@@ -36,6 +36,7 @@ impl Fixture {
                 ask,
                 session_info,
                 feedback,
+                true,
             )
             .unwrap();
         Self {
@@ -211,6 +212,7 @@ fn ask_cancel_close_and_generation_replacement_settle_once_without_pending_cards
             true,
             false,
             false,
+            true,
         )
         .unwrap();
     fixture
@@ -379,6 +381,40 @@ fn ask_validation_rejects_bounds_and_duplicate_question_keys_before_projection()
 }
 
 #[test]
+fn ask_input_cannot_mark_its_own_question_as_a_run_approval() {
+    let fixture = Fixture::new(true, false, false);
+    // `presentation`/`command` are runtime-only: `ask_user` cannot disguise an ordinary question
+    // as the run approval card, whose command text is the re-detected entry's.
+    for extra in [
+        json!({"presentation":"command"}),
+        json!({"command":"rm -rf ."}),
+        json!({"presentation":"command","command":"rm -rf ."}),
+    ] {
+        let mut question = json!({"question":"Q?","options":[{"label":"A"},{"label":"B"}]});
+        for (key, value) in extra.as_object().unwrap() {
+            question[key] = value.clone();
+        }
+        assert_eq!(
+            fixture
+                .tool("chat.tool.ask", json!({"questions":[question]}))
+                .err()
+                .unwrap()
+                .to_string(),
+            "invalid_request",
+            "{extra}"
+        );
+    }
+    assert!(!fixture
+        .db
+        .chat_items(&fixture.session)
+        .unwrap()
+        .iter()
+        .flat_map(|item| &item.parts)
+        .any(|part| part["data"]["threadtermTool"] == "ask_user"),
+        "a rejected ask publishes no card");
+}
+
+#[test]
 fn completed_turn_cannot_be_resurrected_by_ask_publication() {
     let fixture = Fixture::new(true, false, false);
     let reached = Arc::new(Barrier::new(2));
@@ -463,6 +499,7 @@ fn reconnect_fences_a_paused_old_feedback_consumer_before_commit() {
             "generation-two".into(),
             false,
             false,
+            true,
             true,
         )
         .unwrap();

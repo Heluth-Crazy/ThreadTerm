@@ -1,26 +1,45 @@
-.ql-trigger { flex-shrink:0; }
-.ql-menu { width:480px; display:flex; flex-direction:column; overflow:hidden; }
-.ql-menu .surface-error { margin:8px 12px; }.ql-menu .surface-error .btn { margin-left:6px; }
-.ql-list { overflow:auto; min-height:0; }
-.ql-menu > .shell-menu-foot { flex:none; flex-wrap:wrap; }
-.ql-menu > .shell-menu-foot .menu-item { flex:1 0 auto; width:auto; }
-/* One compact line per command: name + command on the left, state and actions on the right. */
-.ql-command { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"head actions" "code actions"; column-gap:10px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border); }
-.ql-command-head { grid-area:head; display:flex; align-items:center; gap:8px; min-width:0; }.ql-command-head strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
-.ql-command code { grid-area:code; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--muted); margin:2px 0 0; }
-.ql-actions { grid-area:actions; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
+.ql-split { display:inline-flex; flex:none; }.ql-split .btn { border-radius:0; }.ql-split .ql-main { max-width:220px; }.ql-split .ql-main span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.ql-split .ql-main,.ql-split .ql-stop { border-right:0; }.ql-split .ql-main { border-radius:var(--radius) 0 0 var(--radius); }.ql-split .ql-dropdown { border-radius:0 var(--radius) var(--radius) 0; }.ql-main .dot { width:6px; height:6px; margin-left:2px; background:currentColor; }.ql-toolbar-error { position:absolute; z-index:2; margin:4px 0; }
+ .ql-pick { position:fixed; z-index:70; box-sizing:border-box; overflow:hidden; width:min(420px,calc(100vw - 16px)); padding:8px; display:flex; flex-direction:column; gap:6px; }.ql-pick>input { width:100%; box-sizing:border-box; }.ql-pick-list { min-height:0; max-height:min(420px,calc(100vh - 180px)); overflow:auto; }.ql-pick-group { padding:7px 6px 2px; color:var(--muted); font-size:11px; }.ql-pick-row { width:100%; min-width:0; display:grid; grid-template-columns:16px minmax(120px,auto) minmax(0,1fr); gap:7px; align-items:center; padding:5px 6px; border:0; background:transparent; color:inherit; text-align:left; }.ql-pick-row:hover,.ql-pick-row.is-active { background:var(--soft); }.ql-pick-row strong { font-size:12px; }.ql-pick-row strong,.ql-pick-row code { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.ql-pick-row code { color:var(--muted); font:11px var(--mono); }.ql-pick-glyph.ql-running { color:var(--primary); }.ql-pick-glyph.ql-failed { color:var(--danger); }.ql-pick-missing { margin:0; padding:3px 6px; color:var(--muted); font-size:11px; }.ql-pick footer { display:flex; border-top:1px solid var(--border); }.ql-pick footer .menu-item { flex:1; }
+.ql-command-head { display:flex; align-items:center; gap:8px; min-width:0; }.ql-command-head strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.ql-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
 .ql-state { display:inline-flex; align-items:center; gap:5px; font-size:11px; white-space:nowrap; color:var(--muted); }.ql-state .dot { width:6px; height:6px; flex-shrink:0; background:currentColor; }
-.ql-running,.ql-starting { color:var(--primary); }.ql-failed,.ql-interrupted { color:var(--danger); }.ql-completed { color:var(--success,var(--primary)); }
+.ql-running,.ql-starting,.ql-ready { color:var(--primary); }.ql-failed,.ql-interrupted { color:var(--danger); }.ql-completed { color:var(--success,var(--primary)); }
+/* The port readiness found, right after the state it explains. */
+.ql-port { font-size:11px; color:var(--primary); font-variant-numeric:tabular-nums; }
+/* Enabled only once the run answers: present, but not a link yet. */
+.ql-url.is-pending { color:var(--muted); cursor:default; text-decoration:none; }
 .ql-run-chip { border:1px solid var(--border); border-radius:var(--radius); padding:5px 8px; min-width:0; max-width:260px; }.ql-run-chip>span:last-child { overflow:hidden; text-overflow:ellipsis; }
 .ql-fields { border:0; margin:0; padding:0; min-width:0; }.ql-editor textarea { width:100%; resize:vertical; min-height:90px; font-family:var(--mono); }.ql-editor .field>input[id$="-command"] { font-family:var(--mono); }
 .ql-editor .note,.ql-import .note { margin:6px 0 10px; }.ql-delete { margin-right:auto; }
 .ql-advanced { border-top:1px solid var(--border); padding-top:12px; }.ql-advanced summary { cursor:pointer; font-size:12px; margin-bottom:10px; }.ql-advanced .field>label { display:block; margin-bottom:6px; }
 .ql-env-row { display:flex; gap:6px; margin-bottom:6px; }.ql-env-row input { min-width:0; width:0; flex:2; }.ql-env-row input:first-child { flex:1; }
+.ql-secret-value { display:flex; align-items:center; min-width:0; flex:2; padding:0 8px; border:1px solid var(--border); border-radius:var(--radius); color:var(--muted); font-size:12px; }
+.ql-env-secret { display:inline-flex; align-items:center; gap:4px; flex:none; color:var(--muted); font-size:11px; white-space:nowrap; }
+.ql-repo-storage { display:flex; align-items:center; gap:7px; margin:0 0 8px; font-size:12px; }
+.ql-repo-details { display:inline-flex; align-items:center; flex:none; }.ql-repo-details .ql-source-label { margin:0 4px 4px 0; background:var(--surface); cursor:pointer; }
+.ql-repo-details .ql-repo-changed { color:var(--danger); border-color:currentColor; }.ql-repo-details .ql-repo-missing { color:var(--danger); }
+.ql-repo-diff { margin:4px 0; padding:7px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); font-size:11px; }.ql-repo-diff section { margin:0 0 7px; }.ql-repo-diff section:last-of-type { margin-bottom:6px; }.ql-repo-diff strong,.ql-repo-diff span { display:block; color:var(--muted); }.ql-repo-diff pre { max-height:80px; margin:2px 0; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; color:var(--text); }
 .ql-directory { display:flex; gap:8px; }.ql-directory input { flex:1; min-width:0; }.ql-directory .btn { flex-shrink:0; }
 .ql-import .ql-directory { align-items:stretch; }.ql-import .ql-directory input { box-sizing:border-box; height:32px; min-height:32px; padding:6px 10px; border-radius:var(--radius); font-size:13px; }.ql-import .ql-directory .btn { flex:0 0 auto; }
 .ql-import .dlg-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .ql-import .dlg-foot .sheet-foot-meta { margin-right:auto; color:var(--muted); font-size:13px; line-height:1.25; font-variant-numeric:tabular-nums; }
 .ql-script-list { max-height:320px; overflow:auto; }.ql-script { display:flex; align-items:center; gap:10px; border-top:1px solid var(--border); padding:10px 0; font-size:12px; }.ql-script>span:nth-child(2) { flex:1; min-width:0; }.ql-script code { display:block; color:var(--muted); margin-top:3px; overflow-wrap:anywhere; }
 .ql-editor summary:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-@media(max-width:800px) { .ql-run-chip { max-width:160px; }.ql-menu { max-width:calc(100vw - 16px); } }
+@media(max-width:800px) { .ql-run-chip { max-width:160px; } }
 @media(max-width:520px) { .ql-import .dlg-foot .sheet-foot-meta { flex:1 0 100%; margin-right:0; }.ql-import .dlg-foot > .btn { flex:1 1 calc(50% - 4px); min-width:0; justify-content:center; } }
+/* Detected: computed from the worktree's files when the popover opens, grouped by source then package/target. */
+.ql-source-label { flex:none; font-size:10px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:0 6px; }
+.ql-depends { display:grid; gap:5px; }
+.ql-depends-row { display:flex; align-items:center; gap:7px; font-size:12px; }
+/* A suggestion is inferred, not declared: the same tag shape, dashed. */
+.ql-source-label.ql-suggested { border-style:dashed; }
+
+.wb-proposal-review { display:flex; flex-direction:column; gap:8px; margin:6px 0; }
+.wb-proposal-review .wb-proposal-field { display:grid; grid-template-columns:minmax(90px,auto) minmax(0,1fr); gap:4px 8px; }
+.wb-proposal-review .wb-proposal-field > strong { overflow-wrap:anywhere; text-transform:none; }
+.wb-proposal-review pre { margin:0; padding:6px; white-space:pre-wrap; overflow-wrap:anywhere; overflow:auto; font:11px/1.45 var(--mono); background:var(--soft); color:var(--text); }
+.wb-proposal-review .wb-proposal-diff pre { grid-column:1 / -1; }
+.wb-proposal-review pre span { display:block; }
+.wb-proposal-review del, .wb-proposal-review ins { grid-column:2; white-space:pre-wrap; overflow-wrap:anywhere; text-decoration:none; }
+.wb-proposal-review del, .wb-proposal-review .is-removed { color:var(--danger); }
+.wb-proposal-review ins, .wb-proposal-review .is-added { color:var(--success,var(--primary)); }

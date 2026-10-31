@@ -12,6 +12,8 @@ export type WorkbenchActions = {
  comments?:import('../fileCommentsHost').FileCommentsHost;
  /** Opens an existing agent session through the host's current workspace rules. */
  openSession?:(sessionId:string) => void;
+ /** Opens a page the host owns (a run's printed local address) through its preview rules. */
+ openPreview?:(url:string) => void;
  openFile:(path:string, position?:{line?:number;column?:number}) => void;
  /** Opens the file as a preview owned by the active session (hidden when switching sessions). */
  openBeside?:(path:string) => void;

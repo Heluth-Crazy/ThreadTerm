@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { openExternal } from "../bridge";
-import type { ChatFormField } from "@threadterm/protocol";
-import { type ChatInteractionForm, type QuestionResponse, type QuestionValue, questionSummary, summaryLine, validQuestionValues } from "../chatQuestion";
+import type { ChatFormField, ChatQuestion } from "@threadterm/protocol";
+import { questionPresentation, type ChatInteractionForm, type QuestionResponse, type QuestionValue, questionSummary, summaryLine, validQuestionValues } from "../chatQuestion";
 
 type Props = {
   form: ChatInteractionForm;
@@ -38,7 +38,7 @@ export function ChatQuestionCard({ form, answerable, resolved, dismissed, summar
   }
   if (inactiveMessage) return <p className="chat-question-summary">{inactiveMessage}</p>;
   return <form className="chat-question-card" onSubmit={submit}>
-    {form.kind === "questions" && form.questions.map((question, index) => <fieldset key={question.id} className="chat-question-fieldset"><legend>{form.questions.length > 1 && <small className="chat-question-number">{copy(`${index + 1} of ${form.questions.length}`, `第 ${index + 1} / ${form.questions.length} 题`)}</small>}{question.header && form.questions.length > 1 && <span className="chat-question-header-chip">{question.header}</span>}<span className="chat-question-title">{question.question}</span></legend>{question.options.map(option => {
+    {form.kind === "questions" && form.questions.map((question, index) => <fieldset key={question.id} className="chat-question-fieldset"><legend>{form.questions.length > 1 && <small className="chat-question-number">{copy(`${index + 1} of ${form.questions.length}`, `第 ${index + 1} / ${form.questions.length} 题`)}</small>}{question.header && form.questions.length > 1 && <span className="chat-question-header-chip">{question.header}</span>}<QuestionTitle question={question} /></legend>{question.options.map(option => {
       const selected = Array.isArray(values[question.id]) ? values[question.id] as string[] : [];
       const checked = selected.includes(option.label);
       return <label className={`chat-question-option${checked ? " is-selected" : ""}`} key={option.label}><input type={question.multiSelect ? "checkbox" : "radio"} name={question.id} checked={checked} disabled={!canAct} onChange={() => { if (!question.multiSelect) setOtherOpen(current => ({ ...current, [question.id]: false })); setValues(current => ({ ...current, [question.id]: question.multiSelect ? (checked ? selected.filter(value => value !== option.label) : [...selected, option.label]) : [option.label] })); }} /><span><b>{option.label}</b>{option.description && <small>{option.description}</small>}</span></label>;
@@ -59,6 +59,13 @@ export function ChatQuestionCard({ form, answerable, resolved, dismissed, summar
     {issue && <p role="alert" className="surface-error">{issue}</p>}
     <div className="chat-approval-actions chat-question-actions">{answerable && <button type="submit" className="btn btn-sm btn-primary chat-approval-choice" disabled={!canAct || !valid}>{submitting ? copy("Submitting…", "提交中…") : form.kind === "url" ? copy("Done", "完成") : copy("Submit", "提交")}</button>}<button type="button" className="btn btn-sm chat-approval-choice" disabled={!canAct} onClick={() => onAnswer?.({ action: "dismiss" })}>{copy("Dismiss", "忽略")}</button></div>
   </form>;
+}
+
+/** The question title and, only for a runtime-marked run approval, the exact command block. An
+ * ordinary multi-line question renders exactly as before: one title span with its full text. */
+function QuestionTitle({ question }: { question: ChatQuestion }) {
+  const { title, command } = questionPresentation(question);
+  return <><span className="chat-question-title">{title}</span>{command !== undefined && <code className="chat-question-command" data-testid="chat-question-command">{command}</code>}</>;
 }
 
 function FormField({ field, value, disabled, onChange, copy }: { field: ChatFormField; value: QuestionValue | undefined; disabled: boolean; onChange: (value?: QuestionValue) => void; copy: Props['copy'] }) {

@@ -11,7 +11,7 @@ use super::{
     acp_mcp_servers, approve_scoped_threadterm_tool, chat_tool_policy, emit_bound as emit, verify_permission_options,
     ChatBackgroundTask, ChatSession, ChatToolPolicy, ChatToolServer, ProviderAdapter,
     ProviderCapability, ProviderError, ScopedProviderEvents,
-    TerminalCommand,
+    TerminalCommand, ToolNamespace,
 };
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -89,8 +89,8 @@ impl GrokAdapter {
                 // approved here (Grok names them `threadterm__<tool>`).
                 if grok_reverse_rpc(&raw).is_some()
                     && raw["method"] == "session/request_permission"
-                    && raw.get("params").and_then(|params| super::acp_scoped_permission_option(params, &tool_policy)).is_some() {
-                    let _ = approve_scoped_threadterm_tool(&responder, &raw, &tool_policy);
+                    && raw.get("params").and_then(|params| super::acp_scoped_permission_option(params, &tool_policy, GROK_TOOL_NAMESPACE)).is_some() {
+                    let _ = approve_scoped_threadterm_tool(&responder, &raw, &tool_policy, GROK_TOOL_NAMESPACE);
                     return;
                 }
                 if project_events || grok_reverse_rpc(&raw).is_some() {
@@ -2739,6 +2739,11 @@ fn wait_for_grok_mode(ui: &Mutex<GrokUiState>, value: &str) -> Result<(), Provid
     Err(ProviderError::new("provider_protocol", format!("Grok did not confirm permission mode {value}")))
 }
 
+/// Grok names ThreadTerm's tools `threadterm__<tool>`; this adapter never reads the
+/// `mcp__threadterm__<tool>` spelling, so a foreign MCP server named `mcp` that exposes
+/// `threadterm__run_start` appears as `mcp__threadterm__run_start` and is not approved.
+const GROK_TOOL_NAMESPACE: ToolNamespace = ToolNamespace::Threadterm;
+
 /// Grok applies exact `--allow MCPTool(...)` rules before its `dontAsk`/auto
 /// decision. Grant only ThreadTerm tools the per-open server actually exposes;
 /// every value is a fixed local name, never agent-provided text or a wildcard.
@@ -2750,6 +2755,7 @@ fn grok_spawn_args(policy: &ChatToolPolicy) -> Vec<String> {
     if policy.ask { tools.push("ask_user"); }
     if policy.session_info { tools.push("session_info"); }
     if policy.feedback { tools.push("feedback_check"); }
+    if policy.run { tools.extend(crate::mcp_delegation::RUN_TOOL_NAMES); }
     if policy.preview { tools.extend(crate::preview::TOOL_NAMES); }
     if policy.browser { tools.extend(crate::browser_tools::TOOL_NAMES); }
 
@@ -3703,15 +3709,18 @@ mod tests {
     fn grok_preapproval_args_are_exact_and_precede_agent() {
         let all = ChatToolPolicy {
             delegation: true, preview: true, browser: true,
-            ask: true, session_info: true, feedback: true,
+            ask: true, session_info: true, feedback: true, run: true,
         };
         let args = grok_spawn_args(&all);
         let agent = args.iter().position(|arg| arg == "agent").unwrap();
         assert_eq!(&args[agent..], &["agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned()]);
         assert!(args[..agent].chunks_exact(2).all(|pair| pair[0] == "--allow" && pair[1].starts_with("MCPTool(threadterm__") && pair[1].ends_with(')')));
         let rules = args[..agent].chunks_exact(2).map(|pair| pair[1].as_str()).collect::<Vec<_>>();
-        assert_eq!(rules.len(), 6 + 1 + 1 + 1 + crate::preview::TOOL_NAMES.len() + crate::browser_tools::TOOL_NAMES.len());
+        assert_eq!(rules.len(), 6 + 1 + 1 + 1 + crate::mcp_delegation::RUN_TOOL_NAMES.len() + crate::preview::TOOL_NAMES.len() + crate::browser_tools::TOOL_NAMES.len());
         assert!(crate::delegation::TOOL_NAMES.iter().all(|tool| rules.contains(&format!("MCPTool(threadterm__{tool})").as_str())));
+        for tool in crate::mcp_delegation::RUN_TOOL_NAMES {
+            assert!(rules.contains(&format!("MCPTool(threadterm__{tool})").as_str()), "{tool}");
+        }
         assert!(!rules.iter().any(|rule| rule.contains("browser_eval") || rule.contains('*')));
 
         let scoped = grok_spawn_args(&ChatToolPolicy { session_info: true, ..ChatToolPolicy::default() });
@@ -3719,7 +3728,31 @@ mod tests {
             "--allow".to_owned(), "MCPTool(threadterm__session_info)".to_owned(),
             "agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned(),
         ]);
+        let run_only = grok_spawn_args(&ChatToolPolicy { run: true, ..ChatToolPolicy::default() });
+        assert_eq!(run_only.len(), crate::mcp_delegation::RUN_TOOL_NAMES.len() * 2 + 3);
+        assert_eq!(run_only.last(), Some(&"stdio".to_owned()));
         assert_eq!(grok_spawn_args(&ChatToolPolicy::default()), vec!["agent".to_owned(), "--no-leader".to_owned(), "stdio".to_owned()]);
+    }
+
+    #[test]
+    fn grok_rejects_a_threadterm_tool_name_from_a_foreign_server_named_mcp() {
+        let policy = ChatToolPolicy { delegation: true, run: true, ask: true, preview: true, browser: true, ..Default::default() };
+        let request = |title: &str| json!({"toolCall":{"title":title,"kind":"other"},"options":[{"optionId":"once","kind":"allow_once"}]});
+        for tool in ["delegate_start", "run_start", "ask_user", "preview_present", "browser_list_tabs"] {
+            assert_eq!(
+                super::super::acp_scoped_permission_option(&request(&format!("threadterm__{tool}")), &policy, GROK_TOOL_NAMESPACE),
+                Some("once".into()),
+                "Grok approves its own exact {tool}"
+            );
+            // Grok renders the server as `server__tool`, so a foreign server called `mcp` exposing
+            // `threadterm__run_start` has exactly this title. It must never be auto-approved.
+            assert_eq!(
+                super::super::acp_scoped_permission_option(&request(&format!("mcp__threadterm__{tool}")), &policy, GROK_TOOL_NAMESPACE),
+                None,
+                "a foreign server named mcp must not be approved for {tool}"
+            );
+            assert!(!super::super::is_threadterm_tool(GROK_TOOL_NAMESPACE, &format!("mcp__threadterm__{tool}")));
+        }
     }
 
     fn grok_probe_frames() -> Vec<Value> {

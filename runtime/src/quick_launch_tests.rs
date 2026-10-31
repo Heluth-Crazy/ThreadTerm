@@ -24,7 +24,9 @@ fn real_cmd_quick_launch_uses_its_shell_program_and_preserves_inherited_term() {
     let saved = runtime.dispatch("test", rpc("quickLaunch.save", json!({
         "projectId":project_id, "name":"Real CMD", "command":command,
         "shell":"cmd", "cwd":"", "kind":"task", "env":[], "operationId":"save-real-cmd"
-    }), "save-real-cmd")).unwrap();
+    }), "save-real-cmd",
+            ),
+        ).unwrap();
     let result = runtime.dispatch("test", rpc("quickLaunch.run", json!({
         "commandId":saved["id"], "cwd":root.path().to_string_lossy(), "operationId":"run-real-cmd"
     }), "run-real-cmd")).unwrap();
@@ -185,6 +187,77 @@ fn command_crud_creation_order_revision_and_replay() {
         .len(),
         1
     );
+}
+
+#[test]
+fn local_secret_responses_are_redacted_and_omitted_values_preserve_the_override() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-local-secret");
+    let pty = PtyManager::new(Arc::new(crate::output::OutputStore::default()));
+    let secret = "local-save-private-value";
+    let saved = dispatch(
+        &db,
+        &pty,
+        "quickLaunch.save",
+        &json!({
+            "projectId":project_id,"name":"Secret task","command":"echo ready","shell":"cmd",
+            "cwd":"","kind":"task","env":[{"name":"TOKEN","secret":true,"value":secret}],
+            "operationId":"local-secret-save"
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        saved["env"][0],
+        json!({"name":"TOKEN","secret":true,"hasValue":true})
+    );
+    assert!(!saved.to_string().contains(secret));
+    let updated = dispatch(
+        &db,
+        &pty,
+        "quickLaunch.save",
+        &json!({
+            "projectId":project_id,"id":saved["id"],"expectedRevision":saved["revision"],
+            "name":"Secret task","command":"echo ready","shell":"cmd","cwd":"","kind":"task",
+            "env":[{"name":"TOKEN","secret":true}],"operationId":"local-secret-update"
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        updated["env"][0],
+        json!({"name":"TOKEN","secret":true,"hasValue":true})
+    );
+    let listed = dispatch(
+        &db,
+        &pty,
+        "quickLaunch.list",
+        &json!({"projectId":project_id}),
+    )
+    .unwrap();
+    assert_eq!(listed[0]["env"][0], updated["env"][0]);
+    let (stored, command_json, receipts): (String, String, Vec<String>) = db
+        .transaction(|tx| {
+            let stored = tx.query_row(
+                "SELECT value FROM quick_launch_repo_secrets WHERE project_id=? AND entry_id=? AND env_name='TOKEN'",
+                params![project_id, saved["id"].as_str().unwrap()],
+                |row| row.get(0),
+            )?;
+            let command_json = tx.query_row(
+                "SELECT env_json FROM quick_launch_commands WHERE id=?",
+                [saved["id"].as_str().unwrap()],
+                |row| row.get(0),
+            )?;
+            let mut statement = tx.prepare(
+                "SELECT result FROM operations WHERE id IN ('local-secret-save','local-secret-update')",
+            )?;
+            let receipts = statement
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok((stored, command_json, receipts))
+        })
+        .unwrap();
+    assert_eq!(stored, secret);
+    assert!(!command_json.contains(secret));
+    assert!(receipts.iter().all(|receipt| !receipt.contains(secret)));
 }
 
 #[test]
@@ -786,20 +859,599 @@ fn stopped_run_ends_quietly_but_a_failed_run_still_needs_attention() {
     let runtime = service(root.path(), Arc::clone(&db));
     let cwd = root.path().to_string_lossy().to_string();
     let inbox = |id: &str| -> Option<(String, bool)> {
-        db.transaction(|tx| Ok(tx.query_row("SELECT kind,read FROM inbox WHERE session_id=?", [id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))).optional()?)).unwrap()
+        db.transaction(|tx| {
+            Ok(tx.query_row("SELECT kind,read FROM inbox WHERE session_id=?", [id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+                )
+                .optional()?)
+        }).unwrap()
     };
     let mut run = |name: &str, command: &str, kind: &str| -> String {
         let saved = runtime.dispatch("test", rpc("quickLaunch.save", json!({"projectId":project_id,"name":name,"command":command,"shell":"cmd","cwd":"","kind":kind,"env":[],"operationId":format!("save-{name}")}), &format!("save-{name}"))).unwrap();
-        let started = runtime.dispatch("test", rpc("quickLaunch.run", json!({"commandId":saved["id"],"cwd":cwd,"operationId":format!("run-{name}")}), &format!("run-{name}"))).unwrap();
+        let started = runtime.dispatch("test", rpc("quickLaunch.run", json!({"commandId":saved["id"],"cwd":cwd,"operationId":format!("run-{name}")}), &format!("run-{name}"),
+                ),
+            ).unwrap();
         started["session"]["id"].as_str().unwrap().to_owned()
     };
     let service_id = run("server", "ping -n 30 127.0.0.1 > nul", "service");
-    runtime.dispatch("test", rpc("session.stop", json!({"sessionId":service_id,"operationId":"stop-server","force":true}), "stop-server")).unwrap();
+    runtime.dispatch("test", rpc("session.stop", json!({"sessionId":service_id,"operationId":"stop-server","force":true}), "stop-server",
+            ),
+        ).unwrap();
     wait_inactive(&db, &service_id);
     assert_eq!(db.session_by_id(&service_id).unwrap().unwrap().run.unwrap().stop_requested, Some(true));
     assert_eq!(inbox(&service_id), None, "a run the user stopped must not ask for attention");
     let failed_id = run("broken", "exit 3", "task");
     wait_inactive(&db, &failed_id);
     assert_eq!(inbox(&failed_id), Some(("failed".to_owned(), false)), "a failing run still needs attention");
+    runtime.shutdown();
+}
+
+fn detect_request(project_id: &str, root: &Path) -> Value {
+    json!({"projectId":project_id,"cwd":root.to_string_lossy()})
+}
+
+#[test]
+fn detect_lists_live_entries_and_run_requires_exactly_one_target() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detect");
+    std::fs::write(
+        root.path().join("package.json"),
+        r#"{"name":"demo","scripts":{"dev":"node x","build":"tsc"}}"#,
+    )
+    .unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let detected = runtime
+        .dispatch(
+            "test",
+            rpc("quickLaunch.detect", detect_request(&project_id, root.path()), "detect",
+            ),
+        )
+        .unwrap();
+    let entries = detected["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(detected["truncated"], json!(false));
+    assert_eq!(entries[0]["key"], json!("node:package.json:build"));
+    assert_eq!(entries[0]["source"]["kind"], json!("node"));
+    assert_eq!(entries[0]["source"]["file"], json!("package.json"));
+    assert_eq!(entries[1]["key"], json!("node:package.json:dev"));
+    assert_eq!(entries[1]["kind"], json!("service"));
+    assert_eq!(entries[1]["cwd"], json!(""));
+    assert!(entries[1].get("missingTool").is_none() || entries[1]["missingTool"].is_string());
+    // Detection resolves the root through the same validation runs use.
+    let outside = tempfile::tempdir().unwrap();
+    let error = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.detect",
+                json!({"projectId":project_id,"cwd":outside.path().to_string_lossy()}),
+                "detect-outside",
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "cwd_outside_root");
+    let cwd = root.path().to_string_lossy().to_string();
+    for (params, code) in [
+        (json!({"cwd":cwd,"operationId":"neither"}), "invalid_request",
+        ),
+        (
+            json!({"commandId":"saved","detectedKey":"node:package.json:dev","projectId":project_id,"cwd":cwd,"operationId":"both"}),
+            "invalid_request",
+        ),
+        (json!({"detectedKey":"node:package.json:dev","cwd":cwd,"operationId":"no-project"}), "invalid_request",
+        ),
+        (json!({"detectedKey":"","projectId":project_id,"cwd":cwd,"operationId":"empty"}), "invalid_request",
+        ),
+        (
+            json!({"detectedKey":"node:package.json:gone","projectId":project_id,"cwd":cwd,"operationId":"gone"}),
+            "detected_entry_not_found",
+        ),
+    ] {
+        let error = runtime
+            .dispatch("test", rpc("quickLaunch.run", params.clone(), "bad"))
+            .unwrap_err();
+        assert_eq!(error.code, code, "{params}");
+    }
+    runtime.shutdown();
+}
+
+#[test]
+fn detected_run_refuses_a_missing_tool_before_launching() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-missing");
+    std::fs::write(
+        root.path().join("Procfile"),
+        "web: tt-qa-definitely-missing-tool --serve\n",
+    )
+    .unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let error = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":"procfile:Procfile:web","projectId":project_id,"cwd":root.path().to_string_lossy(),"operationId":"missing-tool"}),
+                "missing-tool",
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "tool_not_found");
+    assert!(
+        error.message.starts_with("tool_not_found: tt-qa-definitely-missing-tool"),
+        "{}",
+        error.message
+    );
+    assert!(db.snapshot().unwrap().sessions.is_empty(), "nothing launched");
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn detected_run_redetects_its_command_and_shares_admission() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-run");
+    let procfile = root.path().join("Procfile");
+    std::fs::write(&procfile, "web: ping -n 30 127.0.0.1 > nul\ntask: echo FIRST>result.txt\n",
+    ).unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let run = |key: &str, operation: &str| {
+        runtime.dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":key,"projectId":project_id,"cwd":cwd,"operationId":operation}),
+                operation,
+            ),
+        )
+    };
+    // The launch re-reads the files: an edited command is what actually runs.
+    std::fs::write(&procfile, "web: ping -n 30 127.0.0.1 > nul\ntask: echo SECOND>result.txt\n",
+    ).unwrap();
+    let task = run("procfile:Procfile:task", "detected-task").unwrap();
+    let task_id = task["session"]["id"].as_str().unwrap().to_owned();
+    wait_inactive(&db, &task_id);
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(),
+        "SECOND"
+    );
+    let service_run = run("procfile:Procfile:web", "detected-web").unwrap();
+    let id = service_run["session"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(service_run["existing"], json!(false));
+    let stored = db.session_by_id(&id).unwrap().unwrap().run.unwrap();
+    assert_eq!(stored.command_id, "detected:procfile:Procfile:web");
+    assert_eq!(stored.kind, "service");
+    let again = run("procfile:Procfile:web", "detected-web-again").unwrap();
+    assert_eq!(again["existing"], json!(true));
+    assert_eq!(again["session"]["id"], json!(id));
+    runtime
+        .dispatch(
+            "test",
+            rpc(
+                "session.stop",
+                json!({"sessionId":id,"operationId":"stop-detected","force":true}),
+                "stop-detected",
+            ),
+        )
+        .unwrap();
+    wait_inactive(&db, &id);
+    // Removing the source retires the key.
+    std::fs::remove_file(&procfile).unwrap();
+    assert_eq!(
+        run("procfile:Procfile:web", "detected-gone").unwrap_err().code,
+        "detected_entry_not_found"
+    );
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn detected_maven_run_uses_the_wrapper_from_the_maven_root() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-maven");
+    std::fs::write(
+        root.path().join("pom.xml"),
+        "<project><artifactId>demo</artifactId><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>",
+    )
+    .unwrap();
+    // The wrapper records its arguments instead of building anything.
+    std::fs::write(
+        root.path().join("mvnw.cmd"),
+        "@echo off\r\necho %* > mvn-args.txt\r\n",
+    )
+    .unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let run = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":"maven:pom.xml:spring-boot:run","projectId":project_id,"cwd":cwd,"operationId":"detected-maven"}),
+                "detected-maven",
+            ),
+        )
+        .unwrap();
+    let id = run["session"]["id"].as_str().unwrap().to_owned();
+    wait_inactive(&db, &id);
+    let stored = db.session_by_id(&id).unwrap().unwrap().run.unwrap();
+    assert_eq!(stored.command_id, "detected:maven:pom.xml:spring-boot:run");
+    let arguments = std::fs::read_to_string(root.path().join("mvn-args.txt"))
+        .unwrap_or_else(|error| panic!("{error}: {:?}", output_text(&db, &id)));
+    assert!(
+        arguments.trim().ends_with("spring-boot:run"),
+        "the wrapper got {arguments:?}"
+    );
+    runtime.shutdown();
+}
+
+#[test]
+fn unsafe_detected_commands_never_launch() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-detected-unsafe");
+    std::fs::write(root.path().join("Procfile"), "web: node --x\0--y\n").unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let detected = runtime
+        .dispatch(
+            "test",
+            rpc("quickLaunch.detect", detect_request(&project_id, root.path()), "detect-unsafe",
+            ),
+        )
+        .unwrap();
+    assert_eq!(detected["entries"], json!([]), "an unlaunchable command is never listed");
+    // Even the listed key cannot start it: detection refuses the entry outright.
+    let error = runtime
+        .dispatch(
+            "test",
+            rpc(
+                "quickLaunch.run",
+                json!({"detectedKey":"procfile:Procfile:web","projectId":project_id,"cwd":cwd,"operationId":"unsafe"}),
+                "unsafe",
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "detected_entry_not_found");
+    assert!(db.snapshot().unwrap().sessions.is_empty());
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn restart_stops_the_active_run_then_relaunches_the_edited_saved_command() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-restart-saved");
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let saved = runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"name":"Server","command":"ping -n 30 127.0.0.1 > nul","shell":"cmd","cwd":"","kind":"service","env":[],"operationId":"restart-save"
+    }), "restart-save")).unwrap();
+    let first = runtime.dispatch("test", rpc("quickLaunch.run", json!({"commandId":saved["id"],"cwd":cwd,"operationId":"restart-run"}), "restart-run",
+            ),
+        ).unwrap();
+    let first_id = first["session"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(first["existing"], json!(false));
+    // The saved text changes while the run is active: restart relaunches from the current text.
+    runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"id":saved["id"],"expectedRevision":1,"name":"Server","command":"echo SECOND>result.txt","shell":"cmd","cwd":"","kind":"task","env":[],"operationId":"restart-edit"
+    }), "restart-edit")).unwrap();
+    let restarted = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":first_id,"operationId":"restart-1"}), "restart-1",
+            ),
+        ).unwrap();
+    let second_id = restarted["session"]["id"].as_str().unwrap().to_owned();
+    assert_ne!(second_id, first_id);
+    assert_eq!(restarted["existing"], json!(false));
+    assert_eq!(restarted["session"]["run"]["commandId"], saved["id"]);
+    // The stop is the existing intent plus the existing PTY stop: the old run ends quietly.
+    let stopped = db.session_by_id(&first_id).unwrap().unwrap();
+    assert_eq!(stopped.status, "exited");
+    assert_eq!(stopped.run.unwrap().stop_requested, Some(true));
+    wait_inactive(&db, &second_id);
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(),
+        "SECOND"
+    );
+    // Receipt replay returns the same new session and launches nothing.
+    let replay = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":first_id,"operationId":"restart-1"}), "restart-1",
+            ),
+        ).unwrap();
+    assert_eq!(replay["session"]["id"], json!(second_id));
+    assert_eq!(db.snapshot().unwrap().sessions.len(), 2);
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn restart_detected_entry_redetects_its_command_and_refuses_a_removed_source() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-restart-detected");
+    let procfile = root.path().join("Procfile");
+    std::fs::write(&procfile, "task: echo FIRST>result.txt\n").unwrap();
+    let runtime = service(root.path(), Arc::clone(&db));
+    let cwd = root.path().to_string_lossy().to_string();
+    let first = runtime.dispatch("test", rpc("quickLaunch.run", json!({"detectedKey":"procfile:Procfile:task","projectId":project_id,"cwd":cwd,"operationId":"detected-first"}), "detected-first")).unwrap();
+    let first_id = first["session"]["id"].as_str().unwrap().to_owned();
+    wait_inactive(&db, &first_id);
+    assert_eq!(std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(), "FIRST");
+    std::fs::write(&procfile, "task: echo SECOND>result.txt\n").unwrap();
+    let restarted = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":first_id,"operationId":"detected-restart"}), "detected-restart",
+            ),
+        ).unwrap();
+    let second_id = restarted["session"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(restarted["session"]["run"]["commandId"], "detected:procfile:Procfile:task");
+    wait_inactive(&db, &second_id);
+    assert_eq!(std::fs::read_to_string(root.path().join("result.txt")).unwrap().trim(), "SECOND");
+    std::fs::remove_file(&procfile).unwrap();
+    let error = runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":second_id,"operationId":"detected-gone"}), "detected-gone",
+            ),
+        ).unwrap_err();
+    assert_eq!(error.code, "detected_entry_not_found");
+    assert_eq!(db.snapshot().unwrap().sessions.len(), 2, "nothing relaunched");
+    // An unknown session is refused before any run is touched.
+    assert_eq!(
+        runtime.dispatch("test", rpc("quickLaunch.restart", json!({"sessionId":"missing","operationId":"restart-missing"}), "restart-missing")).unwrap_err().code,
+        "session_not_found"
+    );
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn restart_gives_up_after_its_bounded_stop_wait() {
+    let (root, db) = test_db();
+    let project_id = project(&db, root.path(), "project-restart-timeout");
+    let root_key = root.path().canonicalize().unwrap().to_string_lossy().into_owned();
+    let saved = dispatch(&db, &PtyManager::new(Arc::new(crate::output::OutputStore::default())), "quickLaunch.save", &json!({
+        "projectId":project_id,"name":"Stuck","command":"ping -n 30 127.0.0.1 > nul","shell":"cmd","cwd":"","kind":"service","env":[],"operationId":"stuck-save"
+    })).unwrap();
+    // A reserved run whose launch never reached a PTY, as a crash between reservation and
+    // launch leaves it: stop marks the intent, and only the bounded wait can end the restart.
+    let now = Utc::now().to_rfc3339();
+    let command_id = saved["id"].as_str().unwrap().to_owned();
+    let snapshot_json = saved.to_string();
+    db.transaction(|tx| {
+        tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,followed) VALUES('stuck',?,?,'Stuck','custom','terminal','starting',?,?,0)", params![project_id,root_key,now,now])?;
+        tx.execute("INSERT INTO session_activity(session_id,state,revision) VALUES('stuck','unknown',1)", [])?;
+        tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at) VALUES('stuck',?,?,?,?,NULL,NULL,0,?)", params![command_id,project_id,root_key,snapshot_json,now])?;
+        Ok(())
+    }).unwrap();
+    let pty = PtyManager::new(Arc::new(crate::output::OutputStore::default()));
+    assert_eq!(RESTART_STOP_TIMEOUT, Duration::from_secs(10), "the bound the rest of the product waits for");
+    let error = restart_using(&db, &pty, "stuck", "stuck-restart", None, "quickLaunch.restart", None, Duration::from_millis(150),
+    ).unwrap_err();
+    assert_eq!(error.to_string(), "restart_stop_timeout");
+    let session = db.session_by_id("stuck").unwrap().unwrap();
+    assert_eq!(session.status, "starting");
+    assert_eq!(session.run.unwrap().stop_requested, Some(true));
+    assert_eq!(db.snapshot().unwrap().sessions.len(), 1, "a timed-out restart launches nothing");
+    let recorded: i64 = db.transaction(|tx| {
+            Ok(tx.query_row("SELECT COUNT(*) FROM operations WHERE method='quickLaunch.restart'", [], |r| r.get(0),
+            )?)
+        }).unwrap();
+    assert_eq!(recorded, 0, "a timed-out restart records no receipt");
+}
+
+#[test]
+fn repo_run_targets_require_exactly_one_target_and_project_scope() {
+    for target in [
+        json!({"repoId":"api", "projectId":"p"}),
+        json!({"detectedKey":"node:package.json:dev", "projectId":"p"}),
+        json!({"commandId":"saved"}),
+    ] {
+        let mut params = target;
+        params["cwd"] = json!("C:/repo");
+        params["operationId"] = json!("op");
+        validate("quickLaunch.run", &params).unwrap();
+    }
+    for target in [
+        json!({}),
+        json!({"repoId":"api"}),
+        json!({"repoId":"../api", "projectId":"p"}),
+        json!({"commandId":"saved", "repoId":"api", "projectId":"p"}),
+        json!({"detectedKey":"node:package.json:dev", "repoId":"api", "projectId":"p"}),
+    ] {
+        let mut params = target;
+        params["cwd"] = json!("C:/repo");
+        params["operationId"] = json!("op");
+        assert!(validate("quickLaunch.run", &params).is_err(), "{params}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn repo_run_rereads_the_file_merges_secrets_and_moves_to_local_and_back() {
+    let (temp, db) = test_db();
+    let work = temp.path().join("repo");
+    std::fs::create_dir(&work).unwrap();
+    let project_id = project(&db, &work, "repo-run-project");
+    let runtime = service(temp.path(), Arc::clone(&db));
+    let scope = json!({"projectId":project_id,"cwd":work.to_string_lossy()});
+    let call = |method: &str, mut params: Value| {
+        params["projectId"] = scope["projectId"].clone();
+        params["cwd"] = scope["cwd"].clone();
+        runtime
+            .dispatch("test", rpc(method, params, method))
+            .unwrap()
+    };
+    let saved = call(
+        "quickLaunch.repo.save",
+        json!({"entry":{
+        "name":"API","command":"echo BEFORE > result.txt", "shell":"cmd", "cwd":"", "kind":"task",
+        "env":[{"name":"API_TOKEN","value":"local-only-token","secret":true}]
+    },"operationId":"repo-save"}),
+    );
+    assert_eq!(saved["trusted"], true);
+    let path = work.join(".threadterm/run.json");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(!raw.contains("local-only-token"));
+    let mut document: Value = serde_json::from_str(&raw).unwrap();
+    document["entries"][0]["command"] = json!("echo %API_TOKEN% > result.txt");
+    std::fs::write(&path, document.to_string()).unwrap();
+    let launched = call(
+        "quickLaunch.run",
+        json!({"repoId":saved["id"], "operationId":"repo-run"}),
+    );
+    let run_id = launched["session"]["id"].as_str().unwrap();
+    wait_inactive(&db, run_id);
+    assert_eq!(
+        std::fs::read_to_string(work.join("result.txt"))
+            .unwrap()
+            .trim(),
+        "local-only-token"
+    );
+    assert_eq!(launched["session"]["run"]["commandId"], "repo:api");
+    let catalog = call("quickLaunch.repo.list", json!({}));
+    assert_eq!(catalog["entries"][0]["changed"], true);
+    let current = &catalog["entries"][0];
+    assert_eq!(
+        current["env"][0],
+        json!({"name":"API_TOKEN","secret":true,"hasValue":true})
+    );
+    assert!(!current.to_string().contains("local-only-token"));
+    call(
+        "quickLaunch.repo.trust",
+        json!({"id":saved["id"],"fingerprint":current["fingerprint"],"operationId":"trust-repo"}),
+    );
+    let local = runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"name":current["name"],"command":current["command"],"shell":current["shell"],
+        "cwd":current["cwd"],"kind":current["kind"],"env":[{"name":"API_TOKEN","secret":true}],
+        "repoSource":{"id":saved["id"],"fingerprint":catalog["fileFingerprint"],"cwd":work.to_string_lossy()},
+        "operationId":"move-local"
+    }), "move-local")).unwrap();
+    assert_eq!(
+        local["env"][0],
+        json!({"name":"API_TOKEN","secret":true,"hasValue":true})
+    );
+    assert!(!local.to_string().contains("local-only-token"));
+    call(
+        "quickLaunch.repo.delete",
+        json!({"id":saved["id"],"expectedFingerprint":catalog["fileFingerprint"],"operationId":"delete-repo"}),
+    );
+    assert!(call("quickLaunch.repo.list", json!({}))["entries"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let catalog = call("quickLaunch.repo.list", json!({}));
+    let restored = call(
+        "quickLaunch.repo.save",
+        json!({"entry":{
+        "name":local["name"],"command":local["command"],"shell":local["shell"],"cwd":local["cwd"],"kind":local["kind"],
+        "env":[{"name":"API_TOKEN","secret":true}]
+    },"localSource":{"id":local["id"],"revision":local["revision"]},
+       "expectedFingerprint":catalog["fileFingerprint"],"operationId":"move-repo"}),
+    );
+    runtime.dispatch("test", rpc("quickLaunch.delete", json!({"id":local["id"],"expectedRevision":local["revision"],"operationId":"delete-local"}),"delete-local")).unwrap();
+    assert_eq!(restored["trusted"], true);
+    assert_eq!(
+        restored["env"][0],
+        json!({"name":"API_TOKEN","secret":true,"hasValue":true})
+    );
+    assert!(!std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("local-only-token"));
+    let leaked: Vec<(String, String)> = db
+        .transaction(|tx| {
+            let mut found = Vec::new();
+            for (table, column) in [
+                ("operations", "result"),
+                ("operation_requests", "params"),
+                ("quick_launch_commands", "env_json"),
+                ("quick_launch_runs", "snapshot_json"),
+                ("quick_launch_repo_trust", "snapshot_json"),
+                ("outbox", "data"),
+            ] {
+                let sql = format!(
+                    "SELECT COUNT(*) FROM {table} WHERE instr(CAST({column} AS TEXT),?)!=0"
+                );
+                let count: i64 = tx.query_row(&sql, ["local-only-token"], |row| row.get(0))?;
+                if count != 0 {
+                    found.push((table.to_owned(), column.to_owned()));
+                }
+            }
+            Ok(found)
+        })
+        .unwrap();
+    assert_eq!(leaked, Vec::<(String, String)>::new());
+    let stored_secret: String = db
+        .transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT value FROM quick_launch_repo_secrets WHERE value=? LIMIT 1",
+                ["local-only-token"],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(stored_secret, "local-only-token");
+    // A fresh repo secret with no local value is refused by the user run path.
+    let mut document: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    document["entries"][0]["env"][0]["name"] = json!("MISSING_TOKEN");
+    std::fs::write(&path, document.to_string()).unwrap();
+    let error = runtime.dispatch("test", rpc("quickLaunch.run", json!({"projectId":project_id,"cwd":work.to_string_lossy(),"repoId":restored["id"],"operationId":"missing-secret"}),"missing-secret")).unwrap_err();
+    assert_eq!(error.code, "secret_missing");
+    assert!(error.message.contains("MISSING_TOKEN"));
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn saved_port_templates_and_dependencies_keep_secret_values_internal() {
+    let (temp, db) = test_db();
+    let project_id = project(&db, temp.path(), "merge-private-port-project");
+    let runtime = service(temp.path(), Arc::clone(&db));
+    let dependency = runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"name":"Prepare","command":"echo ready > prepared.txt",
+        "shell":"cmd","cwd":"","kind":"task","env":[],"operationId":"merge-prepare-save"
+    }), "merge-prepare-save")).unwrap();
+    let saved = runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"name":"Private port","command":"echo %TOKEN%-%PORT% > private-port.txt & echo ${port}",
+        "shell":"cmd","cwd":"","kind":"task","env":[
+            {"name":"TOKEN","secret":true,"value":"merge-private-token"},
+            {"name":"PORT","value":"${port}"}
+        ],"dependsOn":[dependency["id"]],"operationId":"merge-private-save"
+    }), "merge-private-save")).unwrap();
+    assert_eq!(saved["dependsOn"][0], dependency["id"]);
+    assert!(!saved.to_string().contains("merge-private-token"));
+    let result = runtime.dispatch("test", rpc("quickLaunch.run", json!({
+        "commandId":saved["id"],"cwd":temp.path().to_string_lossy(),"operationId":"merge-private-run"
+    }), "merge-private-run")).unwrap();
+    let sequence_id = result["sequenceId"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let target = loop {
+        let sessions = db.snapshot().unwrap().sessions;
+        if let Some(target) = sessions.into_iter().find(|session| session.run.as_ref().is_some_and(|run| run.command_id == saved["id"].as_str().unwrap())) {
+            break target;
+        }
+        assert!(Instant::now() < deadline, "target never launched for {sequence_id}");
+        thread::sleep(Duration::from_millis(20));
+    };
+    wait_inactive(&db, &target.id);
+    let port = target.run.unwrap().allocated_port.unwrap();
+    assert!(temp.path().join("prepared.txt").exists());
+    assert_eq!(std::fs::read_to_string(temp.path().join("private-port.txt")).unwrap().trim(), format!("merge-private-token-{port}"));
+    let raw: String = db.transaction(|tx| Ok(tx.query_row("SELECT snapshot_json FROM quick_launch_runs WHERE session_id=?", [&target.id], |row| row.get(0))?)).unwrap();
+    assert!(!raw.contains("merge-private-token"));
+    assert!(raw.contains("${port}"));
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn a_saved_secret_only_port_template_allocates_in_the_child_environment() {
+    let (temp, db) = test_db();
+    let project_id = project(&db, temp.path(), "merge-secret-port-project");
+    let runtime = service(temp.path(), Arc::clone(&db));
+    let saved = runtime.dispatch("test", rpc("quickLaunch.save", json!({
+        "projectId":project_id,"name":"Private port","command":"echo %PRIVATE_URL% > secret-url.txt",
+        "shell":"cmd","cwd":"","kind":"task","env":[
+            {"name":"PRIVATE_URL","secret":true,"value":"http://localhost:${port}/private-token"}
+        ],"operationId":"merge-secret-port-save"
+    }), "merge-secret-port-save")).unwrap();
+    let result = runtime.dispatch("test", rpc("quickLaunch.run", json!({
+        "commandId":saved["id"],"cwd":temp.path().to_string_lossy(),"operationId":"merge-secret-port-run"
+    }), "merge-secret-port-run")).unwrap();
+    let port = result["session"]["run"]["allocatedPort"].as_u64().unwrap();
+    wait_inactive(&db, result["session"]["id"].as_str().unwrap());
+    assert_eq!(std::fs::read_to_string(temp.path().join("secret-url.txt")).unwrap().trim(), format!("http://localhost:{port}/private-token"));
+    assert!(!result.to_string().contains("private-token"));
     runtime.shutdown();
 }

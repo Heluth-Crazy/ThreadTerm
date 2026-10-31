@@ -55,6 +55,10 @@ async fn run() -> Result<()> {
     db.mark_live_sessions_interrupted()?;
     threadterm_v3_runtime::delegation::reconcile_interrupted(&db)?;
     threadterm_v3_runtime::quick_launch::mark_setup_runs_interrupted(&db)?;
+    // A run that was still being watched when the runtime stopped is not watched
+    // again: its session is no longer live, so it reads as "no readiness" instead
+    // of staying "Starting" for the rest of its life.
+    threadterm_v3_runtime::quick_launch::reconcile_readiness(&db)?;
     let service = Arc::new(RuntimeService::new(config, db));
     service.initialize_remote()?;
     service.start_retry_scheduler();

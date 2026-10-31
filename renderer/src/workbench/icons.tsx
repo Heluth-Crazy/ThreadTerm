@@ -31,6 +31,9 @@ const glyphs: Record<string, string> = {
  diff: '<path d="M12 3v10M7 8h10M7 20h10"/>',
  'chev-up': '<path d="m6 15 6-6 6 6"/>',
  checkpoint: '<circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/>',
+ // Run view: the approved play triangle and a stop square, drawn on the same grid as the prototype set.
+ play: '<path d="m8 5 11 7-11 7z" fill="none"/>',
+ stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
 };
 const glyphHtml=Object.fromEntries(Object.entries(glyphs).map(([name,__html])=>[name,Object.freeze({__html})]));
 

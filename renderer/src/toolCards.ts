@@ -1,4 +1,6 @@
-import type { ToolEditDiff, ToolEditFile, ToolStatus, ToolView } from './toolView';
+import type { ChatPart } from '@threadterm/protocol';
+import { toolView, type ToolEditDiff, type ToolEditFile, type ToolStatus, type ToolView } from './toolView';
+import { hasRedactedBrowserResult } from './browserToolActivity';
 import { displayPath, pathIsWithinCanonicalScope } from './projectScope';
 
 /**
@@ -198,6 +200,180 @@ export function mcpResultView(value: unknown): { text?: string; structuredConten
     return [text];
   });
   return { ...(blocks.length ? { text: blocks.join('\n\n') } : {}), structuredContent: result.structuredContent, isError: result.isError === true };
+}
+
+/** Every run tool's one-line summary; nothing else is summarised this way. */
+const RUN_TOOL_NAMES = new Set(['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart', 'run_propose']);
+const RUN_ACTIVE_STATES = new Set(['starting', 'running', 'idle', 'waiting']);
+/** Stable run codes; the MCP host wraps a runtime error into `chat_tool_request_failed` with the code as its message. */
+const RUN_ERROR_CODES = new Set([
+  'run_declined', 'run_not_found', 'run_not_permitted', 'detected_entry_changed', 'detected_entry_not_found',
+  'detected_command_too_long', 'detected_command_unprintable', 'tool_not_found', 'chat_turn_inactive',
+]);
+
+export type RunToolSummary =
+  | { kind: 'launch'; name: string; existing: boolean }
+  | { kind: 'stop'; name: string }
+  | { kind: 'logs'; name: string; lines: number }
+  | { kind: 'list'; entries: number; running: number }
+  | { kind: 'status'; name: string; state: string; readiness?: string }
+  | { kind: 'proposal'; name: string }
+  | { kind: 'error'; code: string };
+
+function jsonRecord(value: unknown): Record<string, unknown> | undefined {
+  const parsed = typeof value === 'string' ? parsedJson(value) : value;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+}
+
+const textField = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
+
+/** The compact, one-line reading of a run tool's result. The raw result stays in the card below it. */
+export function runToolSummary(tool: string | undefined, args: unknown, result: unknown): RunToolSummary | undefined {
+  if (!tool || !RUN_TOOL_NAMES.has(tool)) return undefined;
+  const view = mcpResultView(result);
+  let payload = jsonRecord(view?.structuredContent) ?? jsonRecord(view?.text);
+  // A provider can hand the whole envelope back as text inside a text block: unwrap one level.
+  if (payload && view?.isError !== true && Array.isArray(payload.content) && payload.name === undefined && payload.error === undefined) {
+    payload = jsonRecord(mcpResultView(payload)?.text) ?? payload;
+  }
+  payload ??= jsonRecord(args);
+  if (view?.isError === true || payload?.isError === true) {
+    const error = jsonRecord(payload?.error) ?? payload;
+    const code = textField(error?.code) ?? '';
+    const fromMessage = (textField(error?.message) ?? '').split(':')[0]?.trim() ?? '';
+    return { kind: 'error', code: RUN_ERROR_CODES.has(fromMessage) ? fromMessage : code || fromMessage || 'run_failed' };
+  }
+  if (!payload) return undefined;
+  const name = textField(payload.name);
+  switch (tool) {
+    case 'run_propose': {
+      const proposedName = name ?? textField(jsonRecord(args)?.name);
+      return proposedName && textField(payload.state) === 'pending' ? { kind: 'proposal', name: proposedName } : undefined;
+    }
+    case 'run_start':
+    case 'run_restart':
+      return name ? { kind: 'launch', name, existing: payload.existing === true } : undefined;
+    case 'run_stop':
+      return name ? { kind: 'stop', name } : undefined;
+    case 'run_logs': {
+      const text = textField(payload.text) ?? '';
+      const lines = text === '' ? 0 : text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').length;
+      return name ? { kind: 'logs', name, lines } : undefined;
+    }
+    case 'run_list': {
+      const entries = Array.isArray(payload.entries) ? payload.entries.length : undefined;
+      const runs = Array.isArray(payload.runs) ? payload.runs.filter(run => RUN_ACTIVE_STATES.has(String(jsonRecord(run)?.state ?? ''))).length : undefined;
+      return entries === undefined || runs === undefined ? undefined : { kind: 'list', entries, running: runs };
+    }
+    case 'run_status': {
+      const state = textField(payload.state);
+      return name && state ? { kind: 'status', name, state, readiness: textField(payload.readiness) } : undefined;
+    }
+    default: return undefined;
+  }
+}
+
+/** The summary's bilingual one-liner. A known run error becomes short copy; any other keeps its code. */
+export function runToolSummaryLabel(summary: RunToolSummary, copy: Copy): string {
+  switch (summary.kind) {
+    case 'launch': return summary.existing
+      ? copy(`Already running ${summary.name}`, `已在运行 ${summary.name}`)
+      : copy(`Started ${summary.name}`, `已启动 ${summary.name}`);
+    case 'stop': return copy(`Stopped ${summary.name}`, `已停止 ${summary.name}`);
+    case 'logs': return summary.lines === 1
+      ? copy(`1 line of ${summary.name}`, `${summary.name} 的 1 行输出`)
+      : copy(`${summary.lines} lines of ${summary.name}`, `${summary.name} 的 ${summary.lines} 行输出`);
+    case 'list': return copy(`${summary.entries} ${summary.entries === 1 ? 'entry' : 'entries'}, ${summary.running} running`, `${summary.entries} 个条目，${summary.running} 个运行中`);
+    case 'status': return `${summary.name}: ${runStatusText(summary.state, summary.readiness, copy)}`;
+    case 'proposal': return copy(`Proposed ${summary.name}`, `已提议 ${summary.name}`);
+    case 'error':
+      if (summary.code === 'run_declined') return copy('Run declined', '已拒绝运行');
+      if (summary.code === 'run_not_found') return copy('Run not found', '未找到该运行');
+      if (summary.code === 'run_not_permitted') return copy('Not permitted', '没有权限');
+      if (summary.code === 'detected_command_unprintable') return copy('Unprintable command', '命令含不可见字符');
+      return summary.code;
+  }
+}
+
+/** The exact run tool name behind a provider-native identity (`mcp__threadterm__run_start`,
+ * `threadterm__run_start` or a bare `run_start`), or undefined for any other tool. */
+export function runToolName(...names: (string | undefined)[]): string | undefined {
+  for (const name of names) {
+    if (!name) continue;
+    const tool = name.startsWith('mcp__threadterm__') ? name.slice('mcp__threadterm__'.length)
+      : name.startsWith('threadterm__') ? name.slice('threadterm__'.length) : name;
+    if (RUN_TOOL_NAMES.has(tool)) return tool;
+  }
+  return undefined;
+}
+
+/** One provider-native tool result as the MCP envelope `mcpResultView` understands. Claude keeps the
+ * result in `data.content`, ACP/Grok in `data.rawOutput` (Grok sometimes under `Content.content`). */
+function mcpEnvelope(value: unknown, isError = false, depth = 0): Record<string, unknown> | undefined {
+  if (depth > 3 || value === undefined || value === null) return undefined;
+  if (typeof value === 'string') {
+    const parsed = parsedJson(value);
+    if (parsed === value) return { content: [{ type: 'text', text: value }], isError };
+    return mcpEnvelope(parsed, isError, depth + 1) ?? { content: [{ type: 'text', text: value }], isError };
+  }
+  if (Array.isArray(value)) return { content: value, isError };
+  const record = jsonRecord(value);
+  if (!record) return undefined;
+  if (typeof record.content === 'string') return { content: [{ type: 'text', text: record.content }], isError: record.isError === true || isError };
+  if (Array.isArray(record.content)) return { content: record.content, isError: record.isError === true || isError };
+  const inner = jsonRecord(record.Content) ?? jsonRecord(record.content);
+  if (inner) return mcpEnvelope(inner.content ?? inner, isError || record.isError === true, depth + 1);
+  return undefined;
+}
+
+/** The provider's own tool result, normalized for the run summary. */
+export function nativeToolResult(part: Pick<ChatPart, 'toolName' | 'data'>, view: ToolView): unknown {
+  if (view.kind === 'mcp' && view.result !== undefined) return view.result;
+  const data = jsonRecord(part.data) ?? {};
+  const isError = data.isError === true || data.is_error === true;
+  const candidates = [
+    jsonRecord(data.result)?.content, data.result, jsonRecord(data.partialResult)?.content,
+    data.aggregatedOutput, data.output, data.rawOutput, data.content,
+  ];
+  for (const candidate of candidates) {
+    const envelope = mcpEnvelope(candidate, isError);
+    if (envelope) return envelope;
+  }
+  return undefined;
+}
+
+/** The MCP server a part's tool belongs to, when the part declares one. */
+function partServer(part: Pick<ChatPart, 'toolName'>, data: Record<string, unknown> | undefined): string | undefined {
+  const declared = textField(data?.server);
+  if (declared) return declared;
+  const name = part.toolName ?? '';
+  if (name.startsWith('mcp__')) return name.slice('mcp__'.length).split('__')[0];
+  if (name.startsWith('threadterm__')) return 'threadterm';
+  return undefined;
+}
+
+/** A run tool's summary from a native tool part, exactly as the card renders it. Handles Claude's
+ * `data.content`, ACP/Grok's `data.rawOutput` and Grok's `threadterm__<tool>` identity. */
+export function runToolSummaryFromPart(part: ChatPart): RunToolSummary | undefined {
+  if (hasRedactedBrowserResult(part)) return undefined;
+  const data = jsonRecord(part.data);
+  // A foreign MCP server with a lookalike tool name is never a ThreadTerm run tool.
+  const server = partServer(part, data);
+  if (server !== undefined && server !== 'threadterm') return undefined;
+  const tool = runToolName(part.toolName, textField(data?.tool), textField(data?.name));
+  if (!tool) return undefined;
+  const view = toolView(part);
+  return runToolSummary(tool, view.kind === 'mcp' || view.kind === 'generic' ? view.args : undefined, nativeToolResult(part, view));
+}
+
+function runStatusText(state: string, readiness: string | undefined, copy: Copy): string {
+  const active = state === 'running' || state === 'idle' || state === 'waiting';
+  if (state === 'starting' || (active && readiness === 'waiting')) return copy('Starting', '启动中');
+  if (active && readiness === 'ready') return copy('Ready', '已就绪');
+  if (active) return copy('Running', '运行中');
+  if (state === 'error') return copy('Failed', '失败');
+  if (state === 'interrupted') return copy('Interrupted', '已中断');
+  return copy('Exited', '已退出');
 }
 
 function jsonKind(value: unknown): JsonValueKind {

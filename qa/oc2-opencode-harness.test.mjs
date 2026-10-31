@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import http from 'node:http';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { bindOc2Mock } from './oc2-opencode-harness.mjs';
 

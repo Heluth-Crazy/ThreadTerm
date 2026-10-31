@@ -12,7 +12,7 @@ import { assertNoControlViolations, checkControlConsistency } from './lib/visual
 const root = resolve(import.meta.dirname, '..');
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-chat-tools-visual-'));
 const out = join(root, 'qa/results/chat-parity/E1/chat-tools-visual');
-const keys = ['chatTools.ask', 'chatTools.sessionInfo', 'chatTools.feedback', 'chatTools.delegation'];
+const keys = ['chatTools.ask', 'chatTools.sessionInfo', 'chatTools.feedback', 'chatTools.run', 'chatTools.delegation'];
 const entry = `
 import React, {useState} from 'react'; import {flushSync} from 'react-dom'; import {createRoot} from 'react-dom/client';
 import {SettingsChatTools} from './renderer/src/components/SettingsChatTools'; import './renderer/src/styles.css';
@@ -32,11 +32,11 @@ try {
   const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>key.toLowerCase()!=='path')); env.Path=[join(process.env.SystemRoot||'C:\\Windows','System32'),dirname(process.execPath)].join(';');
   app=await electron.launch({args:['--disable-gpu','--in-process-gpu','--no-sandbox',join(scratch,'main.cjs')],env}); const page=await app.firstWindow();
   page.on('pageerror',error=>report.errors.push(error.message)); await page.waitForLoadState('load');await page.waitForFunction(()=>typeof window.qaRender==='function');await page.locator('.settings-chat-tools').waitFor();
-  const switches=page.getByRole('switch'); assert.equal(await switches.count(),5,'five chat-tool switches');
-  assert.deepEqual(await switches.evaluateAll(nodes=>nodes.map(node=>({tag:node.tagName,parentClass:node.parentElement?.className,checked:node.getAttribute('aria-checked')}))), [...keys.map(()=>({tag:'INPUT',parentClass:'setting-switch',checked:'true'})), {tag:'INPUT',parentClass:'setting-switch',checked:'false'}],'defaults use the shared SettingsSwitch; the four tools default on and generated UI defaults off');
+  const switches=page.getByRole('switch'); assert.equal(await switches.count(),6,'six chat-tool switches');
+  assert.deepEqual(await switches.evaluateAll(nodes=>nodes.map(node=>({tag:node.tagName,parentClass:node.parentElement?.className,checked:node.getAttribute('aria-checked')}))), [...keys.map(()=>({tag:'INPUT',parentClass:'setting-switch',checked:'true'})), {tag:'INPUT',parentClass:'setting-switch',checked:'false'}],'defaults use the shared SettingsSwitch; the five tools default on and generated UI defaults off');
   assert.equal(await switches.nth(0).getAttribute('aria-label'),'Ask','shared switch retains the tool name');
   assert.match(await page.locator('.settings-chat-tools > p').innerText(),/Applies to chats connected afterwards/);
-  report.checks.push('four dot-notation settings default on, have native switch semantics, shared SettingsSwitch controls and reconnect hint');
+  report.checks.push('five dot-notation settings default on, have native switch semantics, shared SettingsSwitch controls and reconnect hint');
   for(const stateName of ['on','off','loading','disabled','failed','done']) for(const theme of ['light','dark','custom']) for(const locale of ['en','zh-CN']) for(const width of [1280,420]){
     await page.setViewportSize({width,height:700}); await page.evaluate(next=>window.qaRender(next),{theme,locale,state:stateName,width});
     await page.waitForFunction(()=>document.querySelector('.settings-chat-tools')?.getAttribute('aria-busy')==='false');

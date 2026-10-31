@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { build as viteBuild } from 'vite';
 import react from '@vitejs/plugin-react';
 import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -23,16 +24,16 @@ const isolatedLocalAppData = join(scratch, 'localappdata');
 const isolatedData = join(scratch, 'data');
 const isolatedUserData = join(scratch, 'user-data');
 const isolatedPipe = `\\\\.\\pipe\\tt-script-import-${randomUUID()}`;
-const out = resolve(process.argv[process.argv.indexOf('--out') + 1] ?? join(root, 'qa', 'results', 'ui-script-import'));
+const out = join(scratch, 'out');
 const data = { projectId: 'script-import-project', root: 'C:/qa/worktree', projects: [{ id: 'script-import-project', path: 'C:/qa/worktree', name: 'Fixture' }] };
 const report = { passed: false, screenshots: [], geometry: [], checks: [], calls: [], errors: [] };
-let server, app, page;
+let server, app, page, releaseLock;
 const check = value => { report.checks.push(value); console.log(`PASS ${value}`); };
 const shot = async name => { await page.screenshot({ path: join(out, name) }); report.screenshots.push(name); };
 try {
   await Promise.all([fixture, profile, out, isolatedHome, isolatedCodexHome, isolatedAppData, isolatedLocalAppData, isolatedData, isolatedUserData].map(path => mkdir(path, { recursive: true })));
   await writeFile(join(fixture, 'index.html'), '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quick Launch import QA</title></head><body><div id="root"></div><script type="module" src="/entry.tsx"></script></body></html>');
-  await writeFile(join(fixture, 'entry.tsx'), `import React from 'react';import{createRoot}from'react-dom/client';import{I18nProvider}from'${join(root, 'renderer/src/i18n.tsx').replaceAll('\\', '/')}';import{QuickLaunchMenu}from'${join(root, 'renderer/src/components/QuickLaunch.tsx').replaceAll('\\', '/')}';import'${join(root, 'renderer/src/styles.css').replaceAll('\\', '/')}';import'${join(root, 'renderer/src/workbench/workbench.css').replaceAll('\\', '/')}';const props={projectId:'${data.projectId}',root:'${data.root}',data:{epoch:'qa',revision:1,projects:${JSON.stringify(data.projects)},sessions:[],settings:{language:'en',theme:'light'},workspaces:[],inbox:[],providers:[]},onOpenSession:()=>{throw Error('No session should open during import QA')}};function App(){const[locale,setLocale]=React.useState('en');window.__setScriptImportLocale=setLocale;return <I18nProvider locale={locale}><main style={{height:'100vh',display:'grid',placeItems:'center'}}><div><button>QA fixture</button><QuickLaunchMenu {...props}/></div></main></I18nProvider>}createRoot(document.getElementById('root')).render(<App/>);`);
+  await writeFile(join(fixture, 'entry.tsx'), `import React from 'react';import{createRoot}from'react-dom/client';import{I18nProvider}from'${join(root, 'renderer/src/i18n.tsx').replaceAll('\\', '/')}';import{RunViewPanel}from'${join(root, 'renderer/src/components/RunViewPanel.tsx').replaceAll('\\', '/')}';import'${join(root, 'renderer/src/styles.css').replaceAll('\\', '/')}';import'${join(root, 'renderer/src/workbench/workbench.css').replaceAll('\\', '/')}';const props={scope:{projectId:'${data.projectId}',rootPath:'${data.root}',worktreePath:'${data.root}'},sessions:[],actions:{openFile:()=>{},openDiff:()=>{},dirtyPaths:()=>[],renamed:()=>{},deleted:()=>{},openSession:()=>{},openPreview:()=>{}},zh:false,visible:true};function App(){const[locale,setLocale]=React.useState('en');window.__setScriptImportLocale=setLocale;return <I18nProvider locale={locale}><main style={{height:'100vh',display:'grid',placeItems:'center'}}><div><button>QA fixture</button><RunViewPanel {...props}/></div></main></I18nProvider>}createRoot(document.getElementById('root')).render(<App/>);`);
   await viteBuild({ root: fixture, configFile: false, plugins: [react()], resolve: { alias: [
     { find: /^react$/, replacement: join(root, 'node_modules/react/index.js') },
     { find: /^react-dom\/client$/, replacement: join(root, 'node_modules/react-dom/client.js') },
@@ -45,7 +46,7 @@ try {
   Object.assign(env, { Path: [dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';'), HOME: isolatedHome, USERPROFILE: isolatedHome, HOMEDRIVE: isolatedHome.slice(0, 2), HOMEPATH: isolatedHome.slice(2), CODEX_HOME: isolatedCodexHome, APPDATA: isolatedAppData, LOCALAPPDATA: isolatedLocalAppData, THREADTERM_V3_DATA: isolatedData, THREADTERM_V3_USER_DATA: isolatedUserData, THREADTERM_V3_PIPE: isolatedPipe, TT_QA_DESKTOP: '1', TT_PARITY_PROFILE: profile });
   assert.equal(env.CODEX_HOME, isolatedCodexHome); assert.equal(env.APPDATA, isolatedAppData); assert.equal(env.LOCALAPPDATA, isolatedLocalAppData);
   assert.equal(env.THREADTERM_V3_DATA, isolatedData); assert.equal(env.THREADTERM_V3_USER_DATA, isolatedUserData); assert.equal(env.THREADTERM_V3_PIPE, isolatedPipe);
-  app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', join(root, 'qa/parity/electron-static.cjs')], env, timeout: 30000 });
+  releaseLock = await acquireElectronQaLock(); app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', join(root, 'qa/parity/electron-static.cjs')], env, timeout: 30000 });
   page = await app.firstWindow({ timeout: 30000 }); page.setDefaultTimeout(8000); page.on('pageerror', error => report.errors.push(String(error)));
   await page.addInitScript(({ projectId }) => {
     const calls = [], saved = []; let failBuildOnce = true;
@@ -62,9 +63,8 @@ try {
   }, { projectId: data.projectId });
   await page.goto(`${server.origin}/`); await page.waitForFunction(() => Boolean(window.threadterm));
   const openDialog = async () => {
-    const trigger = page.getByRole('button', { name: /Run|运行/ }).first();
-    await trigger.click(); await page.getByTestId('quick-launch-menu').waitFor();
-    await page.getByRole('button', { name: /Import scripts|导入脚本/ }).click();
+    await page.getByTestId('run-view-menu').click();
+    await page.getByRole('menuitem', { name: /Import from package\.json|从 package\.json 导入/ }).click();
     const dialog = page.getByRole('dialog', { name: /Import scripts|导入脚本/ }); await dialog.waitFor();
     await dialog.getByRole('button', { name: /Load scripts|加载脚本/ }).click();
     await dialog.locator('.ql-script').first().waitFor();
@@ -104,7 +104,7 @@ try {
       for (let i = 0; i < 16 && !await visualDialog.locator('.dlg-foot .btn-primary').evaluate(button => document.activeElement === button); i++) await page.keyboard.press('Tab');
       await page.keyboard.press('Escape');
       await visualDialog.waitFor({ state: 'hidden' });
-      assert.equal(await page.locator('.ql-trigger').evaluate(button => document.activeElement === button), true, 'Escape closes the plain dialog and restores Run focus');
+      assert.equal(await page.getByTestId('run-view-menu').evaluate(button => document.activeElement === button), true, 'Escape closes the dialog and restores Run menu focus');
       assert.equal(await page.evaluate(() => window.__scriptImportQA.calls.some(call => call.method === 'quickLaunch.save')), false, 'Escape never saves scripts');
       check('keyboard focus outline, Escape dismissal, and Run focus restoration remain intact');
     } else {
@@ -158,9 +158,8 @@ try {
   assert.equal(buildIds[0], buildIds[1], 'retry keeps the original operation ID for the uncertain build save');
   assert.equal(await page.evaluate(() => window.__scriptImportQA.calls.some(call => call.method === 'quickLaunch.run')), false, 'import does not execute scripts');
   check('production component loads, counts, disables empty import, preserves completed rows through partial failure, retries with stable IDs, and does not execute scripts');
-  await page.locator('.ql-trigger').click();
-  const menu = page.getByTestId('quick-launch-menu'); await menu.waitFor();
-  await menu.getByRole('button', { name: /Edit|编辑/ }).first().click();
+  await page.getByTestId('run-row-menu-saved-dev').click();
+  await page.getByRole('menuitem', { name: /Edit|编辑/ }).click();
   const editor = page.getByRole('dialog', { name: /Edit command|编辑命令/ }); await editor.waitFor();
   const editorPath = editor.locator('input[id$="-cwd"]');
   const editorGeometry = await editorPath.evaluate(input => { const box = input.getBoundingClientRect(), style = getComputedStyle(input); return { height: box.height, radius: style.borderRadius, fontSize: style.fontSize }; });
@@ -173,6 +172,7 @@ try {
 finally {
   await mkdir(out, { recursive: true }); await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   if (app) { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
+  await releaseLock?.().catch(() => {});
   server?.close();
   const safeScratch = resolve(scratch);
   assert.equal(dirname(safeScratch), resolve(tmpdir()), 'scratch deletion target stays directly inside the OS temp directory');

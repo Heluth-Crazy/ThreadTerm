@@ -241,9 +241,16 @@ fn request_lane(method: &str) -> Lane {
     match method {
         "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read"
         | "chat.image.read" => Lane::Concurrent,
+        // The run reads never wait for the user; `run.start`/`run.restart` do, and stay
+        // ordered so one approval cannot reorder a stop behind a start.
+        "chat.tool.run.list" | "chat.tool.run.status" | "chat.tool.run.logs" => Lane::Concurrent,
         "group.prerequisites"
         | "terminal.read"
         | "project.catalog.list"
+        | "quickLaunch.detect"
+        | "quickLaunch.port.read"
+        | "quickLaunch.repo.list"
+        | "quickLaunch.recent" | "quickLaunch.proposals.list"
         | "session.launch.read"
         | "git.status"
         | "git.diff"
@@ -363,9 +370,10 @@ fn trace_method(method: &str) -> &'static str {
         "plugin.selectBrowserBinding", "plugin.setEnabled", "project.add", "project.remove",
         "project.update", "provider.list",
         "provider.refresh",
-        "quickLaunch.delete", "quickLaunch.list", "quickLaunch.run", "quickLaunch.save",
+        "quickLaunch.delete", "quickLaunch.detect", "quickLaunch.list", "quickLaunch.restart", "quickLaunch.run", "quickLaunch.save",
+        "quickLaunch.repo.delete", "quickLaunch.repo.list", "quickLaunch.repo.save", "quickLaunch.repo.trust",
         "quickLaunch.setup.read", "quickLaunch.setup.run", "quickLaunch.setup.save",
-        "quickLaunch.setup.status", "review.checkpoint", "review.revert", "runtime.health",
+        "quickLaunch.setup.status", "quickLaunch.port.read", "quickLaunch.sequence.cancel", "quickLaunch.recent", "quickLaunch.proposals.list", "quickLaunch.proposals.accept", "quickLaunch.proposals.reject", "chat.tool.run.propose", "review.checkpoint", "review.revert", "runtime.health",
         "runtime.shutdown", "runtime.snapshot", "session.attention.acknowledge",
         "session.config.read", "session.config.save", "session.create", "session.documents.list",
         "session.documents.pin", "session.documents.unpin", "session.lookup", "session.organize",
@@ -1016,14 +1024,28 @@ mod decoder_tests {
     }
 
     #[test]
+    fn repo_config_reads_and_mutations_use_their_expected_lanes() {
+        assert_eq!(request_lane("quickLaunch.repo.list"), Lane::Concurrent);
+        for method in ["quickLaunch.repo.save", "quickLaunch.repo.delete", "quickLaunch.repo.trust"] {
+            assert_eq!(request_lane(method), Lane::Ordered, "{method}");
+            assert_eq!(trace_method(method), method);
+        }
+    }
+
+    #[test]
     fn slow_reads_run_concurrently_and_terminal_control_keeps_its_own_order() {
         for read in [
             "terminal.read",
             "chat.tool.ask",
             "chat.tool.sessionInfo",
             "chat.tool.feedback",
+            "chat.tool.run.list",
+            "chat.tool.run.status",
+            "chat.tool.run.logs",
             "chat.feedback.read",
             "project.catalog.list",
+            "quickLaunch.detect",
+            "quickLaunch.port.read",
             "git.status",
             "git.diff",
             "git.fingerprints",
@@ -1074,6 +1096,14 @@ mod decoder_tests {
             "git.operation.continue",
             "session.resume",
             "session.stop",
+            "chat.tool.run.start",
+            "chat.tool.run.stop",
+            "chat.tool.run.restart",
+            "chat.tool.run.propose",
+            "quickLaunch.proposals.accept",
+            "quickLaunch.proposals.reject",
+            "quickLaunch.restart",
+            "quickLaunch.sequence.cancel",
             "worktree.list",
             "workspace.save",
             "filesystem.write",
@@ -1084,6 +1114,26 @@ mod decoder_tests {
             "not.a.method",
         ] {
             assert_eq!(request_lane(method), Lane::Ordered, "{method}");
+        }
+
+        // The agent run tools specifically: a status/log list poll must never wait behind
+        // a slow read, and the three that can block on the user stay ordered.
+        for read in [
+            "chat.tool.run.list",
+            "chat.tool.run.status",
+            "chat.tool.run.logs",
+        ] {
+            assert_eq!(request_lane(read), Lane::Concurrent, "{read}");
+        }
+        for mutation in [
+            "chat.tool.run.start",
+            "chat.tool.run.stop",
+            "chat.tool.run.restart",
+            "chat.tool.run.propose",
+            "quickLaunch.proposals.accept",
+            "quickLaunch.proposals.reject",
+        ] {
+            assert_eq!(request_lane(mutation), Lane::Ordered, "{mutation}");
         }
     }
 

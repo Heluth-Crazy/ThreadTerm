@@ -428,3 +428,142 @@ fn failed_setup_step_adds_only_its_failed_inbox_item() {
     assert_eq!(inbox[0], (sessions[1].as_str().unwrap().to_owned(), "failed".to_owned()));
     runtime.shutdown();
 }
+
+#[cfg(windows)]
+#[test]
+fn dependency_tasks_share_the_setup_runner_and_cancel_keeps_started_work_running() {
+    let (root, db) = setup_test_db();
+    let project = setup_project(&db,root.path(),"dependency-runner-project");
+    let runtime = setup_service(root.path(),Arc::clone(&db));
+    let dependency = save_command(&runtime,&project,"prepare","echo dependency>> dependency-order.txt","task","dependency-runner-dependency");
+    let second_dependency = save_command(&runtime,&project,"prepare second","echo second>> dependency-order.txt","task","dependency-runner-second");
+    let target = runtime.dispatch("setup-test",setup_rpc("quickLaunch.save",json!({
+        "projectId":project,"name":"target","command":"echo target>> dependency-order.txt","shell":"cmd",
+        "cwd":"","kind":"task","env":[],"dependsOn":[dependency["id"],second_dependency["id"]],"operationId":"dependency-runner-target"
+    }),"dependency-runner-target")).unwrap();
+    let started = runtime.dispatch("setup-test",setup_rpc("quickLaunch.run",json!({
+        "commandId":target["id"],"cwd":root.path().to_string_lossy(),"operationId":"dependency-runner-start"
+    }),"dependency-runner-start")).unwrap();
+    assert_eq!(started["sequence"]["trigger"],"depends_on");
+    assert_eq!(started["sequence"]["targetCommandId"],target["id"]);
+    assert_eq!(started["sequenceId"],started["sequence"]["id"]);
+    let completed = wait_setup_state(&runtime,&project,"completed");
+    assert_eq!(completed["commandIds"],json!([dependency["id"],second_dependency["id"],target["id"]]));
+    let deadline = Instant::now()+Duration::from_secs(5);
+    while std::fs::read_to_string(root.path().join("dependency-order.txt"))
+        .map(|text|!text.contains("target"))
+        .unwrap_or(true) && Instant::now()<deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(std::fs::read_to_string(root.path().join("dependency-order.txt")).unwrap().replace("\r\n","\n"),"dependency\nsecond\ntarget\n");
+
+    let failing = save_command(&runtime,&project,"failing","exit /b 7","task","dependency-runner-failing");
+    let blocked = runtime.dispatch("setup-test",setup_rpc("quickLaunch.save",json!({
+        "projectId":project,"name":"blocked","command":"echo unexpected> dependency-blocked.txt","shell":"cmd",
+        "cwd":"","kind":"task","env":[],"dependsOn":[failing["id"]],"operationId":"dependency-runner-blocked"
+    }),"dependency-runner-blocked")).unwrap();
+    runtime.dispatch("setup-test",setup_rpc("quickLaunch.run",json!({
+        "commandId":blocked["id"],"cwd":root.path().to_string_lossy(),"operationId":"dependency-runner-failure-start"
+    }),"dependency-runner-failure-start")).unwrap();
+    let failed = wait_setup_state(&runtime,&project,"failed");
+    assert_eq!(failed["names"][0],"failing");
+    assert_eq!(failed["exitCode"],7);
+    assert_eq!(failed["error"],"dependency_failed: failing");
+    assert!(!root.path().join("dependency-blocked.txt").exists());
+
+    let slow = save_command(&runtime,&project,"slow","ping -n 30 127.0.0.1 > nul","task","dependency-runner-slow");
+    let never = runtime.dispatch("setup-test",setup_rpc("quickLaunch.save",json!({
+        "projectId":project,"name":"never","command":"echo unexpected> dependency-never.txt","shell":"cmd",
+        "cwd":"","kind":"task","env":[],"dependsOn":[slow["id"]],"operationId":"dependency-runner-never"
+    }),"dependency-runner-never")).unwrap();
+    let running = runtime.dispatch("setup-test",setup_rpc("quickLaunch.run",json!({
+        "commandId":never["id"],"cwd":root.path().to_string_lossy(),"operationId":"dependency-runner-slow-start"
+    }),"dependency-runner-slow-start")).unwrap();
+    let cancelled = runtime.dispatch("setup-test",setup_rpc("quickLaunch.sequence.cancel",json!({
+        "id":running["sequenceId"],"operationId":"dependency-runner-cancel"
+    }),"dependency-runner-cancel")).unwrap();
+    assert_eq!(cancelled["state"],"cancelled");
+    let dependency_session = running["session"]["id"].as_str().unwrap();
+    assert!(matches!(db.session_by_id(dependency_session).unwrap().unwrap().status.as_str(),"starting"|"running"|"idle"|"waiting"));
+    assert!(!root.path().join("dependency-never.txt").exists());
+    runtime.dispatch("setup-test",setup_rpc("session.stop",json!({
+        "sessionId":dependency_session,"operationId":"dependency-runner-stop","force":true
+    }),"dependency-runner-stop")).unwrap();
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_observes_a_reused_task_without_stealing_its_dependency_sequence() {
+    let (root,db) = setup_test_db();
+    let project = setup_project(&db,root.path(),"reused-owner-project");
+    let runtime = setup_service(root.path(),Arc::clone(&db));
+    let shared = save_command(&runtime,&project,"shared","ping -n 3 127.0.0.1 > nul","task","reused-owner-shared");
+    let target = runtime.dispatch("setup-test",setup_rpc("quickLaunch.save",json!({
+        "projectId":project,"name":"target","command":"echo target> reused-owner-target.txt","shell":"cmd",
+        "cwd":"","kind":"task","env":[],"dependsOn":[shared["id"]],"operationId":"reused-owner-target"
+    }),"reused-owner-target")).unwrap();
+    save_setup(&runtime,&project,&[shared["id"].as_str().unwrap().to_owned()],0,"reused-owner-setup-save");
+    let dependency = runtime.dispatch("setup-test",setup_rpc("quickLaunch.run",json!({
+        "commandId":target["id"],"cwd":root.path().to_string_lossy(),"operationId":"reused-owner-dependency-run"
+    }),"reused-owner-dependency-run")).unwrap();
+    let setup = runtime.dispatch("setup-test",setup_rpc("quickLaunch.setup.run",json!({
+        "projectId":project,"cwd":root.path().to_string_lossy(),"operationId":"reused-owner-setup-run"
+    }),"reused-owner-setup-run")).unwrap();
+    assert_eq!(dependency["session"]["id"],setup["sessionIds"][0]);
+    let deadline = Instant::now()+Duration::from_secs(10);
+    loop {
+        let statuses = setup_status(&runtime,&project);
+        let dependency_done = statuses.iter().any(|run|run["id"]==dependency["sequenceId"] && run["state"]=="completed");
+        let setup_done = statuses.iter().any(|run|run["id"]==setup["id"] && run["state"]=="completed");
+        if dependency_done && setup_done { break; }
+        assert!(Instant::now()<deadline,"reused task did not satisfy both owners: {statuses:?}");
+        thread::sleep(Duration::from_millis(25));
+    }
+    runtime.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn a_service_dependency_waits_for_its_allocated_listener_before_starting_the_target() {
+    let (root,db) = setup_test_db();
+    let project = setup_project(&db,root.path(),"service-dependency-project");
+    let runtime = setup_service(root.path(),Arc::clone(&db));
+    let listener = runtime.dispatch("setup-test",setup_rpc("quickLaunch.save",json!({
+        "projectId":project,"name":"listener",
+        "command":"$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,${port});$l.Start();Start-Sleep -Seconds 120",
+        "shell":"powershell","cwd":"","kind":"service","env":[],"operationId":"service-dependency-listener"
+    }),"service-dependency-listener")).unwrap();
+    let target = runtime.dispatch("setup-test",setup_rpc("quickLaunch.save",json!({
+        "projectId":project,"name":"after listener","command":"Set-Content -LiteralPath 'service-dependency-target.txt' -Value ready",
+        "shell":"powershell","cwd":"","kind":"task","env":[],"dependsOn":[listener["id"]],"operationId":"service-dependency-target"
+    }),"service-dependency-target")).unwrap();
+    let started = runtime.dispatch("setup-test",setup_rpc("quickLaunch.run",json!({
+        "commandId":target["id"],"cwd":root.path().to_string_lossy(),"operationId":"service-dependency-run"
+    }),"service-dependency-run")).unwrap();
+    assert!(started["session"]["run"]["allocatedPort"].as_u64().is_some());
+    let completed = wait_setup_state(&runtime,&project,"completed");
+    assert_eq!(completed["sessionIds"].as_array().unwrap().len(),2);
+    assert_eq!(db.session_by_id(started["session"]["id"].as_str().unwrap()).unwrap().unwrap().run.unwrap().readiness.as_deref(),Some("ready"));
+    let deadline = Instant::now()+Duration::from_secs(5);
+    while !root.path().join("service-dependency-target.txt").exists() && Instant::now()<deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(root.path().join("service-dependency-target.txt").exists());
+    runtime.dispatch("setup-test",setup_rpc("session.stop",json!({
+        "sessionId":started["session"]["id"],"operationId":"service-dependency-stop","force":true
+    }),"service-dependency-stop")).unwrap();
+    std::fs::remove_file(root.path().join("service-dependency-target.txt")).unwrap();
+    let restarted = runtime.dispatch("setup-test",setup_rpc("quickLaunch.restart",json!({
+        "sessionId":completed["sessionIds"][1],"operationId":"service-dependency-restart"
+    }),"service-dependency-restart")).unwrap();
+    assert!(restarted["sequenceId"].as_str().is_some());
+    assert_eq!(restarted["session"]["run"]["commandId"],listener["id"]);
+    assert_ne!(restarted["session"]["id"],started["session"]["id"]);
+    let deadline = Instant::now()+Duration::from_secs(10);
+    while !root.path().join("service-dependency-target.txt").exists() && Instant::now()<deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(root.path().join("service-dependency-target.txt").exists());
+    runtime.shutdown();
+}

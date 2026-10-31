@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { attachedNativeBrowserPages, dismissBrowserNotifications, nativeBrowserContents } from './lib/native-browser.mjs';
 
 function fixture(){

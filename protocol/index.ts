@@ -48,23 +48,111 @@ export interface Session { id:string; projectId?:string; worktreePath?:string; t
 export type QuickLaunchShell = 'cmd'|'powershell'|'pwsh';
 /** `service` keeps running (dev server, API); `task` is expected to exit (build, test). Only changes wording/defaults. */
 export type QuickLaunchKind = 'service'|'task';
-export interface QuickLaunchEnvVar { name:string; /** `%NAME%` references expand against the inherited environment at run time. */ value:string }
+export interface QuickLaunchEnvVar { name:string; /** Only public values are returned. Secret values stay in local overrides. */ value?:string; secret?:boolean; hasValue?:boolean }
+/** Omit a secret value to retain/copy its existing local override; an explicit empty string is a valid replacement. */
+export interface QuickLaunchSaveEnvVar { name:string; value?:string; secret?:boolean }
+/** Agent proposals never carry secret metadata or values: every suggested override is plain text. */
+export interface RunProposalEnvVar { name:string; value:string }
 export interface QuickLaunchCommand { id:string; projectId:string; revision:number; name:string; /** Verbatim command text for the shell (may hold several lines for PowerShell). */ command:string; shell:QuickLaunchShell;
  /** Relative to the worktree root, '' = the root; resolved again at every run and kept inside the root. */ cwd:string; kind:QuickLaunchKind; env:QuickLaunchEnvVar[];
- /** Fallback preview address when the run prints no local URL. */ previewUrl?:string; createdAt:string; updatedAt:string }
+ /** Fallback preview address when the run prints no local URL. */ previewUrl?:string;
+ /** Saved commands to start and satisfy in order before this command; one level only. */ dependsOn?:string[]; createdAt:string; updatedAt:string }
 /** The launch snapshot of a run; editing or deleting the command later does not change it. */
-export interface SessionRun { commandId:string; name:string; kind:QuickLaunchKind; shell:QuickLaunchShell; /** The first local http(s) URL this run printed (`output`), else the command's fallback (`configured`). */ url?:string; urlSource?:'output'|'configured';
+export interface SessionRun { commandId:string; name:string; kind:QuickLaunchKind; shell:QuickLaunchShell; /** The first local http(s) URL this run printed (`output`), the port its process tree listened on (`port`), else the command's fallback (`configured`). */ url?:string; urlSource?:'output'|'configured'|'port';
+ /** `waiting` while a service run is watched for a listening port, `ready` once it listened or printed a URL, `none`
+  * when the watcher gave up or this platform cannot tell. Absent for tasks and for runs older than readiness. */
+ readiness?:'waiting'|'ready'|'none';
+ /** The port the run became ready on; only when readiness came from a port. */ port?:number;
+ /** The free port allocated from this command's `${port}` template. It remains present before readiness and may differ from `port`, which is the port observed as ready. */ allocatedPort?:number;
+ /** The Chat session whose agent started this run (a run the user started has none). The Run view labels it in 2b. */ startedBy?:string;
  /** The user asked to stop it: an exit after this reads as "Stopped", not as a failure. */ stopRequested?:boolean;
- /** Present when a worktree setup sequence started this run: its id, 0-based step and step count. */ setup?:{runId:string;step:number;total:number} }
+ /** Present when a worktree setup sequence started this run: its id, 0-based step and step count. */ setup?:{runId:string;step:number;total:number};
+ /** Present when the shared sequence runner started this run: its id, 0-based step and step count. */ sequence?:{runId:string;step:number;total:number} }
 /** Worktree setup (Quick Launch): a project's chosen `task` commands, run in order in every new worktree of the project
  * and on request. Saving a non-empty list is the user's consent to run it automatically. Revision 0 = never saved. */
 export interface QuickLaunchSetup { projectId:string; revision:number; commandIds:string[] }
+/** Where a detected entry came from. Detection reads manifest files only, never a build tool. */
+export type DetectedRunSourceKind = 'node'|'cargo'|'maven'|'gradle'|'python'|'make'|'just'|'compose'|'procfile';
+export interface DetectedRunSource { kind:DetectedRunSourceKind; /** Relative to the worktree root, forward slashes. */ file:string; /** Short label for the row: the manifest's file name. */ label:string }
+/** A runnable entry computed live from the worktree's files and never stored; it retires itself when its source goes. */
+export interface DetectedRunEntry { /** Stable, readable identity, e.g. `node:apps/web/package.json:dev`. */ key:string; source:DetectedRunSource;
+ name:string; command:string; shell:QuickLaunchShell; /** Relative to the worktree root, '' = the root. */ cwd:string; kind:QuickLaunchKind;
+ /** Package or target group the row is listed under. */ group:string; /** The entry's tool is not on PATH; the runtime refuses to launch it. */ missingTool?:string;
+ /** Inferred from source code rather than declared in a manifest; shown as a suggestion. */ suggested?:boolean }
+export interface QuickLaunchDetection { entries:DetectedRunEntry[]; /** A bound stopped the scan (entries, members, glob depth or time). */ truncated:boolean }
+/** Repo-stored shared entries. Secret values are local overrides and never appear in `.threadterm/run.json`. */
+export interface QuickLaunchRepoEnvVar extends QuickLaunchEnvVar {}
+export interface QuickLaunchRepoAcceptedEnvVar { name:string; value?:string; secret?:boolean }
+export interface QuickLaunchRepoLaunchFields { command:string; shell:QuickLaunchShell; cwd:string; kind:QuickLaunchKind; env:QuickLaunchRepoAcceptedEnvVar[]; previewUrl?:string }
+export interface QuickLaunchRepoEntry { id:string; name:string; command:string; shell:QuickLaunchShell; cwd:string; kind:QuickLaunchKind; env:QuickLaunchRepoEnvVar[]; previewUrl?:string;
+ /** SHA-256 of canonical launch-relevant fields, excluding secret values. */ fingerprint:string; trusted:boolean; changed:boolean; missingSecrets:string[]; /** Last locally accepted non-secret fields, for the change diff. */ accepted?:QuickLaunchRepoLaunchFields }
+export interface QuickLaunchRepoCatalog { exists:boolean; fileFingerprint?:string; entries:QuickLaunchRepoEntry[]; error?:string }
+export interface QuickLaunchRepoSaveEntry { id?:string; name:string; command:string; shell:QuickLaunchShell; cwd:string; kind:QuickLaunchKind; env:QuickLaunchSaveEnvVar[]; previewUrl?:string }
+/** Agent Run tools (`run_list`/`run_start`/`run_status`/`run_logs`/`run_stop`/`run_restart`).
+ * They are caller-scoped: every entry and run belongs to the calling Chat's own project and
+ * worktree root; anything else is `run_not_found`. A detected or untrusted repo entry starts only after an
+ * `ask_user` card in that Chat, and the runtime launches exactly the text it showed.
+ * The runtime injects `callerSessionId` and `callerToken`; a model-supplied value is rejected. */
+export interface ChatToolRunEntry { /** A saved command id, `detected:<key>`, or `repo:<id>`. */ id:string; name:string; command:string; /** Relative to the worktree root. */ cwd:string;
+ kind:QuickLaunchKind; source:'saved'|'detected'|'repo'; /** Saved entries and locally trusted, unchanged repo entries start without asking. */ approved:boolean;
+ /** The entry's tool is not on PATH; it cannot be started. */ missingTool?:string; /** The active run of this entry, when one exists. */ activeRunId?:string }
+export interface ChatToolRunSummary { runId:string; entryId:string; name:string; state:SessionStatus; readiness?:'waiting'|'ready'|'none'; url?:string; port?:number; exitCode?:number;
+ startedAt:string; startedBy:'user'|'agent'; /** Started by the calling Chat session itself. */ startedBySelf:boolean; /** The dependency sequence this run belongs to. */ sequence?:WorktreeSetupRun }
+export interface ChatToolRunList { /** The canonical worktree root the tools are scoped to. */ worktree:string; entries:ChatToolRunEntry[];
+ /** Active runs plus the latest finished ones. */ runs:ChatToolRunSummary[]; /** The calling Chat's own proposals, pending and recently decided. */ proposals?:ChatToolRunProposalSummary[]; truncated:boolean }
+export interface ChatToolRunStart { runId:string; /** An instance was already active: nothing new was launched. */ existing:boolean; state:SessionStatus; entryId:string|null; name:string|null;
+ /** Present when `run_start` launched a dependency sequence; use `run_status` to follow its progress. */ sequenceId?:string; sequence?:WorktreeSetupRun }
+/** `run_status` may name a terminal run or, when `runId` is a dependency sequence id, the sequence target itself. */
+export interface ChatToolRunStatus { runId:string; entryId:string; name:string; state:SessionStatus|WorktreeSetupState; readiness?:'waiting'|'ready'|'none'; url?:string; port?:number; exitCode?:number;
+ startedAt:string; startedBy:'user'|'agent'; /** Started by the calling Chat session itself. */ startedBySelf:boolean; uptimeSeconds:number;
+ /** Present while or after this run belongs to a shared dependency sequence. */ sequence?:WorktreeSetupRun }
+/** A stop is the user's Stop: the intent flag plus terminating the run's process tree. */
+export interface ChatToolRunStop { runId:string; /** The stopped run's entry, for the tool card's summary. */ entryId:string|null; name:string|null; state:SessionStatus|WorktreeSetupState; stopRequested:true;
+ /** Present when Stop cancelled a dependency sequence. */ sequence?:WorktreeSetupRun }
+export interface ChatToolRunLogs { runId:string; /** The read run's entry, for the tool card's summary. */ entryId:string|null; name:string|null; /** Plain text: ANSI/OSC sequences stripped, CR overwrites collapsed, at most 64 KiB. */ text:string;
+ /** The scan cap (1 MiB back), the text cap or the line bound cut something. */ truncated:boolean; totalBytes:number }
+/** How a recent run ended (or that it is still active), in the Run view's own vocabulary. */
+export type QuickLaunchRunState = 'starting'|'ready'|'running'|'completed'|'exited'|'failed'|'stopped'|'interrupted';
+/** One recent run of a worktree: temporary by design. The last runs of the worktree within 7 days, at most 20; deleting
+ * its session removes the row, and nothing older is listed. `source` is `adhoc` once the saved command behind a run is
+ * gone, so Keep still has the snapshot to promote. */
+export interface QuickLaunchRecentRun { runId:string; /** The saved command id, or `detected:<key>`. */ entryId:string; name:string;
+ /** The launch snapshot's text, which is what Keep saves. */ command:string; source:'saved'|'detected'|'repo'|'adhoc';
+ startedAt:string; /** When the run ended; absent while it is still active. */ endedAt?:string; state:QuickLaunchRunState;
+ exitCode?:number; /** The user or an agent asked to stop it: the exit reads as "Stopped", not as a failure. */ stopped:boolean;
+ /** The Chat session whose agent started it. The renderer resolves the title. */ startedBy?:string;
+ /** Set once the run was kept as a saved command. */ kept?:{commandId:string};
+ /** The immutable launch snapshot: exactly the fields Keep prefills the command editor with. */ snapshot:QuickLaunchCommand }
+export interface QuickLaunchRecent { runs:QuickLaunchRecentRun[] }
+export type RunProposalState = 'pending'|'accepted'|'rejected'|'superseded'|'expired';
+/** An agent's suggested command (`run_propose`), or its suggestion for updating a saved one. It is only a pending
+ * suggestion: a human accepts it in the Run view, so prompt injection can neither persist nor run a command. */
+export interface RunProposal { id:string; projectId:string; /** The canonical worktree root it belongs to. */ root:string;
+ /** The proposing Chat session. */ sessionId:string; /** The saved command this proposal updates; absent for a new entry. */ targetCommandId?:string;
+ name:string; /** Verbatim command text for the shell. */ command:string; shell:QuickLaunchShell; cwd:string; kind:QuickLaunchKind;
+ env:QuickLaunchEnvVar[]; previewUrl?:string; /** The target's current dependencies, shown to the human but never agent-writable. */ dependsOn?:string[]; /** Why the agent suggests it, at most 2000 characters. */ reason:string;
+ state:RunProposalState; /** The target's revision when it was proposed: accepting uses it as `expectedRevision`. */ baseRevision?:number;
+ createdAt:string; decidedAt?:string; /** The command accepting it created or updated. */ decidedCommandId?:string;
+ /** The target command as it is now, so the UI can show the diff; absent when it no longer exists. */ target?:QuickLaunchCommand }
+/** The human's edits from the command editor, applied over the proposal by `quickLaunch.proposals.accept`. An absent
+ * field keeps the proposal's value; `previewUrl: ''` clears the fallback address. */
+export interface RunProposalEdits { name?:string; command?:string; shell?:QuickLaunchShell; cwd?:string; kind?:QuickLaunchKind;
+ env?:QuickLaunchSaveEnvVar[]; previewUrl?:string; dependsOn?:string[] }
+export interface RunProposalList { /** Every pending proposal of the worktree, newest first. */ pending:RunProposal[];
+ /** The last 10 decided proposals of the worktree, newest decision first. */ decided:RunProposal[] }
+/** `run_propose`: a pending suggestion. Nothing is saved and nothing runs until a human accepts it in the Run view. */
+export interface ChatToolRunProposal { proposalId:string; state:'pending' }
+/** One of the calling Chat's own proposals, so `run_list` shows what the human decided. */
+export interface ChatToolRunProposalSummary { proposalId:string; state:RunProposalState; name:string; targetCommandId?:string;
+ createdAt:string; decidedCommandId?:string }
 export type WorktreeSetupState = 'running'|'completed'|'failed'|'cancelled'|'interrupted';
 /** One sequence in one worktree. `commandIds`/`names` are snapshots taken at start. `step` is the step running now, or the
  * one that failed / was cancelled / was interrupted. `sessionIds` holds the terminal of every step started so far.
  * `exitCode` is the failed step's exit code. A runtime restart turns `running` into `interrupted`; it never resumes. */
 export interface WorktreeSetupRun { id:string; projectId:string; root:string; commandIds:string[]; names:string[]; step:number;
- state:WorktreeSetupState; sessionIds:string[]; exitCode?:number; trigger:'worktree.create'|'manual'|'retry'; createdAt:string; updatedAt:string }
+ state:WorktreeSetupState; sessionIds:string[]; exitCode?:number; trigger:'worktree.create'|'manual'|'retry'|'depends_on';
+ /** The saved command requested after a `depends_on` sequence completes. */ targetCommandId?:string;
+ /** A dependency sequence reports `dependency_failed: <name>` when its current prerequisite cannot be satisfied. */ error?:string; createdAt:string; updatedAt:string }
 /** Prompt queue (Chat): messages written while the agent works wait here; the runtime sends them in order, one per
  * finished turn, through the same path as chat.send. Never while paused, disconnected, mid-turn or awaiting an approval. */
 export interface ChatQueueItem { id:string; text:string; images:string[]; revision:number; createdAt:string; updatedAt:string;
@@ -116,7 +204,7 @@ export interface PageTargetRef { selector?:string; rect?:PageRect }
 export interface PluginList { /** Where user plugins are installed (one folder per plugin, each with threadterm-plugin.json). */ directory:string; plugins:PluginInfo[] }
 /** A saved composer snippet inserted at the caret from the `+` menu or the composer's right-click menu. */
 export interface QuickMessage { id:string; title:string; text:string }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; [key:string]:unknown }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; [key:string]:unknown }
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export type ExternalFileSource = 'dialog'|'drop'|'link'|'recent';
@@ -135,7 +223,8 @@ export type ReviewDraftDelete =
 export interface InboxItem { id:string; sessionId:string; kind:string; title:string; createdAt:string; read:boolean }
 export interface Snapshot { epoch:string; revision:number; projects:Project[]; sessions:Session[]; settings:Settings; workspaces:Workspace[]; inbox:InboxItem[]; providers:ProviderCapability[] }
 export interface NativeHistoryItem { provider:ProviderId; nativeId:string; title:string; cwd?:string; updatedAt:string; resumable:boolean; reason?:string }
-export interface FileReference { path:string; line?:number; column?:number }
+/** A location in a local file. `sourceSearch` asks the runtime to resolve a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root. */
+export interface FileReference { path:string; line?:number; column?:number; sourceSearch?:boolean }
 export interface ResolvedFileReference extends FileScope, FileReference { kind:'text'|'image' }
 export type ChatPlanEntryStatus = 'pending'|'in_progress'|'completed';
 export type ChatPlanEntryPriority = 'high'|'medium'|'low';
@@ -291,6 +380,10 @@ export interface ChatQuestion {
  id:string; header?:string; question:string;
  options:{label:string;description?:string}[];
  multiSelect:boolean; allowOther:boolean; secret:boolean;
+ /** Runtime-only: `command` marks a run approval so the card renders `command` as its own unclamped block. */
+ presentation?:'command';
+ /** The exact command being approved. Only the run approval sets it; agent input cannot. */
+ command?:string;
 }
 export interface ChatFormField {
  id:string; title?:string; description?:string;
@@ -825,12 +918,27 @@ export interface RequestMap {
  'chat.queue.send': [{sessionId:string;itemId:string;operationId:string;leaseEpoch:number},ChatQueue];
  'quickLaunch.list': [{projectId:string},QuickLaunchCommand[]];
  /** Creates (no `id`) or replaces a command (`id` + `expectedRevision`; a stale revision fails with `revision_conflict`). */
- 'quickLaunch.save': [{projectId:string;id?:string;expectedRevision?:number;name:string;command:string;shell:QuickLaunchShell;cwd:string;kind:QuickLaunchKind;env:QuickLaunchEnvVar[];previewUrl?:string;operationId:string},QuickLaunchCommand];
+ 'quickLaunch.save': [{projectId:string;id?:string;expectedRevision?:number;name:string;command:string;shell:QuickLaunchShell;cwd:string;kind:QuickLaunchKind;env:QuickLaunchSaveEnvVar[];previewUrl?:string;dependsOn?:string[];repoSource?:{id:string;fingerprint:string;cwd:string};runId?:string;operationId:string},QuickLaunchCommand];
  /** Running runs of the command keep running. */
  'quickLaunch.delete': [{id:string;expectedRevision:number;operationId:string},null];
  /** Runs the command in the worktree whose root is `cwd` (a registered root of the command's project). When a run of this
-  * command is already active in that root, returns it with `existing: true` instead of starting another. */
- 'quickLaunch.run': [{commandId:string;cwd:string;operationId:string},{session:Session;existing:boolean}];
+  * command is already active in that root, returns it with `existing: true` instead of starting another.
+  * Exactly one of `commandId`, `detectedKey`, or `repoId` is accepted. Detected and repo command text always comes
+  * from a fresh runtime file read, never from this request. */
+ 'quickLaunch.run': [{commandId?:string;detectedKey?:string;repoId?:string;projectId?:string;cwd:string;operationId:string},{session:Session;existing:boolean;sequence?:WorktreeSetupRun;sequenceId?:string}];
+ /** Stops the run of this session, waits up to 10 s for it to exit (`restart_stop_timeout`, nothing relaunched), then
+  * launches the same entry again for the same worktree root: saved and repo entries from current storage, a detected
+  * entry by re-detecting it (`detected_entry_not_found`). The result is the new session. */
+ 'quickLaunch.restart': [{sessionId:string;operationId:string},{session:Session;existing:boolean;sequence?:WorktreeSetupRun;sequenceId?:string}];
+ /** Detected entries of the worktree whose root is `cwd` (a registered root of the project). Reads files only. */
+ 'quickLaunch.detect': [{projectId:string;cwd:string},QuickLaunchDetection];
+ /** Shared entries and this user's local trust/secret state for one worktree. */
+ 'quickLaunch.repo.list': [{projectId:string;cwd:string},QuickLaunchRepoCatalog];
+ /** Atomically writes the shared file and local secret/trust state; a stale file fingerprint conflicts. */
+ 'quickLaunch.repo.save': [{projectId:string;cwd:string;entry:QuickLaunchRepoSaveEntry;expectedFingerprint?:string;localSource?:{id:string;revision:number};operationId:string},QuickLaunchRepoEntry];
+ 'quickLaunch.repo.delete': [{projectId:string;cwd:string;id:string;expectedFingerprint?:string;operationId:string},null];
+ /** Trusts exactly the launch fingerprint reviewed by this user. */
+ 'quickLaunch.repo.trust': [{projectId:string;cwd:string;id:string;fingerprint:string;operationId:string},QuickLaunchRepoEntry];
  'quickLaunch.setup.read': [{projectId:string},QuickLaunchSetup];
  /** Ordered `task` commands of the project, unique, at most 20; [] turns setup off. Stale revision → `revision_conflict`.
   * Deleting a command removes it from the list. */
@@ -841,6 +949,36 @@ export interface RequestMap {
  'quickLaunch.setup.run': [{projectId:string;cwd:string;fromStep?:number;operationId:string},WorktreeSetupRun];
  /** The latest sequence of each worktree root of the project. */
  'quickLaunch.setup.status': [{projectId:string},WorktreeSetupRun[]];
+ /** Cancels a running shared setup or dependency sequence. */
+ 'quickLaunch.sequence.cancel': [{id:string;operationId:string},WorktreeSetupRun];
+ /** Reads the persisted `${port}` allocation for one saved command in one worktree. */
+ 'quickLaunch.port.read': [{commandId:string;cwd:string},{port?:number}];
+ /** The worktree's latest runs within 7 days, at most 20, newest first. Read-only. */
+ 'quickLaunch.recent': [{projectId:string;cwd:string},QuickLaunchRecent];
+ /** The pending proposals of the worktree and the last 10 decided ones. Read-only. */
+ 'quickLaunch.proposals.list': [{projectId:string;cwd:string},RunProposalList];
+ /** A human action from the Run view: applies the proposal, with the human's optional `edits`, through the same save
+  * path as `quickLaunch.save` (create, or update with `expectedRevision` = the proposal's base revision). A stale base
+ * fails with `revision_conflict`. Never reachable through a chat tool. */
+ 'quickLaunch.proposals.accept': [{proposalId:string;operationId:string;edits?:RunProposalEdits},QuickLaunchCommand];
+ 'quickLaunch.proposals.reject': [{proposalId:string;operationId:string},null];
+ /** Agent run tools. Caller-scoped to the calling Chat's worktree: another worktree's or project's run is `run_not_found`.
+  * A read-only delegate may list, read status and read logs only (`run_not_permitted` otherwise). */
+ 'chat.tool.run.list': [{},ChatToolRunList];
+ /** Starts a saved entry directly; a `detected:<key>` entry raises the `ask_user` card first ("Run once" / "Don't run")
+  * and starts only the re-detected text it showed (`detected_entry_changed` if that text moved). `requestId` replays. */
+ 'chat.tool.run.start': [{id:string;requestId:string},ChatToolRunStart];
+ 'chat.tool.run.status': [{runId:string},ChatToolRunStatus];
+ /** The last `lines` lines (default 200, max 2000) of the run's terminal output, plain text, at most 64 KiB. */
+ 'chat.tool.run.logs': [{runId:string;lines?:number},ChatToolRunLogs];
+ /** The same stop the user's Stop performs. */
+ 'chat.tool.run.stop': [{runId:string},ChatToolRunStop];
+ /** Stop, wait for the exit, then relaunch the entry; a detected entry asks again first. `requestId` replays. */
+ 'chat.tool.run.restart': [{runId:string;requestId:string},ChatToolRunStart];
+ /** Suggests a command (no `id`) or an update of a saved command of the caller's project (`id`). It never saves and
+  * never runs: a human accepts or rejects it in the Run view. A newer proposal for the same target from the same chat
+  * supersedes the older pending one; pending proposals expire after 7 days. `requestId` replays. */
+ 'chat.tool.run.propose': [{name:string;command:string;reason:string;id?:string;cwd?:string;kind?:QuickLaunchKind;shell?:QuickLaunchShell;env?:RunProposalEnvVar[];previewUrl?:string;requestId:string},ChatToolRunProposal];
  'history.list': [{provider:ProviderId;cursor?:string;limit?:number;cwd?:string},{items:NativeHistoryItem[];nextCursor?:string}];
  'history.read': [{provider:ProviderId;nativeId:string},ChatItem[]];
  'chat.send': [{sessionId:string;text:string;images?:string[];operationId:string;leaseEpoch:number},{turnId:string}];
@@ -860,6 +998,7 @@ export interface RequestMap {
  'chat.connection': [{sessionId:string},ChatConnectionState];
  'chat.connect': [{sessionId:string;leaseEpoch:number;operationId:string},ChatConnectionState];
  'filesystem.list': [FileScope&{path:string},FileEntry[]];
+ /** Resolve a scoped file. `sourceSearch` resolves a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root. */
  'filesystem.resolve': [{sessionId:string}&FileReference,ResolvedFileReference];
  'filesystem.external.open': [{path:string;source:ExternalFileSource;sessionId?:string},ExternalFileOpenResult];
  'filesystem.external.read': [{id:string},FileDocument];
@@ -1014,7 +1153,10 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.restart','quickLaunch.detect','quickLaunch.repo.list','quickLaunch.repo.save','quickLaunch.repo.delete','quickLaunch.repo.trust','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','chat.tool.run.list','chat.tool.run.start','chat.tool.run.status','chat.tool.run.logs','chat.tool.run.stop','chat.tool.run.restart','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+/* feat/run-p3 additions are registered below without rebuilding the legacy literal.
+export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.restart','quickLaunch.detect','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','quickLaunch.recent','quickLaunch.proposals.list','quickLaunch.proposals.accept','quickLaunch.proposals.reject','chat.tool.run.list','chat.tool.run.start','chat.tool.run.status','chat.tool.run.logs','chat.tool.run.stop','chat.tool.run.restart','chat.tool.run.propose','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+*/
 // Kept additive while this long-standing literal remains source-compatible.
 // The legacy list predates review-draft RPCs; extend it here so old callers of
 // `validateRequest` accept the additive methods without rebuilding that list.
@@ -1022,6 +1164,8 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
+ 'quickLaunch.sequence.cancel','quickLaunch.port.read',
+ 'quickLaunch.recent','quickLaunch.proposals.list','quickLaunch.proposals.accept','quickLaunch.proposals.reject','chat.tool.run.propose',
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
@@ -1056,7 +1200,10 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.update':['sessionId','operationId'],'session.attention.acknowledge':['sessionId','operationId'],'session.claim':['sessionId','clientId'],'session.release':['sessionId'],
  'session.renew':['sessionId'],
  'terminal.input':['sessionId','data'],'terminal.resize':['sessionId'],
- 'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'chat.queue.read':['sessionId'],'chat.queue.add':['sessionId','text','operationId'],'chat.queue.update':['sessionId','itemId','text','operationId'],'chat.queue.remove':['sessionId','itemId','operationId'],'chat.queue.move':['sessionId','itemId','operationId'],'chat.queue.pause':['sessionId','operationId'],'chat.queue.resume':['sessionId','operationId'],'chat.queue.send':['sessionId','itemId','operationId'],'quickLaunch.list':['projectId'],'quickLaunch.save':['projectId','name','command','shell','kind','operationId'],'quickLaunch.delete':['id','operationId'],'quickLaunch.run':['commandId','cwd','operationId'],'quickLaunch.setup.read':['projectId'],'quickLaunch.setup.save':['projectId','operationId'],'quickLaunch.setup.run':['projectId','cwd','operationId'],'quickLaunch.setup.status':['projectId'],'history.list':['provider'],'history.read':['provider','nativeId'],
+ 'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'chat.queue.read':['sessionId'],'chat.queue.add':['sessionId','text','operationId'],'chat.queue.update':['sessionId','itemId','text','operationId'],'chat.queue.remove':['sessionId','itemId','operationId'],'chat.queue.move':['sessionId','itemId','operationId'],'chat.queue.pause':['sessionId','operationId'],'chat.queue.resume':['sessionId','operationId'],'chat.queue.send':['sessionId','itemId','operationId'],'quickLaunch.list':['projectId'],'quickLaunch.save':['projectId','name','command','shell','kind','operationId'],'quickLaunch.delete':['id','operationId'],'quickLaunch.restart':['sessionId','operationId'],'quickLaunch.detect':['projectId','cwd'],'quickLaunch.repo.list':['projectId','cwd'],'quickLaunch.repo.save':['projectId','cwd','operationId'],'quickLaunch.repo.delete':['projectId','cwd','id','operationId'],'quickLaunch.repo.trust':['projectId','cwd','id','fingerprint','operationId'],'quickLaunch.setup.read':['projectId'],'quickLaunch.setup.save':['projectId','operationId'],'quickLaunch.setup.run':['projectId','cwd','operationId'],'quickLaunch.setup.status':['projectId'],'history.list':['provider'],'history.read':['provider','nativeId'],
+/* feat/run-p3 string field additions are assigned below.
+ 'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'chat.queue.read':['sessionId'],'chat.queue.add':['sessionId','text','operationId'],'chat.queue.update':['sessionId','itemId','text','operationId'],'chat.queue.remove':['sessionId','itemId','operationId'],'chat.queue.move':['sessionId','itemId','operationId'],'chat.queue.pause':['sessionId','operationId'],'chat.queue.resume':['sessionId','operationId'],'chat.queue.send':['sessionId','itemId','operationId'],'quickLaunch.list':['projectId'],'quickLaunch.save':['projectId','name','command','shell','kind','operationId'],'quickLaunch.delete':['id','operationId'],'quickLaunch.restart':['sessionId','operationId'],'quickLaunch.detect':['projectId','cwd'],'quickLaunch.setup.read':['projectId'],'quickLaunch.setup.save':['projectId','operationId'],'quickLaunch.setup.run':['projectId','cwd','operationId'],'quickLaunch.setup.status':['projectId'],'quickLaunch.recent':['projectId','cwd'],'quickLaunch.proposals.list':['projectId','cwd'],'quickLaunch.proposals.accept':['proposalId','operationId'],'quickLaunch.proposals.reject':['proposalId','operationId'],'chat.tool.run.propose':['name','command','reason','requestId'],'history.list':['provider'],'history.read':['provider','nativeId'],
+*/
  'chat.send':['sessionId','text','operationId'],'chat.steer':['sessionId','turnId','text','operationId'],'chat.cancel':['sessionId','turnId'],
  'chat.approve':['sessionId','turnId','approvalId','choiceId','operationId'],'chat.projectTrust.set':['sessionId','decision','operationId'],
  'chat.answer':['sessionId','turnId','approvalId','operationId'],
@@ -1083,6 +1230,13 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
 };
 (stringFields as Partial<Record<Method,readonly string[]>>)['git.undo']=['projectId','id','operationId'];
 (stringFields as Partial<Record<Method,readonly string[]>>)['git.undo.list']=['projectId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.sequence.cancel']=['id','operationId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.port.read']=['commandId','cwd'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.recent']=['projectId','cwd'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.proposals.list']=['projectId','cwd'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.proposals.accept']=['proposalId','operationId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['quickLaunch.proposals.reject']=['proposalId','operationId'];
+(stringFields as Partial<Record<Method,readonly string[]>>)['chat.tool.run.propose']=['name','command','reason','requestId'];
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
  if(typeof method!=='string'||!(METHODS as readonly string[]).includes(method)) throw new Error('Unsupported runtime method');
@@ -1194,6 +1348,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m==='filesystem.list' && typeof params.path!=='string') throw new Error('Invalid path');
  if(m==='filesystem.resolve') {
   if(String(params.path).length>16*1024||String(params.path).includes('\0')) throw new Error('Invalid file reference');
+  if(params.sourceSearch!==undefined&&typeof params.sourceSearch!=='boolean') throw new Error('Invalid source search flag');
   for(const key of ['line','column']) if(params[key]!==undefined&&(!Number.isSafeInteger(params[key])||Number(params[key])<1||Number(params[key])>1_000_000)) throw new Error(`Invalid ${key}`);
  }
  if(['filesystem.write','draft.put'].includes(m) && (typeof params.content!=='string'||params.content.length>1024*1024)) throw new Error('Invalid file content');
@@ -1261,17 +1416,83 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(!['service','task'].includes(String(params.kind))) throw new Error('Invalid command kind');
   // Relative to the worktree root; the runtime resolves it again at every run and keeps it inside the root.
   if(typeof params.cwd!=='string'||params.cwd.length>260||/^([a-z]:|[\\/])/i.test(params.cwd)||/(^|[\\/])\.\.([\\/]|$)/.test(params.cwd)||/[\u0000-\u001f<>"|?*]/.test(params.cwd)) throw new Error('Invalid working directory');
-  if(!Array.isArray(params.env)||params.env.length>32||params.env.some(item=>!isRecord(item)||typeof item.name!=='string'||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)||typeof item.value!=='string'||item.value.length>8192||item.value.includes('\u0000'))||new Set(params.env.map(item=>String((item as {name:unknown}).name).toUpperCase())).size!==params.env.length) throw new Error('Invalid environment overrides');
-  if(params.previewUrl!==undefined&&!isWebPreviewUrl(params.previewUrl)) throw new Error('Invalid preview address');
+  if(!Array.isArray(params.env)||params.env.length>32||params.env.some(item=>!isRecord(item)||typeof item.name!=='string'||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)||(item.secret!==true&&typeof item.value!=='string')||(item.value!==undefined&&(typeof item.value!=='string'||item.value.length>8192||item.value.includes('\u0000')))||(item.secret!==undefined&&typeof item.secret!=='boolean'))||new Set(params.env.map(item=>String((item as {name:unknown}).name).toUpperCase())).size!==params.env.length) throw new Error('Invalid environment overrides');
+  if(params.previewUrl!==undefined&&!isQuickLaunchPreviewUrl(params.previewUrl)) throw new Error('Invalid preview address');
+  if(params.dependsOn!==undefined&&(!Array.isArray(params.dependsOn)||params.dependsOn.length>8||params.dependsOn.some(id=>typeof id!=='string'||!id)||new Set(params.dependsOn).size!==params.dependsOn.length)) throw new Error('Invalid command dependencies');
   if((params.id===undefined)!==(params.expectedRevision===undefined)||(params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1))) throw new Error('Invalid command revision');
+  if(params.repoSource!==undefined) {
+   const source=params.repoSource;
+   if(!isRecord(source)||typeof source.id!=='string'||!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(source.id)||typeof source.fingerprint!=='string'||!/^[a-f0-9]{64}$/.test(source.fingerprint)||typeof source.cwd!=='string'||!source.cwd) throw new Error('Invalid repo move source');
+  }
  }
+ if(m==='quickLaunch.save'&&params.runId!==undefined&&(typeof params.runId!=='string'||!params.runId)) throw new Error('Invalid runId');
  if(m==='quickLaunch.delete'&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid command revision');
+ if(m==='quickLaunch.run') {
+  // Exactly one target. A detected or repo target needs its project to resolve the root.
+  const saved=params.commandId!==undefined,detected=params.detectedKey!==undefined,repo=params.repoId!==undefined;
+  if([saved,detected,repo].filter(Boolean).length!==1) throw new Error('Invalid run target');
+  if(typeof params.cwd!=='string'||!params.cwd||typeof params.operationId!=='string'||!params.operationId) throw new Error('Invalid run request');
+  if(saved&&(typeof params.commandId!=='string'||!params.commandId)) throw new Error('Invalid commandId');
+  if(detected&&(typeof params.detectedKey!=='string'||!params.detectedKey||params.detectedKey.length>512||typeof params.projectId!=='string'||!params.projectId)) throw new Error('Invalid detected entry');
+  if(repo&&(typeof params.repoId!=='string'||!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(params.repoId)||typeof params.projectId!=='string'||!params.projectId)) throw new Error('Invalid repo entry');
+ }
+ if(m.startsWith('quickLaunch.repo.')) {
+  const fingerprint=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+  if(typeof params.projectId!=='string'||!params.projectId||typeof params.cwd!=='string'||!params.cwd) throw new Error('Invalid repo scope');
+  if(m!=='quickLaunch.repo.list'&&(typeof params.operationId!=='string'||!params.operationId||params.operationId.length>512)) throw new Error('Invalid repo operation');
+  if((m==='quickLaunch.repo.delete'||m==='quickLaunch.repo.trust')&&(typeof params.id!=='string'||!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(params.id))) throw new Error('Invalid repo entry');
+  if(m==='quickLaunch.repo.trust'&&!fingerprint(params.fingerprint)) throw new Error('Invalid repo fingerprint');
+  if((m==='quickLaunch.repo.save'||m==='quickLaunch.repo.delete')&&params.expectedFingerprint!==undefined&&!fingerprint(params.expectedFingerprint)) throw new Error('Invalid repo file fingerprint');
+  if(m==='quickLaunch.repo.save') {
+   if(params.localSource!==undefined) {
+    const source=params.localSource;
+    if(!isRecord(source)||typeof source.id!=='string'||!source.id||!Number.isSafeInteger(source.revision)||Number(source.revision)<1) throw new Error('Invalid local move source');
+   }
+   const entry=params.entry;
+   if(!isRecord(entry)||typeof entry.name!=='string'||!entry.name.trim()||[...entry.name].length>80||/[\u0000-\u001f\u007f]/.test(entry.name)||typeof entry.command!=='string'||!entry.command.trim()||entry.command.length>8000||entry.command.includes('\u0000')||!['cmd','powershell','pwsh'].includes(String(entry.shell))||!['service','task'].includes(String(entry.kind))||typeof entry.cwd!=='string'||entry.cwd.length>260||/^([a-z]:|[\\/])/i.test(entry.cwd)||/(^|[\\/])\.\.([\\/]|$)/.test(entry.cwd)||/[\u0000-\u001f<>"|?*]/.test(entry.cwd)) throw new Error('Invalid repo entry');
+   if(entry.id!==undefined&&(typeof entry.id!=='string'||!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(entry.id))) throw new Error('Invalid repo entry id');
+   if(entry.shell==='cmd'&&/[\r\n]/.test(entry.command)) throw new Error('Invalid cmd command');
+   if(!Array.isArray(entry.env)||entry.env.length>32||entry.env.some(item=>!isRecord(item)||typeof item.name!=='string'||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)||(item.secret!==true&&typeof item.value!=='string')||(item.value!==undefined&&(typeof item.value!=='string'||item.value.length>8192||item.value.includes('\u0000')))||(item.secret!==undefined&&typeof item.secret!=='boolean'))||new Set(entry.env.map(item=>String((item as {name:unknown}).name).toUpperCase())).size!==entry.env.length) throw new Error('Invalid environment overrides');
+   if(entry.previewUrl!==undefined&&!isWebPreviewUrl(entry.previewUrl)) throw new Error('Invalid preview address');
+  }
+ }
  if(m==='quickLaunch.setup.save') {
   const ids=params.commandIds;
   if(!Array.isArray(ids)||ids.length>20||ids.some(id=>typeof id!=='string'||!id)||new Set(ids).size!==ids.length) throw new Error('Invalid setup commands');
   if(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<0) throw new Error('Invalid setup revision');
  }
  if(m==='quickLaunch.setup.run'&&params.fromStep!==undefined&&(!Number.isInteger(params.fromStep)||Number(params.fromStep)<0||Number(params.fromStep)>19)) throw new Error('Invalid setup step');
+ // Recent runs and agent proposals: the bounds live here as well as in the runtime, so a desktop cannot send a
+ // request the runtime would have to reject after reading the database.
+ if(m==='quickLaunch.recent'||m==='quickLaunch.proposals.list') {
+  if(typeof params.cwd!=='string'||!params.cwd) throw new Error('Invalid worktree root');
+ }
+ if(m==='quickLaunch.proposals.accept'&&params.edits!==undefined) {
+  const edits=params.edits;
+  if(!isRecord(edits)) throw new Error('Invalid proposal edits');
+  if(edits.name!==undefined) { const name=String(edits.name).trim(); if(!name||[...name].length>80||/[\u0000-\u001f\u007f]/.test(name)) throw new Error('Invalid command name'); }
+  if(edits.command!==undefined&&(!String(edits.command).trim()||String(edits.command).length>8000||String(edits.command).includes('\u0000'))) throw new Error('Invalid command text');
+  if(edits.shell!==undefined&&!['cmd','powershell','pwsh'].includes(String(edits.shell))) throw new Error('Invalid shell');
+  if(edits.kind!==undefined&&!['service','task'].includes(String(edits.kind))) throw new Error('Invalid command kind');
+  if(edits.cwd!==undefined&&(typeof edits.cwd!=='string'||edits.cwd.length>260||/^([a-z]:|[\\/])/i.test(edits.cwd)||/(^|[\\/])\.\.([\\/]|$)/.test(edits.cwd)||/[\u0000-\u001f<>"|?*]/.test(edits.cwd))) throw new Error('Invalid working directory');
+  if(edits.env!==undefined&&(!Array.isArray(edits.env)||edits.env.length>32||edits.env.some(item=>!isRecord(item)||typeof item.name!=='string'||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)||(item.secret!==true&&typeof item.value!=='string')||(item.value!==undefined&&(typeof item.value!=='string'||item.value.length>8192||item.value.includes('\u0000')))||(item.secret!==undefined&&typeof item.secret!=='boolean'))||new Set(edits.env.map(item=>String((item as {name:unknown}).name).toUpperCase())).size!==edits.env.length)) throw new Error('Invalid environment overrides');
+  if(edits.previewUrl!==undefined&&edits.previewUrl!==''&&!isQuickLaunchPreviewUrl(edits.previewUrl)) throw new Error('Invalid preview address');
+  if(edits.dependsOn!==undefined&&(!Array.isArray(edits.dependsOn)||edits.dependsOn.length>8||edits.dependsOn.some(id=>typeof id!=='string'||!id)||new Set(edits.dependsOn).size!==edits.dependsOn.length)) throw new Error('Invalid command dependencies');
+ }
+ if(m==='chat.tool.run.propose') {
+  const name=String(params.name).trim(), command=String(params.command);
+  if(!name||[...name].length>80||/[\u0000-\u001f\u007f]/.test(name)) throw new Error('Invalid command name');
+  if(!command.trim()||command.length>8000||command.includes('\u0000')) throw new Error('Invalid command text');
+  const shell=params.shell===undefined?'cmd':String(params.shell),kind=params.kind===undefined?'service':String(params.kind);
+  if(!['cmd','powershell','pwsh'].includes(shell)) throw new Error('Invalid shell');
+  if(!['service','task'].includes(kind)) throw new Error('Invalid command kind');
+  if(shell==='cmd'&&(params.shell!==undefined||params.id===undefined)&&/[\r\n]/.test(String(params.command))) throw new Error('Invalid command text');
+  if(![...String(params.reason)].length||[...String(params.reason)].length>2000||String(params.reason).trim()==='') throw new Error('Invalid proposal reason');
+  if(params.cwd!==undefined&&(typeof params.cwd!=='string'||params.cwd.length>260||/^([a-z]:|[\\/])/i.test(params.cwd)||/(^|[\\/])\.\.([\\/]|$)/.test(params.cwd)||/[\u0000-\u001f<>"|?*]/.test(params.cwd))) throw new Error('Invalid working directory');
+  if(params.env!==undefined&&(!Array.isArray(params.env)||params.env.length>32||params.env.some(item=>!isRecord(item)||typeof item.name!=='string'||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(item.name)||typeof item.value!=='string'||item.value.length>8192||item.value.includes('\u0000')||item.secret!==undefined)||new Set(params.env.map(item=>String((item as {name:unknown}).name).toUpperCase())).size!==params.env.length)) throw new Error('Invalid environment overrides');
+  if(params.previewUrl!==undefined&&!isQuickLaunchPreviewUrl(params.previewUrl)) throw new Error('Invalid preview address');
+  if(params.id!==undefined&&(typeof params.id!=='string'||!params.id||params.id.length>512)) throw new Error('Invalid commandId');
+ }
  if(m==='agentReview.start') {
   if(!/^[a-z][a-z0-9-]{1,31}$/.test(String(params.agent))) throw new Error('Invalid agent');
   const scope=params.scope, id=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=200;
@@ -1310,6 +1531,18 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {
+ if(method==='quickLaunch.list'||method==='quickLaunch.save'||method==='quickLaunch.repo.list'||method==='quickLaunch.repo.save'||method==='quickLaunch.repo.trust') {
+  const commands=method==='quickLaunch.list'?result:method==='quickLaunch.repo.list'&&isRecord(result)?result.entries:[result];
+  if(Array.isArray(commands)) for(const command of commands) {
+   if(!isRecord(command)||!Array.isArray(command.env)) continue;
+   for(const item of command.env) {
+    if(!isRecord(item)) throw new Error('Invalid environment metadata');
+    if(item.secret===true) {
+     if('value' in item||typeof item.hasValue!=='boolean') throw new Error('Secret value in runtime response');
+    } else if(typeof item.value!=='string'||item.hasValue!==undefined) throw new Error('Invalid public environment value');
+   }
+  }
+ }
  if(method==='git.history.plan') {
   const value=result as GitHistoryPlan, oid=/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
   if(!isRecord(result)||!oid.test(value.hash)||!oid.test(value.head)||!Array.isArray(value.parents)||value.parents.some(parent=>!isRecord(parent)||!oid.test(parent.hash))) throw new Error('Invalid history plan commits');
@@ -1379,6 +1612,10 @@ export function validateResult<M extends Method>(method:M,result:unknown):assert
 export function isWebPreviewUrl(value:unknown):value is string {
  if(typeof value!=='string'||!value||value.length>2048||/[\s\u0000-\u001f\u007f-\u009f]/.test(value)) return false;
  try { const url=new URL(value); return (url.protocol==='http:'||url.protocol==='https:')&&Boolean(url.hostname); } catch { return false; }
+}
+/** Quick Launch resolves its literal `${port}` token before launching, then applies the ordinary web preview invariant. */
+function isQuickLaunchPreviewUrl(value:unknown):value is string {
+ return typeof value==='string'&&isWebPreviewUrl(value.replaceAll('${port}','5173'));
 }
 export function validateLayout(value:unknown):asserts value is PaneLayout {
  let panes=0; const ids=new Set<string>();
@@ -1555,7 +1792,7 @@ export interface DataStatus { root:string;database:{path:string;sizeBytes:number
 export interface ThemeBackgroundLayer { image:string;opacity:number;blur:number;overlay:number;fit:'cover'|'contain'|'tile';focusX:number;focusY:number;scale:number }
 export interface ThemeBackgrounds { window?:ThemeBackgroundLayer;sidebar?:ThemeBackgroundLayer;sidebar2?:ThemeBackgroundLayer;chat?:ThemeBackgroundLayer;editor?:ThemeBackgroundLayer;terminal?:ThemeBackgroundLayer;browser?:ThemeBackgroundLayer }
 export interface ThemeTokens { background:string;surface:string;text:string;muted:string;accent:string;border:string;sidebar?:string;editor?:string;base?:string;backgrounds?:ThemeBackgrounds }
-export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.delegation'?:boolean} }
+export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.run'?:boolean;'chatTools.delegation'?:boolean} }
 export interface UsageRecord { source?:UsageSource;status?:SessionStatus;sessionId:string;provider:ProviderId;recordedAt:string;inputTokens?:number;outputTokens?:number;estimatedCost?:number;currency?:string;model?:string }
 export type UsageSource = 'created'|'native-history'|'rerun';
 export interface SessionLifecycleMetric { sessionId:string;projectId?:string;provider:ProviderId;mode:SessionMode;status:SessionStatus;source?:UsageSource;sourceSessionId?:string;startedAt:string;endedAt?:string;sessionLifetimeSeconds?:number;durationKind:'session_lifetime';history:{status:SessionStatus;recordedAt:string}[] }

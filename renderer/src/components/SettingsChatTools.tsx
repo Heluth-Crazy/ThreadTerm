@@ -29,6 +29,7 @@ const tools: ToolSpec[] = [
   flatTool("chatTools.ask", "Ask", "提问", "Ask you a question with selectable answers.", "向你提问，并提供可选答案。"),
   flatTool("chatTools.sessionInfo", "Session info", "会话信息", "Read a referenced session and its recent conversation.", "读取你引用的会话信息和近期对话。"),
   flatTool("chatTools.feedback", "Feedback", "反馈", "Check for your notes between steps of a long task.", "在长任务的步骤之间查看你发送的反馈。"),
+  flatTool("chatTools.run", "Run", "运行", "Start, stop and read the Run entries of this worktree. Detected entries ask you first.", "启动、停止并读取此工作树的运行项。检测到的运行项会先询问你。"),
   flatTool("chatTools.delegation", "Delegation", "任务委派", "Delegate a task to another supported agent.", "将任务委派给其他受支持的智能体。"),
   {
     id: "chatTools.generatedUi",

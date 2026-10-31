@@ -55,6 +55,8 @@ pub mod remote_access;
 pub mod retry_scheduler;
 pub mod review;
 pub mod review_drafts;
+pub(crate) mod run_detect;
+pub(crate) mod run_repo_config;
 pub mod service;
 pub mod session_activity;
 pub mod session_configs;

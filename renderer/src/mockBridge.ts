@@ -19,7 +19,6 @@ function demoSnapshot(): Snapshot {
     ],
     settings: { revision: 0, theme: "dark", language: "zh-CN" },
     workspaces: [],
-    presets: [],
     inbox: [],
     providers: [
       { id: "kimi", name: "Kimi", installed: true, terminal: true, chat: true, history: true, resume: true, auth: "authenticated" },
@@ -47,11 +46,12 @@ function respond(method: Method): unknown {
       return demoSnapshot().projects.map((project) => ({ ...project, revision: 1, pinned: false, sortOrder: 0, git: { available: false } }));
     case "plugin.list":
       return { directory: "", plugins: [] };
-    case "preset.list":
     case "quickLaunch.list":
       return [];
     case "quickLaunch.setup.read":
       return { revision: 0, commandIds: [] };
+    case "quickLaunch.detect":
+      return { entries: [], truncated: false };
     case "runtime.health":
       return { ok: true, mock: true };
     case "inbox.read":
@@ -79,6 +79,8 @@ export function installMockBridge(): void {
     onWindowState: () => () => {},
     subscribeOutput: () => Promise.resolve(() => {}),
     chooseDirectory: () => Promise.resolve(null),
+    attachFiles: () => Promise.resolve([]),
+    openExternalFiles: () => Promise.resolve([]),
     chooseSavePath: () => Promise.resolve(null),
     exportFile: () => Promise.resolve(null),
     activateDataRelocation: () => Promise.resolve({ activated: false }),

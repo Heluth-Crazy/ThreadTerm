@@ -17,10 +17,13 @@ const MISSING_CODES = ['file_reference_not_found', 'file_reference_not_file', 'f
 export type FileLinkStatus = 'exists' | 'missing' | 'unknown';
 export type FileLinkValidator = {
   /** The cached status, starting a lookup when there is none; `undefined` while pending. */
-  peek(path: string): FileLinkStatus | undefined;
-  settle(path: string): Promise<FileLinkStatus>;
+  peek(path: string, sourceSearch?: boolean): FileLinkStatus | undefined;
+  settle(path: string, sourceSearch?: boolean): Promise<FileLinkStatus>;
   onSettled(listener: () => void): () => void;
 };
+
+/** The same path may be looked up with and without the source search, so the flag is part of the key. */
+const linkKey = (path: string, sourceSearch?: boolean) => sourceSearch ? `\u0000${path}` : path;
 
 /** `missing` only for answers that say the file is not there; anything else cannot be checked. */
 export function fileLinkStatusOf(error: unknown): FileLinkStatus {
@@ -29,27 +32,28 @@ export function fileLinkStatusOf(error: unknown): FileLinkStatus {
 }
 
 /** A bounded, briefly cached existence check shared by hover links and the Ctrl hit layer. */
-export function createFileLinkValidator(check: (path: string) => Promise<FileLinkStatus>): FileLinkValidator {
+export function createFileLinkValidator(check: (path: string, sourceSearch?: boolean) => Promise<FileLinkStatus>): FileLinkValidator {
   type Entry = { status?: FileLinkStatus; checkedAt: number; promise: Promise<FileLinkStatus> };
   const entries = new Map<string, Entry>();
   const listeners = new Set<() => void>();
-  const lookup = (path: string) => {
-    const cached = entries.get(path);
+  const lookup = (path: string, sourceSearch?: boolean) => {
+    const key = linkKey(path, sourceSearch);
+    const cached = entries.get(key);
     if (cached && (cached.status === undefined || Date.now() - cached.checkedAt < VALIDATION_TTL_MS)) return cached;
     // Keep the previous answer while refreshing, so the Ctrl layer does not flicker.
     const entry: Entry = { status: cached?.status, checkedAt: Date.now(), promise: Promise.resolve<FileLinkStatus>('unknown') };
-    entry.promise = check(path).catch(() => 'unknown' as const).then(status => {
+    entry.promise = check(path, sourceSearch).catch(() => 'unknown' as const).then(status => {
       entry.status = status; entry.checkedAt = Date.now();
       for (const listener of listeners) listener();
       return status;
     });
-    entries.delete(path); entries.set(path, entry);
+    entries.delete(key); entries.set(key, entry);
     if (entries.size > VALIDATION_CACHE_LIMIT) entries.delete(entries.keys().next().value as string);
     return entry;
   };
   return {
-    peek: path => lookup(path).status,
-    settle: path => lookup(path).promise,
+    peek: (path, sourceSearch) => lookup(path, sourceSearch).status,
+    settle: (path, sourceSearch) => lookup(path, sourceSearch).promise,
     onSettled: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   };
 }
@@ -276,7 +280,7 @@ function readings(terminal: Terminal, lineNumber: number): Reading[][] {
   const current = logicalLine(terminal, lineNumber - 1);
   if (!current) return [];
   const read = (source: CellText, candidate: FileReferenceCandidate, span: [number, number], speculative: boolean): Reading => ({
-    reference: { path: candidate.path, ...(candidate.line ? { line: candidate.line } : {}), ...(candidate.column ? { column: candidate.column } : {}) },
+    reference: { path: candidate.path, ...(candidate.line ? { line: candidate.line } : {}), ...(candidate.column ? { column: candidate.column } : {}), ...(candidate.sourceSearch ? { sourceSearch: true } : {}) },
     speculative,
     segments: segments(source, candidate.start, candidate.end, terminal.cols),
     span,
@@ -304,8 +308,8 @@ function readings(terminal: Terminal, lineNumber: number): Reading[][] {
 }
 
 /** The first reading the runtime has not ruled out; `null` while a lookup is pending. */
-function pick(group: Reading[], status: (path: string) => FileLinkStatus | undefined): Reading | null | undefined {
-  const statuses = group.map(reading => status(reading.reference.path));
+function pick(group: Reading[], status: (reference: FileReference) => FileLinkStatus | undefined): Reading | null | undefined {
+  const statuses = group.map(reading => status(reading.reference));
   for (const [index, reading] of group.entries()) {
     const result = statuses[index];
     if (result === undefined) return null;
@@ -338,7 +342,7 @@ function toLinks(chosen: (Reading | null | undefined)[], lineNumber: number, ope
  * non-speculative reading of each location is used.
  */
 export function terminalFileLinks(terminal: Terminal, lineNumber: number, openFile: (reference: FileReference) => void, interaction?: TerminalFileLinkInteraction, validator?: FileLinkValidator): ILink[] {
-  const status = (path: string): FileLinkStatus | undefined => validator ? validator.peek(path) : 'unknown';
+  const status = (reference: FileReference): FileLinkStatus | undefined => validator ? validator.peek(reference.path, reference.sourceSearch) : 'unknown';
   return toLinks(readings(terminal, lineNumber).map(group => pick(group, status)), lineNumber, openFile, interaction);
 }
 
@@ -346,6 +350,6 @@ export function terminalFileLinks(terminal: Terminal, lineNumber: number, openFi
 export async function provideTerminalFileLinks(terminal: Terminal, lineNumber: number, openFile: (reference: FileReference) => void, interaction: TerminalFileLinkInteraction | undefined, validator: FileLinkValidator): Promise<ILink[]> {
   const groups = readings(terminal, lineNumber);
   const settled = new Map<string, FileLinkStatus>();
-  await Promise.all(groups.flat().map(async reading => { settled.set(reading.reference.path, await validator.settle(reading.reference.path)); }));
-  return toLinks(groups.map(group => pick(group, path => settled.get(path))), lineNumber, openFile, interaction);
+  await Promise.all(groups.flat().map(async reading => { settled.set(linkKey(reading.reference.path, reading.reference.sourceSearch), await validator.settle(reading.reference.path, reading.reference.sourceSearch)); }));
+  return toLinks(groups.map(group => pick(group, reference => settled.get(linkKey(reference.path, reference.sourceSearch)))), lineNumber, openFile, interaction);
 }

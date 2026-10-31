@@ -783,9 +783,9 @@ pub(crate) fn tool_server_resolver(
         let Ok(settings) = crate::delegation::chat_tool_settings(&db) else {
             return spec;
         };
-        if supported && (settings.ask || settings.session_info || settings.feedback) {
+        if supported && (settings.ask || settings.session_info || settings.feedback || settings.run) {
             if let (Some(command), Some(generation)) = (mcp.as_ref(), registry.preview_worker_token(session)) {
-                if let Ok(token) = chat_tools.issue(session, generation, settings.ask, settings.session_info, settings.feedback) {
+                if let Ok(token) = chat_tools.issue(session, generation, settings.ask, settings.session_info, settings.feedback, settings.run) {
                     let server = spec.get_or_insert_with(|| ChatToolServer {
                         name: "threadterm".into(), command: command.to_string_lossy().into_owned(), args: vec![],
                         env: vec![
@@ -793,13 +793,14 @@ pub(crate) fn tool_server_resolver(
                             ("THREADTERM_V3_DATA".into(), config.data_dir.to_string_lossy().into_owned()), ("THREADTERM_V3_PIPE".into(), config.pipe_base.clone()),
                         ],
                     });
-                    server.env.retain(|(key, _)| !matches!(key.as_str(), "THREADTERM_MCP_PROFILE" | "THREADTERM_CHAT_SESSION_ID" | "THREADTERM_CHAT_TOKEN" | "THREADTERM_CHAT_TOOL_ASK" | "THREADTERM_CHAT_TOOL_SESSION_INFO" | "THREADTERM_CHAT_TOOL_FEEDBACK"));
+                    server.env.retain(|(key, _)| !matches!(key.as_str(), "THREADTERM_MCP_PROFILE" | "THREADTERM_CHAT_SESSION_ID" | "THREADTERM_CHAT_TOKEN" | "THREADTERM_CHAT_TOOL_ASK" | "THREADTERM_CHAT_TOOL_SESSION_INFO" | "THREADTERM_CHAT_TOOL_FEEDBACK" | "THREADTERM_CHAT_TOOL_RUN"));
                     server.env.push(("THREADTERM_MCP_PROFILE".into(), "chat-tools".into()));
                     server.env.push(("THREADTERM_CHAT_SESSION_ID".into(), session.into()));
                     server.env.push(("THREADTERM_CHAT_TOKEN".into(), token));
                     server.env.push(("THREADTERM_CHAT_TOOL_ASK".into(), if settings.ask { "1" } else { "0" }.into()));
                     server.env.push(("THREADTERM_CHAT_TOOL_SESSION_INFO".into(), if settings.session_info { "1" } else { "0" }.into()));
                     server.env.push(("THREADTERM_CHAT_TOOL_FEEDBACK".into(), if settings.feedback { "1" } else { "0" }.into()));
+                    server.env.push(("THREADTERM_CHAT_TOOL_RUN".into(), if settings.run { "1" } else { "0" }.into()));
                 }
             }
         }
@@ -1067,16 +1068,24 @@ mod tests {
             Some(root.path().join("threadterm-v3-mcp")),
         );
         let env_value = |server: &ChatToolServer, key: &str| server.env.iter().find(|(name, _)| name == key).map(|(_, value)| value.clone());
-        db.update_settings(&json!({"chatTools.ask":true,"chatTools.sessionInfo":true,"chatTools.feedback":true}), 0, "enable-all").unwrap();
+        db.update_settings(&json!({"chatTools.ask":true,"chatTools.sessionInfo":true,"chatTools.feedback":true,"chatTools.run":true}), 0, "enable-all").unwrap();
         let first = resolver("s", "codex").expect("the first connection gets the app-hosted tools");
         assert_eq!(env_value(&first, "THREADTERM_CHAT_TOOL_ASK").as_deref(), Some("1"));
         assert_eq!(env_value(&first, "THREADTERM_CHAT_TOOL_SESSION_INFO").as_deref(), Some("1"));
         assert_eq!(env_value(&first, "THREADTERM_CHAT_TOOL_FEEDBACK").as_deref(), Some("1"));
+        assert_eq!(env_value(&first, "THREADTERM_CHAT_TOOL_RUN").as_deref(), Some("1"));
         assert!(first.env.iter().all(|(key, _)| key != "THREADTERM_GENERATED_UI"), "generated UI stays off while its switch is off");
         db.update_settings(&json!({"chatTools.feedback":false}), db.snapshot().unwrap().settings.revision, "disable-feedback").unwrap();
         let second = resolver("s", "codex").expect("the next connection still gets the remaining tools");
         assert_eq!(env_value(&second, "THREADTERM_CHAT_TOOL_ASK").as_deref(), Some("1"), "the remaining switches stay on");
         assert_eq!(env_value(&second, "THREADTERM_CHAT_TOOL_FEEDBACK").as_deref(), Some("0"), "the disabled tool is off for the next connection");
+        assert_eq!(env_value(&second, "THREADTERM_CHAT_TOOL_RUN").as_deref(), Some("1"), "run is on by default");
+        // Run alone is still a server: its default is on, like Ask, Session info and Feedback.
+        let revision = db.snapshot().unwrap().settings.revision;
+        db.update_settings(&json!({"chatTools.ask":false,"chatTools.sessionInfo":false,"chatTools.feedback":false,"chatTools.run":true}), revision, "run-only").unwrap();
+        let run_only = resolver("s", "codex").expect("a Chat with only the run switch still gets the server");
+        assert_eq!(env_value(&run_only, "THREADTERM_CHAT_TOOL_RUN").as_deref(), Some("1"));
+        assert_eq!(env_value(&run_only, "THREADTERM_CHAT_TOOL_ASK").as_deref(), Some("0"));
     }
     #[test]
     fn acknowledgment_cannot_retarget_an_existing_workspace_lease() {

@@ -2116,8 +2116,30 @@
           "type": "string",
           "enum": [
             "output",
-            "configured"
+            "configured",
+            "port"
           ]
+        },
+        "readiness": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "ready",
+            "none"
+          ],
+          "description": "`waiting` while a service run is watched for a listening port, `ready` once it listened or printed a URL, `none` when the watcher gave up or this platform cannot tell. Absent for tasks and for runs older than readiness."
+        },
+        "port": {
+          "type": "number",
+          "description": "The port the run became ready on; only when readiness came from a port."
+        },
+        "allocatedPort": {
+          "type": "number",
+          "description": "The free port allocated from this command's `${port}` template. It remains present before readiness and may differ from `port`, which is the port observed as ready."
+        },
+        "startedBy": {
+          "type": "string",
+          "description": "The Chat session whose agent started this run (a run the user started has none). The Run view labels it in 2b."
         },
         "stopRequested": {
           "type": "boolean",
@@ -2143,6 +2165,27 @@
           ],
           "additionalProperties": false,
           "description": "Present when a worktree setup sequence started this run: its id, 0-based step and step count."
+        },
+        "sequence": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "step": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "runId",
+            "step",
+            "total"
+          ],
+          "additionalProperties": false,
+          "description": "Present when the shared sequence runner started this run: its id, 0-based step and step count."
         }
       },
       "required": [
@@ -2352,12 +2395,16 @@
         },
         "column": {
           "type": "number"
+        },
+        "sourceSearch": {
+          "type": "boolean"
         }
       },
       "required": [
         "path"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A location in a local file. `sourceSearch` asks the runtime to resolve a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root."
     },
     "ChatPlanPart": {
       "type": "object",
@@ -3280,6 +3327,9 @@
             "chatTools.feedback": {
               "type": "boolean"
             },
+            "chatTools.run": {
+              "type": "boolean"
+            },
             "chatTools.delegation": {
               "type": "boolean"
             }
@@ -3506,6 +3556,9 @@
           "type": "boolean"
         },
         "chatTools.feedback": {
+          "type": "boolean"
+        },
+        "chatTools.run": {
           "type": "boolean"
         },
         "chatTools.delegation": {
@@ -5055,6 +5108,13 @@
           "type": "string",
           "description": "Fallback preview address when the run prints no local URL."
         },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Saved commands to start and satisfy in order before this command; one level only."
+        },
         "createdAt": {
           "type": "string"
         },
@@ -5085,11 +5145,16 @@
         },
         "value": {
           "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
+        },
+        "hasValue": {
+          "type": "boolean"
         }
       },
       "required": [
-        "name",
-        "value"
+        "name"
       ],
       "additionalProperties": false
     },
@@ -5107,6 +5172,12 @@
         },
         "existing": {
           "type": "boolean"
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun"
+        },
+        "sequenceId": {
+          "type": "string"
         }
       },
       "required": [
@@ -5114,39 +5185,6 @@
         "existing"
       ],
       "additionalProperties": false
-    },
-    "RequestResult<\"quickLaunch.setup.read\">": {
-      "$ref": "#/definitions/QuickLaunchSetup"
-    },
-    "QuickLaunchSetup": {
-      "type": "object",
-      "properties": {
-        "projectId": {
-          "type": "string"
-        },
-        "revision": {
-          "type": "number"
-        },
-        "commandIds": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "projectId",
-        "revision",
-        "commandIds"
-      ],
-      "additionalProperties": false,
-      "description": "Worktree setup (Quick Launch): a project's chosen `task` commands, run in order in every new worktree of the project and on request. Saving a non-empty list is the user's consent to run it automatically. Revision 0 = never saved."
-    },
-    "RequestResult<\"quickLaunch.setup.save\">": {
-      "$ref": "#/definitions/QuickLaunchSetup"
-    },
-    "RequestResult<\"quickLaunch.setup.run\">": {
-      "$ref": "#/definitions/WorktreeSetupRun"
     },
     "WorktreeSetupRun": {
       "type": "object",
@@ -5192,8 +5230,17 @@
           "enum": [
             "worktree.create",
             "manual",
-            "retry"
+            "retry",
+            "depends_on"
           ]
+        },
+        "targetCommandId": {
+          "type": "string",
+          "description": "The saved command requested after a `depends_on` sequence completes."
+        },
+        "error": {
+          "type": "string",
+          "description": "A dependency sequence reports `dependency_failed: <name>` when its current prerequisite cannot be satisfied."
         },
         "createdAt": {
           "type": "string"
@@ -5228,11 +5275,1016 @@
         "interrupted"
       ]
     },
+    "RequestResult<\"quickLaunch.restart\">": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/definitions/Session"
+        },
+        "existing": {
+          "type": "boolean"
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun"
+        },
+        "sequenceId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "existing"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"quickLaunch.detect\">": {
+      "$ref": "#/definitions/QuickLaunchDetection"
+    },
+    "QuickLaunchDetection": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DetectedRunEntry"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "DetectedRunEntry": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/DetectedRunSource"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "group": {
+          "type": "string",
+          "description": "Package or target group the row is listed under."
+        },
+        "missingTool": {
+          "type": "string"
+        },
+        "suggested": {
+          "type": "boolean",
+          "description": "Inferred from source code rather than declared in a manifest; shown as a suggestion."
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "group"
+      ],
+      "additionalProperties": false,
+      "description": "A runnable entry computed live from the worktree's files and never stored; it retires itself when its source goes."
+    },
+    "DetectedRunSource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/DetectedRunSourceKind"
+        },
+        "file": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "file",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "DetectedRunSourceKind": {
+      "type": "string",
+      "enum": [
+        "node",
+        "cargo",
+        "maven",
+        "gradle",
+        "python",
+        "make",
+        "just",
+        "compose",
+        "procfile"
+      ],
+      "description": "Where a detected entry came from. Detection reads manifest files only, never a build tool."
+    },
+    "RequestResult<\"quickLaunch.repo.list\">": {
+      "$ref": "#/definitions/QuickLaunchRepoCatalog"
+    },
+    "QuickLaunchRepoCatalog": {
+      "type": "object",
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "fileFingerprint": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRepoEntry"
+          }
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "exists",
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRepoEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRepoEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "SHA-256 of canonical launch-relevant fields, excluding secret values."
+        },
+        "trusted": {
+          "type": "boolean"
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "missingSecrets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "accepted": {
+          "$ref": "#/definitions/QuickLaunchRepoLaunchFields"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env",
+        "fingerprint",
+        "trusted",
+        "changed",
+        "missingSecrets"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRepoEnvVar": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
+        },
+        "hasValue": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "Repo-stored shared entries. Secret values are local overrides and never appear in `.threadterm/run.json`."
+    },
+    "QuickLaunchRepoLaunchFields": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRepoAcceptedEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRepoAcceptedEnvVar": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"quickLaunch.repo.save\">": {
+      "$ref": "#/definitions/QuickLaunchRepoEntry"
+    },
+    "RequestResult<\"quickLaunch.repo.delete\">": {
+      "type": "null"
+    },
+    "RequestResult<\"quickLaunch.repo.trust\">": {
+      "$ref": "#/definitions/QuickLaunchRepoEntry"
+    },
+    "RequestResult<\"quickLaunch.setup.read\">": {
+      "$ref": "#/definitions/QuickLaunchSetup"
+    },
+    "QuickLaunchSetup": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "number"
+        },
+        "commandIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "projectId",
+        "revision",
+        "commandIds"
+      ],
+      "additionalProperties": false,
+      "description": "Worktree setup (Quick Launch): a project's chosen `task` commands, run in order in every new worktree of the project and on request. Saving a non-empty list is the user's consent to run it automatically. Revision 0 = never saved."
+    },
+    "RequestResult<\"quickLaunch.setup.save\">": {
+      "$ref": "#/definitions/QuickLaunchSetup"
+    },
+    "RequestResult<\"quickLaunch.setup.run\">": {
+      "$ref": "#/definitions/WorktreeSetupRun"
+    },
     "RequestResult<\"quickLaunch.setup.status\">": {
       "type": "array",
       "items": {
         "$ref": "#/definitions/WorktreeSetupRun"
       }
+    },
+    "RequestResult<\"quickLaunch.sequence.cancel\">": {
+      "$ref": "#/definitions/WorktreeSetupRun"
+    },
+    "RequestResult<\"quickLaunch.port.read\">": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestResult<\"quickLaunch.recent\">": {
+      "$ref": "#/definitions/QuickLaunchRecent"
+    },
+    "QuickLaunchRecent": {
+      "type": "object",
+      "properties": {
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchRecentRun"
+          }
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchRecentRun": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string",
+          "description": "The launch snapshot's text, which is what Keep saves."
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "saved",
+            "detected",
+            "repo",
+            "adhoc"
+          ]
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "endedAt": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/QuickLaunchRunState"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "stopped": {
+          "type": "boolean"
+        },
+        "startedBy": {
+          "type": "string",
+          "description": "The Chat session whose agent started it. The renderer resolves the title."
+        },
+        "kept": {
+          "type": "object",
+          "properties": {
+            "commandId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "commandId"
+          ],
+          "additionalProperties": false,
+          "description": "Set once the run was kept as a saved command."
+        },
+        "snapshot": {
+          "$ref": "#/definitions/QuickLaunchCommand",
+          "description": "The immutable launch snapshot: exactly the fields Keep prefills the command editor with."
+        }
+      },
+      "required": [
+        "runId",
+        "entryId",
+        "name",
+        "command",
+        "source",
+        "startedAt",
+        "state",
+        "stopped",
+        "snapshot"
+      ],
+      "additionalProperties": false,
+      "description": "One recent run of a worktree: temporary by design. The last runs of the worktree within 7 days, at most 20; deleting its session removes the row, and nothing older is listed. `source` is `adhoc` once the saved command behind a run is gone, so Keep still has the snapshot to promote."
+    },
+    "QuickLaunchRunState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "ready",
+        "running",
+        "completed",
+        "exited",
+        "failed",
+        "stopped",
+        "interrupted"
+      ],
+      "description": "How a recent run ended (or that it is still active), in the Run view's own vocabulary."
+    },
+    "RequestResult<\"quickLaunch.proposals.list\">": {
+      "$ref": "#/definitions/RunProposalList"
+    },
+    "RunProposalList": {
+      "type": "object",
+      "properties": {
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RunProposal"
+          }
+        },
+        "decided": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RunProposal"
+          },
+          "description": "The last 10 decided proposals of the worktree, newest decision first."
+        }
+      },
+      "required": [
+        "pending",
+        "decided"
+      ],
+      "additionalProperties": false
+    },
+    "RunProposal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "The proposing Chat session."
+        },
+        "targetCommandId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/RunProposalState"
+        },
+        "baseRevision": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "decidedAt": {
+          "type": "string"
+        },
+        "decidedCommandId": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/definitions/QuickLaunchCommand",
+          "description": "The target command as it is now, so the UI can show the diff; absent when it no longer exists."
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "root",
+        "sessionId",
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env",
+        "reason",
+        "state",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "description": "An agent's suggested command (`run_propose`), or its suggestion for updating a saved one. It is only a pending suggestion: a human accepts it in the Run view, so prompt injection can neither persist nor run a command."
+    },
+    "RunProposalState": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "accepted",
+        "rejected",
+        "superseded",
+        "expired"
+      ]
+    },
+    "RequestResult<\"quickLaunch.proposals.accept\">": {
+      "$ref": "#/definitions/QuickLaunchCommand"
+    },
+    "RequestResult<\"quickLaunch.proposals.reject\">": {
+      "type": "null"
+    },
+    "RequestResult<\"chat.tool.run.list\">": {
+      "$ref": "#/definitions/ChatToolRunList"
+    },
+    "ChatToolRunList": {
+      "type": "object",
+      "properties": {
+        "worktree": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatToolRunEntry"
+          }
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatToolRunSummary"
+          },
+          "description": "Active runs plus the latest finished ones."
+        },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatToolRunProposalSummary"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "worktree",
+        "entries",
+        "runs",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "ChatToolRunEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "saved",
+            "detected",
+            "repo"
+          ]
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "missingTool": {
+          "type": "string",
+          "description": "The entry's tool is not on PATH; it cannot be started."
+        },
+        "activeRunId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "command",
+        "cwd",
+        "kind",
+        "source",
+        "approved"
+      ],
+      "additionalProperties": false,
+      "description": "Agent Run tools (`run_list`/`run_start`/`run_status`/`run_logs`/`run_stop`/`run_restart`). They are caller-scoped: every entry and run belongs to the calling Chat's own project and worktree root; anything else is `run_not_found`. A detected or untrusted repo entry starts only after an `ask_user` card in that Chat, and the runtime launches exactly the text it showed. The runtime injects `callerSessionId` and `callerToken`; a model-supplied value is rejected."
+    },
+    "ChatToolRunSummary": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "readiness": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "ready",
+            "none"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "port": {
+          "type": "number"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "startedBy": {
+          "type": "string",
+          "enum": [
+            "user",
+            "agent"
+          ]
+        },
+        "startedBySelf": {
+          "type": "boolean"
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun"
+        }
+      },
+      "required": [
+        "runId",
+        "entryId",
+        "name",
+        "state",
+        "startedAt",
+        "startedBy",
+        "startedBySelf"
+      ],
+      "additionalProperties": false
+    },
+    "ChatToolRunProposalSummary": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/RunProposalState"
+        },
+        "name": {
+          "type": "string"
+        },
+        "targetCommandId": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "decidedCommandId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "state",
+        "name",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "description": "One of the calling Chat's own proposals, so `run_list` shows what the human decided."
+    },
+    "RequestResult<\"chat.tool.run.start\">": {
+      "$ref": "#/definitions/ChatToolRunStart"
+    },
+    "ChatToolRunStart": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "existing": {
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "entryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sequenceId": {
+          "type": "string",
+          "description": "Present when `run_start` launched a dependency sequence; use `run_status` to follow its progress."
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun"
+        }
+      },
+      "required": [
+        "runId",
+        "existing",
+        "state",
+        "entryId",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.tool.run.status\">": {
+      "$ref": "#/definitions/ChatToolRunStatus"
+    },
+    "ChatToolRunStatus": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionStatus"
+            },
+            {
+              "$ref": "#/definitions/WorktreeSetupState"
+            }
+          ]
+        },
+        "readiness": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "ready",
+            "none"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "port": {
+          "type": "number"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "startedBy": {
+          "type": "string",
+          "enum": [
+            "user",
+            "agent"
+          ]
+        },
+        "startedBySelf": {
+          "type": "boolean"
+        },
+        "uptimeSeconds": {
+          "type": "number"
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun",
+          "description": "Present while or after this run belongs to a shared dependency sequence."
+        }
+      },
+      "required": [
+        "runId",
+        "entryId",
+        "name",
+        "state",
+        "startedAt",
+        "startedBy",
+        "startedBySelf",
+        "uptimeSeconds"
+      ],
+      "additionalProperties": false,
+      "description": "`run_status` may name a terminal run or, when `runId` is a dependency sequence id, the sequence target itself."
+    },
+    "RequestResult<\"chat.tool.run.logs\">": {
+      "$ref": "#/definitions/ChatToolRunLogs"
+    },
+    "ChatToolRunLogs": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "The scan cap (1 MiB back), the text cap or the line bound cut something."
+        },
+        "totalBytes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "runId",
+        "entryId",
+        "name",
+        "text",
+        "truncated",
+        "totalBytes"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"chat.tool.run.stop\">": {
+      "$ref": "#/definitions/ChatToolRunStop"
+    },
+    "ChatToolRunStop": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionStatus"
+            },
+            {
+              "$ref": "#/definitions/WorktreeSetupState"
+            }
+          ]
+        },
+        "stopRequested": {
+          "type": "boolean",
+          "const": true
+        },
+        "sequence": {
+          "$ref": "#/definitions/WorktreeSetupRun",
+          "description": "Present when Stop cancelled a dependency sequence."
+        }
+      },
+      "required": [
+        "runId",
+        "entryId",
+        "name",
+        "state",
+        "stopRequested"
+      ],
+      "additionalProperties": false,
+      "description": "A stop is the user's Stop: the intent flag plus terminating the run's process tree."
+    },
+    "RequestResult<\"chat.tool.run.restart\">": {
+      "$ref": "#/definitions/ChatToolRunStart"
+    },
+    "RequestResult<\"chat.tool.run.propose\">": {
+      "$ref": "#/definitions/ChatToolRunProposal"
+    },
+    "ChatToolRunProposal": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "const": "pending"
+        }
+      },
+      "required": [
+        "proposalId",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "`run_propose`: a pending suggestion. Nothing is saved and nothing runs until a human accepts it in the Run view."
     },
     "RequestResult<\"history.list\">": {
       "type": "object",
@@ -5961,6 +7013,9 @@
         },
         "column": {
           "type": "number"
+        },
+        "sourceSearch": {
+          "type": "boolean"
         },
         "projectId": {
           "type": "string"
@@ -11813,6 +12868,162 @@
         },
         "method": {
           "type": "string",
+          "const": "quickLaunch.restart"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.restart%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.detect"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.detect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.save"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.delete"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.repo.trust"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.repo.trust%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "quickLaunch.setup.read"
         },
         "result": {
@@ -11895,6 +13106,344 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22quickLaunch.setup.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.sequence.cancel"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.sequence.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.port.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.port.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.recent"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.recent%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.proposals.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.accept"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.proposals.accept%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.proposals.reject"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.proposals.reject%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.start"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.start%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.status"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.logs"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.logs%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.stop"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.restart"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.restart%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.tool.run.propose"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.tool.run.propose%22%3E"
         }
       },
       "required": [

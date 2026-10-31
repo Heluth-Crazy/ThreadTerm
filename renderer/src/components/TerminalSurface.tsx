@@ -286,7 +286,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     terminal.loadAddon(new WebLinksAddon((_event, url) => setSelectedLink(url)));
     const fileLinkInteraction = createTerminalFileLinkInteraction(element);
     // Link only what the session's runtime can find, so `3.14` or half of a wrapped path is not offered.
-    const fileLinkValidator = createFileLinkValidator(path => request('filesystem.resolve', { sessionId, path }).then(() => 'exists' as const, fileLinkStatusOf));
+    const fileLinkValidator = createFileLinkValidator((path, sourceSearch) => request('filesystem.resolve', sourceSearch ? { sessionId, path, sourceSearch: true } : { sessionId, path }).then(() => 'exists' as const, fileLinkStatusOf));
     const fileLinkDisposable = terminal.registerLinkProvider({ provideLinks: (line, callback) => {
       if (!openFileRef.current) { callback(undefined); return; }
       void provideTerminalFileLinks(terminal, line, reference => openFileRef.current?.(reference), fileLinkInteraction, fileLinkValidator).then(callback, () => callback(undefined));

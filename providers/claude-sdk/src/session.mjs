@@ -55,6 +55,9 @@ export const THREADTERM_BROWSER_READ_TOOLS = new Set(['browser_list_tabs', 'brow
 export const THREADTERM_BROWSER_ACTION_TOOLS = new Set(['browser_navigate', 'browser_click', 'browser_type', 'browser_hover', 'browser_press_key', 'browser_select_option'].map(name => `mcp__threadterm__${name}`));
 export const THREADTERM_BROWSER_TOOLS = new Set([...THREADTERM_BROWSER_READ_TOOLS, ...THREADTERM_BROWSER_ACTION_TOOLS]);
 export const THREADTERM_CHAT_TOOLS = new Set(['ask_user', 'session_info', 'feedback_check'].map(name => `mcp__threadterm__${name}`));
+// The Run tools as the SDK names them (runtime `mcp_delegation::RUN_TOOL_NAMES`), approved only when
+// THREADTERM_CHAT_TOOL_RUN=1 arrives with the composed chat-tools server.
+export const THREADTERM_RUN_TOOLS = new Set(['run_list', 'run_start', 'run_status', 'run_logs', 'run_stop', 'run_restart', 'run_propose'].map(name => `mcp__threadterm__${name}`));
 const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 
 const ROUNDTABLE_READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep']);
@@ -194,6 +197,7 @@ export class ClaudeSession {
     this.threadTermAskTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_ASK === '1';
     this.threadTermSessionInfoTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_SESSION_INFO === '1';
     this.threadTermFeedbackTool = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_FEEDBACK === '1';
+    this.threadTermRunTools = threadterm?.name === undefined && typeof environment.THREADTERM_CHAT_TOKEN === 'string' && environment.THREADTERM_CHAT_TOKEN.length > 0 && environment.THREADTERM_CHAT_TOOL_RUN === '1';
     // "Don't ask" and "Auto" settle an ask without consulting canUseTool, so
     // "Don't ask" denied ThreadTerm's own tools. The exact names
     // requestPermission allows in every mode are also pre-approved as rules
@@ -208,6 +212,7 @@ export class ClaudeSession {
       ...(this.threadTermAskTool ? ['mcp__threadterm__ask_user'] : []),
       ...(this.threadTermSessionInfoTool ? ['mcp__threadterm__session_info'] : []),
       ...(this.threadTermFeedbackTool ? ['mcp__threadterm__feedback_check'] : []),
+      ...(this.threadTermRunTools ? THREADTERM_RUN_TOOLS : []),
     ];
     const options = {
       cwd,
@@ -481,7 +486,8 @@ export class ClaudeSession {
       || (this.threadTermBrowserTools && THREADTERM_BROWSER_TOOLS.has(toolName))
       || (this.threadTermAskTool && toolName === 'mcp__threadterm__ask_user')
       || (this.threadTermSessionInfoTool && toolName === 'mcp__threadterm__session_info')
-      || (this.threadTermFeedbackTool && toolName === 'mcp__threadterm__feedback_check')) return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      || (this.threadTermFeedbackTool && toolName === 'mcp__threadterm__feedback_check')
+      || (this.threadTermRunTools && THREADTERM_RUN_TOOLS.has(toolName))) return Promise.resolve({ behavior: 'allow', updatedInput: input });
     // Projection keys approvals by Chat session and request id. A fresh worker
     // for the same Chat must therefore never restart the request-id sequence in
     // the same namespace and overwrite an answered receipt from its predecessor.

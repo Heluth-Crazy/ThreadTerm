@@ -287,6 +287,7 @@ struct ChatCaller {
     ask: bool,
     session_info: bool,
     feedback: bool,
+    run: bool,
 }
 impl ChatCaller {
     fn from_env() -> Option<Self> {
@@ -306,6 +307,7 @@ impl ChatCaller {
             ask: enabled("THREADTERM_CHAT_TOOL_ASK"),
             session_info: enabled("THREADTERM_CHAT_TOOL_SESSION_INFO"),
             feedback: enabled("THREADTERM_CHAT_TOOL_FEEDBACK"),
+            run: enabled("THREADTERM_CHAT_TOOL_RUN"),
         })
     }
     fn params(&self, mut params: Value) -> Result<Value, Value> {
@@ -378,6 +380,9 @@ fn composed_instructions(
         if chat.feedback {
             text.push_str("\nFor long tasks, call feedback_check between major steps to receive user notes sent during this turn.");
         }
+        if chat.run {
+            text.push_str(RUN_INSTRUCTIONS);
+        }
     }
     text
 }
@@ -428,11 +433,8 @@ async fn call_chat_tool(
     let Some(chat) = chat else {
         return call_tool(config, caller, name, arguments, cancelled).await;
     };
-    let (method, enabled) = match name {
-        "ask_user" => ("chat.tool.ask", chat.ask),
-        "session_info" => ("chat.tool.sessionInfo", chat.session_info),
-        "feedback_check" => ("chat.tool.feedback", chat.feedback),
-        _ => return call_tool(config, caller, name, arguments, cancelled).await,
+    let Some((method, enabled)) = chat_method(name, chat) else {
+        return call_tool(config, caller, name, arguments, cancelled).await;
     };
     if !enabled {
         return Err(failure(
@@ -451,6 +453,24 @@ async fn call_chat_tool(
         .map_err(|error| failure("chat_tool_request_failed", error.to_string()))
 }
 
+/// The runtime method behind one Chat tool name, and the switch that gates it. An
+/// unknown name falls through to the ordinary terminal tools.
+fn chat_method(name: &str, chat: &ChatCaller) -> Option<(&'static str, bool)> {
+    Some(match name {
+        "ask_user" => ("chat.tool.ask", chat.ask),
+        "session_info" => ("chat.tool.sessionInfo", chat.session_info),
+        "feedback_check" => ("chat.tool.feedback", chat.feedback),
+        "run_list" => ("chat.tool.run.list", chat.run),
+        "run_start" => ("chat.tool.run.start", chat.run),
+        "run_status" => ("chat.tool.run.status", chat.run),
+        "run_logs" => ("chat.tool.run.logs", chat.run),
+        "run_stop" => ("chat.tool.run.stop", chat.run),
+        "run_restart" => ("chat.tool.run.restart", chat.run),
+        "run_propose" => ("chat.tool.run.propose", chat.run),
+        _ => return None,
+    })
+}
+
 fn chat_tools(caller: &ChatCaller) -> Vec<Value> {
     let mut result = Vec::new();
     if caller.ask {
@@ -462,7 +482,78 @@ fn chat_tools(caller: &ChatCaller) -> Vec<Value> {
     if caller.feedback {
         result.push(tool("feedback_check", "Read feedback notes the user sent during this turn. Call between major steps of long tasks; returned notes are marked received.", json!({"type":"object","additionalProperties":false,"properties":{}})));
     }
+    if caller.run {
+        result.extend(run_tools());
+    }
     result
+}
+
+/// The run tools' names, in catalogue order; 2b auto-approves exactly these.
+pub const RUN_TOOL_NAMES: [&str; 7] = [
+    "run_list",
+    "run_start",
+    "run_status",
+    "run_logs",
+    "run_stop",
+    "run_restart",
+    "run_propose",
+];
+
+/// One short line: the tool descriptions carry the details, and Claude Code keeps
+/// only the first 2048 characters of the instructions.
+const RUN_INSTRUCTIONS:&str="\nUse run_list to see this worktree's Run entries; run_start asks for detected/untrusted repo entries; read run_logs instead of starting duplicates; run_propose needs human acceptance.";
+
+fn run_tools() -> Vec<Value> {
+    let run_id = json!({"type":"string","minLength":1,"maxLength":128});
+    vec![
+        tool(
+            "run_list",
+            "List the Run entries and runs of your own worktree: saved, detected and shared repo entries, plus active runs and the latest finished ones. Prefer an existing run; do not start duplicates.",
+            json!({"type":"object","additionalProperties":false,"properties":{}}),
+        ),
+        tool(
+            "run_start",
+            "Start one Run entry of your own worktree, given its `id` from run_list. Saved entries and trusted unchanged repo entries start directly; a detected, untrusted or changed repo entry asks the user first. Run once does not change repo trust. One active instance is returned instead of starting another. Pass an unique `requestId` so a retry replays the same launch.",
+            json!({"type":"object","additionalProperties":false,"required":["id","requestId"],"properties":{
+                "id":{"type":"string","minLength":1,"maxLength":512,"description":"A run_list entry id: a saved command id, `detected:<key>`, or `repo:<id>`."},
+                "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Idempotency key: the same value returns the same run."}}}),
+        ),
+        tool(
+            "run_status",
+            "Read one run's state, readiness, URL, port, exit code and uptime. Only runs of your own worktree are visible.",
+            json!({"type":"object","additionalProperties":false,"required":["runId"],"properties":{"runId":run_id}}),
+        ),
+        tool(
+            "run_logs",
+            "Read the last lines (default 200, max 2000) of one run's terminal output in your own worktree as plain text. Use this instead of starting a duplicate to see what a server printed.",
+            json!({"type":"object","additionalProperties":false,"required":["runId"],"properties":{"runId":run_id,"lines":{"type":"integer","minimum":1,"maximum":2000}}}),
+        ),
+        tool(
+            "run_stop",
+            "Stop a run of your own worktree, the same way the user's Stop does. Prefer stopping what you started.",
+            json!({"type":"object","additionalProperties":false,"required":["runId"],"properties":{"runId":run_id}}),
+        ),
+        tool(
+            "run_restart",
+            "Stop a run of your own worktree and start its entry again. Detected and untrusted or changed repo entries ask the user again; saved and trusted unchanged repo entries restart directly. Pass an unique `requestId` so a retry replays the same restart.",
+            json!({"type":"object","additionalProperties":false,"required":["runId","requestId"],"properties":{"runId":run_id,"requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Idempotency key: the same value returns the same restart."}}}),
+        ),
+        tool(
+            "run_propose",
+            "Suggest a new Run command, or an update to one saved entry of your own worktree project. A human must accept it in the Run view before anything is saved or run. Pass an unique `requestId` so a retry replays the same pending proposal.",
+            json!({"type":"object","additionalProperties":false,"required":["name","command","reason","requestId"],"properties":{
+                "name":{"type":"string","minLength":1,"maxLength":80},
+                "command":{"type":"string","minLength":1,"maxLength":8000},
+                "reason":{"type":"string","minLength":1,"maxLength":2000},
+                "id":{"type":"string","minLength":1,"maxLength":512,"description":"A saved command id from your own project, to suggest an update."},
+                "cwd":{"type":"string","maxLength":260},
+                "kind":{"type":"string","enum":["service","task"]},
+                "shell":{"type":"string","enum":["cmd","powershell","pwsh"]},
+                "env":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","value"],"properties":{"name":{"type":"string","minLength":1,"maxLength":128},"value":{"type":"string","maxLength":8192}}}},
+                "previewUrl":{"type":"string","maxLength":2048},
+                "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Idempotency key: the same value returns the same proposal."}}}),
+        ),
+    ]
 }
 
 fn validate_browser_arguments(name: &str, arguments: &Value) -> Result<(), Value> {
@@ -2207,6 +2298,7 @@ mod tests {
             ask: true,
             session_info: true,
             feedback: true,
+            run: true,
         };
         let instructions = composed_instructions(true, true, Some(&chat), true, false);
         let kept = instructions.chars().take(2048).collect::<String>();
@@ -2252,6 +2344,7 @@ mod tests {
             ask: true,
             session_info: false,
             feedback: true,
+            run: false,
         };
         let names: Vec<_> = composed_tools(false, false, Some(&chat), false)
             .into_iter()
@@ -2276,6 +2369,151 @@ mod tests {
     }
 
     #[test]
+    fn run_tools_follow_the_run_switch_and_state_their_scope_and_approval_rule() {
+        let chat = |run: bool| ChatCaller {
+            session_id: "s".into(),
+            token: "t".into(),
+            ask: false,
+            session_info: false,
+            feedback: false,
+            run,
+        };
+        assert_eq!(chat_tools(&chat(false)), Vec::<Value>::new());
+        let tools = chat_tools(&chat(true));
+        let names = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, RUN_TOOL_NAMES);
+        for tool in &tools {
+            let schema = &tool["inputSchema"];
+            assert_eq!(schema["additionalProperties"], false, "{tool}");
+            // The scope and the approval rule are stated where the model reads them.
+            let description = tool["description"].as_str().unwrap();
+            assert!(
+                description.contains("own worktree") || description.contains("your own worktree"),
+                "{description}"
+            );
+        }
+        let start = &tools[1]["inputSchema"];
+        assert_eq!(start["required"], json!(["id", "requestId"]));
+        assert_eq!(start["properties"]["id"]["maxLength"], 512);
+        assert_eq!(start["properties"]["requestId"]["maxLength"], 128);
+        assert_eq!(tools[2]["inputSchema"]["properties"]["runId"]["maxLength"], 128);
+        assert_eq!(
+            tools[3]["inputSchema"]["properties"]["lines"]["maximum"],
+            2000
+        );
+        assert_eq!(
+            tools[5]["inputSchema"]["required"],
+            json!(["runId", "requestId"])
+        );
+        let propose = &tools[6];
+        assert_eq!(propose["name"], "run_propose");
+        assert_eq!(
+            propose["inputSchema"]["required"],
+            json!(["name", "command", "reason", "requestId"])
+        );
+        assert_eq!(propose["inputSchema"]["properties"]["reason"]["maxLength"], 2000);
+        assert_eq!(propose["inputSchema"]["properties"]["cwd"]["maxLength"], 260);
+        assert_eq!(propose["inputSchema"]["properties"]["env"]["maxItems"], 32);
+        assert_eq!(propose["inputSchema"]["properties"]["env"]["items"]["properties"]["value"]["maxLength"], 8192);
+        assert!(propose["description"].as_str().unwrap().contains("must accept"));
+        assert!(tools[1]["description"].as_str().unwrap().contains("asks the user first"));
+        assert!(tools.iter().any(|tool| tool["description"]
+            .as_str()
+            .unwrap()
+            .contains("do not start duplicates")));
+        // The one instruction line is short and disappears with the switch.
+        let instructions = composed_instructions(false, false, Some(&chat(true)), false, false);
+        assert!(instructions.contains("run_list to see this worktree's Run entries"));
+        assert!(instructions.contains("read run_logs instead of starting duplicates"));
+        assert!(RUN_INSTRUCTIONS.len() < 200, "{}", RUN_INSTRUCTIONS.len());
+        assert!(!composed_instructions(false, false, Some(&chat(false)), false, false)
+            .contains("run_list"));
+    }
+
+    #[test]
+    fn run_tool_names_map_to_the_caller_scoped_methods() {
+        let chat = ChatCaller {
+            session_id: "s".into(),
+            token: "t".into(),
+            ask: false,
+            session_info: false,
+            feedback: false,
+            run: true,
+        };
+        for (name, method) in [
+            ("run_list", "chat.tool.run.list"),
+            ("run_start", "chat.tool.run.start"),
+            ("run_status", "chat.tool.run.status"),
+            ("run_logs", "chat.tool.run.logs"),
+            ("run_stop", "chat.tool.run.stop"),
+            ("run_restart", "chat.tool.run.restart"),
+            ("run_propose", "chat.tool.run.propose"),
+        ] {
+            assert_eq!(chat_method(name, &chat), Some((method, true)), "{name}");
+        }
+        let off = ChatCaller { run: false, ..chat.clone() };
+        assert_eq!(chat_method("run_start", &off), Some(("chat.tool.run.start", false)));
+        assert_eq!(chat_method("run_propose", &off), Some(("chat.tool.run.propose", false)));
+        assert_eq!(chat_method("terminal_list", &chat), None);
+        // Identity is runtime-injected for every run tool, never taken from the model.
+        assert_eq!(
+            chat.params(json!({"id":"detected:node:package.json:dev","requestId":"r"}))
+                .unwrap(),
+            json!({"id":"detected:node:package.json:dev","requestId":"r","callerSessionId":"s","callerToken":"t"})
+        );
+        assert_eq!(
+            chat.params(json!({"callerSessionId":"spoofed"}))
+                .unwrap_err()["error"]["code"],
+            "invalid_arguments"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_tools_are_gated_before_any_runtime_connection() {
+        let config = browser_test_config();
+        let disabled = ChatCaller {
+            session_id: "s".into(),
+            token: "t".into(),
+            ask: false,
+            session_info: false,
+            feedback: false,
+            run: false,
+        };
+        for name in RUN_TOOL_NAMES {
+            let error = call_chat_tool(
+                &config,
+                None,
+                None,
+                Some(&disabled),
+                name,
+                &json!({}),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error["error"]["code"], "tool_disabled", "{name}");
+        }
+        let enabled = ChatCaller { run: true, ..disabled };
+        for name in RUN_TOOL_NAMES {
+            let error = call_chat_tool(
+                &config,
+                None,
+                None,
+                Some(&enabled),
+                name,
+                &json!({"runId":"r","callerToken":"spoof"}),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error["error"]["code"], "invalid_arguments", "{name}");
+        }
+    }
+
+    #[test]
     fn app_tool_identity_is_runtime_owned() {
         let chat = ChatCaller {
             session_id: "s".into(),
@@ -2283,6 +2521,7 @@ mod tests {
             ask: true,
             session_info: true,
             feedback: true,
+            run: true,
         };
         assert_eq!(
             chat.params(json!({})).unwrap(),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { questionSummary, validQuestionValues } from "./chatQuestion";
+import { questionPresentation, questionSummary, validQuestionValues, visibleControlCharacters } from "./chatQuestion";
 
 const en = (text: string) => text;
 
@@ -63,4 +63,22 @@ test("question validation enforces supported formats and url emptiness", () => {
   const url = { kind: "url" as const, message: "Open", url: "https://example.test" };
   assert.equal(validQuestionValues(url, {}), true);
   assert.equal(validQuestionValues(url, { unexpected: "value" }), false);
+});
+
+test("only a runtime-marked run approval splits its command into its own block", () => {
+  const plain = { id: "q1", question: "Choose one\nsecond line", options: [{ label: "A" }], multiSelect: false, allowOther: false, secret: false };
+  assert.deepEqual(questionPresentation(plain), { title: "Choose one\nsecond line" }, "an ordinary multi-line question is untouched");
+  const marked = { ...plain, question: "Run this detected command from `package.json` in `work`?\nnpm run dev", presentation: "command" as const, command: "npm run dev" };
+  assert.deepEqual(questionPresentation(marked), { title: "Run this detected command from `package.json` in `work`?", command: "npm run dev" });
+  assert.equal(questionPresentation({ ...marked, command: undefined }).command, "npm run dev", "the question text is the fallback when no command field arrives");
+});
+
+test("a command block shows invisible and control characters instead of hiding them", () => {
+  assert.equal(visibleControlCharacters("node safe\u200B.js"), "node safe\u27E8U+200B\u27E9.js");
+  assert.equal(visibleControlCharacters("a\u202Eb"), "a\u27E8U+202E\u27E9b");
+  assert.equal(visibleControlCharacters("a\uFEFFb"), "a\u27E8U+FEFF\u27E9b");
+  assert.equal(visibleControlCharacters("a\u2028b"), "a\u27E8U+2028\u27E9b");
+  assert.equal(visibleControlCharacters("a\u0000b"), "a\u27E8U+0000\u27E9b");
+  assert.equal(visibleControlCharacters("node\tsafe.js"), "node\tsafe.js", "tab stays ordinary whitespace");
+  assert.equal(visibleControlCharacters("plain"), "plain");
 });

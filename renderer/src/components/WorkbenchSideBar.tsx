@@ -3,19 +3,22 @@ import { createPortal } from 'react-dom';
 import type { GitStatus, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { Icon } from './PrototypeIcon';
+import { WbIcon } from '../workbench/icons';
 import { ExplorerView } from './ExplorerView';
 import { SearchView } from './SearchView';
 import { SourceControlView } from './SourceControlView';
 import { AgentChangesView } from './AgentChangesView';
+import { RunViewPanel } from './RunViewPanel';
 import { workbenchError } from '../workbench/errors';
 import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
+import { useRunProposalCount } from '../runProposals';
 import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import '../workbench/workbench.css';
 import './panel-headers.css';
 
-export type WorkbenchView = 'files'|'search'|'scm'|'changes';
+export type WorkbenchView = 'files'|'search'|'scm'|'run'|'changes';
 export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeKey?:string };
 // Only the last view and the width are remembered. The panel starts closed whenever the workspace opens: a session
 // opens as just a session, and the panel appears only when a view is chosen (user decision 2026-09-28).
@@ -27,7 +30,7 @@ function readStored():Stored {
  try {
   const value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Partial<Stored>;
   return {
-   view:['files', 'search', 'scm', 'changes'].includes(String(value.view)) ? value.view as WorkbenchView : 'files',
+   view:['files', 'search', 'scm', 'run', 'changes'].includes(String(value.view)) ? value.view as WorkbenchView : 'files',
    width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Number(value.width) || 280)),
   };
  } catch { return {view:'files', width:280}; }
@@ -81,8 +84,8 @@ export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath
  * View switcher + panel. An open panel owns its switcher above its card; otherwise the switcher is
  * portalled into the top-left pane strip. The panel card shares the pane cards' top and bottom edges.
  */
-export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, activePath, command, switcherHost, zh}:{
- scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; switcherHost?:HTMLElement|null; zh:boolean;
+export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], activeSessionId, activePath, command, switcherHost, zh}:{
+ scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; switcherHost?:HTMLElement|null; zh:boolean;
 }) {
  const [stored, setStored] = useState(readStored);
  const [open, setOpen] = useState(false);
@@ -132,10 +135,13 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
   target.addEventListener('pointermove', move); target.addEventListener('pointerup', end); target.addEventListener('pointercancel', end);
  };
  const changeCount = git.status?.changes.length ?? 0;
+ const proposalCount = useRunProposalCount({projectId:scope.projectId,root:scope.rootPath}, zh);
  const views:{id:WorkbenchView;icon:string;label:string;shortcut:string;badge?:number}[] = [
   {id:'files', icon:'file', label:text('Files', '文件'), shortcut:'Ctrl+Shift+E'},
   {id:'search', icon:'search', label:text('Search', '搜索'), shortcut:'Ctrl+Shift+F'},
   {id:'scm', icon:'branch', label:text('Source Control', '源代码管理'), shortcut:'Ctrl+Shift+G', badge:changeCount || undefined},
+  // The Run view deliberately has no shortcut: Ctrl+Shift+R is Electron's Force Reload in the default menu.
+  {id:'run', icon:'play', label:text('Run', '运行'), shortcut:'', badge:proposalCount || undefined},
   {id:'changes', icon:'spark', label:text('Agent changes', 'Agent 改动'), shortcut:''},
  ];
  const current = views.find(view => view.id === stored.view)!;
@@ -144,7 +150,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
    data-view={view.id} aria-pressed={open && stored.view === view.id} aria-label={view.label}
    title={`${view.label}${view.shortcut ? ` (${view.shortcut})` : ''}${open && stored.view === view.id ? text(' · click to hide the side bar (Ctrl+B)', ' · 再次点击隐藏侧栏（Ctrl+B）') : ''}`}
    onClick={() => select(view.id)}>
-   <Icon name={view.icon}/>{view.badge ? <span className="wb-switch-badge">{view.badge > 99 ? '99+' : view.badge}</span> : null}
+   <WbIcon name={view.icon}/>{view.badge ? <span className="wb-switch-badge" data-testid={view.id==='run'?'run-proposals-badge':undefined} role={view.id==='run'?'status':undefined} aria-live={view.id==='run'?'polite':undefined} aria-label={view.id==='run'?text(`${view.badge} pending proposal${view.badge===1?'':'s'}`,`${view.badge} 个待处理建议`):undefined}>{view.badge > 99 ? '99+' : view.badge}</span> : null}
   </button>)}
  </nav>;
  return <>
@@ -157,6 +163,7 @@ export function WorkbenchSideBar({scope, actions, sessions, activeSessionId, act
      {visited.has('files') && <div className="wb-view" hidden={stored.view !== 'files'}><ExplorerView scope={scope} actions={actions} git={git} zh={zh} activePath={activePath} focusKey={stored.view === 'files' ? focusKey : undefined} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/></div>}
      {visited.has('search') && <div className="wb-view" hidden={stored.view !== 'search'}><SearchView scope={scope} actions={actions} zh={zh} focusKey={stored.view === 'search' ? focusKey : undefined}/></div>}
      {visited.has('scm') && <div className="wb-view" hidden={stored.view !== 'scm'}><SourceControlView scope={scope} actions={actions} git={git} zh={zh} visible={open&&stored.view==='scm'} command={open&&stored.view==='scm'&&command?.view==='scm'&&command.action&&command.key!==handledCommand?{view:'scm',key:command.key,action:command.action,scopeKey:command.scopeKey}:undefined} onCommandHandled={setHandledCommand} toolbarHost={stored.view === 'scm' ? actionsHost : undefined}/></div>}
+     {visited.has('run') && <div className="wb-view" hidden={stored.view !== 'run'}><RunViewPanel scope={scope} actions={actions} sessions={allSessions} zh={zh} visible={open&&stored.view==='run'} toolbarHost={stored.view === 'run' ? actionsHost??undefined : undefined}/></div>}
      {visited.has('changes') && <div className="wb-view" hidden={stored.view !== 'changes'}><AgentChangesView sessions={sessions} activeSessionId={activeSessionId} actions={actions} zh={zh} visible={stored.view === 'changes'} toolbarHost={stored.view === 'changes' ? actionsHost : undefined}/></div>}
     </div>
    </section>

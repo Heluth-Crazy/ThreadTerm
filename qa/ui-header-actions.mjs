@@ -2,7 +2,7 @@
 // The app uses a read-only prototype seed and a protocol-shaped renderer fixture;
 // no provider, native runtime, user profile, database, or user desktop is used.
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -22,8 +22,8 @@ const themes = values('themes', ['light', 'dark']);
 const langs = values('langs', ['en', 'zh']);
 const neutralPalette = process.argv.includes('--neutral-palette');
 const cropsOnly = process.argv.includes('--crops-only');
-const out = resolve(values('out', [join(here, 'results', 'ui-header-actions', phase)])[0]);
 const scratch = await mkdtemp(join(tmpdir(), `tt-header-${phase}-`));
+const out=join(scratch,'screenshots');
 const isolatedHome = join(scratch, 'home');
 const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows';
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(path|home|userprofile|homedrive|homepath|codex_home|appdata|localappdata|threadterm_v3_.*|tt_qa_.*|tt_parity_profile|electron_run_as_node)$/i.test(key)));
@@ -147,13 +147,13 @@ async function assertNeutralPalette(page, tag) {
       return { color: rgba(token('--bg')), source: '--bg fallback' };
     };
     const primary = document.querySelector('.ov-page-head .page-actions .btn-primary');
-    const secondary = document.querySelector('.ov-page-head .page-actions .btn:not(.btn-primary):not(.ql-trigger)');
+    const secondary = document.querySelector('.ov-page-head .page-actions .btn:not(.btn-primary):not(.ql-main)');
     if (!primary || !secondary) throw new Error('Project header primary or secondary action is missing');
     const primaryStyle = getComputedStyle(primary), secondaryStyle = getComputedStyle(secondary);
     const background = pageBackground(secondary);
     const actualPrimaryBg = rgba(primaryStyle.backgroundColor), actualPrimaryFg = rgba(primaryStyle.color);
     const actualSecondaryBg = rgba(secondaryStyle.backgroundColor), actualSecondaryBorder = rgba(secondaryStyle.borderTopColor), actualSecondaryFg = rgba(secondaryStyle.color);
-    const runStyle = getComputedStyle(document.querySelector('.ov-page-head .page-actions .ql-trigger'));
+    const runStyle = getComputedStyle(document.querySelector('.ov-page-head .page-actions .ql-main'));
     const runFg = rgba(runStyle.color);
     const text = rgba(token('--text')), surface = rgba(token('--surface')), muted = rgba(token('--muted'));
     return {
@@ -208,8 +208,8 @@ async function assertNeutralPalette(page, tag) {
   assert.equal(expectedPrimaryHover, true, `${tag}: primary hover uses the neutral --text mix (computed ${primaryHover.background})`);
   assert.equal(primaryHover.color, colors.tokens.surface, `${tag}: primary hover keeps surface foreground`);
 
-  const run = page.locator('.ov-page-head .page-actions .ql-trigger');
-  await run.focus();
+  const run = page.locator('.ov-page-head .page-actions .ql-main');
+  await page.locator('.ov-page-head .ql-dropdown').focus();
   await page.keyboard.press('Tab');
   const primaryFocus = await primary.evaluate(element => ({ active: element === document.activeElement, visible: element.matches(':focus-visible'), outlineColor: getComputedStyle(element).outlineColor, outlineWidth: getComputedStyle(element).outlineWidth }));
   await page.keyboard.press('Tab');
@@ -257,7 +257,7 @@ try {
       };
     });
     await openSession(page);
-    const sessionGeometry = await metrics(page, ['.ws-top .ws-back', '.ws-top .runtime-nav-toggle', '.ws-top .ws-chip', '.ws-top .ql-trigger', '.ws-top > .icon-btn']);
+    const sessionGeometry = await metrics(page, ['.ws-top .ws-back', '.ws-top .runtime-nav-toggle', '.ws-top .ws-chip', '.ws-top .ql-main', '.ws-top > .icon-btn']);
     const headerBounds = await page.locator('.ws-top').evaluate(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, right: rect.right, width: rect.width }; });
     await page.screenshot({ path: join(out, `session-${tag}.png`), animations: 'disabled' });
     report.shots.push(`session-${tag}.png`);
@@ -273,7 +273,7 @@ try {
       note(`crop-${tag}`, { passed: true });
       continue;
     }
-    const projectGeometry = await metrics(page, ['.ov-page-head .page-actions > .ql-trigger', '.ov-page-head .page-actions > .btn', '.ov-page-head .project-tools > .icon-btn']);
+    const projectGeometry = await metrics(page, ['.ov-page-head .page-actions .ql-main', '.ov-page-head .page-actions > .btn', '.ov-page-head .project-tools > .icon-btn']);
     const actionSemantics = await page.locator('.ov-page-head .page-actions > .btn').evaluateAll(elements => elements.map(element => ({ text: element.textContent.trim(), primary: element.classList.contains('btn-primary') })));
     await page.screenshot({ path: join(out, `project-${tag}.png`), animations: 'disabled' });
     report.shots.push(`project-${tag}.png`);
@@ -281,10 +281,10 @@ try {
     const geometry = { session: sessionGeometry, project: projectGeometry, actionSemantics, headerBounds };
     note(`geometry-${tag}`, { passed: true, geometry });
     if (phase === 'after') {
-      for (const item of [...sessionGeometry.filter(item => item.selector.includes('.ws-chip') || item.selector.includes('.ql-trigger')),
+      for (const item of [...sessionGeometry.filter(item => item.selector.includes('.ws-chip') || item.selector.includes('.ql-main')),
         ...projectGeometry]) {
         assert.ok(Math.abs(item.height - 32) <= 1, `${tag}: ${item.selector} ${item.text} height ${item.height}, expected 32`);
-        assert.equal(item.radius, item.selector.includes('.ov-page-head') ? '6px' : '8px', `${tag}: ${item.selector} ${item.text} radius ${item.radius}`);
+        assert.equal(item.radius, item.selector.includes('.ql-main') ? (item.selector.includes('.ov-page-head')?'6px 0px 0px 6px':'8px 0px 0px 8px') : item.selector.includes('.ov-page-head') ? '6px' : '8px', `${tag}: ${item.selector} ${item.text} radius ${item.radius}`);
       }
       const title = await page.locator('.ov-title-row .page-title').evaluate(element => ({ width: element.clientWidth, contentWidth: element.scrollWidth, text: element.textContent }));
       assert.ok(title.width >= Math.min(title.contentWidth, 240), tag + ': header keeps useful title identity before actions (' + JSON.stringify(title) + ')');
@@ -323,11 +323,11 @@ try {
 
     // Run popover closes on Escape and restores focus to its trigger.
     await openSession(page);
-    const trigger = page.locator('.ws-top .ql-trigger');
+    const trigger = page.locator('.ws-top .ql-main');
     await trigger.click();
-    await page.locator('.ql-menu:visible').waitFor();
+    await page.locator('.ql-pick:visible').waitFor();
     await page.keyboard.press('Escape');
-    await page.locator('.ql-menu:visible').waitFor({ state: 'hidden' });
+    await page.locator('.ql-pick:visible').waitFor({ state: 'hidden' });
     assert.equal(await trigger.evaluate(element => document.activeElement === element), true, `${tag}: Run trigger regains focus`);
     note(`run-escape-focus-${tag}`, { passed: true });
 
@@ -347,11 +347,11 @@ try {
       };
       await openSession(page);
       await keyboardFocus('.ws-top .ws-back', '.ws-top .ws-chip', 'project chip');
-      await keyboardFocus('.ws-top .ws-chip', '.ws-top .ql-trigger', 'Run control');
+      await keyboardFocus('.ws-top .ws-chip', '.ws-top .ql-main', 'Run control');
       await page.locator('.ws-top .ws-chip').first().click();
       await page.locator('.ov-page-head').waitFor();
-      await keyboardFocus('.ov-page-head .page-actions .ql-trigger', '.ov-page-head .page-actions .btn-primary', 'New terminal action');
-      await keyboardFocus('.ov-page-head .page-actions .btn-primary', '.ov-page-head .page-actions > .btn:not(.btn-primary):not(.ql-trigger)', 'New worktree action');
+      await keyboardFocus('.ov-page-head .page-actions .ql-main', '.ov-page-head .page-actions .btn-primary', 'New terminal action');
+      await keyboardFocus('.ov-page-head .page-actions .btn-primary', '.ov-page-head .page-actions > .btn:not(.btn-primary):not(.ql-main)', 'New worktree action');
       note(`header-keyboard-focus-${tag}`, { passed: true });
     }
 
@@ -418,5 +418,6 @@ try {
   await qaApp?.cleanup?.();
   report.completedAt = new Date().toISOString();
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
-  console.log(JSON.stringify({ out, phase, shots: report.shots.length, cases: report.cases.length, errors: report.errors }, null, 2));
+  console.log(JSON.stringify({ phase, shots: report.shots.length, cases: report.cases.length, errors: report.errors }, null, 2));
+  await rm(scratch,{recursive:true,force:true,maxRetries:10,retryDelay:250});
 }
