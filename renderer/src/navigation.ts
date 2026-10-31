@@ -1,4 +1,5 @@
 import type { Session } from "@threadterm/protocol";
+import { isCodeReviewSession } from "./codeReview";
 export type SessionScope = "all" | "active" | "recent" | "followed" | "bookmarked" | "archived";
 export type SessionSort = "updated" | "title" | "provider";
 
@@ -20,6 +21,7 @@ export function visibleSessions(
   const recent = new Set(recentIds);
   return sessions
     .filter((session) => {
+      if (isCodeReviewSession(session)) return false;
       const archived = Boolean(session.archived);
       const inScope =
         scope === "archived"
@@ -49,7 +51,7 @@ export function visibleSessions(
 
 export function pinnedSessions(sessions: Session[], limit = 6) {
   return sessions
-    .filter((session) => session.pinned && !session.archived)
+    .filter((session) => session.pinned && !session.archived && !isCodeReviewSession(session))
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, limit);
 }
@@ -62,12 +64,12 @@ export function lastActiveSessionId(
   current?: string,
 ) {
   return recentIds.find((id) =>
-    id !== current && sessions.some((session) => session.id === id && !session.archived),
+    id !== current && sessions.some((session) => session.id === id && !session.archived && !isCodeReviewSession(session)),
   );
 }
 
 export function nextSessionId(sessions: Session[], current: string, direction: -1 | 1) {
-  const navigable = sessions.filter((session) => !session.archived);
+  const navigable = sessions.filter((session) => !session.archived && !isCodeReviewSession(session));
   const index = navigable.findIndex((session) => session.id === current);
   if (index < 0 || navigable.length < 2) return;
   return navigable[(index + direction + navigable.length) % navigable.length]?.id;

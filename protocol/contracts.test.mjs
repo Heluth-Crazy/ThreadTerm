@@ -580,10 +580,10 @@ test('handshake rejects old and mismatched Chat approval contracts without imply
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION}),/older and was left running/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00'},'runtime'),/Running jobs were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:1}),new RegExp('contract '+PROTOCOL_CONTRACT));
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/contract 17/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/contract 18/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/left running/);
- assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/contract 17/);
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),/contract 17/);
+ assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/contract 18/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),/contract 18/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:99,contract:PROTOCOL_CONTRACT}),/wire protocol/);
  validateResult('runtime.health',{version:'0.1.0',epoch:'e',contract:PROTOCOL_CONTRACT});
@@ -667,6 +667,21 @@ test('agent reviews take a shape-checked agent and a checkpoint or uncommitted s
  assert.throws(()=>validateResult('agentReview.start',{...started,extra:1}));
 });
 
+test('code reviews validate depth, scope, focus bound and leaseEpoch; options and cancel are exact',()=>{
+ const start={sessionId:'s',provider:'codex',depth:'standard',scope:{kind:'uncommitted'},operationId:'o',leaseEpoch:1};
+ validateRequest('codeReview.start',start);
+ validateRequest('codeReview.start',{...start,model:'gpt',thinking:'high',focus:'look at auth',depth:'thorough',scope:{kind:'branch'}});
+ for(const depth of ['','fast',null]) assert.throws(()=>validateRequest('codeReview.start',{...start,depth}),/Invalid review depth|protocol schema/);
+ for(const scope of [{kind:'checkpoints'},{kind:'other'},null]) assert.throws(()=>validateRequest('codeReview.start',{...start,scope}),/Invalid review scope|protocol schema/);
+ assert.throws(()=>validateRequest('codeReview.start',{...start,focus:'x'.repeat(5*1024)}),/Invalid focus|protocol schema/);
+ assert.throws(()=>validateRequest('codeReview.start',{...start,leaseEpoch:1.5}),/Invalid leaseEpoch|protocol schema/);
+ validateRequest('codeReview.options',{sessionId:'s'});
+ validateRequest('codeReview.cancel',{sessionId:'s',reviewId:'r',operationId:'o',leaseEpoch:1});
+ validateResult('codeReview.start',{reviewId:'r',itemId:'i'});
+ validateResult('codeReview.options',{providers:[{id:'codex',name:'Codex',available:true,readOnly:'enforced'}],scopes:[{kind:'uncommitted',available:true,label:'Uncommitted changes',fileCount:2}],active:'r'});
+ validateResult('codeReview.cancel',null);
+});
+
 test('groups validate messages, members, archive state, paging, and the member session link',()=>{
  const member={sessionId:'s-a',provider:'codex',handle:'codex',model:'fixture-model',mode:'read_only',readOnly:'enforced',readOnlyNote:'Read-only',state:'idle',joinedAt:'t'};
  const message={id:'message-1',author:'user',body:'Review @claude',recipients:['codex'],references:[{kind:'reply',messageId:'reply-1',handle:'claude',title:"@claude's reply",bytes:12}],deliveries:[{sessionId:'s-a',handle:'codex',state:'queued'}],createdAt:'t'};
@@ -747,7 +762,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,17);
+ assert.equal(PROTOCOL_CONTRACT,18);
 });
 
 test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{

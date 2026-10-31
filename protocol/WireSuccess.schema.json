@@ -1953,6 +1953,9 @@
         },
         "forkedFrom": {
           "$ref": "#/definitions/SessionForkOrigin"
+        },
+        "codeReview": {
+          "$ref": "#/definitions/SessionCodeReview"
         }
       },
       "required": [
@@ -2231,6 +2234,34 @@
         "sessionId"
       ],
       "additionalProperties": false
+    },
+    "SessionCodeReview": {
+      "type": "object",
+      "properties": {
+        "reviewId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "finder",
+            "verifier"
+          ]
+        },
+        "lens": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reviewId",
+        "parentSessionId",
+        "role"
+      ],
+      "additionalProperties": false,
+      "description": "Present when this Chat session is a Chat Code Review finder or verifier. S2 hides these from the sidebar and opens them by id."
     },
     "RequestResult<\"session.resume\">": {
       "$ref": "#/definitions/Session"
@@ -2632,7 +2663,8 @@
       "enum": [
         "live",
         "native",
-        "none"
+        "none",
+        "session"
       ]
     },
     "RequestResult<\"chat.snapshot\">": {
@@ -9323,6 +9355,118 @@
     "RequestResult<\"agentReview.mark\">": {
       "$ref": "#/definitions/AgentReview"
     },
+    "RequestResult<\"codeReview.options\">": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CodeReviewProviderChoice"
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CodeReviewScopeChoice"
+          }
+        },
+        "active": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "providers",
+        "scopes"
+      ],
+      "additionalProperties": false
+    },
+    "CodeReviewProviderChoice": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "readOnly": {
+          "type": "string",
+          "enum": [
+            "enforced",
+            "requested"
+          ]
+        },
+        "model": {
+          "$ref": "#/definitions/ChatSessionOption"
+        },
+        "thinking": {
+          "$ref": "#/definitions/ChatSessionOption"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "available",
+        "readOnly"
+      ],
+      "additionalProperties": false
+    },
+    "CodeReviewScopeChoice": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "uncommitted",
+            "session",
+            "branch"
+          ]
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "fileCount": {
+          "type": "number"
+        },
+        "label": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "available",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"codeReview.start\">": {
+      "type": "object",
+      "properties": {
+        "reviewId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reviewId",
+        "itemId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"codeReview.cancel\">": {
+      "type": "null"
+    },
     "RequestResult<\"group.prerequisites\">": {
       "$ref": "#/definitions/GroupPrerequisites"
     },
@@ -15524,6 +15668,84 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22agentReview.mark%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "codeReview.options"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22codeReview.options%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "codeReview.start"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22codeReview.start%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "codeReview.cancel"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22codeReview.cancel%22%3E"
         }
       },
       "required": [

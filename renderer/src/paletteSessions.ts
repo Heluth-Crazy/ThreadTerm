@@ -1,5 +1,6 @@
 import type { Project, ProviderCapability, Session } from "@threadterm/protocol";
 import { providerLabel } from "./attentionState";
+import { isCodeReviewSession } from "./codeReview";
 import { displayPath, sameCanonicalScope } from "./projectScope";
 import { isTerminalAttentionSession, sessionActivity, sessionActivityLabel, sortSessionsByActivity } from "./sessionActivity";
 import { sessionState, sessionStateLabel, type SessionViewState } from "./sessionState";
@@ -11,8 +12,9 @@ const time = (value: string) => { const parsed = Date.parse(value); return Numbe
  * the user first, sessionActivity.ts), then ended, read-only and archived ones, most recently updated first.
  */
 export function paletteOrder(sessions: readonly Session[]): Map<string, number> {
-  const live = sessions.filter(session => !session.archived && !isTerminalAttentionSession(session));
-  const rest = sessions.filter(session => !live.includes(session))
+  const listed = sessions.filter(session => !isCodeReviewSession(session));
+  const live = listed.filter(session => !session.archived && !isTerminalAttentionSession(session));
+  const rest = listed.filter(session => !live.includes(session))
     .sort((left, right) => time(right.updatedAt) - time(left.updatedAt) || left.id.localeCompare(right.id));
   return new Map([...sortSessionsByActivity(live), ...rest].map((session, index) => [session.id, index]));
 }

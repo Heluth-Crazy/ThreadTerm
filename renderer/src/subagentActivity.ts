@@ -18,7 +18,7 @@ export function subagentInfo(part: ChatPart): SubagentInfo | undefined {
   const key = text(data.key) || text(part.toolId);
   if (!key) return undefined;
   return { ...data, key, provider: text(data.provider) || '', status: subagentStatus({ status: data.status || part.status as SubagentStatus }),
-    transcript: data.transcript === 'live' || data.transcript === 'native' ? data.transcript : 'none' };
+    transcript: data.transcript === 'live' || data.transcript === 'native' || data.transcript === 'session' ? data.transcript : 'none' };
 }
 
 export function subagentTitle(info: SubagentInfo, copy: Copy): string {

@@ -16,13 +16,14 @@ type Props = {
   onAttachFiles: () => void | Promise<void>;
   onPickQuickMessage: (message: QuickMessage) => void;
   onSlashCommands: () => void;
+  onCodeReview?: () => void;
   onLiveFeedback: () => void;
   liveFeedbackEnabled: boolean;
   disabled: boolean;
   copy: (en: string, zh: string) => string;
 };
 
-export function ComposerPlusMenu({ quickMessages, onAttachFiles, onPickQuickMessage, onSlashCommands, onLiveFeedback, liveFeedbackEnabled, disabled, copy }: Props) {
+export function ComposerPlusMenu({ quickMessages, onAttachFiles, onPickQuickMessage, onSlashCommands, onCodeReview, onLiveFeedback, liveFeedbackEnabled, disabled, copy }: Props) {
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<"root" | "quick">("root");
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -125,6 +126,9 @@ export function ComposerPlusMenu({ quickMessages, onAttachFiles, onPickQuickMess
         <button type="button" role="menuitem" className="menu-item chat-plus-item" data-testid="plus-slash-commands" onClick={() => { closeForAction(); onSlashCommands(); }}>
           <Icon name="chevR" /><span className="chat-plus-label">{copy("Slash commands", "斜杠命令")}</span>
         </button>
+        {onCodeReview && <button type="button" role="menuitem" className="menu-item chat-plus-item" data-testid="plus-code-review" onClick={() => { closeForAction(); onCodeReview(); }}>
+          <Icon name="search" /><span className="chat-plus-label">{copy("Code review…", "代码审查…")}</span>
+        </button>}
         <button type="button" role="menuitem" className="menu-item chat-plus-item" data-testid="plus-live-feedback" disabled={!liveFeedbackEnabled} title={liveFeedbackEnabled ? undefined : copy("Available while a running turn accepts feedback notes.", "仅在运行的回合接受反馈备注时可用。")} onClick={() => { closeForAction(); onLiveFeedback(); }}>
           <Icon name="clock" /><span className="chat-plus-label">{copy("Live feedback…", "实时反馈…")}</span>
         </button>

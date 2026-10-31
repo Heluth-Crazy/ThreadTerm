@@ -67,6 +67,8 @@ import { SteerSend } from './SteerSend';
 import { steerControlKind, steerFailureMessage } from '../steerSend';
 import { stopFailureMessage } from '../stopTurn';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
+import { CodeReviewDialog } from './CodeReviewDialog';
+import { CODE_REVIEW_SLASH, isCodeReviewSession, parseReviewSlash } from '../codeReview';
 import { partitionAttachedFiles } from '../chatAttachments';
 import { parseQuickMessages } from '../quickMessages';
 import { useAppSettings } from '../appSettings';
@@ -435,6 +437,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const canTakeControl = canControl || (session.readOnly && session.mode === 'chat' && session.status !== 'exited');
   const ended = isEnded(session);
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
+  const [codeReviewOpen, setCodeReviewOpen] = useState(false);
+  const [codeReviewFocus, setCodeReviewFocus] = useState("");
   const turnChangesCache = useMemo(() => createTurnChangesCache<import('@threadterm/protocol').ReviewFile[]>(), [session.id]);
   const [viewportSessionId, setViewportSessionId] = useState<string>();
   const [repair, setRepair] = useState<ChatRepairAvailability>();
@@ -1064,6 +1068,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       }
       return;
     }
+    const reviewSlash = parseReviewSlash(text);
+    if (reviewSlash.matched && !images.length && !context.items.length) {
+      openCodeReview(reviewSlash.focus);
+      changeText("");
+      return;
+    }
     try { value=serializeSubmission(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
     const epoch=leaseSessionId.current === session.id ? lease.current : undefined;
     const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
@@ -1505,7 +1515,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const fresh = mentionData.key === mentionKey ? mentionData : {};
     if (fresh.files) sources.files = fileMentionItems(fresh.files);
     if (fresh.commits) sources.commits = commitMentionItems(fresh.commits);
-    const otherSessions = sessionMentionItems(sessions, session.id, session.projectId);
+    const otherSessions = sessionMentionItems(
+      sessions.filter((s) => !isCodeReviewSession(s)),
+      session.id,
+      session.projectId,
+    );
     if (otherSessions.length) sources.sessions = otherSessions;
     if (delegationEnabled) {
       const agents = agentMentionItems(capabilities, session.provider);
@@ -1519,9 +1533,26 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const slash = composerEditableNow ? slashQuery(text) : undefined;
   const slashCommands = useMemo(() => {
     const commands: ChatSlashCommand[] = [...ui.commands];
+    if (!commands.some(command => command.name.replace(/^\//, "") === CODE_REVIEW_SLASH)) {
+      commands.unshift({ name: CODE_REVIEW_SLASH, description: copy("Review changes in a fresh agent…", "在全新代理中审查改动…") });
+    }
     if (liveTurn && !commands.some(command => command.name === "stop")) commands.unshift({ name: "stop", description: copy("Stop this turn", "停止此轮") });
     return slash === undefined ? [] : matchSlashCommands(slash, commands);
   }, [zh, liveTurn, slash, ui.commands]);
+  function openCodeReview(focus = "") {
+    // Starting a review is a mutation under this chat's lease, like sending.
+    if (leaseSessionId.current !== session.id || lease.current === undefined) {
+      setError(copy("Take control of this chat to start a code review.", "请先取得此聊天的控制权再开始代码审查。"));
+      return;
+    }
+    setCodeReviewFocus(focus);
+    setCodeReviewOpen(true);
+  }
+  async function cancelCodeReview(reviewId: string) {
+    const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+    if (epoch === undefined) throw new Error(copy("Reclaim control to stop the review.", "请先重新取得控制以停止审查。"));
+    await request("codeReview.cancel", { sessionId: session.id, reviewId, operationId: operationId(), leaseEpoch: epoch });
+  }
   async function setOption(optionId: string, value: string) {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     if ((!writable && !permissionOptionsWritable) || epoch === undefined) return;
@@ -1553,6 +1584,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           if(remaining!==currentText.current)changeText(remaining);
         });
       }
+      return;
+    }
+    if (command.name.replace(/^\//, "") === CODE_REVIEW_SLASH) {
+      const parsed = parseReviewSlash(text);
+      openCodeReview(parsed.matched ? parsed.focus : "");
+      changeText("");
       return;
     }
     changeText(`/${command.name.replace(/^\//, "")} `);
@@ -1683,7 +1720,20 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         {item.parts.map((part, index) => {
           if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] }, false, index === lastReplyIndex)}</Fragment>;
           const info = subagentInfo(part);
-          return info ? <SubagentCard key={`${session.id}:${info.key}`} sessionId={session.id} info={info} copy={copy} zh={zh} renderItem={renderItem} openFile={openFile} /> : null;
+          return info ? <SubagentCard
+            key={`${session.id}:${info.key}`}
+            sessionId={session.id}
+            info={info}
+            copy={copy}
+            zh={zh}
+            renderItem={renderItem}
+            openFile={openFile}
+            sessions={sessions}
+            onOpenSession={onOpenSession}
+            composerText={text}
+            onInsertFix={(markdown) => { changeText(markdown); composeRef.current?.focus(); }}
+            onCancelReview={cancelCodeReview}
+          /> : null;
         })}
       </Fragment>;
       }
@@ -1873,7 +1923,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         disabled={ended || (!writable && !permissionOptionsWritable)}
         busy={busy}
         onSetOption={setOption}
-        leading={<ComposerPlusMenu quickMessages={quickMessages} disabled={busy || ended || !writable} liveFeedbackEnabled={steerKind === 'split-note' && Boolean(text.trim()) && !images.length} onAttachFiles={attachPickedFiles} onPickQuickMessage={insertQuickMessageAtCaret} onSlashCommands={() => insertSnippetAtCaret("/")} onLiveFeedback={() => { setLiveFeedbackSignal(value => value + 1); composeRef.current?.focus(); }} copy={copy} />}
+        leading={<ComposerPlusMenu quickMessages={quickMessages} disabled={busy || ended || !writable} liveFeedbackEnabled={steerKind === 'split-note' && Boolean(text.trim()) && !images.length} onAttachFiles={attachPickedFiles} onPickQuickMessage={insertQuickMessageAtCaret} onSlashCommands={() => insertSnippetAtCaret("/")} onCodeReview={() => openCodeReview()} onLiveFeedback={() => { setLiveFeedbackSignal(value => value + 1); composeRef.current?.focus(); }} copy={copy} />}
         status={<Fragment>
           <ChatContextRing usage={contextUsage} copy={copy} />
           <ChatConnectionChip
@@ -1899,6 +1949,19 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     {overlay === "full" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={connectSlow} error={connection.error} variant="full" onRetry={connection.phase === "failed" && link.transport === "up" ? retryConnection : undefined} copy={copy} transportDown={link.transport !== "up"} />}
     {repairDialog && <SurfaceDialog title={legacyHistoryReload ? copy('Reload saved history?', '重新加载已保存的历史？') : copy('Repair chat history?', '修复对话记录？')} subtitle={session.title} icon={legacyHistoryReload ? 'clock' : 'refresh'} size="sm" className="chat-repair-dialog" descriptionId={repairDescriptionId} onClose={() => { if (!repairBusy) setRepairDialog(false); }} footer={<><button autoFocus className="btn" disabled={repairBusy} onClick={() => setRepairDialog(false)}>{copy('Cancel', '取消')}</button><button className="btn btn-primary" disabled={repairBusy} onClick={() => void confirmRepair()}>{repairBusy ? (legacyHistoryReload ? copy('Reloading…', '正在重新加载…') : copy('Repairing…', '正在修复…')) : (legacyHistoryReload ? copy('Reload history', '重新加载历史') : copy('Repair history', '修复历史'))}</button></>}><div id={repairDescriptionId} className="chat-repair-confirm"><p>{copy("The local transcript will be replaced by the agent's saved record. Some local details may be lost: tool details, subagent cards, question answers, usage and timings. A backup of the current transcript is kept, and pending requests will expire.", '本地对话记录将被代理保存的记录替换。部分本地细节可能丢失：工具详情、子代理卡片、问题回答、用量和耗时。当前记录会保留一份备份，待处理的请求将过期。')}</p><p>{copy('Queued prompts, drafts and review checkpoints are not changed.', '排队的提示词、草稿和审查检查点不受影响。')}</p><p className="note">{copy('This only reads the agent\'s saved history. It does not send a prompt or continue the conversation.', '此操作仅读取代理保存的历史，不会发送提示词，也不会继续对话。')}</p></div></SurfaceDialog>}
     {mentionPreview !== undefined && <SurfaceDialog title={copy('Context preview', '上下文预览')} variant="plain" size="wide" className="context-preview-dialog" onClose={() => setMentionPreview(undefined)}><pre className="context-preview" data-testid="context-preview">{mentionPreview}</pre></SurfaceDialog>}
+    {codeReviewOpen && leaseSessionId.current === session.id && lease.current !== undefined && <CodeReviewDialog
+      session={session}
+      leaseEpoch={lease.current}
+      initialFocus={codeReviewFocus}
+      copy={copy}
+      onClose={() => setCodeReviewOpen(false)}
+      onStarted={() => { /* card arrives via chat.item */ }}
+      onJumpToActive={(reviewId) => {
+        setCodeReviewOpen(false);
+        const card = document.querySelector(`[data-review-id="${reviewId}"]`);
+        card?.scrollIntoView({ block: "nearest" });
+      }}
+    />}
   </section></FileReferenceScopeProvider>;
 }
 // The Task map inspector reuses this sanitizing renderer (codexMarkdownCache.test.ts evaluates the function source, so it stays a plain declaration).

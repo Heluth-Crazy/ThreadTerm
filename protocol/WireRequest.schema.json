@@ -5118,6 +5118,134 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"codeReview.options\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"codeReview.start\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "depth": {
+          "$ref": "#/definitions/CodeReviewDepth"
+        },
+        "scope": {
+          "$ref": "#/definitions/CodeReviewScope"
+        },
+        "focus": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "provider",
+        "depth",
+        "scope",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "CodeReviewDepth": {
+      "type": "string",
+      "enum": [
+        "quick",
+        "standard",
+        "thorough"
+      ]
+    },
+    "CodeReviewScope": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uncommitted"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "session"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "branch"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RequestParams<\"codeReview.cancel\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "reviewId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "reviewId",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"group.prerequisites\">": {
       "type": "object",
       "properties": {
@@ -11488,6 +11616,84 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22agentReview.mark%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "codeReview.options"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22codeReview.options%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "codeReview.start"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22codeReview.start%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "codeReview.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22codeReview.cancel%22%3E"
         }
       },
       "required": [

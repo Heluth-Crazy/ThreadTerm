@@ -27,10 +27,16 @@ pub fn initialize(db: &Database) -> Result<()> { db.transaction(|tx| Ok(tx.execu
 
 pub(crate) fn is_reviewer(db: &Database, session_id: &str) -> Result<bool> {
     db.transaction(|tx| {
-        match tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_reviews WHERE reviewer_session_id=?)", [session_id], |r| r.get(0)) {
-            Ok(value) => Ok(value),
+        let agent = match tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_reviews WHERE reviewer_session_id=?)", [session_id], |r| r.get::<_, bool>(0)) {
+            Ok(value) => value,
             // Legacy fixtures instantiate the service without main's schema setup.
-            Err(rusqlite::Error::SqliteFailure(_, Some(message))) if message == "no such table: agent_reviews" => Ok(false),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message))) if message == "no such table: agent_reviews" => false,
+            Err(error) => return Err(error.into()),
+        };
+        if agent { return Ok(true); }
+        match tx.query_row("SELECT EXISTS(SELECT 1 FROM code_review_sessions WHERE session_id=?)", [session_id], |r| r.get(0)) {
+            Ok(value) => Ok(value),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message))) if message == "no such table: code_review_sessions" => Ok(false),
             Err(error) => Err(error.into()),
         }
     })
@@ -214,10 +220,28 @@ pub(crate) fn parse_answer(root: &Path, answer: &str) -> (Option<Vec<Value>>, bo
         if title.is_empty() || title.chars().count() > 200 { continue; }
         let body = entry["body"].as_str().unwrap_or("");
         let body = if body.chars().count() > 4000 { body.chars().take(3999).collect::<String>() + "…" } else { body.into() };
-        let mut finding = json!({"id":uuid::Uuid::new_v4().to_string(),"severity":severity,"title":title,"body":body,"state":"open"});
+        let id = entry["id"].as_str().map(str::trim).filter(|s| !s.is_empty())
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let mut finding = json!({"id":id,"severity":severity,"title":title,"body":body,"state":"open"});
         if let Some(path) = entry["path"].as_str().and_then(|s| normalize_path(root, s)) {
             finding["path"] = json!(path);
             if let Some(line) = entry["line"].as_u64().filter(|line| *line > 0 && *line <= 9_007_199_254_740_991) { finding["line"] = json!(line); }
+        }
+        if let Some(category) = entry["category"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            let category = if category.chars().count() > 80 { category.chars().take(79).collect::<String>() + "…" } else { category.into() };
+            finding["category"] = json!(category);
+        }
+        if let Some(scenario) = entry["failureScenario"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            let scenario = if scenario.chars().count() > 2000 { scenario.chars().take(1999).collect::<String>() + "…" } else { scenario.into() };
+            finding["failureScenario"] = json!(scenario);
+        }
+        if let Some(verdict) = entry["verdict"].as_str().filter(|v| matches!(*v, "confirmed"|"plausible"|"rejected"|"unverified")) {
+            finding["verdict"] = json!(verdict);
+        }
+        if let Some(reason) = entry["reason"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            let reason = if reason.chars().count() > 400 { reason.chars().take(399).collect::<String>() + "…" } else { reason.into() };
+            finding["reason"] = json!(reason);
         }
         findings.push(finding);
         if findings.len() == 100 { break; }

@@ -338,6 +338,8 @@ fn record_tx(
   // Agent delegation: while the parent agent is inside a turn, a delegated
   // session's requests go to it instead of the user, and its replies and
   // errors raise no notices. Otherwise everything behaves as usual.
+  // Code Review reviewers report through their card in the parent chat, so
+  // their replies and errors raise no notices either; approvals still do.
   let delegation=crate::delegation::active_link(tx,session_id)?;
   let quiet=match &delegation {Some(link)=>crate::delegation::parent_turn_active(tx,&link.parent_session_id)?,None=>false};
   let mut routed_to_parent=false;
@@ -473,9 +475,9 @@ fn record_tx(
      if part.get("status").and_then(Value::as_str)==Some("streaming") {part["status"]=json!("complete");changed=true;}
     }
     // Reply notices are already-read and excluded from snapshot Inbox rows.
-    if !quiet {notify_reply(tx,session_id,turn,data,&now)?;}
+    if !quiet && !crate::code_review::is_reviewer_tx(tx,session_id)? {notify_reply(tx,session_id,turn,data,&now)?;}
    }
-   "chat.error"=>{item.turn_status=Some(crate::domain::NativeTurnStatus::Failed);item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}}
+   "chat.error"=>{item.turn_status=Some(crate::domain::NativeTurnStatus::Failed);item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet && !crate::code_review::is_reviewer_tx(tx,session_id)? {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}}
    "chat.ui"=>{
     let mut payload=normalize_chat_ui(data.clone());
     payload["sessionId"]=json!(session_id);

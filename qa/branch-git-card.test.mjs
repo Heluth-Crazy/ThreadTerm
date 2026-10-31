@@ -24,6 +24,6 @@ test('without a History callback commits are passive divs with title only and no
 });
 
 test('overview exposes History only with a non-archived session in the canonical project/worktree scope', () => {
-  assert.match(overview, /const sessions=data\.sessions\.filter\(s=>s\.projectId===projectId&&!s\.archived&&\(!initialWorktreePath\|\|sameCanonicalScope\(s\.worktreePath\?\?project\.path,initialWorktreePath\)\)\)/);
+  assert.match(overview, /const sessions=data\.sessions\.filter\(s=>s\.projectId===projectId&&!s\.archived&&!isCodeReviewSession\(s\)&&\(!initialWorktreePath\|\|sameCanonicalScope\(s\.worktreePath\?\?project\.path,initialWorktreePath\)\)\)/);
   assert.match(overview, /onOpenHistory=\{onOpenHistory && sessions\.length > 0 \? commit=>onOpenHistory\(\{projectId,worktreePath:path,commit\}\) : undefined\}/);
 });

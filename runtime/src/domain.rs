@@ -44,8 +44,23 @@ pub struct Session {
     pub group: Option<SessionGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::quick_launch::SessionRun>,
+    /// Present when this Chat session is a Chat Code Review finder or verifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_review: Option<SessionCodeReview>,
     #[serde(flatten, default)]
     pub organization: SessionOrganization,
+}
+
+/// Marker filled from `code_review_sessions` so S2 can open reviewers by id.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCodeReview {
+    pub review_id: String,
+    pub parent_session_id: String,
+    /// `finder` or `verifier`.
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
