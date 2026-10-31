@@ -175,13 +175,12 @@ impl PtyManager {
         let handle = thread::Builder::new()
             .name(format!("pty-reader-{id}"))
             .spawn(move || {
-                let mut buffer = [0u8; 8192];
+                let mut buffer = [0u8; 64 * 1024];
                 let mut startup = crate::conpty::StartupQueryFilter::new(bundled_host);
                 // Storage failure policy (output.rs): a refused append keeps the
                 // bytes pending and marks the terminal degraded, so the reader
                 // keeps draining and the live view catches up once the database
-                // accepts data again. Report the transition once, not per chunk.
-                let mut storage_failure: Option<String> = None;
+                // accepts data again. OutputStore owns the bounded transition logs.
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
@@ -194,10 +193,7 @@ impl PtyManager {
                                 if observer.is_done() { run_observer = None; }
                             }
                             if !data.is_empty() {
-                                match output.append(&reader_db, &id, &data) {
-                                    Ok(_) => storage_failure = None,
-                                    Err(error) => report_storage_failure(&mut storage_failure, &id, &error),
-                                }
+                                let _ = output.append_shared(&reader_db, &id, &data);
                             }
                         }
                         Err(_) => break,
@@ -210,9 +206,19 @@ impl PtyManager {
                     }
                 }
                 if !rest.is_empty() {
-                    if let Err(error) = output.append(&reader_db, &id, &rest) {
-                        report_storage_failure(&mut storage_failure, &id, &error);
+                    let _ = output.append_shared(&reader_db, &id, &rest);
+                }
+                // The waiter records the exit status on its own thread, so this
+                // bounded tail retry never delays session exit handling.
+                let retry_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let mut backoff = std::time::Duration::from_millis(100);
+                while matches!(output.flush_pending(&reader_db, &id), Ok(crate::output::FlushOutcome::Retryable { .. })) {
+                    let now = std::time::Instant::now();
+                    if now >= retry_deadline {
+                        break;
                     }
+                    thread::sleep(backoff.min(retry_deadline.saturating_duration_since(now)));
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(2));
                 }
                 // The final drain can race the process-exit status write.
                 reader_db.schedule_retention();
@@ -444,15 +450,6 @@ impl PtyManager {
             .and_then(|job| job.as_ref().map(SessionJob::process_ids))
             .unwrap_or_default()
     }
-}
-/// Reports the first failed durable append of one stretch of storage failure.
-fn report_storage_failure(seen: &mut Option<String>, session_id: &str, error: &anyhow::Error) {
-    if seen.is_some() {
-        return;
-    }
-    let message = error.to_string();
-    eprintln!("Terminal output for {session_id} could not be saved: {message}");
-    *seen = Some(message);
 }
 fn default_shell() -> &'static str {
     if cfg!(windows) {
@@ -752,6 +749,55 @@ mod tests {
         }
         assert!(db.terminal_storage_degraded(&session.id).unwrap().is_none(), "recording must resume without keeping the degraded marker");
         manager.stop(&db, &session.id, true).unwrap();
+    }
+
+    #[test]
+    fn an_exited_storage_failure_flushes_its_final_tail_after_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "pty-exit-tail" })
+            .unwrap();
+        // Occupy the reader's first cursor so the final output becomes pending.
+        db.append_output(&session.id, 0, b"occupied").unwrap();
+        let output = Arc::new(OutputStore::default());
+        let manager = PtyManager::new(Arc::clone(&output));
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe",
+            vec!["/Q".to_owned(), "/C".to_owned(), "echo FINAL-EXIT-MARKER".to_owned()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "/bin/sh",
+            vec!["-c".to_owned(), "printf 'FINAL-EXIT-MARKER'".to_owned()],
+        );
+        manager
+            .launch(Arc::clone(&db), &session.id, dir.path().to_str().unwrap(), Some(program), &args)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while db.terminal_storage_degraded(&session.id).unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the final append was not refused");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        while db.session_by_id(&session.id).unwrap().unwrap().status != "exited" {
+            assert!(Instant::now() < deadline, "the process did not exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        db.transaction(|tx| {
+            tx.execute("DELETE FROM output_chunks WHERE session_id=?", [&session.id])?;
+            Ok(())
+        })
+        .unwrap();
+        let text = || {
+            let output: Vec<u8> = db.output_from(&session.id, 0, 1 << 20).unwrap().into_iter().flat_map(|(_, bytes)| bytes).collect();
+            String::from_utf8_lossy(&output).into_owned()
+        };
+        while !text().contains("FINAL-EXIT-MARKER") {
+            assert!(Instant::now() < deadline, "the quiet exit tail was not retried: {:?}", text());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(db.terminal_storage_degraded(&session.id).unwrap().is_none());
     }
 
     #[test]

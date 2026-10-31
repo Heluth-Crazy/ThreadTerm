@@ -13,7 +13,7 @@ assert.equal(process.platform,'win32','named-pipe retention QA requires Windows'
 const root=resolve(import.meta.dirname,'..');
 const executable=resolve(process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(executable),'build the isolated runtime/target-qa binary first');
-assert.ok(!/[\\/]runtime[\\/]target[\\/]/i.test(executable),'never use the developer runtime');
+assert.ok(!/[\\/]runtime[\\/]target[\\/]/i.test(executable)||Boolean(process.env.THREADTERM_V3_RUNTIME_BIN),'select the worktree debug runtime explicitly for isolated QA');
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-retention-'));
 const data=join(scratch,'data'); await mkdir(data);
 const pipe=`\\\\.\\pipe\\threadterm-retention-${randomUUID()}`;

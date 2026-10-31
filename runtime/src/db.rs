@@ -42,6 +42,19 @@ pub(crate) struct GitUndoEntry {
 pub(crate) mod schema;
 
 impl Database {
+    #[cfg(test)]
+    pub(crate) fn set_synchronous_for_test(&self, mode: &str) -> Result<()> {
+        anyhow::ensure!(
+            matches!(mode, "FULL" | "NORMAL"),
+            "invalid test synchronous mode"
+        );
+        self.connection
+            .lock()
+            .unwrap()
+            .pragma_update(None, "synchronous", mode)?;
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let mut connection =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
