@@ -1179,6 +1179,10 @@ impl RuntimeService {
             remote.shutdown();
         }
         self.pty.terminate_all(&self.db);
+        self.output.drain_pending(
+            &self.db,
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
         let _ = crate::settings_services::release_relocation(&self.config);
     }
     fn cancel_all_deferred_launches(&self) -> Result<()> {
@@ -4974,6 +4978,22 @@ mod tests {
         let launch = db.deferred_codex_launch(&id).unwrap().unwrap();
         assert_eq!(launch["phase"], "failed");
         assert_eq!(launch["error"]["code"], "runtime_stopping");
+    }
+
+    #[test]
+    fn shutdown_bounds_a_pending_output_drain() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = db.create_session(CreateSession {
+            project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None,
+            operation_id: "shutdown-pending-output",
+        }).unwrap();
+        db.append_output(&session.id, 0, b"occupied").unwrap();
+        let service = test_service(root.path(), Arc::clone(&db));
+        assert!(service.output.append_shared(&db, &session.id, b"pending").is_err());
+        let started = std::time::Instant::now();
+        service.shutdown();
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]
