@@ -59,8 +59,12 @@ impl Database {
         let mut connection =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         schema::check_reader(&connection, schema::MAIN_VERSION)?;
+        // synchronous=NORMAL: in WAL mode a commit survives an app or daemon crash, and only the last
+        // transactions can be lost on power loss or an OS crash, never with corruption. FULL synced the WAL on
+        // every commit, which capped terminal output at about 14 MiB/s with 64 KiB chunks; NORMAL reaches about
+        // 50 (output flood benchmark, task 10-31-output-storage-path; chosen by the user on 2026-10-31).
         connection.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
         )?;
         let upgrade_backup = schema::prepare_main(&connection, path)?;
         connection.execute_batch(
@@ -3517,6 +3521,17 @@ mod tests {
             .contains("session_not_found"));
         assert_eq!(db.output_start("missing").unwrap(), None);
     }
+    #[test]
+    fn the_runtime_database_uses_wal_with_normal_synchronous() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("runtime.sqlite")).unwrap();
+        let conn = db.connection.lock().unwrap();
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        let synchronous: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, "wal");
+        assert_eq!(synchronous, 1, "synchronous must be NORMAL (1)");
+    }
+
     #[test]
     fn output_history_gaps_fail_instead_of_forging_continuous_cursors() {
         let dir = tempfile::tempdir().unwrap();

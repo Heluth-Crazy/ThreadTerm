@@ -17,9 +17,8 @@ fn output_flood_benchmark() {
             for chunk_size in [8192, 65536] {
                 let dir = tempfile::tempdir().unwrap();
                 let db = Arc::new(Database::open(&dir.path().join("flood.sqlite")).unwrap());
-                if mode == "NORMAL" {
-                    db.set_synchronous_for_test(mode).unwrap();
-                }
+                // Set both modes explicitly: the runtime default is NORMAL.
+                db.set_synchronous_for_test(mode).unwrap();
                 let ids: Vec<_> = (0..sessions)
                     .map(|i| {
                         db.create_session(CreateSession {
