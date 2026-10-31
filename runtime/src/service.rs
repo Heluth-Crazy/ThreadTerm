@@ -293,6 +293,7 @@ fn set_chat_option(
     } else if provider == "claude" && option_id == "model" && result["options"].as_array().into_iter().flatten().any(|row| row["id"] == "mode" && row["value"] == "auto") {
         permission_modes::remember(db, session_id, provider, &result)?;
     }
+    let _ = crate::code_review::remember_provider_options(db, provider, &result);
     Ok(result)
 }
 
@@ -1536,6 +1537,16 @@ impl RuntimeService {
             if request.method.starts_with("agentReview.") {
                 return crate::agent_review::dispatch(&self.db, &self.providers, &request.method, &request.params, &|create| self.create_session(&parse(create)?, None));
             }
+            if request.method.starts_with("codeReview.") {
+                return crate::code_review::dispatch(
+                    &self.db,
+                    &self.providers,
+                    &request.method,
+                    &request.params,
+                    &|session_id, epoch| self.leases.require(&self.db, session_id, principal, epoch).map(|_| ()),
+                    &|create| self.create_session(&parse(create)?, None),
+                );
+            }
             match request.method.as_str() {
                 "inbox.read" => {
                     #[derive(Deserialize)]
@@ -2066,7 +2077,11 @@ impl RuntimeService {
                 "chat.projectTrust.set" => self.set_pi_project_trust(principal, &request.params),
                 "chat.options" => {
                     let p: ChatRead = parse(&request.params)?;
-                    permission_modes::options(&self.db, &self.providers, &p.session_id)
+                    let state = permission_modes::options(&self.db, &self.providers, &p.session_id)?;
+                    if let Ok(Some(session)) = self.db.session_by_id(&p.session_id) {
+                        let _ = crate::code_review::remember_provider_options(&self.db, &session.provider, &state);
+                    }
+                    Ok(state)
                 }
                 "chat.backgroundTasks.list" => {
                     let p: ChatRead = parse(&request.params)?;
@@ -3588,6 +3603,11 @@ fn read_subagent_transcript(
                 Err(error) => Ok(empty("native", Some(error.message))),
             }
         }
+        "session" => match crate::code_review::read_session_transcript(db, &request.session_id, &request.key)
+        {
+            Ok(value) => Ok(value),
+            Err(error) => Ok(empty("session", Some(error.to_string()))),
+        },
         _ => Ok(empty("none", None)),
     }
 }

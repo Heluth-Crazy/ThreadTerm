@@ -277,6 +277,7 @@ fn request_lane(method: &str) -> Lane {
         | "review.list"
         | "review.changes"
         | "review.diff"
+        | "codeReview.options"
         | "worktree.branches"
         | "usage.query"
         | "history.list"
@@ -351,6 +352,7 @@ impl LaneSender {
 fn trace_method(method: &str) -> &'static str {
     const KNOWN: &[&str] = &[
         "agentReview.list", "agentReview.mark", "agentReview.start",
+        "codeReview.cancel", "codeReview.options", "codeReview.start",
         "catalog.visibility.list", "catalog.visibility.update",
         "chat.answer", "chat.approve", "chat.backgroundTask.stop", "chat.backgroundTasks.list", "chat.cancel", "chat.connect",
         "chat.connection", "chat.context.read", "chat.draft.read", "chat.draft.save", "chat.option.set",
@@ -1146,6 +1148,7 @@ mod decoder_tests {
             "chat.queue.add",
             "review.revert",
             "agentReview.start",
+            "codeReview.start",
             "data.backup",
             "git.stash.apply",
             "git.cherryPick",

@@ -1,6 +1,6 @@
 use crate::domain::{
-    ChatItem, ChatTurnOrigin, Project, Session, SessionDelegation, SessionForkedFrom,
-    SessionOrganization, SessionOrganize, Settings, Snapshot,
+    ChatItem, ChatTurnOrigin, Project, Session, SessionCodeReview, SessionDelegation,
+    SessionForkedFrom, SessionOrganization, SessionOrganize, Settings, Snapshot,
 };
 use crate::session_activity::SessionActivity;
 use anyhow::{anyhow, Context, Result};
@@ -1405,7 +1405,7 @@ impl Database {
                 return Ok((session,false));
             }
             let timestamp=now();
-            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, group:None, run:None, organization:SessionOrganization::default() };
+            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, group:None, run:None, code_review:None, organization:SessionOrganization::default() };
             let mut transcript = normalize_history_transcript(&session.id, request.transcript)?;
             add_generic_fork_anchors(&mut transcript, Some(request.native_id));
             tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
@@ -1572,6 +1572,7 @@ impl Database {
             delegation: None,
             group: None,
             run: None,
+            code_review: None,
             organization: SessionOrganization::default(),
         };
         tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
@@ -2272,10 +2273,13 @@ pub(crate) fn subagent_card_tx(
     session: &str,
     key: &str,
 ) -> Result<Option<ChatItem>> {
+    let assistant = format!("{session}:assistant:subagent:{key}");
+    let system = format!("{session}:system:subagent:{key}");
+    let id = if key.starts_with("review:") { system.as_str() } else { assistant.as_str() };
     let data: Option<String> = tx
         .query_row(
             "SELECT data FROM chat_items WHERE session_id=? AND id=?",
-            params![session, format!("{session}:assistant:subagent:{key}")],
+            params![session, id],
             |r| r.get(0),
         )
         .optional()?;
@@ -2361,9 +2365,14 @@ pub(crate) fn upsert_subagent_item(
         params![session, key, session, key],
     )?;
     if dropped > 0 {
+        let card = if key.starts_with("review:") {
+            format!("{session}:system:subagent:{key}")
+        } else {
+            format!("{session}:assistant:subagent:{key}")
+        };
         tx.execute(
             "UPDATE chat_items SET data=json_set(data,'$.parts[0].data.truncated',json('true')) WHERE session_id=? AND id=?",
-            params![session, format!("{session}:assistant:subagent:{key}")],
+            params![session, card],
         )?;
     }
     Ok(rev)
@@ -2510,6 +2519,7 @@ fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
             delegation: None,
             group: None,
             run: crate::quick_launch::run_from_row(r, 15)?,
+            code_review: None,
             organization: SessionOrganization::default(),
         })
     })?;
@@ -2519,6 +2529,7 @@ fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
         session.activity = session_activity(conn, &session.id)?;
         session.delegation = session_delegation(conn, &session.id)?;
         session.group = crate::group_chat::session_link(conn, &session.id)?;
+        session.code_review = session_code_review(conn, &session.id)?;
     }
     Ok(sessions)
 }
@@ -2686,6 +2697,34 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
     .optional()
     .map_err(Into::into)
 }
+
+fn session_code_review(conn: &Connection, id: &str) -> Result<Option<SessionCodeReview>> {
+    match conn.query_row(
+        "SELECT crs.review_id, cr.session_id, crs.role, crs.lens \
+         FROM code_review_sessions crs JOIN code_reviews cr ON cr.id=crs.review_id \
+         WHERE crs.session_id=?",
+        [id],
+        |row| {
+            Ok(SessionCodeReview {
+                review_id: row.get(0)?,
+                parent_session_id: row.get(1)?,
+                role: row.get(2)?,
+                lens: row.get(3)?,
+            })
+        },
+    ) {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message == "no such table: code_review_sessions"
+                || message == "no such table: code_reviews" =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn session_activity(conn: &Connection, id: &str) -> Result<Option<SessionActivity>> {
     conn.query_row(
         "SELECT state,revision,turn_id,reason FROM session_activity WHERE session_id=?",
@@ -2778,11 +2817,12 @@ pub(crate) fn set_session_activity_tx(
 }
 
 fn read_session(conn: &Connection, id: &str) -> Result<Session> {
-    let mut session = conn.query_row("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id WHERE sessions.id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,activity:None,delegation:None,group:None,run:crate::quick_launch::run_from_row(r,15)?,organization:SessionOrganization::default()}))?;
+    let mut session = conn.query_row("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id WHERE sessions.id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,activity:None,delegation:None,group:None,run:crate::quick_launch::run_from_row(r,15)?,code_review:None,organization:SessionOrganization::default()}))?;
     session.organization = session_organization(conn, id)?;
     session.activity = session_activity(conn, id)?;
     session.delegation = session_delegation(conn, id)?;
     session.group = crate::group_chat::session_link(conn, id)?;
+    session.code_review = session_code_review(conn, id)?;
     Ok(session)
 }
 fn session_tx(tx: &Transaction<'_>, id: &str) -> Result<Session> {

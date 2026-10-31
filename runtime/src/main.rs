@@ -52,8 +52,10 @@ async fn run() -> Result<()> {
     threadterm_v3_runtime::review::initialize(&db)?;
     threadterm_v3_runtime::session_documents::initialize(&db)?;
     threadterm_v3_runtime::agent_review::initialize(&db)?;
+    threadterm_v3_runtime::code_review::initialize(&db)?;
     db.mark_live_sessions_interrupted()?;
     threadterm_v3_runtime::delegation::reconcile_interrupted(&db)?;
+    let _ = threadterm_v3_runtime::code_review::reconcile_interrupted(&db);
     threadterm_v3_runtime::quick_launch::mark_setup_runs_interrupted(&db)?;
     // A run that was still being watched when the runtime stopped is not watched
     // again: its session is no longer live, so it reads as "no readiness" instead

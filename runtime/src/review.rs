@@ -1241,6 +1241,14 @@ pub fn capture_before_turn(
     operation_id: &str,
     text: &str,
 ) -> Option<String> {
+    // Code-review finder/verifier turns do not need parent-style checkpoints;
+    // capturing them under the send worker lock stalls the whole review.
+    if operation_id.contains(":send:finder:")
+        || operation_id.contains(":send:verifier")
+        || crate::agent_review::is_reviewer(db, session_id).unwrap_or(false)
+    {
+        return None;
+    }
     let trace_timer = crate::send_trace::Timer::start();
     crate::send_trace::emit(crate::send_trace::Event::new("review.checkpoint.begin")
         .operation_id(operation_id).session_id(session_id).method("chat.send"));
@@ -1675,7 +1683,7 @@ fn revert(db: &Database, session_id: &str, object: &Map<String, Value>) -> Resul
 
 /// One immutable file in an independent review snapshot. `None` means omitted
 /// by the checkpoint capture bound, rather than an empty change.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ReviewFile {
     pub path: String,
     pub status: String,
@@ -1764,6 +1772,23 @@ pub(crate) fn unified_snapshot(db: &Database, session_id: &str, from_id: &str, t
         }
     }
     Ok(files)
+}
+
+/// Count changed paths between checkpoints without building unified diffs.
+pub(crate) fn changed_file_count(db: &Database, session_id: &str, from_id: &str, to_id: Option<&str>) -> Result<usize> {
+    let scope = session_scope(db, session_id)?.ok_or_else(|| anyhow!("review_unavailable"))?;
+    let (from, mut extra) = ready_tree(&checkpoint_row(db, session_id, from_id)?)?;
+    let deadline = Instant::now() + REVIEW_BUDGET;
+    let store = Store::open(db, &scope.root, deadline)?;
+    let to = match to_id {
+        Some(id) => {
+            let (tree, stores) = ready_tree(&checkpoint_row(db, session_id, id)?)?;
+            extra.extend(stores);
+            tree
+        }
+        None => store.snapshot(deadline)?.tree,
+    };
+    Ok(store.changes(&from, &to, &extra, deadline)?.len())
 }
 
 #[cfg(test)]
