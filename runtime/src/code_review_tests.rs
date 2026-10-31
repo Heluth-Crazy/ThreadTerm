@@ -166,7 +166,7 @@ impl ChatSession for FixtureChat {
             thread::sleep(Duration::from_millis(hang as u64));
         }
         if self.hold_turn.load(Ordering::SeqCst) == 0 {
-            code_review::test_complete_turn(&self.session_id, &turn, &answer);
+            complete_turn_later(Arc::clone(&self.db), self.session_id.clone(), turn.clone(), answer);
         }
         {
             let mut log = self.log.lock().unwrap();
@@ -188,6 +188,32 @@ impl ChatSession for FixtureChat {
     }
 }
 
+/// Completes a reviewer turn the way a provider does: its events arrive on another
+/// thread after `send` returned, and go through the real chat projection. It waits
+/// until the pipeline has bound the turn, as a real reply can never precede that.
+fn complete_turn_later(db: Arc<Database>, session_id: String, turn: String, answer: String) {
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let bound: Option<String> = db
+                .transaction(|tx| {
+                    Ok(tx
+                        .query_row("SELECT turn_id FROM code_review_sessions WHERE session_id=?", [&session_id], |r| r.get(0))
+                        .optional()?
+                        .flatten())
+                })
+                .unwrap_or(None);
+            if bound.as_deref() == Some(turn.as_str()) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        db.record_provider_event(&session_id, Some(&turn), "chat.turn.started", &json!({})).unwrap();
+        db.record_provider_event(&session_id, Some(&turn), "chat.delta", &json!({"text": answer})).unwrap();
+        db.record_provider_event(&session_id, Some(&turn), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    });
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     db: Arc<Database>,
@@ -202,7 +228,6 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        code_review::test_clear_completed_turns();
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
         session_configs::initialize(&db).unwrap();
@@ -965,4 +990,120 @@ fn options_counts_files_without_building_diffs() {
     .unwrap();
     assert_eq!(options["scopes"][0]["kind"], "uncommitted");
     assert_eq!(options["scopes"][0]["fileCount"], count);
+}
+
+fn card(db: &Database, parent: &str, review_id: &str) -> Value {
+    db.subagent_card(parent, &format!("review:{review_id}")).unwrap().unwrap().parts[0]["data"].clone()
+}
+
+fn start(fixture: &Fixture, parent: &str, depth: &str, operation: &str, create: &dyn Fn(&Value) -> anyhow::Result<Value>) -> anyhow::Result<Value> {
+    code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.start",
+        &json!({"sessionId":parent,"provider":"reviewer","depth":depth,"scope":{"kind":"uncommitted"},"operationId":operation,"leaseEpoch":1}),
+        &|_, _| Ok(()),
+        create,
+    )
+}
+
+#[test]
+fn failed_preparation_ends_the_review_and_frees_the_chat() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("tracked.txt"), "changed
+").unwrap();
+    let parent = fixture.session(&repo, "parent-prepare");
+    let broken = |_: &Value| -> anyhow::Result<Value> { Err(anyhow::anyhow!("session_create_failed")) };
+    let failed = start(&fixture, &parent, "standard", "prepare-fails", &broken).unwrap();
+    let review_id = failed["reviewId"].as_str().unwrap();
+    let data = card(&fixture.db, &parent, review_id);
+    assert_eq!(data["status"], "failed");
+    assert!(data["summary"].as_str().unwrap().contains("could not start"), "card={data}");
+    assert!(data["endedAt"].is_string());
+    let create = fixture.create();
+    fixture.push_answer(json!([]));
+    let next = start(&fixture, &parent, "quick", "prepare-retry", &create).unwrap();
+    assert_eq!(wait_done(&fixture.db, next["reviewId"].as_str().unwrap())["stage"], "done");
+}
+
+#[test]
+fn card_line_follows_the_stage_and_a_stale_refresh_cannot_reopen_it() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("tracked.txt"), "changed
+").unwrap();
+    let parent = fixture.session(&repo, "parent-card");
+    let create = fixture.create();
+    fixture.hold_turn.store(1, Ordering::SeqCst);
+    let started = start(&fixture, &parent, "standard", "card-line", &create).unwrap();
+    let review_id = started["reviewId"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let running = loop {
+        let data = card(&fixture.db, &parent, review_id);
+        if data["summary"] == "Finding issues · 0/1" || Instant::now() >= deadline {
+            break data;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(running["status"], "running");
+    assert_eq!(running["summary"], "Finding issues · 0/1", "card={running}");
+    assert!(running.get("endedAt").is_none());
+    code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.cancel",
+        &json!({"sessionId":parent,"reviewId":review_id,"operationId":"card-cancel","leaseEpoch":1}),
+        &|_, _| Ok(()),
+        &create,
+    )
+    .unwrap();
+    let cancelled = card(&fixture.db, &parent, review_id);
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["summary"], "Cancelled");
+    // A live refresh that was already under way when the review ended.
+    code_review::upsert_card(&fixture.db, &parent, review_id, false).unwrap();
+    let again = card(&fixture.db, &parent, review_id);
+    assert_eq!(again["status"], "cancelled");
+    assert_eq!(again["endedAt"], cancelled["endedAt"]);
+    assert!(again["rev"].as_i64() >= cancelled["rev"].as_i64());
+}
+
+#[test]
+fn standard_with_no_candidates_skips_the_verifier_and_raises_no_notices() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("tracked.txt"), "changed
+").unwrap();
+    let parent = fixture.session(&repo, "parent-empty");
+    let create = fixture.create();
+    fixture.push_answer(json!([]));
+    let started = start(&fixture, &parent, "standard", "empty", &create).unwrap();
+    let review_id = started["reviewId"].as_str().unwrap();
+    let summary = wait_done(&fixture.db, review_id);
+    assert_eq!(summary["findings"], json!([]));
+    assert_eq!(summary["stagesDone"], 2);
+    assert_eq!(card(&fixture.db, &parent, review_id)["summary"], "No issues found");
+    assert_eq!(fixture.log.lock().unwrap().sends.len(), 1, "only the finder ran");
+    let transcript = code_review::read_session_transcript(&fixture.db, &parent, &format!("review:{review_id}")).unwrap();
+    let labels: Vec<&str> = transcript["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["role"] == "system")
+        .filter_map(|item| item["parts"][0]["text"].as_str())
+        .collect();
+    assert_eq!(labels, ["Stage: finding · general", "Stage: verifying · not run"]);
+    // The finder's finished turn is reported by the card, not by a reply notice.
+    let notices: i64 = fixture
+        .db
+        .transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT COUNT(*) FROM inbox WHERE session_id IN (SELECT session_id FROM code_review_sessions WHERE review_id=?)",
+                [review_id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(notices, 0);
 }

@@ -81,44 +81,19 @@ CREATE TABLE IF NOT EXISTS provider_option_catalog (
 );";
 
 static START_GATE: Mutex<()> = Mutex::new(());
-fn card_emit() -> &'static Mutex<HashMap<String, Instant>> {
-    static CARD_EMIT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+/// The last card written per active review. Held for the whole card write, so a
+/// slow live refresh can never land after a terminal card.
+struct CardEmit {
+    at: Instant,
+    signature: String,
+}
+fn card_emit() -> &'static Mutex<HashMap<String, CardEmit>> {
+    static CARD_EMIT: OnceLock<Mutex<HashMap<String, CardEmit>>> = OnceLock::new();
     CARD_EMIT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 fn cancel_flags() -> &'static Mutex<HashMap<String, Arc<Mutex<bool>>>> {
     static CANCEL_FLAGS: OnceLock<Mutex<HashMap<String, Arc<Mutex<bool>>>>> = OnceLock::new();
     CANCEL_FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(test)]
-fn test_completed_turns() -> &'static Mutex<HashMap<String, String>> {
-    static COMPLETED: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    COMPLETED.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Test helper: mark a reviewer turn completed without touching SQLite under the
-/// provider worker lock (which deadlocks with card refresh).
-#[cfg(test)]
-pub(crate) fn test_complete_turn(session_id: &str, turn_id: &str, answer: &str) {
-    if let Ok(mut map) = test_completed_turns().lock() {
-        map.insert(format!("{session_id}\0{turn_id}"), answer.to_owned());
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn test_clear_completed_turns() {
-    if let Ok(mut map) = test_completed_turns().lock() {
-        map.clear();
-    }
-}
-
-#[cfg(test)]
-fn test_turn_answer(session_id: &str, turn_id: &str) -> Option<String> {
-    test_completed_turns()
-        .lock()
-        .ok()?
-        .get(&format!("{session_id}\0{turn_id}"))
-        .cloned()
 }
 
 fn fault(code: &str) -> anyhow::Error {
@@ -184,7 +159,6 @@ struct CancelRequest {
     session_id: String,
     review_id: String,
     operation_id: String,
-    #[allow(dead_code)]
     lease_epoch: i64,
 }
 
@@ -192,8 +166,27 @@ pub fn initialize(db: &Database) -> Result<()> {
     db.transaction(|tx| {
         tx.execute_batch(SCHEMA)?;
         let _ = tx.execute("ALTER TABLE code_reviews ADD COLUMN card_rev INTEGER NOT NULL DEFAULT 0", []);
+        let _ = tx.execute("ALTER TABLE code_reviews ADD COLUMN ended_at TEXT", []);
         Ok(())
     })
+}
+
+/// Whether `session_id` is a Code Review finder or verifier, inside a projection
+/// transaction. Legacy fixtures without the table read as not a reviewer.
+pub(crate) fn is_reviewer_tx(tx: &Transaction<'_>, session_id: &str) -> Result<bool> {
+    match tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM code_review_sessions WHERE session_id=?)",
+        [session_id],
+        |r| r.get(0),
+    ) {
+        Ok(value) => Ok(value),
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message == "no such table: code_review_sessions" =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Active reviews interrupted by a runtime restart become failed; their child
@@ -217,27 +210,13 @@ pub fn reconcile_interrupted(db: &Database) -> Result<usize> {
         Ok(rows)
     })?;
     for (id, parent) in &rows {
-        let _ = upsert_card(db, parent, id, "failed", true);
+        let _ = upsert_card(db, parent, id, true);
     }
     Ok(rows.len())
 }
 
 pub(crate) fn is_hidden_reviewer(db: &Database, session_id: &str) -> Result<bool> {
-    db.transaction(|tx| {
-        match tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM code_review_sessions WHERE session_id=?)",
-            [session_id],
-            |r| r.get(0),
-        ) {
-            Ok(value) => Ok(value),
-            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
-                if message == "no such table: code_review_sessions" =>
-            {
-                Ok(false)
-            }
-            Err(error) => Err(error.into()),
-        }
-    })
+    db.transaction(|tx| is_reviewer_tx(tx, session_id))
 }
 
 pub(crate) fn remember_provider_options(db: &Database, provider: &str, state: &Value) -> Result<()> {
@@ -268,7 +247,8 @@ pub(crate) fn remember_provider_options(db: &Database, provider: &str, state: &V
     let text = fit_catalog_json(&kept)?;
     db.transaction(|tx| {
         tx.execute(
-            "INSERT INTO provider_option_catalog(provider,options_json,seen_at) VALUES(?,?,?) ON CONFLICT(provider) DO UPDATE SET options_json=excluded.options_json,seen_at=excluded.seen_at",
+            // `chat.options` runs often; an unchanged catalog is not rewritten.
+            "INSERT INTO provider_option_catalog(provider,options_json,seen_at) VALUES(?,?,?) ON CONFLICT(provider) DO UPDATE SET options_json=excluded.options_json,seen_at=excluded.seen_at WHERE options_json<>excluded.options_json",
             params![provider, text, Utc::now().to_rfc3339()],
         )?;
         Ok(())
@@ -328,17 +308,23 @@ fn catalog_option(db: &Database, provider: &str, category: &str) -> Result<Optio
 
 /// Counts changed paths without building diffs (for `codeReview.options`).
 pub(crate) fn count_uncommitted_files(root: &Path) -> Result<usize> {
-    let status = crate::git_read::run_git(
-        root,
-        &["status", "--porcelain", "-z"],
-        &[],
-        None,
-        crate::git_read::LOCAL_TIMEOUT,
-    )?;
+    Ok(status_paths(root, false)?.len())
+}
+
+/// Paths from `git status --porcelain=v1 -z --no-renames`: one `XY path` entry
+/// each, so a rename is its delete plus its add and never a bare source path.
+fn status_paths(root: &Path, every_untracked: bool) -> Result<Vec<String>> {
+    let mut args = vec!["status", "--porcelain=v1", "-z", "--no-renames"];
+    if every_untracked {
+        args.push("--untracked-files=all");
+    }
+    let status = crate::git_read::run_git(root, &args, &[], None, crate::git_read::LOCAL_TIMEOUT)?;
     Ok(String::from_utf8_lossy(&status)
         .split('\0')
-        .filter(|entry| !entry.is_empty())
-        .count())
+        .filter_map(|entry| entry.get(3..))
+        .map(|path| path.replace('\\', "/"))
+        .filter(|path| !path.is_empty())
+        .collect())
 }
 
 pub(crate) fn count_session_files(db: &Database, session_id: &str) -> Result<usize> {
@@ -509,26 +495,18 @@ fn capture_scope(
 }
 
 fn worktree_fingerprint(root: &Path) -> Result<String> {
-    let status = crate::git_read::run_git(
-        root,
-        &["status", "--porcelain=v1", "-z"],
-        &[],
-        None,
-        crate::git_read::LOCAL_TIMEOUT,
-    )?;
+    // Every untracked file is listed, so an edit inside a new folder is seen too.
+    let paths = status_paths(root, true)?;
     let mut hasher = Sha256::new();
-    hasher.update(&status);
-    let text = String::from_utf8_lossy(&status);
-    for path in text.split('\0').filter(|s| s.len() > 3).map(|s| s[3..].replace('\\', "/")).take(200) {
-        if path.is_empty() {
+    for (index, path) in paths.iter().enumerate() {
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+        if index >= 200 {
             continue;
         }
-        if let Ok(bytes) = fs::read(root.join(&path)) {
-            hasher.update(path.as_bytes());
-            hasher.update(&bytes);
-        } else {
-            hasher.update(path.as_bytes());
-            hasher.update(b"missing");
+        match fs::read(root.join(path)) {
+            Ok(bytes) => hasher.update(&bytes),
+            Err(_) => hasher.update(b"missing"),
         }
     }
     Ok(hex::encode(hasher.finalize()))
@@ -538,22 +516,12 @@ fn changed_paths(root: &Path, before: &str, after: &str) -> Vec<String> {
     if before == after {
         return Vec::new();
     }
-    let Ok(status) = crate::git_read::run_git(
-        root,
-        &["status", "--porcelain=v1", "-z"],
-        &[],
-        None,
-        crate::git_read::LOCAL_TIMEOUT,
-    ) else {
-        return vec!["(status unavailable)".into()];
-    };
-    String::from_utf8_lossy(&status)
-        .split('\0')
-        .filter(|s| s.len() > 3)
-        .map(|s| s[3..].replace('\\', "/"))
-        .filter(|s| !s.is_empty())
-        .take(12)
-        .collect()
+    match status_paths(root, false) {
+        Ok(paths) if !paths.is_empty() => paths.into_iter().take(12).collect(),
+        // The worktree differs from the start but is clean now: an edit was undone.
+        Ok(_) => vec!["(changes since undone)".into()],
+        Err(_) => vec!["(status unavailable)".into()],
+    }
 }
 
 pub(crate) fn build_finder_prompt(
@@ -855,206 +823,209 @@ fn reviewer_ids_tx(tx: &Transaction<'_>, review_id: &str) -> Result<Vec<String>>
     Ok(rows)
 }
 
-fn card_preview(db: &Database, review_id: &str, status: &str) -> Result<String> {
-    if status == "failed" {
-        let error: Option<String> = db.transaction(|tx| {
-            Ok(tx
-                .query_row("SELECT error FROM code_reviews WHERE id=?", [review_id], |r| r.get(0))
-                .optional()?)
-        })?;
-        return Ok(error.unwrap_or_else(|| "The review failed".into()));
+/// The collapsed card line: live stage progress, or the result once it ends.
+fn card_preview(summary: &Value, status: &str, error: Option<&str>) -> String {
+    let count = |key: &str| summary[key].as_i64().unwrap_or(0);
+    match status {
+        "failed" => error.unwrap_or("The review failed").to_owned(),
+        "cancelled" => "Cancelled".into(),
+        "running" => {
+            let finders = if summary["depth"] == "quick" { 1 } else { (count("stagesTotal") - 1).max(1) };
+            match summary["stage"].as_str().unwrap_or("") {
+                "finding" => format!("Finding issues · {}/{finders}", count("stagesDone").min(finders)),
+                "verifying" => format!("Verifying {} findings", count("candidates")),
+                _ => "Preparing".into(),
+            }
+        }
+        _ => {
+            let findings = summary["findings"].as_array().cloned().unwrap_or_default();
+            let tally = |verdict: &str| findings.iter().filter(|f| f["verdict"] == verdict).count();
+            let (confirmed, plausible) = (tally("confirmed"), tally("plausible"));
+            let unverified = findings.len() - confirmed - plausible;
+            let mut parts = Vec::new();
+            if confirmed > 0 {
+                parts.push(format!("{confirmed} confirmed"));
+            }
+            if plausible > 0 {
+                parts.push(format!("{plausible} plausible"));
+            }
+            if unverified > 0 {
+                parts.push(format!("{unverified} unverified"));
+            }
+            if parts.is_empty() { "No issues found".into() } else { parts.join(" · ") }
+        }
     }
-    let findings: Vec<Value> = db.transaction(|tx| {
-        let raw: Option<String> = tx.query_row(
-            "SELECT findings_json FROM code_reviews WHERE id=?",
+}
+
+/// Reviewer activity for the card. SQL aggregates keep a once-per-second refresh
+/// from decoding whole transcripts; `size` changes whenever any reviewer item does.
+struct Progress {
+    items: i64,
+    size: f64,
+    tools: i64,
+    last: Option<String>,
+}
+
+fn live_card_progress(tx: &Transaction<'_>, review_id: &str) -> Result<Progress> {
+    const REVIEWERS: &str = "SELECT session_id FROM code_review_sessions WHERE review_id=?1";
+    let (items, size) = tx.query_row(
+        &format!("SELECT COUNT(*), TOTAL(length(data)) FROM chat_items WHERE session_id IN ({REVIEWERS})"),
+        [review_id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
+    )?;
+    let tools = tx.query_row(
+        &format!("SELECT COUNT(*) FROM chat_items c, json_each(c.data,'$.parts') p WHERE c.session_id IN ({REVIEWERS}) AND json_extract(p.value,'$.type')='tool'"),
+        [review_id],
+        |r| r.get::<_, i64>(0),
+    )?;
+    let last = tx
+        .query_row(
+            &format!("SELECT CAST(COALESCE(json_extract(p.value,'$.toolName'),json_extract(p.value,'$.data.title'),json_extract(p.value,'$.data.name')) AS TEXT) FROM chat_items c, json_each(c.data,'$.parts') p WHERE c.session_id IN ({REVIEWERS}) AND json_extract(p.value,'$.type')='tool' ORDER BY c.created_at DESC, c.rowid DESC, p.key DESC LIMIT 1"),
             [review_id],
             |r| r.get::<_, Option<String>>(0),
-        )?;
-        Ok(raw
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default())
-    })?;
-    if findings.is_empty() {
-        return Ok("No issues found".into());
-    }
-    let mut confirmed = 0usize;
-    let mut plausible = 0usize;
-    let mut unverified = 0usize;
-    for finding in &findings {
-        match finding.get("verdict").and_then(Value::as_str).unwrap_or("unverified") {
-            "confirmed" => confirmed += 1,
-            "plausible" => plausible += 1,
-            _ => unverified += 1,
-        }
-    }
-    let depth: String = db.transaction(|tx| {
-        Ok(tx.query_row("SELECT depth FROM code_reviews WHERE id=?", [review_id], |r| r.get(0))?)
-    })?;
-    let mut parts = Vec::new();
-    if confirmed > 0 {
-        parts.push(format!("{confirmed} confirmed"));
-    }
-    if plausible > 0 {
-        parts.push(format!("{plausible} plausible"));
-    }
-    if depth == "quick" || unverified > 0 {
-        if unverified > 0 || depth == "quick" {
-            parts.push(format!("{unverified} unverified"));
-        }
-    }
-    if parts.is_empty() {
-        Ok("No issues found".into())
-    } else {
-        Ok(parts.join(" · "))
+        )
+        .optional()?
+        .flatten()
+        .map(|label| label.trim().chars().take(120).collect::<String>())
+        .filter(|label| !label.is_empty());
+    Ok(Progress { items, size, tools, last })
+}
+
+fn card_status(state: &str) -> &'static str {
+    match state {
+        "done" => "completed",
+        "failed" => "failed",
+        "cancelled" => "cancelled",
+        _ => "running",
     }
 }
 
-fn live_card_progress(db: &Database, review_id: &str) -> Result<(usize, usize, Option<String>, i64)> {
-    let reviewers = reviewer_ids(db, review_id)?;
-    let mut tool_count = 0usize;
-    let mut item_count = 0usize;
-    let mut last_activity: Option<(String, String)> = None;
-    for reviewer in reviewers {
-        let items = db.chat_items(&reviewer).unwrap_or_default();
-        item_count += items.len();
-        for item in items {
-            for part in &item.parts {
-                if part.get("type").and_then(Value::as_str) != Some("tool") {
-                    continue;
-                }
-                tool_count += 1;
-                let label = part
-                    .get("toolName")
-                    .and_then(Value::as_str)
-                    .or_else(|| part.pointer("/data/title").and_then(Value::as_str))
-                    .or_else(|| part.pointer("/data/name").and_then(Value::as_str))
-                    .unwrap_or("")
-                    .trim();
-                if !label.is_empty() {
-                    last_activity = Some((item.created_at.clone(), label.to_owned()));
-                }
-            }
-        }
-        if last_activity.is_none() {
-            if let Some(session) = db.session_by_id(&reviewer)? {
-                if let Some(activity) = session.activity {
-                    let text = activity.reason.clone().unwrap_or_else(|| activity.state.clone());
-                    if !text.is_empty() {
-                        last_activity = Some((session.updated_at, text));
-                    }
-                }
-            }
-        }
+/// Writes the parent's review card from the stored review. The status comes from
+/// the review's state, never from the caller, and writes are serialized, so a
+/// stale live refresh cannot reopen a finished card. An unchanged card is not
+/// rewritten; `force` only skips the once-per-second throttle.
+pub(crate) fn upsert_card(db: &Database, parent: &str, review_id: &str, force: bool) -> Result<()> {
+    let mut emitted = card_emit().lock().map_err(|_| anyhow!("card emit poisoned"))?;
+    let now = Instant::now();
+    if !force && emitted.get(review_id).is_some_and(|last| now.duration_since(last.at) < CARD_LIVE_REFRESH) {
+        return Ok(());
     }
-    let rev = db.transaction(|tx| {
-        let current: i64 = tx.query_row(
-            "SELECT card_rev FROM code_reviews WHERE id=?",
+    let summary = summary_value(db, review_id)?;
+    let (state, provider, started_at, error, progress) = db.transaction(|tx| {
+        let (state, provider, started_at, error) = tx.query_row(
+            "SELECT state, provider, created_at, error FROM code_reviews WHERE id=?",
             [review_id],
-            |r| r.get(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?)),
         )?;
-        let next = current + 1 + item_count as i64;
-        tx.execute("UPDATE code_reviews SET card_rev=? WHERE id=?", params![next, review_id])?;
-        Ok(next)
+        Ok((state, provider, started_at, error, live_card_progress(tx, review_id)?))
     })?;
-    Ok((tool_count, item_count, last_activity.map(|(_, text)| text), rev))
-}
-
-fn upsert_card(db: &Database, parent: &str, review_id: &str, status: &str, force: bool) -> Result<()> {
-    if !force {
-        let mut map = card_emit().lock().map_err(|_| anyhow!("card emit poisoned"))?;
-        let now = Instant::now();
-        if let Some(previous) = map.get(review_id) {
-            if now.duration_since(*previous) < CARD_LIVE_REFRESH {
-                return Ok(());
-            }
-        }
-        map.insert(review_id.to_owned(), now);
+    let status = card_status(&state);
+    let preview = card_preview(&summary, status, error.as_deref());
+    let signature = json!([status, summary, progress.items, progress.size, progress.tools, progress.last, preview]).to_string();
+    if emitted.get(review_id).is_some_and(|last| last.signature == signature) {
+        return Ok(());
     }
     let key = review_key(review_id);
     let id = card_id(parent, &key);
-    let summary = summary_value(db, review_id)?;
-    let (provider, started_at, error): (String, String, Option<String>) = db.transaction(|tx| {
-        Ok(tx.query_row(
-            "SELECT provider, created_at, error FROM code_reviews WHERE id=?",
-            [review_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?)
-    })?;
-    let (tool_count, item_count, last_activity, rev) = live_card_progress(db, review_id)?;
-    let preview = if status == "failed" {
-        error.unwrap_or_else(|| "The review failed".into())
-    } else {
-        card_preview(db, review_id, status)?
-    };
-    let now = Utc::now().to_rfc3339();
-    let mut info = json!({
-        "key": key,
-        "provider": provider,
-        "agentType": "code-review",
-        "name": "Code review",
-        "description": summary["scopeLabel"].clone(),
-        "status": status,
-        "transcript": "session",
-        "review": summary,
-        "startedAt": started_at,
-        "toolCount": tool_count,
-        "itemCount": item_count,
-        "summary": preview,
-        "rev": rev,
-    });
-    if let Some(activity) = last_activity {
-        info["lastActivity"] = json!(activity);
-    }
-    if matches!(status, "completed" | "failed" | "cancelled") {
-        info["endedAt"] = json!(now);
-    }
-    let item = ChatItem {
-        id: id.clone(),
-        role: "system".into(),
-        parts: vec![json!({"type":"subagent","toolId":key,"status":status,"data":info})],
-        created_at: started_at.clone(),
-        turn_id: None,
-        elapsed_ms: None,
-        turn_status: None,
-        turn_origin: None,
-        fork_anchor: None,
-        turn_model: None,
-        turn_usage: None,
-        turn_review: None,
-    };
+    let terminal = status != "running";
     db.transaction(|tx| {
-        let created: Option<String> = tx
+        tx.execute("UPDATE code_reviews SET card_rev=card_rev+1 WHERE id=?", [review_id])?;
+        if terminal {
+            tx.execute(
+                "UPDATE code_reviews SET ended_at=COALESCE(ended_at,?) WHERE id=?",
+                params![Utc::now().to_rfc3339(), review_id],
+            )?;
+        }
+        let (rev, ended_at): (i64, Option<String>) = tx.query_row(
+            "SELECT card_rev, ended_at FROM code_reviews WHERE id=?",
+            [review_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let mut info = json!({
+            "key": key,
+            "provider": provider,
+            "agentType": "code-review",
+            "name": "Code review",
+            "description": summary["scopeLabel"].clone(),
+            "status": status,
+            "transcript": "session",
+            "review": summary,
+            "startedAt": started_at,
+            "toolCount": progress.tools,
+            "itemCount": progress.items,
+            "summary": preview,
+            "rev": rev,
+        });
+        if let Some(activity) = &progress.last {
+            info["lastActivity"] = json!(activity);
+        }
+        if let Some(ended_at) = ended_at.filter(|_| terminal) {
+            info["endedAt"] = json!(ended_at);
+        }
+        let created_at: Option<String> = tx
             .query_row("SELECT created_at FROM chat_items WHERE id=?", [&id], |r| r.get(0))
             .optional()?;
-        let mut stored = item;
-        if let Some(created_at) = created {
-            stored.created_at = created_at;
-        }
+        let item = ChatItem {
+            id: id.clone(),
+            role: "system".into(),
+            parts: vec![json!({"type":"subagent","toolId":key,"status":status,"data":info})],
+            created_at: created_at.unwrap_or_else(|| started_at.clone()),
+            turn_id: None,
+            elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
+            fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
+        };
         tx.execute(
             "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,NULL,'message',?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-            params![stored.id, parent, serde_json::to_string(&stored)?, stored.created_at],
+            params![item.id, parent, serde_json::to_string(&item)?, item.created_at],
         )?;
         tx.execute(
             "INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",
-            params![json!({"sessionId":parent,"item":stored}).to_string(), Utc::now().to_rfc3339()],
+            params![json!({"sessionId":parent,"item":item}).to_string(), Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    })?;
+    if terminal {
+        emitted.remove(review_id);
+    } else {
+        emitted.insert(review_id.to_owned(), CardEmit { at: now, signature });
+    }
+    Ok(())
+}
+
+/// Moves an active review to `state`; a review that already ended is left alone.
+fn bump_stage(db: &Database, review_id: &str, stage: &str, done: i64, state: &str) -> Result<bool> {
+    db.transaction(|tx| {
+        let changed = tx.execute(
+            "UPDATE code_reviews SET stage=?, stages_done=?, state=?, updated_at=? WHERE id=? AND state IN ('preparing','finding','verifying')",
+            params![stage, done, state, Utc::now().to_rfc3339(), review_id],
+        )?;
+        Ok(changed > 0)
+    })
+}
+
+/// Counts one finished finder (answered or failed) while the review is finding.
+fn finish_finder(db: &Database, review_id: &str) -> Result<()> {
+    db.transaction(|tx| {
+        tx.execute(
+            "UPDATE code_reviews SET stages_done=stages_done+1, updated_at=? WHERE id=? AND state='finding'",
+            params![Utc::now().to_rfc3339(), review_id],
         )?;
         Ok(())
     })
 }
 
-fn bump_stage(db: &Database, review_id: &str, stage: &str, done: i64, state: &str) -> Result<bool> {
+/// Fails an active review with `error`, keeping the stages it finished.
+fn fail_review(db: &Database, review_id: &str, error: &str) -> Result<bool> {
     db.transaction(|tx| {
-        let changed = if matches!(state, "cancelled" | "failed" | "done") {
-            tx.execute(
-                "UPDATE code_reviews SET stage=?, stages_done=?, state=?, updated_at=? WHERE id=? AND state IN ('preparing','finding','verifying')",
-                params![stage, done, state, Utc::now().to_rfc3339(), review_id],
-            )?
-        } else {
-            tx.execute(
-                "UPDATE code_reviews SET stage=?, stages_done=?, state=?, updated_at=? WHERE id=? AND state IN ('preparing','finding','verifying')",
-                params![stage, done, state, Utc::now().to_rfc3339(), review_id],
-            )?
-        };
+        let changed = tx.execute(
+            "UPDATE code_reviews SET stage='done', state='failed', error=?, updated_at=? WHERE id=? AND state IN ('preparing','finding','verifying')",
+            params![error, Utc::now().to_rfc3339(), review_id],
+        )?;
         Ok(changed > 0)
     })
 }
@@ -1074,8 +1045,9 @@ fn push_warning(db: &Database, review_id: &str, warning: &str) -> Result<()> {
         let raw: String = tx.query_row("SELECT warnings_json FROM code_reviews WHERE id=?", [review_id], |r| r.get(0))?;
         let mut warnings: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
         warnings.push(json!(warning));
+        // A review that already ended keeps the warnings it ended with.
         tx.execute(
-            "UPDATE code_reviews SET warnings_json=?, updated_at=? WHERE id=?",
+            "UPDATE code_reviews SET warnings_json=?, updated_at=? WHERE id=? AND state IN ('preparing','finding','verifying')",
             params![json!(warnings).to_string(), Utc::now().to_rfc3339(), review_id],
         )?;
         Ok(())
@@ -1104,24 +1076,26 @@ fn set_findings(
     })
 }
 
-fn last_answer_text(db: &Database, reviewer: &str) -> Result<String> {
+/// The newest assistant text of the bound turn. A trailing tool-only item is
+/// skipped, so the fenced findings block in the last text reply is what is read.
+fn last_answer_text(db: &Database, reviewer: &str, turn: &str) -> Result<String> {
     db.transaction(|tx| {
         let mut statement = tx.prepare(
-            "SELECT data FROM chat_items WHERE session_id=? AND json_extract(data,'$.role')='assistant' ORDER BY created_at DESC,id DESC",
+            "SELECT data FROM chat_items WHERE session_id=? AND turn_id=? AND json_extract(data,'$.role')='assistant' ORDER BY created_at DESC,id DESC",
         )?;
-        let mut rows = statement.query([reviewer])?;
+        let mut rows = statement.query(params![reviewer, turn])?;
         while let Some(row) = rows.next()? {
             let item: ChatItem = serde_json::from_str(&row.get::<_, String>(0)?)?;
-            if item.parts.is_empty() {
-                continue;
-            }
-            return Ok(item
+            let text = item
                 .parts
                 .iter()
                 .filter(|p| p["type"] == "text")
                 .filter_map(|p| p["text"].as_str())
                 .collect::<Vec<_>>()
-                .join("\n"));
+                .join("\n");
+            if !text.trim().is_empty() {
+                return Ok(text);
+            }
         }
         Ok(String::new())
     })
@@ -1163,17 +1137,13 @@ fn wait_for_answer(
             return Err(anyhow!("The reviewer session {} before completing", session.status));
         }
         match bound_turn_status(db, reviewer, turn)?.as_deref() {
-            Some("completed") => return Ok(Some(last_answer_text(db, reviewer)?)),
+            Some("completed") => return Ok(Some(last_answer_text(db, reviewer, turn)?)),
             Some(status @ ("failed" | "interrupted" | "cancelled" | "canceled")) => {
                 return Err(anyhow!("The reviewer turn ended with status {status}"));
             }
             _ => {}
         }
-        #[cfg(test)]
-        if let Some(answer) = test_turn_answer(reviewer, turn) {
-            return Ok(Some(answer));
-        }
-        let _ = upsert_card(db, parent, review_id, "running", false);
+        let _ = upsert_card(db, parent, review_id, false);
         std::thread::sleep(STAGE_POLL);
     }
     Err(anyhow!("The reviewer timed out"))
@@ -1223,10 +1193,15 @@ fn apply_read_only_after_connect(providers: &Providers, reviewer: &str, provider
     }
 }
 
-fn stop_reviewers(db: &Database, providers: &Arc<Providers>, review_id: &str) -> Result<()> {
+/// Stops the reviewers' provider processes once a review ends, so finished
+/// reviews leave no idle agents behind. A cancel also marks the sessions
+/// interrupted and cancels their turns first.
+fn stop_reviewers(db: &Database, providers: &Arc<Providers>, review_id: &str, cancel: bool) -> Result<()> {
     let reviewers = reviewer_ids(db, review_id)?;
-    for reviewer in &reviewers {
-        let _ = db.set_session_status(reviewer, "interrupted", None);
+    if cancel {
+        for reviewer in &reviewers {
+            let _ = db.set_session_status(reviewer, "interrupted", None);
+        }
     }
     // Provider cancel/stop can block on a worker still inside send/capture; run
     // them off-thread so the review can already be terminal and waiters exit.
@@ -1236,7 +1211,9 @@ fn stop_reviewers(db: &Database, providers: &Arc<Providers>, review_id: &str) ->
             .name("code-review-stop".into())
             .spawn(move || {
                 for reviewer in reviewers {
-                    let _ = providers.chat_cancel(&reviewer, "");
+                    if cancel {
+                        let _ = providers.chat_cancel(&reviewer, "");
+                    }
                     let _ = providers.chat_stop(&reviewer);
                 }
             });
@@ -1470,141 +1447,84 @@ fn run_pipeline(
     cancel: Arc<Mutex<bool>>,
 ) {
     let fail = |db: &Database, message: &str| {
-        let ok = bump_stage(db, &review_id, "done", 0, "failed").unwrap_or(false);
-        if !ok {
-            return;
+        if fail_review(db, &review_id, message).unwrap_or(false) {
+            let _ = upsert_card(db, &parent_id, &review_id, true);
         }
-        let _ = db.transaction(|tx| {
-            tx.execute(
-                "UPDATE code_reviews SET error=?, updated_at=? WHERE id=? AND state='failed'",
-                params![message, Utc::now().to_rfc3339(), review_id],
-            )?;
-            Ok(())
-        });
-        let _ = upsert_card(db, &parent_id, &review_id, "failed", true);
+        let _ = stop_reviewers(db, &providers, &review_id, false);
     };
-    let stop_providers = Arc::clone(&providers);
     let mark_cancelled = |db: &Database| {
         if cancel_review(db, &review_id).unwrap_or(false) {
-            let _ = upsert_card(db, &parent_id, &review_id, "cancelled", true);
+            let _ = upsert_card(db, &parent_id, &review_id, true);
         }
-        let _ = stop_reviewers(db, &stop_providers, &review_id);
+        let _ = stop_reviewers(db, &providers, &review_id, true);
     };
     let cancelled = || *cancel.lock().unwrap_or_else(|p| p.into_inner());
+    let unverified = |findings: Vec<Value>| {
+        findings
+            .into_iter()
+            .map(|mut finding| {
+                finding["verdict"] = json!("unverified");
+                finding
+            })
+            .collect::<Vec<_>>()
+    };
 
-    let mut finder_groups = Vec::new();
     if !bump_stage(&db, &review_id, "finding", 0, "finding").unwrap_or(false) {
         return;
     }
-    let _ = upsert_card(&db, &parent_id, &review_id, "running", true);
+    let _ = upsert_card(&db, &parent_id, &review_id, true);
 
-    let finders: Vec<_> = planned.iter().filter(|row| row.role == "finder").cloned().collect();
-    if depth == Depth::Thorough && finders.len() > 1 {
-        let results = std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for planned_finder in &finders {
-                let db = Arc::clone(&db);
-                let providers = Arc::clone(&providers);
-                let review_id = review_id.clone();
-                let parent_id = parent_id.clone();
-                let provider = provider.clone();
-                let root = root.clone();
-                let scope_label = scope_label.clone();
-                let files = files.clone();
-                let focus = focus.clone();
-                let cancel = Arc::clone(&cancel);
-                let planned_finder = planned_finder.clone();
-                handles.push(scope.spawn(move || {
-                    run_one_finder(
-                        &db,
-                        &providers,
-                        &review_id,
-                        &parent_id,
-                        &provider,
-                        &root,
-                        &scope_label,
-                        &files,
-                        focus.as_deref(),
-                        &planned_finder,
-                        &cancel,
-                    )
-                }));
-            }
-            handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err(anyhow!("finder thread panicked")))).collect::<Vec<_>>()
-        });
-        let mut any_cancel = false;
-        for (planned_finder, result) in finders.iter().zip(results) {
-            match result {
-                Ok(None) => any_cancel = true,
-                Ok(Some(group)) => {
-                    finder_groups.push(group);
-                    let _ = bump_stage(
-                        &db,
-                        &review_id,
-                        "finding",
-                        planned_finder.stage_index + 1,
-                        "finding",
+    // Every finder runs on its own thread (Thorough's three lenses at once). Each
+    // counts itself finished and refreshes the card, so progress moves while
+    // the others still run.
+    let finders: Vec<_> = planned.iter().filter(|row| row.role == "finder").collect();
+    let results = std::thread::scope(|scope| {
+        let handles = finders
+            .iter()
+            .map(|finder| {
+                let (db, providers, cancel) = (&*db, &*providers, &cancel);
+                let (review_id, parent_id, provider) = (&review_id, &parent_id, &provider);
+                let (root, scope_label, files, focus) = (&root, &scope_label, &files, focus.as_deref());
+                scope.spawn(move || {
+                    let result = run_one_finder(
+                        db, providers, review_id, parent_id, provider, root, scope_label, files, focus, finder, cancel,
                     );
-                }
-                Err(error) => {
-                    let _ = push_warning(
-                        &db,
-                        &review_id,
-                        &format!("Finder ({}) failed: {error}", planned_finder.lens),
-                    );
-                }
-            }
-            let _ = upsert_card(&db, &parent_id, &review_id, "running", false);
-        }
-        if any_cancel || cancelled() {
-            mark_cancelled(&db);
-            return;
-        }
-    } else {
-        for planned_finder in &finders {
-            if cancelled() {
-                mark_cancelled(&db);
-                return;
-            }
-            match run_one_finder(
-                &db,
-                &providers,
-                &review_id,
-                &parent_id,
-                &provider,
-                &root,
-                &scope_label,
-                &files,
-                focus.as_deref(),
-                planned_finder,
-                &cancel,
-            ) {
-                Ok(None) => {
-                    mark_cancelled(&db);
-                    return;
-                }
-                Ok(Some(group)) => {
-                    finder_groups.push(group);
-                }
-                Err(error) => {
-                    fail(&db, &format!("Finder failed: {error}"));
-                    return;
-                }
-            }
-            let _ = bump_stage(
-                &db,
-                &review_id,
-                "finding",
-                planned_finder.stage_index + 1,
-                "finding",
-            );
-            let _ = upsert_card(&db, &parent_id, &review_id, "running", false);
+                    if !matches!(result, Ok(None)) {
+                        let _ = finish_finder(db, review_id);
+                        let _ = upsert_card(db, parent_id, review_id, false);
+                    }
+                    result
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| Err(anyhow!("finder thread panicked"))))
+            .collect::<Vec<_>>()
+    });
+    let (mut finder_groups, mut errors, mut any_cancel) = (Vec::new(), Vec::new(), false);
+    for (finder, result) in finders.iter().zip(results) {
+        match result {
+            Ok(None) => any_cancel = true,
+            Ok(Some(group)) => finder_groups.push(group),
+            Err(error) => errors.push((finder.lens.clone(), error.to_string())),
         }
     }
-
-    if finder_groups.is_empty() {
-        fail(&db, "Every finder failed");
+    if any_cancel || cancelled() {
+        mark_cancelled(&db);
         return;
+    }
+    if finder_groups.is_empty() {
+        let message = match errors.as_slice() {
+            [(_, error)] if finders.len() == 1 => format!("The reviewer failed: {error}"),
+            [(lens, error), ..] => format!("Every finder failed. First error ({lens}): {error}"),
+            [] => "No finder ran".to_owned(),
+        };
+        fail(&db, &message);
+        return;
+    }
+    for (lens, error) in &errors {
+        let _ = push_warning(&db, &review_id, &format!("Finder ({lens}) failed: {error}"));
     }
     let candidates = merge_candidates(finder_groups);
     if !set_findings(&db, &review_id, &candidates, Some(candidates.len()), None).unwrap_or(false) {
@@ -1612,36 +1532,27 @@ fn run_pipeline(
     }
 
     let findings = if depth == Depth::Quick {
+        unverified(candidates)
+    } else if candidates.is_empty() {
+        // Nothing to refute: the verifier would only spend a run confirming an empty list.
         candidates
-            .into_iter()
-            .map(|mut f| {
-                f["verdict"] = json!("unverified");
-                f
-            })
-            .collect::<Vec<_>>()
     } else {
         if cancelled() {
             mark_cancelled(&db);
             return;
         }
-        if !bump_stage(&db, &review_id, "verifying", depth.stages_total() - 1, "verifying").unwrap_or(false) {
+        if !bump_stage(&db, &review_id, "verifying", finders.len() as i64, "verifying").unwrap_or(false) {
             return;
         }
-        let _ = upsert_card(&db, &parent_id, &review_id, "running", true);
+        let _ = upsert_card(&db, &parent_id, &review_id, true);
         match planned.iter().find(|row| row.role == "verifier") {
             None => {
                 let _ = push_warning(&db, &review_id, "Verifier session was not prepared");
-                candidates
-                    .into_iter()
-                    .map(|mut f| {
-                        f["verdict"] = json!("unverified");
-                        f
-                    })
-                    .collect::<Vec<_>>()
+                unverified(candidates)
             }
             Some(verifier) => {
                 let prompt = build_verifier_prompt(&root, &scope_label, &files, &candidates, focus.as_deref());
-                match (|| -> Result<Vec<Value>> {
+                match (|| -> Result<Option<Vec<Value>>> {
                     crate::service::connect_chat_session(&db, &providers, &verifier.session_id)?;
                     apply_read_only_after_connect(&providers, &verifier.session_id, &provider);
                     let result = crate::service::send_chat_message(
@@ -1663,16 +1574,17 @@ fn run_pipeline(
                         )?;
                         Ok(())
                     })?;
-                    let answer = wait_for_answer(&db, &verifier.session_id, &turn, &cancel, &parent_id, &review_id)?
-                        .ok_or_else(|| anyhow!("cancelled"))?;
+                    let Some(answer) = wait_for_answer(&db, &verifier.session_id, &turn, &cancel, &parent_id, &review_id)? else {
+                        return Ok(None);
+                    };
                     let (parsed, unparsed) = agent_review::parse_answer(&root, &answer);
                     if unparsed {
                         Err(anyhow!("unparsed verifier answer"))
                     } else {
-                        Ok(parsed.unwrap_or_default())
+                        Ok(Some(parsed.unwrap_or_default()))
                     }
                 })() {
-                    Ok(verified) => {
+                    Ok(Some(verified)) => {
                         let (findings, rejected) = apply_verifier(&candidates, &verified);
                         if !set_findings(&db, &review_id, &findings, Some(candidates.len()), Some(rejected))
                             .unwrap_or(false)
@@ -1681,19 +1593,17 @@ fn run_pipeline(
                         }
                         findings
                     }
-                    Err(error) if error.to_string() == "cancelled" => {
+                    Ok(None) => {
+                        mark_cancelled(&db);
+                        return;
+                    }
+                    Err(_) if cancelled() => {
                         mark_cancelled(&db);
                         return;
                     }
                     Err(error) => {
                         let _ = push_warning(&db, &review_id, &format!("Verifier failed: {error}"));
-                        candidates
-                            .into_iter()
-                            .map(|mut f| {
-                                f["verdict"] = json!("unverified");
-                                f
-                            })
-                            .collect()
+                        unverified(candidates)
                     }
                 }
             }
@@ -1729,31 +1639,31 @@ fn run_pipeline(
         return;
     }
     if bump_stage(&db, &review_id, "done", depth.stages_total(), "done").unwrap_or(false) {
-        let _ = upsert_card(&db, &parent_id, &review_id, "completed", true);
+        let _ = upsert_card(&db, &parent_id, &review_id, true);
     }
+    let _ = stop_reviewers(&db, &providers, &review_id, false);
 }
+
+/// Most reviewer items one transcript read returns. Each reviewer keeps an equal
+/// share of its newest items, so a long finder never hides the verifier.
+const TRANSCRIPT_ITEMS: usize = 500;
 
 pub fn read_session_transcript(db: &Database, parent: &str, key: &str) -> Result<Value> {
     let review_id = key.strip_prefix("review:").ok_or_else(|| fault("invalid_request"))?;
-    let (owned, rev, rows) = db.transaction(|tx| {
-        let owner: Option<String> = tx
+    let (rev, ended, rows) = db.transaction(|tx| {
+        let review: Option<(String, i64, String)> = tx
             .query_row(
-                "SELECT session_id FROM code_reviews WHERE id=?",
+                "SELECT session_id, card_rev, state FROM code_reviews WHERE id=?",
                 [review_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let Some(owner) = owner else {
+        // Only the chat that owns the review may read its reviewers.
+        let Some((_, rev, state)) = review.filter(|(owner, _, _)| owner == parent) else {
             return Err(fault("invalid_request"));
         };
-        if owner != parent {
-            return Err(fault("invalid_request"));
-        }
-        let rev: i64 = tx
-            .query_row("SELECT card_rev FROM code_reviews WHERE id=?", [review_id], |r| r.get(0))
-            .unwrap_or(0);
         let mut statement = tx.prepare(
-            "SELECT session_id, role, lens, stage_index FROM code_review_sessions WHERE review_id=? ORDER BY stage_index ASC, session_id ASC",
+            "SELECT crs.session_id, crs.role, crs.lens, crs.stage_index, s.created_at FROM code_review_sessions crs JOIN sessions s ON s.id=crs.session_id WHERE crs.review_id=? ORDER BY crs.stage_index ASC, crs.session_id ASC",
         )?;
         let rows = statement
             .query_map([review_id], |r| {
@@ -1762,34 +1672,39 @@ pub fn read_session_transcript(db: &Database, parent: &str, key: &str) -> Result
                     r.get::<_, String>(1)?,
                     r.get::<_, Option<String>>(2)?,
                     r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok((owner, rev, rows))
+        Ok((rev, !matches!(state.as_str(), "preparing" | "finding" | "verifying"), rows))
     })?;
-    let _ = owned;
-    let mut items = Vec::new();
-    for (session_id, role, lens, stage_index) in rows {
-        let label = match (role.as_str(), lens.as_deref()) {
+    let share = TRANSCRIPT_ITEMS / rows.len().max(1);
+    let (mut items, mut truncated) = (Vec::new(), false);
+    for (session_id, role, lens, stage_index, created_at) in rows {
+        let mut child_items = db.chat_items(&session_id).unwrap_or_default();
+        if child_items.len() > share {
+            child_items.drain(..child_items.len() - share);
+            truncated = true;
+        }
+        let mut label = match (role.as_str(), lens.as_deref()) {
             ("verifier", _) => "Stage: verifying".to_owned(),
             (_, Some(lens)) => format!("Stage: finding · {lens}"),
             _ => format!("Stage: finding · {stage_index}"),
         };
+        if ended && child_items.is_empty() {
+            label.push_str(" · not run");
+        }
         items.push(json!({
             "id": format!("{parent}:system:review-stage:{review_id}:{stage_index}:{session_id}"),
             "role": "system",
             "parts": [{"type":"text","text": label}],
-            "createdAt": Utc::now().to_rfc3339(),
+            "createdAt": created_at,
         }));
-        let child_items = db.chat_items(&session_id).unwrap_or_default();
         for item in child_items {
             items.push(serde_json::to_value(item)?);
-            if items.len() >= 500 {
-                return Ok(json!({"items": items, "rev": rev, "truncated": true, "source": "session"}));
-            }
         }
     }
-    Ok(json!({"items": items, "rev": rev, "truncated": false, "source": "session"}))
+    Ok(json!({"items": items, "rev": rev, "truncated": truncated, "source": "session"}))
 }
 
 pub fn dispatch(
@@ -1838,9 +1753,9 @@ pub fn dispatch(
                 // Mark cancelled before stopping reviewers so a stuck provider
                 // stop cannot leave the review active forever.
                 if cancel_review(db, &request.review_id)? {
-                    upsert_card(db, &request.session_id, &request.review_id, "cancelled", true)?;
+                    upsert_card(db, &request.session_id, &request.review_id, true)?;
                 }
-                let _ = stop_reviewers(db, providers, &request.review_id);
+                let _ = stop_reviewers(db, providers, &request.review_id, true);
             }
             db.complete_operation(&request.operation_id, method, &Value::Null)?;
             Ok(Value::Null)
@@ -1918,74 +1833,66 @@ pub fn dispatch(
                 )?;
                 Ok(())
             })?;
-            upsert_card(db, &session.id, &review_id, "running", true)?;
-            let mut planned = Vec::new();
-            for (index, lens) in request.depth.lenses().into_iter().enumerate() {
-                let reviewer = create_reviewer_session(
-                    db,
-                    &session,
-                    &cwd,
-                    &request.provider,
-                    &format!("Code review · {lens}"),
-                    &format!("{}:finder:{index}", request.operation_id),
-                    create,
-                )?;
-                if let Err(error) = stage_read_only(db, providers, &reviewer, &request.provider) {
-                    let _ = push_warning(db, &review_id, &format!("Could not stage read-only mode: {error}"));
+            upsert_card(db, &session.id, &review_id, true)?;
+            // The review row exists from here on: any failure must end it, or it
+            // would block every later review of this chat as `review_active`.
+            let prepared = (|| -> Result<Vec<PlannedSession>> {
+                let mut stages: Vec<(&'static str, String, i64)> = request
+                    .depth
+                    .lenses()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, lens)| ("finder", lens.to_owned(), index as i64))
+                    .collect();
+                if request.depth != Depth::Quick {
+                    stages.push(("verifier", "verify".into(), request.depth.stages_total() - 1));
                 }
-                if let Some(model) = &request.model {
-                    stage_catalog_selection(db, &request.provider, "model", model, &reviewer)?;
+                let mut planned = Vec::new();
+                for (role, lens, stage_index) in stages {
+                    let (title, operation) = if role == "verifier" {
+                        ("Code review · verify".to_owned(), format!("{}:verifier", request.operation_id))
+                    } else {
+                        (format!("Code review · {lens}"), format!("{}:finder:{stage_index}", request.operation_id))
+                    };
+                    let reviewer = create_reviewer_session(db, &session, &cwd, &request.provider, &title, &operation, create)?;
+                    // Mark it a reviewer before staging: it is hidden and
+                    // tool-restricted even if staging fails.
+                    db.transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO code_review_sessions(review_id,session_id,role,lens,stage_index) VALUES (?,?,?,?,?)",
+                            params![review_id, reviewer, role, lens, stage_index],
+                        )?;
+                        tx.execute(
+                            "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
+                            params![json!({"sessionId":reviewer,"kind":"session.codeReview"}).to_string(), Utc::now().to_rfc3339()],
+                        )?;
+                        Ok(())
+                    })?;
+                    if let Err(error) = stage_read_only(db, providers, &reviewer, &request.provider) {
+                        let _ = push_warning(db, &review_id, &format!("Could not stage read-only mode: {error}"));
+                    }
+                    if let Some(model) = &request.model {
+                        stage_catalog_selection(db, &request.provider, "model", model, &reviewer)?;
+                    }
+                    if let Some(thinking) = &request.thinking {
+                        stage_catalog_selection(db, &request.provider, "thinking", thinking, &reviewer)?;
+                    }
+                    planned.push(PlannedSession { session_id: reviewer, role, lens, stage_index });
                 }
-                if let Some(thinking) = &request.thinking {
-                    stage_catalog_selection(db, &request.provider, "thinking", thinking, &reviewer)?;
-                }
-                db.transaction(|tx| {
-                    tx.execute(
-                        "INSERT INTO code_review_sessions(review_id,session_id,role,lens,stage_index) VALUES (?,?,?,?,?)",
-                        params![review_id, reviewer, "finder", lens, index as i64],
-                    )?;
-                    Ok(())
-                })?;
-                planned.push(PlannedSession {
-                    session_id: reviewer,
-                    role: "finder",
-                    lens: lens.to_owned(),
-                    stage_index: index as i64,
-                });
-            }
-            if request.depth != Depth::Quick {
-                let verifier = create_reviewer_session(
-                    db,
-                    &session,
-                    &cwd,
-                    &request.provider,
-                    "Code review · verify",
-                    &format!("{}:verifier", request.operation_id),
-                    create,
-                )?;
-                let _ = stage_read_only(db, providers, &verifier, &request.provider);
-                if let Some(model) = &request.model {
-                    stage_catalog_selection(db, &request.provider, "model", model, &verifier)?;
-                }
-                if let Some(thinking) = &request.thinking {
-                    stage_catalog_selection(db, &request.provider, "thinking", thinking, &verifier)?;
-                }
-                let stage_index = request.depth.stages_total() - 1;
-                db.transaction(|tx| {
-                    tx.execute(
-                        "INSERT INTO code_review_sessions(review_id,session_id,role,lens,stage_index) VALUES (?,?,?,?,?)",
-                        params![review_id, verifier, "verifier", "verify", stage_index],
-                    )?;
-                    Ok(())
-                })?;
-                planned.push(PlannedSession {
-                    session_id: verifier,
-                    role: "verifier",
-                    lens: "verify".into(),
-                    stage_index,
-                });
-            }
+                Ok(planned)
+            })();
             let result = json!({"reviewId": review_id, "itemId": item_id});
+            let planned = match prepared {
+                Ok(planned) => planned,
+                Err(error) => {
+                    // The card reports it; the dialog sees a started review.
+                    if fail_review(db, &review_id, &format!("The review could not start: {error}"))? {
+                        upsert_card(db, &session.id, &review_id, true)?;
+                    }
+                    db.complete_operation(&request.operation_id, method, &result)?;
+                    return Ok(result);
+                }
+            };
             db.complete_operation(&request.operation_id, method, &result)?;
             let cancel = Arc::new(Mutex::new(false));
             if let Ok(mut map) = cancel_flags().lock() {
@@ -2024,15 +1931,8 @@ pub fn dispatch(
                     }
                 });
             if let Err(error) = spawned {
-                if bump_stage(db, &review_id, "done", 0, "failed")? {
-                    let _ = db.transaction(|tx| {
-                        tx.execute(
-                            "UPDATE code_reviews SET error=?, updated_at=? WHERE id=? AND state='failed'",
-                            params![format!("The review could not start: {error}"), Utc::now().to_rfc3339(), review_id],
-                        )?;
-                        Ok(())
-                    });
-                    upsert_card(db, &session.id, &review_id, "failed", true)?;
+                if fail_review(db, &review_id, &format!("The review could not start: {error}"))? {
+                    upsert_card(db, &session.id, &review_id, true)?;
                 }
                 if let Ok(mut map) = cancel_flags().lock() {
                     map.remove(&review_id);

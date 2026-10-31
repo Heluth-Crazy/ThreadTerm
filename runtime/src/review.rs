@@ -1241,12 +1241,10 @@ pub fn capture_before_turn(
     operation_id: &str,
     text: &str,
 ) -> Option<String> {
-    // Code-review finder/verifier turns do not need parent-style checkpoints;
-    // capturing them under the send worker lock stalls the whole review.
-    if operation_id.contains(":send:finder:")
-        || operation_id.contains(":send:verifier")
-        || crate::agent_review::is_reviewer(db, session_id).unwrap_or(false)
-    {
+    // Code Review finders and verifiers are read-only and never reverted, so
+    // their turns skip the worktree snapshot; parallel finders would otherwise
+    // each capture the same worktree before they start.
+    if crate::code_review::is_hidden_reviewer(db, session_id).unwrap_or(false) {
         return None;
     }
     let trace_timer = crate::send_trace::Timer::start();
