@@ -212,6 +212,8 @@ pub fn reconcile_interrupted(db: &Database) -> Result<usize> {
     for (id, parent) in &rows {
         let _ = upsert_card(db, parent, id, true);
     }
+    // No review runs at startup, so every copy left by an earlier run is stale.
+    remove_tree(&snapshot_root(db));
     Ok(rows.len())
 }
 
@@ -284,6 +286,117 @@ fn read_only_kind(provider: &str) -> &'static str {
     match provider {
         "codex" | "claude" | "grok" => "enforced",
         _ => "requested",
+    }
+}
+
+/// An agent that cannot be locked read-only reviews a throwaway copy instead of the
+/// user's files, so it can run without asking for every command.
+fn isolates(provider: &str) -> bool {
+    read_only_kind(provider) == "requested"
+}
+
+/// Copies of reviewed code live beside the database, one folder per review.
+pub(crate) fn snapshot_root(db: &Database) -> PathBuf {
+    db.path().parent().unwrap_or_else(|| Path::new(".")).join("review-snapshots")
+}
+
+pub(crate) fn snapshot_dir(db: &Database, review_id: &str) -> PathBuf {
+    snapshot_root(db).join(review_id)
+}
+
+/// Bounds for copying uncommitted work into a copy; beyond them the review asks as before.
+const SNAPSHOT_FILES: usize = 20_000;
+const SNAPSHOT_BYTES: u64 = 512 * 1024 * 1024;
+
+/// A throwaway copy of `root` at the state under review: a shared local clone checked out
+/// at the same commit, with the same branch, remote-tracking and tag refs but no remotes
+/// (a reviewer has nowhere to push), plus every uncommitted and untracked file.
+pub(crate) fn create_snapshot(root: &Path, dir: &Path) -> Result<()> {
+    use crate::git_read::{git_text, run_git, LOCAL_TIMEOUT, NETWORK_TIMEOUT};
+    if !remove_tree(dir) {
+        return Err(anyhow!("an earlier copy could not be removed"));
+    }
+    fs::create_dir_all(dir.parent().unwrap_or(dir))?;
+    let (source, target) = (root.to_string_lossy().into_owned(), dir.to_string_lossy().into_owned());
+    // A clone and checkout of a large tree can outlast the 30 s budget of a read.
+    run_git(root, &["clone", "--shared", "--no-checkout", "--quiet", ".", &target], &[], None, NETWORK_TIMEOUT)?;
+    run_git(dir, &["remote", "remove", "origin"], &[], None, LOCAL_TIMEOUT)?;
+    run_git(
+        dir,
+        &["fetch", "--quiet", "--update-head-ok", &source, "+refs/heads/*:refs/heads/*", "+refs/remotes/*:refs/remotes/*", "+refs/tags/*:refs/tags/*"],
+        &[],
+        None,
+        NETWORK_TIMEOUT,
+    )?;
+    let head = git_text(root, &["rev-parse", "HEAD"])?.trim().to_owned();
+    match git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).map(|name| name.trim().to_owned()) {
+        Ok(branch) if !branch.is_empty() => run_git(dir, &["checkout", "--quiet", "--force", &branch], &[], None, NETWORK_TIMEOUT)?,
+        _ => run_git(dir, &["checkout", "--quiet", "--force", "--detach", &head], &[], None, NETWORK_TIMEOUT)?,
+    };
+    let (mut files, mut bytes) = (0usize, 0u64);
+    for path in status_paths(root, true)? {
+        let (from, to) = (root.join(&path), dir.join(&path));
+        match fs::metadata(&from) {
+            Ok(meta) if meta.is_file() => {
+                files += 1;
+                bytes += meta.len();
+                if files > SNAPSHOT_FILES || bytes > SNAPSHOT_BYTES {
+                    return Err(anyhow!("there are too many uncommitted files to copy"));
+                }
+                if let Some(parent) = to.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&from, &to)?;
+            }
+            // A nested repository or submodule entry is not copied.
+            Ok(_) => {}
+            Err(_) => {
+                let _ = fs::remove_file(&to);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes a review's copy once its reviewers have stopped. A provider process can hold
+/// the folder briefly after stopping; a copy left behind goes at the next startup.
+fn remove_snapshot(dir: &Path) {
+    for _ in 0..20 {
+        if remove_tree(dir) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Git leaves some object files read-only, which Windows refuses to delete.
+fn remove_tree(dir: &Path) -> bool {
+    if !dir.exists() || fs::remove_dir_all(dir).is_ok() {
+        return true;
+    }
+    clear_readonly(dir);
+    fs::remove_dir_all(dir).is_ok()
+}
+
+/// Never follows a link or junction out of the copy: only real folders are entered.
+fn clear_readonly(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => clear_readonly(&path),
+            Ok(kind) if kind.is_file() => {
+                if let Ok(meta) = fs::metadata(&path) {
+                    let mut permissions = meta.permissions();
+                    if permissions.readonly() {
+                        #[allow(clippy::permissions_set_readonly_false)]
+                        permissions.set_readonly(false);
+                        let _ = fs::set_permissions(&path, permissions);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1152,6 +1265,23 @@ fn wait_for_answer(
     Err(anyhow!("The reviewer timed out"))
 }
 
+/// The chat's folder inside the copy (the copy's root when the folder is not there).
+fn snapshot_cwd(root: &Path, cwd: &str, dir: &Path) -> String {
+    let cwd = PathBuf::from(cwd);
+    let cwd = crate::git_read::plain_path(&cwd.canonicalize().unwrap_or(cwd));
+    let inside = cwd.strip_prefix(root).ok().map(|relative| dir.join(relative)).filter(|path| path.is_dir());
+    inside.unwrap_or_else(|| dir.to_path_buf()).to_string_lossy().into_owned()
+}
+
+/// In a copy the reviewer stops asking: Kimi's never-ask mode. Pi never asks, and
+/// OpenCode keeps its own permission settings, so it may still ask.
+pub(crate) fn stage_never_ask(db: &Database, reviewer: &str, provider: &str) -> Result<()> {
+    if provider == "kimi" {
+        crate::delegation::stage_authority(db, reviewer, &[("mode", "yolo")])?;
+    }
+    Ok(())
+}
+
 fn stage_read_only(db: &Database, providers: &Providers, reviewer: &str, provider: &str) -> Result<()> {
     match provider {
         "codex" => {
@@ -1208,6 +1338,8 @@ fn stop_reviewers(db: &Database, providers: &Arc<Providers>, review_id: &str, ca
     }
     // Provider cancel/stop can block on a worker still inside send/capture; run
     // them off-thread so the review can already be terminal and waiters exit.
+    // An isolated review's copy goes once its reviewers have let go of it.
+    let snapshot = snapshot_dir(db, review_id);
     if !reviewers.is_empty() {
         let providers = Arc::clone(providers);
         let _ = std::thread::Builder::new()
@@ -1219,7 +1351,10 @@ fn stop_reviewers(db: &Database, providers: &Arc<Providers>, review_id: &str, ca
                     }
                     let _ = providers.chat_stop(&reviewer);
                 }
+                remove_snapshot(&snapshot);
             });
+    } else {
+        remove_snapshot(&snapshot);
     }
     Ok(())
 }
@@ -1885,6 +2020,22 @@ pub fn dispatch(
                 if request.depth != Depth::Quick {
                     stages.push(("verifier", "verify".into(), request.depth.stages_total() - 1));
                 }
+                // An agent that cannot be locked read-only reviews a copy and stops asking;
+                // without a copy it keeps asking before commands, as before.
+                let isolated_cwd = if isolates(&request.provider) {
+                    let dir = snapshot_dir(db, &review_id);
+                    match create_snapshot(&root, &dir) {
+                        Ok(()) => Some(snapshot_cwd(&root, &cwd, &dir)),
+                        Err(error) => {
+                            remove_snapshot(&dir);
+                            let _ = push_warning(db, &review_id, &format!("Could not make a copy to review, so the reviewer asks before running commands: {error}"));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                let reviewer_cwd = isolated_cwd.clone().unwrap_or_else(|| cwd.clone());
                 let mut planned = Vec::new();
                 for (role, lens, stage_index) in stages {
                     let (title, operation) = if role == "verifier" {
@@ -1892,7 +2043,7 @@ pub fn dispatch(
                     } else {
                         (format!("Code review · {lens}"), format!("{}:finder:{stage_index}", request.operation_id))
                     };
-                    let reviewer = create_reviewer_session(db, &session, &cwd, &request.provider, &title, &operation, create)?;
+                    let reviewer = create_reviewer_session(db, &session, &reviewer_cwd, &request.provider, &title, &operation, create)?;
                     // Mark it a reviewer before staging: it is hidden and
                     // tool-restricted even if staging fails.
                     db.transaction(|tx| {
@@ -1908,6 +2059,9 @@ pub fn dispatch(
                     })?;
                     if let Err(error) = stage_read_only(db, providers, &reviewer, &request.provider) {
                         let _ = push_warning(db, &review_id, &format!("Could not stage read-only mode: {error}"));
+                    }
+                    if isolated_cwd.is_some() {
+                        stage_never_ask(db, &reviewer, &request.provider)?;
                     }
                     if let Some(model) = &request.model {
                         stage_catalog_selection(db, &request.provider, "model", model, &reviewer)?;

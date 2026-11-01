@@ -250,7 +250,7 @@ export function CodeReviewDialog({ session, leaseEpoch, initialFocus = "", copy,
       </label>
 
       {selected?.readOnly === "requested" && <p className="code-review-hint" data-testid="code-review-readonly-note">
-        {copy("This agent is asked not to edit files but can't be locked to read-only.", "已要求此代理不编辑文件，但无法强制锁定为只读。")}
+        {copy("This agent can't be locked to read-only, so it reviews a copy of your code instead of your files.", "此代理无法锁定为只读，因此会审查代码副本，而不是你的文件。")}
       </p>}
     </>}
     {issue && <p className="surface-error" role="alert" data-testid="code-review-error">{issue}</p>}

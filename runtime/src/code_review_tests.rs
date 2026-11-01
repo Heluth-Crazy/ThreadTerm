@@ -1145,3 +1145,86 @@ fn a_running_reviewers_approval_is_answered_through_the_chat_that_owns_the_revie
         .unwrap();
     assert_eq!(owner_of(&owner, "reviewer-turn", "1"), None, "a finished review no longer routes approvals");
 }
+
+fn git_out(cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+#[test]
+fn a_review_copy_holds_the_reviewed_state_and_has_nowhere_to_push() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("gone.txt"), "tracked\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "second"]);
+    git(&repo, &["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    fs::remove_file(repo.join("gone.txt")).unwrap();
+    fs::create_dir_all(repo.join("new/deep")).unwrap();
+    fs::write(repo.join("new/deep/untracked.txt"), "fresh\n").unwrap();
+    let copy = code_review::snapshot_dir(&fixture.db, "review-copy");
+    code_review::create_snapshot(&repo, &copy).unwrap();
+    assert_eq!(git_out(&copy, &["rev-parse", "HEAD"]), git_out(&repo, &["rev-parse", "HEAD"]));
+    assert_eq!(git_out(&copy, &["symbolic-ref", "--short", "HEAD"]), git_out(&repo, &["symbolic-ref", "--short", "HEAD"]));
+    assert_eq!(fs::read_to_string(copy.join("tracked.txt")).unwrap(), "changed\n");
+    assert!(!copy.join("gone.txt").exists(), "a deleted file stays deleted in the copy");
+    assert_eq!(fs::read_to_string(copy.join("new/deep/untracked.txt")).unwrap(), "fresh\n");
+    assert_eq!(git_out(&copy, &["remote"]), "", "the copy has no remote to push to");
+    assert!(git_out(&copy, &["status", "--porcelain"]).contains("tracked.txt"), "git sees the same uncommitted change");
+    // The user's repository is untouched.
+    assert_eq!(fs::read_to_string(repo.join("tracked.txt")).unwrap(), "changed\n");
+    assert_eq!(git_out(&repo, &["remote"]), "origin");
+}
+
+#[test]
+fn an_isolating_review_runs_its_reviewers_in_a_copy_that_is_removed_after() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    let parent = fixture.session(&repo, "isolated-parent");
+    let create = fixture.create();
+    fixture.push_answer(json!([]));
+    let started = code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.start",
+        &json!({"sessionId":parent,"provider":"reviewer","depth":"quick","scope":{"kind":"uncommitted"},"operationId":"isolated","leaseEpoch":1}),
+        &|_, _| Ok(()),
+        &create,
+    )
+    .unwrap();
+    let review = started["reviewId"].as_str().unwrap().to_owned();
+    let copy = code_review::snapshot_dir(&fixture.db, &review);
+    let reviewer: String = fixture
+        .db
+        .transaction(|tx| Ok(tx.query_row("SELECT session_id FROM code_review_sessions WHERE review_id=?", [&review], |r| r.get(0))?))
+        .unwrap();
+    let session = fixture.db.session_by_id(&reviewer).unwrap().unwrap();
+    let cwd = crate::delegation::session_cwd(&fixture.db, &session).unwrap();
+    assert!(Path::new(&cwd).starts_with(&copy), "the reviewer works in the copy, not the repo: {cwd}");
+    let _ = wait_done(&fixture.db, &review);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while copy.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!copy.exists(), "the copy is removed once the review ends");
+}
+
+#[test]
+fn kimi_reviewers_in_a_copy_are_staged_never_ask_and_startup_sweeps_old_copies() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    let reviewer = fixture.session(&repo, "never-ask");
+    code_review::stage_never_ask(&fixture.db, &reviewer, "kimi").unwrap();
+    let staged = fixture.db.pending_fork_options(&reviewer).unwrap();
+    assert!(staged.as_array().unwrap().iter().any(|row| row["id"] == "mode" && row["value"] == "yolo"), "{staged}");
+    let other = fixture.session(&repo, "never-ask-other");
+    code_review::stage_never_ask(&fixture.db, &other, "opencode").unwrap();
+    assert!(!fixture.db.pending_fork_options(&other).unwrap().as_array().is_some_and(|rows| rows.iter().any(|row| row["id"] == "mode")));
+    let stale = code_review::snapshot_dir(&fixture.db, "left-behind");
+    fs::create_dir_all(stale.join("sub")).unwrap();
+    code_review::reconcile_interrupted(&fixture.db).unwrap();
+    assert!(!code_review::snapshot_root(&fixture.db).exists(), "startup removes copies an earlier run left behind");
+}
