@@ -14,10 +14,10 @@ const titles: Record<string, string> = {
   root: 'Harden workspace validation', claude: 'Inspect validation callers', grok: 'Check provider error paths',
   kimi: 'Review protocol contracts', 'live-child': 'Monitor verification run',
 };
-const session = (id: string, provider: Session['provider'], seconds = 0, parent?: string): Session => ({
+const session = (id: string, provider: Session['provider'], seconds = 0, parent?: string, outcome?: string): Session => ({
   id, provider, title: titles[id] ?? 'Investigate validation behavior', mode: 'chat', projectId: 'task-map-project', status: 'idle',
   createdAt: at(seconds), updatedAt: at(seconds + 40),
-  ...(parent ? { delegation: { id: `delegation-${id}`, parentSessionId: parent, workspace: 'shared', state: 'completed' } } : {}),
+  ...(parent ? { delegation: { id: `delegation-${id}`, parentSessionId: parent, workspace: 'shared', state: 'completed', ...(outcome ? { outcome } : {}) } } : {}),
 });
 const item = (id: string, seconds: number, turnId: string, role: ChatItem['role'], parts: ChatPart[], extra: Partial<ChatItem> = {}): ChatItem => ({
   id, role, parts, turnId, createdAt: at(seconds), ...extra,
@@ -51,9 +51,10 @@ const approval = (): ChatPart => ({ type: 'approval', approvalId: 'approval-publ
 
 function delegation(): TaskMapFixture {
   const root = { ...session('root', 'codex'), status: 'waiting' as const };
-  const claude = session('claude', 'claude', 5, root.id);
+  const claude = session('claude', 'claude', 5, root.id, 'All provider callers are covered.');
   claude.delegation = { ...claude.delegation!, workspace: 'worktree', branch: 'task-map/research' };
-  const kimi = session('kimi', 'kimi', 6, root.id), grok = session('grok', 'grok', 15, claude.id);
+  const kimi = session('kimi', 'kimi', 6, root.id, 'The protocol rejects empty session ids.');
+  const grok = session('grok', 'grok', 15, claude.id, 'Provider error handling is consistent.');
   const rootItems: ChatItem[] = [
     item('root-prompt-1', 0, 'turn-1', 'user', [text('Map the validation flow\nInclude delegated work and changed files.')]),
     item('root-plan', 1, 'turn-1', 'assistant', [{ type: 'plan', data: { entries: [
@@ -163,7 +164,7 @@ export function taskMapFixtureLastTime(fixture: TaskMapFixture): number {
 /** Cross-turn delegated work, overlapping branches, anchored native work and an orphan branch. */
 function nested(): TaskMapFixture {
   const fixture = delegation();
-  const child = session('unanchored', 'kimi', 70, 'root');
+  const child = session('unanchored', 'kimi', 70, 'root', 'Imported delegate history is available.');
   fixture.sessions.push(child);
   fixture.items.set(child.id, [item('unanchored-prompt', 70, 'orphan-turn', 'user', [text('Inspect an imported delegate without a start record.')]),
     item('unanchored-read', 71, 'orphan-turn', 'assistant', [read('docs/import.md')]),
@@ -182,8 +183,10 @@ function nested(): TaskMapFixture {
 
 /** Two concurrent siblings, then a later branch that can reuse their column. */
 function parallel(): TaskMapFixture {
-  const root = session('root', 'codex'), claude = session('claude', 'claude', 5, root.id);
-  const kimi = session('kimi', 'kimi', 6, root.id), grok = session('grok', 'grok', 65, root.id);
+  const root = session('root', 'codex');
+  const claude = session('claude', 'claude', 5, root.id, 'Validation callers are covered.');
+  const kimi = session('kimi', 'kimi', 6, root.id, 'Protocol contracts and the plan are updated.');
+  const grok = session('grok', 'grok', 65, root.id, 'Provider errors are covered.');
   const subagent = native('completed', 4);
   subagent.data = { ...subagent.data as object, startedAt: at(68), endedAt: at(82) };
   return { rootSessionId: root.id, sessions: [root, claude, kimi, grok],

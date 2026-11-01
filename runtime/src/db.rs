@@ -87,6 +87,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS deferred_codex_launches (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, phase TEXT NOT NULL, error_code TEXT, error_message TEXT, cwd TEXT);
              CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS chat_items_session ON chat_items(session_id, created_at, id);
+             CREATE INDEX IF NOT EXISTS group_reply_turn_items ON chat_items(session_id,turn_id,created_at);
              CREATE TABLE IF NOT EXISTS chat_repair_backups (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, created_at TEXT NOT NULL, items_json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS subagent_items (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, subagent_key TEXT NOT NULL, item_id TEXT NOT NULL, seq INTEGER NOT NULL, rev INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, subagent_key, item_id));
              CREATE INDEX IF NOT EXISTS subagent_items_rev ON subagent_items(session_id, subagent_key, rev);
@@ -2678,24 +2679,124 @@ fn session_organization(conn: &Connection, id: &str) -> Result<SessionOrganizati
     data.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
         .unwrap_or_else(|| Ok(SessionOrganization::default()))
 }
+/// Card preview length: characters, not bytes, so multibyte text stays safe.
+const DELEGATION_OUTCOME_CHARS: usize = 280;
+/// Newest-first bound for the delegated-turn text read. Never scan the whole transcript.
+const DELEGATION_OUTCOME_ITEM_BOUND: i64 = 32;
+
 fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDelegation>> {
-    conn.query_row(
-        "SELECT id,parent_session_id,workspace,branch,state,user_messages,authority FROM delegations WHERE child_session_id=?",
-        [id],
-        |row| {
-            Ok(SessionDelegation {
-                id: row.get(0)?,
-                parent_session_id: row.get(1)?,
-                workspace: row.get(2)?,
-                branch: row.get(3)?,
-                state: row.get(4)?,
-                user_messages: row.get(5)?,
-                authority: row.get(6)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(Into::into)
+    let Some((delegation_id, parent_session_id, workspace, branch, state, user_messages, authority, turn_id, result, error)) =
+        conn.query_row(
+            "SELECT id,parent_session_id,workspace,branch,state,user_messages,authority,turn_id,result,error FROM delegations WHERE child_session_id=?",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, u32>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let outcome = delegation_outcome(conn, id, &state, turn_id.as_deref(), result.as_deref(), error.as_deref())?;
+    Ok(Some(SessionDelegation {
+        id: delegation_id,
+        parent_session_id,
+        workspace,
+        branch,
+        state,
+        user_messages,
+        authority,
+        outcome,
+    }))
+}
+
+/// Terminal-state preview for a delegate card. Active links have no outcome; later
+/// turns of the child never contribute text (only the bound turn, or the stored result).
+fn delegation_outcome(
+    conn: &Connection,
+    child_session_id: &str,
+    state: &str,
+    turn_id: Option<&str>,
+    result: Option<&str>,
+    error: Option<&str>,
+) -> Result<Option<String>> {
+    if !matches!(state, "completed" | "failed" | "cancelled" | "interrupted") {
+        return Ok(None);
+    }
+    let text = if state == "failed" {
+        match error.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(message) => Some(message.to_owned()),
+            None => delegated_turn_outcome_text(conn, child_session_id, turn_id, result)?,
+        }
+    } else {
+        delegated_turn_outcome_text(conn, child_session_id, turn_id, result)?
+    };
+    Ok(text.map(|value| truncate_delegation_outcome(&value)).filter(|value| !value.is_empty()))
+}
+
+fn delegated_turn_outcome_text(
+    conn: &Connection,
+    child_session_id: &str,
+    turn_id: Option<&str>,
+    result: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(turn) = turn_id {
+        if let Some(text) = bound_turn_assistant_text(conn, child_session_id, turn)? {
+            return Ok(Some(text));
+        }
+    }
+    Ok(result.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned))
+}
+
+/// Newest-first assistant text of the bound turn only. Uses `group_reply_turn_items`
+/// (`session_id, turn_id, created_at`) and stops at the first non-empty text part.
+fn bound_turn_assistant_text(conn: &Connection, child_session_id: &str, turn_id: &str) -> Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT data FROM chat_items WHERE session_id=? AND turn_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+    )?;
+    let rows = statement.query_map(params![child_session_id, turn_id, DELEGATION_OUTCOME_ITEM_BOUND], |row| {
+        row.get::<_, String>(0)
+    })?;
+    for row in rows {
+        let Ok(item) = serde_json::from_str::<ChatItem>(&row?) else {
+            continue;
+        };
+        if item.role != "assistant" {
+            continue;
+        }
+        if let Some(text) = item
+            .parts
+            .iter()
+            .rev()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .map(str::trim)
+            .find(|text| !text.is_empty())
+        {
+            return Ok(Some(text.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
+fn truncate_delegation_outcome(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() > DELEGATION_OUTCOME_CHARS {
+        format!("{}…", trimmed.chars().take(DELEGATION_OUTCOME_CHARS).collect::<String>())
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 fn session_code_review(conn: &Connection, id: &str) -> Result<Option<SessionCodeReview>> {
@@ -5075,6 +5176,167 @@ mod browser_eval_context_tests {
             .transaction(|tx| tx.query_row("SELECT COUNT(*) FROM git_undo", [], |row| row.get(0)).map_err(Into::into))
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+}
+
+#[cfg(test)]
+mod delegation_outcome_tests {
+    use super::*;
+
+    fn delegation_pair(db: &Database, op: &str) -> (Session, Session) {
+        let parent = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: Some("parent"),
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: &format!("{op}-parent"),
+            })
+            .unwrap();
+        let child = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: Some("child"),
+                provider: "claude",
+                mode: "chat",
+                native_id: None,
+                operation_id: &format!("{op}-child"),
+            })
+            .unwrap();
+        (parent, child)
+    }
+
+    fn insert_delegation_row(
+        db: &Database,
+        id: &str,
+        parent: &str,
+        child: &str,
+        turn_id: Option<&str>,
+        state: &str,
+        result: Option<&str>,
+        error: Option<&str>,
+    ) {
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,result,error,created_at,updated_at) VALUES (?,?,?,'claude','shared','C:/fixture',NULL,'work',0,?,?,?,?,?,?,?)",
+                params![id, parent, child, format!("{id}-op"), turn_id, state, result, error, "t", "t"],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn insert_assistant_text(db: &Database, session: &str, item_id: &str, turn_id: &str, created_at: &str, text: &str) {
+        let item = ChatItem {
+            id: item_id.into(),
+            role: "assistant".into(),
+            parts: vec![json!({"type":"text","text":text})],
+            created_at: created_at.into(),
+            turn_id: Some(turn_id.into()),
+            elapsed_ms: None,
+            turn_status: None,
+            turn_origin: None,
+            fork_anchor: None,
+            turn_model: None,
+            turn_usage: None,
+            turn_review: None,
+        };
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,'message',?,?)",
+                params![item.id, session, turn_id, serde_json::to_string(&item)?, created_at],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_completed_delegation_outcome_stays_on_the_bound_turn_after_later_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let (parent, child) = delegation_pair(&db, "bound-turn");
+        insert_delegation_row(&db, "d1", &parent.id, &child.id, Some("bound-turn"), "completed", Some("stored-fallback"), None);
+        insert_assistant_text(&db, &child.id, "bound-answer", "bound-turn", "2026-11-01T00:00:00Z", "Delegated answer");
+        insert_assistant_text(&db, &child.id, "later-answer", "later-turn", "2026-11-01T01:00:00Z", "Later user takeover text");
+        let outcome = db.session_by_id(&child.id).unwrap().unwrap().delegation.unwrap().outcome;
+        assert_eq!(outcome.as_deref(), Some("Delegated answer"));
+    }
+
+    #[test]
+    fn a_failed_delegation_projects_its_error_as_the_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let (parent, child) = delegation_pair(&db, "failed-error");
+        insert_delegation_row(
+            &db,
+            "d-fail",
+            &parent.id,
+            &child.id,
+            Some("bound-turn"),
+            "failed",
+            Some("partial answer"),
+            Some("Authentication required: 403 quota"),
+        );
+        insert_assistant_text(&db, &child.id, "bound-answer", "bound-turn", "2026-11-01T00:00:00Z", "partial answer");
+        let outcome = db.session_by_id(&child.id).unwrap().unwrap().delegation.unwrap().outcome;
+        assert_eq!(outcome.as_deref(), Some("Authentication required: 403 quota"));
+    }
+
+    #[test]
+    fn an_active_delegation_projects_no_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let (parent, child) = delegation_pair(&db, "active");
+        insert_delegation_row(&db, "d-run", &parent.id, &child.id, Some("bound-turn"), "running", None, None);
+        insert_assistant_text(&db, &child.id, "partial", "bound-turn", "2026-11-01T00:00:00Z", "still working");
+        let outcome = db.session_by_id(&child.id).unwrap().unwrap().delegation.unwrap().outcome;
+        assert_eq!(outcome, None);
+    }
+
+    #[test]
+    fn a_legacy_null_turn_id_delegation_projects_the_stored_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let (parent, child) = delegation_pair(&db, "legacy");
+        insert_delegation_row(&db, "d-legacy", &parent.id, &child.id, None, "completed", Some("Legacy stored result"), None);
+        insert_assistant_text(&db, &child.id, "any", "some-turn", "2026-11-01T00:00:00Z", "Unrelated later text");
+        let outcome = db.session_by_id(&child.id).unwrap().unwrap().delegation.unwrap().outcome;
+        assert_eq!(outcome.as_deref(), Some("Legacy stored result"));
+    }
+
+    #[test]
+    fn a_delegation_outcome_truncates_multibyte_text_at_280_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let (parent, child) = delegation_pair(&db, "multibyte");
+        let long: String = "界".repeat(300);
+        insert_delegation_row(&db, "d-mb", &parent.id, &child.id, Some("bound-turn"), "completed", None, None);
+        insert_assistant_text(&db, &child.id, "long", "bound-turn", "2026-11-01T00:00:00Z", &long);
+        let outcome = db.session_by_id(&child.id).unwrap().unwrap().delegation.unwrap().outcome.unwrap();
+        assert_eq!(outcome.chars().count(), 281);
+        assert!(outcome.ends_with('…'));
+        assert_eq!(outcome.chars().take(280).collect::<String>(), "界".repeat(280));
+    }
+
+    #[test]
+    fn a_delegation_bound_turn_outcome_read_uses_the_turn_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let plan: Vec<String> = db
+            .transaction(|tx| {
+                let mut statement = tx.prepare(
+                    "EXPLAIN QUERY PLAN SELECT data FROM chat_items WHERE session_id=? AND turn_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                )?;
+                let rows = statement.query_map(params!["s", "t", DELEGATION_OUTCOME_ITEM_BOUND], |row| row.get::<_, String>(3))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("USING INDEX group_reply_turn_items")),
+            "{plan:?}"
+        );
     }
 }
 

@@ -2055,6 +2055,9 @@
             "writes_in_workspace",
             "full_access"
           ]
+        },
+        "outcome": {
+          "type": "string"
         }
       },
       "required": [

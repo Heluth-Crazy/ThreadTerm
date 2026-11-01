@@ -70,22 +70,18 @@ const now = '2026-10-20T23:07:00Z';
 const session = (id, provider, title, extra = {}) => ({ id, provider, title, mode: 'chat', status: 'idle', createdAt: now, updatedAt: now, projectId: 'p', ...extra });
 const parent = session('parent', 'codex', 'codex-chat-test5');
 const delegate = (id, provider, title, state, extra = {}) => session(id, provider, title, { delegation: { id: 'd-' + id, parentSessionId: 'parent', workspace: 'shared', state, userMessages: 5, ...extra } });
+const drawerOutcome = 'The drawer header repeats the tool name, and failed rows wrap over three lines. Recommend one summary line.';
+const authError = '401: {"message":"Authentication Fails, Your api key: ****rj7a is invalid","type":"authentication_error"}';
 const delegateSets = {
-  mixed: [delegate('g1', 'codex', 'Codex: fix the delegation strip', 'running'), delegate('g2', 'claude', 'Claude: review the tool drawer', 'completed'), delegate('g3', 'pi', 'Pi reads the project README', 'failed')],
-  finished: [delegate('g4', 'pi', 'Pi reads the project README', 'failed'), delegate('g5', 'pi', 'Pi reads README (provider updated)', 'failed')],
+  mixed: [delegate('g1', 'codex', 'Codex: fix the delegation strip', 'running'), delegate('g2', 'claude', 'Claude: review the tool drawer', 'completed', { outcome: drawerOutcome }), delegate('g3', 'pi', 'Pi reads the project README', 'failed', { outcome: authError })],
+  finished: [delegate('g4', 'pi', 'Pi reads the project README', 'failed', { outcome: authError }), delegate('g5', 'pi', 'Pi reads README (provider updated)', 'failed', { outcome: authError })],
 };
-const outcomes = {
-  g2: [{ id: 'x', role: 'assistant', createdAt: now, parts: [{ type: 'text', text: 'The drawer header repeats the tool name, and failed rows wrap over three lines. Recommend one summary line.' }] }],
-  g3: [{ id: 'y', role: 'assistant', createdAt: now, parts: [{ type: 'error', text: '401: {"message":"Authentication Fails, Your api key: ****rj7a is invalid","type":"authentication_error"}' }] }],
-  g4: [{ id: 'y', role: 'assistant', createdAt: now, parts: [{ type: 'error', text: '401: {"message":"Authentication Fails, Your api key: ****rj7a is invalid","type":"authentication_error"}' }] }],
-  g5: [{ id: 'y', role: 'assistant', createdAt: now, parts: [{ type: 'error', text: '401: {"message":"Authentication Fails, Your api key: ****rj7a is invalid","type":"authentication_error"}' }] }],
-};
-window.threadterm = { onEvent: () => () => {}, request: async (method, params) => method === 'chat.read' ? (outcomes[params.sessionId] ?? []) : Promise.reject(Error('Unexpected ' + method)) };
+window.threadterm = { onEvent: () => () => {}, request: async (method) => { throw Error('Unexpected ' + method); } };
 
 const en = (english) => english;
 function Gallery({ open, extra }) {
   return <div className="qa-gallery">
-    {Object.entries(delegateSets).map(([name, base]) => { const delegates = extra && name === 'finished' ? [...base, delegate('g6', 'claude', 'Claude: a new delegate', 'completed')] : base; return <section key={name} data-qa={'delegation-' + name}>
+    {Object.entries(delegateSets).map(([name, base]) => { const delegates = extra && name === 'finished' ? [...base, delegate('g6', 'claude', 'Claude: a new delegate', 'completed', { outcome: drawerOutcome })] : base; return <section key={name} data-qa={'delegation-' + name}>
       <h2>delegation: {name}</h2>
       <div className="qa-chat-frame"><DelegationPanel session={parent} delegates={delegates} onOpenSession={() => {}} copy={en} zh={false} /></div>
     </section>; })}

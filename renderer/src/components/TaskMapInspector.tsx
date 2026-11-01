@@ -7,7 +7,7 @@ import { openAndRevealInChat } from '../chatFlowSync';
 import { formatChatDuration } from '../chatPresentation';
 import { planDataOf, planEntryLabel, planProgress } from '../chatPlan';
 import { approvalData, choiceLabel } from '../chatApproval';
-import { delegationStateLabel, delegateOutcomePreview } from '../delegation';
+import { delegationStateLabel } from '../delegation';
 import { providerLabel } from '../chatConnection';
 import { elapsedMs as subagentElapsedMs, subagentToolCount } from '../subagentActivity';
 import { ChatMarkdown } from './ChatMarkdownExtras';
@@ -149,7 +149,7 @@ function DelegateDetails({ node, sessions, items, copy, zh }: { node: TaskMapNod
   const [all, setAll] = useState(false), child = sessions.find(session => session.id === node.childSessionId);
   if (!child) return <p className="note">{copy('Delegate details are unavailable.', '委派详情不可用。')}</p>;
   const prompt = (items.get(child.id) ?? []).find(item => item.role === 'user')?.parts.map(part => part.text ?? '').join('\n');
-  const outcome = delegateOutcomePreview(items.get(child.id) ?? [], child.delegation?.state === 'failed');
+  const outcome = child.delegation?.outcome;
   return <>
     <Field label={copy('Delegate', '委派代理')}><p><AgentIcon provider={child.provider} size={16} /> {providerLabel(child.provider)} · {delegationStateLabel(child.delegation?.state ?? 'running', zh)}</p><p>{copy('Workspace', '工作区')}: {child.delegation?.workspace === 'worktree' ? copy('Worktree', '工作树') : copy('Shared', '共享')}{child.delegation?.branch && ` · ${child.delegation.branch}`}</p></Field>
     {prompt && <Field label={copy('Task', '任务')}><pre className={`task-map-inspector-pre task-map-inspector-clamped${all ? ' is-expanded' : ''}`}>{prompt}</pre><button type="button" className="btn btn-sm" onClick={() => setAll(value => !value)}>{all ? copy('Show less', '收起') : copy('Show all', '显示全部')}</button></Field>}

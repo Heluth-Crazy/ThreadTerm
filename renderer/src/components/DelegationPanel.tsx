@@ -1,7 +1,7 @@
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import type { Session } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
-import { attachedMessagesLabel, authorityLabel, delegateOutcomePreview, delegationActive, delegationStateLabel, delegationStateSummary, delegationStripVisible } from "../delegation";
+import { attachedMessagesLabel, authorityLabel, delegationActive, delegationStateLabel, delegationStateSummary, delegationStripVisible } from "../delegation";
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import "./delegation-panel.css";
 
@@ -80,20 +80,10 @@ function DelegateCard({ delegate, onOpenSession, copy, zh }: { delegate: Session
   const state = delegate.delegation!.state;
   const active = delegationActive(state);
   const failed = state === "failed";
-  const [preview, setPreview] = useState<string>();
+  const preview = delegate.delegation!.outcome;
   const [issue, setIssue] = useState<string>();
   const [stopping, setStopping] = useState(false);
   const attached = delegate.delegation!.userMessages ? attachedMessagesLabel(delegate.delegation!.userMessages, copy) : undefined;
-  useEffect(() => {
-    if (active) { setPreview(undefined); return; }
-    let disposed = false;
-    // The delegate's answer (or failure) once the delegated turn ended. A preview
-    // needs only the newest bounded page, never the whole transcript.
-    void request("chat.snapshot", { sessionId: delegate.id }).then(snapshot => {
-      if (!disposed) setPreview(delegateOutcomePreview(snapshot.items, failed));
-    }).catch(() => { if (!disposed) setPreview(undefined); });
-    return () => { disposed = true; };
-  }, [delegate.id, active, failed]);
   const stop = () => {
     setStopping(true); setIssue(undefined);
     void request("session.stop", { sessionId: delegate.id, operationId: operationId() })
