@@ -46,7 +46,7 @@ function Fixture(){
 createRoot(document.getElementById('root')).render(<Fixture/>);
 `;
 await build({stdin:{contents:entry,resolveDir:resolve('.'),loader:'tsx'},bundle:true,outfile:join(scratch,'qa.js'),jsx:'automatic',loader:{'.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl'}});
-await writeFile(join(scratch,'index.html'),'<link rel="stylesheet" href="qa.css"><style>html,body,#root,.fixture{height:100%;margin:0}.fixture{display:flex}.fixture>.terminal-wrap{flex:1;min-width:0;min-height:0}</style><div id="root"></div><script src="qa.js"></script>');
+await writeFile(join(scratch,'index.html'),'<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body,#root,.fixture{height:100%;margin:0}.fixture{display:flex}.fixture>.terminal-wrap{flex:1;min-width:0;min-height:0}</style><div id="root"></div><script src="qa.js"></script>');
 const main = `
 import {app,BrowserWindow,ipcMain} from 'electron';
 import {RuntimeClient} from './desktop/src/runtime-client';

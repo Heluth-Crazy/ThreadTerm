@@ -33,6 +33,11 @@ const RUNTIME_READY_TIMEOUT_MS = 12_000;
 const RETRY_DELAY_MS = 400;
 const INITIAL_OUTPUT_CREDIT = 64 * 1024;
 const MAX_OUTPUT_CREDIT = 8 * 1024 * 1024;
+// A view which falls further behind than this is switched to lagging catch-up
+// instead of buffering without bound.  The cap matches the runtime's own credit
+// window (MAX_OUTPUT_CREDIT), so the bytes a view misses while lagging are the
+// same bounded range it re-reads through `terminal.read` to catch up.
+const MAX_CONSUMER_QUEUE_BYTES = 8 * 1024 * 1024;
 const SEND_TRACE_ENV = 'THREADTERM_V3_SEND_TRACE';
 const SEND_TRACE_LOG_FILE = 'desktop-send-trace.log';
 const MAX_CORRELATION_ID_LENGTH = 128;
@@ -165,7 +170,7 @@ interface BrowserControlSession { control: LengthPrefixedSocket; pipe: string; t
 interface BrowserConnectionAttempt { session: BrowserControlSession; connection?: LengthPrefixedSocket; promise: Promise<LengthPrefixedSocket> }
 interface PendingBrowserRequest { method: BrowserDesktopMethod; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
 interface OutputSubscription { id: string; sessionId: string; cursor: number; onChunk: (chunk: OutputChunk) => void | Promise<void> }
-interface OutputGroup { sessionId: string; cursor: number; fanout: OutputFanout; delivery: Promise<void> }
+interface OutputGroup { sessionId: string; cursor: number; fanout: OutputFanout }
 
 const OUTPUT_BACKFILL_PAGE_BYTES = 64 * 1024;
 
@@ -282,7 +287,7 @@ function requestTimeoutMs(method: Method): number {
 }
 
 export class RuntimeClient {
-  constructor(private readonly options: { autoLaunch?: boolean } = {}) {}
+  constructor(private readonly options: { autoLaunch?: boolean; maxConsumerQueueBytes?: number } = {}) {}
   private control?: LengthPrefixedSocket;
   private output?: LengthPrefixedSocket;
   private browser?: LengthPrefixedSocket;
@@ -541,7 +546,7 @@ export class RuntimeClient {
     const subscription: OutputSubscription = { id, sessionId, cursor, onChunk };
     let group = this.outputGroups.get(sessionId);
     const isNewGroup = !group;
-    if (!group) { group = { sessionId, cursor, fanout: new OutputFanout(), delivery: Promise.resolve() }; this.outputGroups.set(sessionId, group); }
+    if (!group) { group = { sessionId, cursor, fanout: new OutputFanout() }; this.outputGroups.set(sessionId, group); }
     this.subscriptions.set(id, subscription);
     // A group has one upstream cursor.  A view which joins it later must not
     // rewind that cursor (which would duplicate bytes for every existing view),
@@ -575,6 +580,26 @@ export class RuntimeClient {
     const removeConsumer = group.fanout.add(id, async (chunk) => {
       await liveGate;
       await deliver(chunk);
+    }, {
+      limit: this.options.maxConsumerQueueBytes ?? MAX_CONSUMER_QUEUE_BYTES,
+      // A lagging view catches up through the same durable backfill a late
+      // joiner uses: from its own delivered cursor up to the group's live
+      // cursor, then it rejoins live delivery.  Live frames which arrive while
+      // it reads are dropped for this view (it stays lagging) but advance the
+      // group cursor, so the read repeats until it reaches that live end.
+      // `deliver` trims by byte cursor, so nothing is delivered twice or out of
+      // order, and nothing is skipped silently.
+      catchUp: async () => {
+        await liveGate;
+        for (;;) {
+          const end = group!.cursor;
+          if (end <= deliveredCursor) return;
+          const from = deliveredCursor;
+          await this.backfillConsumer(sessionId, from, end, deliver);
+          if (deliveredCursor <= from) throw new RuntimeUnavailableError('Runtime output history did not advance');
+        }
+      },
+      onError: (error) => { if (this.outputGroups.get(sessionId) === group) this.handleDisconnect(error); },
     });
     const cleanup = () => {
       active = false;
@@ -608,7 +633,18 @@ export class RuntimeClient {
     let next = cursor;
     while (next < end) {
       const requestedCursor = next;
-      const page = await this.request('terminal.read', { sessionId, cursor: next, limit: OUTPUT_BACKFILL_PAGE_BYTES });
+      const page = await this.request('terminal.read', { sessionId, cursor: next, limit: OUTPUT_BACKFILL_PAGE_BYTES })
+        .catch((error: unknown) => {
+          // Corrupt or legacy history cannot be paged across.  Skip this view to
+          // the captured boundary with an explicit gap, exactly as the runtime
+          // does for a multiplexed subscription, instead of failing it silently.
+          if (!isTerminalHistoryGap(error)) throw error;
+          return undefined;
+        });
+      if (!page) {
+        await deliver({ sessionId, cursor: end, data: new Uint8Array(), gap: true }, end);
+        return;
+      }
       if (page.fromCursor > next) {
         // The read may observe newer output after the snapshot.  Do not move
         // this consumer beyond its captured boundary or it would trim those
@@ -823,12 +859,12 @@ export class RuntimeClient {
       // shared watermark before fanout so a later consumer or reconnect never
       // resubscribes from the lost prefix.
       group.cursor = Math.max(group.cursor, cursor);
-      await this.queueOutput(group, { sessionId: header.sessionId, cursor, data, gap: true }, 0, origin);
+      this.queueOutput(group, { sessionId: header.sessionId, cursor, data, gap: true }, 0, origin);
     }
     else if (kind === 1) {
       const cursor = header.cursor ?? group.cursor;
       group.cursor = cursor + data.byteLength;
-      await this.queueOutput(group, { sessionId: header.sessionId, cursor, data }, Math.min(data.byteLength, MAX_OUTPUT_CREDIT), origin);
+      this.queueOutput(group, { sessionId: header.sessionId, cursor, data }, Math.min(data.byteLength, MAX_OUTPUT_CREDIT), origin);
     }
   }
 
@@ -837,23 +873,21 @@ export class RuntimeClient {
     if (this.suspended) throw new RuntimeUnavailableError('Desktop shutdown is in progress');
   }
 
-  private queueOutput(group: OutputGroup, chunk: OutputChunk, credit = 0, origin?: LengthPrefixedSocket): Promise<void> {
-    const delivery = group.delivery.then(async () => {
-      await group.fanout.publish(chunk);
-      // A delayed consumer may finish after this session was unsubscribed or
-      // after the output pipe reconnected.  Credit belongs to the transport
-      // which supplied this exact frame; never pay it into a newer stream.
-      if (credit > 0 && !this.expectedDisconnect && this.output === origin && this.outputGroups.get(group.sessionId) === group) {
-        this.sendOutputFrame(2, { sessionId: group.sessionId, credit });
-      }
+  private queueOutput(group: OutputGroup, chunk: OutputChunk, credit = 0, origin?: LengthPrefixedSocket): void {
+    // Every view owns its queue and delivery loop, so this only enqueues: a view
+    // which has not rendered (or acknowledged) earlier bytes can neither delay
+    // this frame for other views nor hold back credit for this transport.
+    group.fanout.publish(chunk, (error) => {
+      if (!origin || this.output === origin) this.handleDisconnect(error);
     });
-    // Keep later frames ordered even if this transport is about to fail.  The
-    // originating call still receives the failure, and the normal reconnect
-    // path owns recovery of the group cursor.
-    group.delivery = delivery.catch((error) => {
-      if (!origin || this.output === origin) this.handleDisconnect(asError(error));
-    });
-    return delivery;
+    // Credit acknowledges that every view accepted the bytes into its queue (or
+    // is lagging and will re-read them), never that a view finished rendering.
+    // A delayed consumer may finish after this session was unsubscribed or
+    // after the output pipe reconnected.  Credit belongs to the transport which
+    // supplied this exact frame; never pay it into a newer stream.
+    if (credit > 0 && !this.expectedDisconnect && this.output === origin && this.outputGroups.get(group.sessionId) === group) {
+      this.sendOutputFrame(2, { sessionId: group.sessionId, credit });
+    }
   }
 
   private sendOutputFrame(kind: number, header: Record<string, unknown>): void {
@@ -1089,6 +1123,10 @@ function resolveRuntimeExecutable(): { kind: 'exe' | 'cargo'; path: string } {
 }
 function delay(ms: number): Promise<void> { return new Promise((resolvePromise) => setTimeout(resolvePromise, ms)); }
 function asError(value: unknown): Error { return value instanceof Error ? value : new Error(String(value)); }
+/** The runtime's diagnostic for durable history it cannot page across. */
+function isTerminalHistoryGap(error: unknown): boolean {
+  return error instanceof Error && /terminal_history_gap/.test(error.message);
+}
 function isControlResponse(value: unknown): value is ControlResponse { return isRecord(value) && value.v === 1 && typeof value.id === 'string' && (('result' in value) !== ('error' in value)) && (!('error' in value) || isRuntimeError(value.error)); }
 function isRuntimeError(value: unknown): value is RuntimeError { return isRecord(value) && typeof value.code === 'string' && typeof value.message === 'string'; }
 function isOutputHeader(value: unknown): value is { sessionId: string; cursor?: number } { return isRecord(value) && typeof value.sessionId === 'string' && (value.cursor === undefined || (Number.isSafeInteger(value.cursor) && Number(value.cursor) >= 0)); }
