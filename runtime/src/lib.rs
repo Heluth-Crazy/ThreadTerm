@@ -48,6 +48,7 @@ pub(crate) mod retention;
 pub mod project_catalog;
 pub mod providers;
 pub mod quick_launch;
+pub(crate) mod terminal_agents;
 pub mod usage_ledger;
 mod provider_events;
 pub mod plugins;

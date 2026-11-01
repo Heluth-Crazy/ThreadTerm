@@ -1956,6 +1956,9 @@
         },
         "codeReview": {
           "$ref": "#/definitions/SessionCodeReview"
+        },
+        "terminalAgent": {
+          "type": "string"
         }
       },
       "required": [

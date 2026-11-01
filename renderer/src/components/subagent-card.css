@@ -12,8 +12,8 @@
 .chat-subagent-card.is-failed .chat-subagent-status, .chat-subagent-card.is-cancelled .chat-subagent-status, .chat-subagent-error { color:var(--danger,var(--text)); }
 .chat-subagent-status .chat-connect-mark { width:14px; height:14px; }
 .chat-subagent-status .chat-connect-logo { width:14px; height:14px; }
-/* AgentLoadingMark's shared brand component has a 64px inline size. */
-.chat-subagent-status .brand-ico { width:14px !important; height:14px !important; }
+/* AgentLoadingMark's tile defaults to 64px; keep the status pill mark at 14px. */
+.chat-subagent-status .agent-tile { width:14px !important; height:14px !important; }
 .chat-subagent-card details[open] > summary .chat-subagent-chevron { transform:rotate(90deg); }
 .chat-subagent-meta, .chat-subagent-current { color:var(--muted); font-size:12px; }
 .chat-subagent-meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; min-width:0; }

@@ -18,7 +18,7 @@ import { applyStorageEvent, storageNoteFromRead, terminalStorageAttention, termi
 import { EXACT, fidelityAfterLiveGap, screenFidelityDetail, screenFidelityLabel, type ScreenFidelity } from '../terminalFidelity';
 import './terminal-surface.css';
 import {BlockInspector} from './BlockInspector';
-import { AgentIcon, Icon } from './PrototypeIcon';
+import { Icon } from './PrototypeIcon';
 import { AgentLoadingMark } from './AgentLoadingMark';
 import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
 import { parseFileReference } from '../fileReferences';

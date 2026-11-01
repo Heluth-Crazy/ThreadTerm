@@ -115,7 +115,7 @@ try {
   assert.equal(await page.locator('.chat-tool-activity').count(), 2, 'live cards remain between their surrounding tool drawers');
   // No idle clocks (e24c744): a running card ticks only while it is expanded.
   assert.equal((await page.evaluate(() => window.qaTimerCounts())).starts, 0, 'a collapsed running card keeps no elapsed-time interval');
-  const markBounds = await running.locator('.chat-subagent-status .brand-ico').first().evaluate(node => { const box=node.getBoundingClientRect(); return {width:box.width,height:box.height}; });
+  const markBounds = await running.locator('.chat-subagent-status .agent-tile').first().evaluate(node => { const box=node.getBoundingClientRect(); return {width:box.width,height:box.height}; });
   assert.ok(markBounds.width <= 16 && markBounds.height <= 16, 'running mark remains inside the status pill');
   await shot('01-running-single-light.png');
   await running.locator('> details > summary').click();

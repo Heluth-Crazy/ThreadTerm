@@ -64,6 +64,7 @@ async fn run() -> Result<()> {
     let service = Arc::new(RuntimeService::new(config, db));
     service.initialize_remote()?;
     service.start_retry_scheduler();
+    service.start_terminal_agent_watcher();
     let result = transport::serve(Arc::clone(&service), credential).await;
     service.shutdown();
     result

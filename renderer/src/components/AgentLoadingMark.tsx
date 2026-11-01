@@ -1,5 +1,5 @@
 import type { ProviderId } from "@threadterm/protocol";
-import { AgentIcon } from "./PrototypeIcon";
+import { AgentTile } from "./PrototypeIcon";
 
 /**
  * The provider mark used while a connection or a native terminal is pending.
@@ -10,8 +10,8 @@ import { AgentIcon } from "./PrototypeIcon";
 export function AgentLoadingMark({ provider, active = true }: { provider: ProviderId | string; active?: boolean }) {
   return <span className="chat-connect-mark" aria-hidden="true">
     <span className="chat-connect-logo">
-      <AgentIcon provider={provider} size={64} />
-      {active && <span className="chat-connect-wave"><AgentIcon provider={provider} size={64} /></span>}
+      <AgentTile provider={provider} size={64} />
+      {active && <span className="chat-connect-wave"><AgentTile provider={provider} size={64} /></span>}
     </span>
   </span>;
 }

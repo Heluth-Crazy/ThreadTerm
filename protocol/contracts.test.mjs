@@ -28,6 +28,14 @@ test('fork requires a lease and stable operation identity and carries additive n
  assert.throws(()=>validateResult('chat.fork',{session,mode:'other'}));
  validateResult('chat.read',[{id:'reply',role:'assistant',parts:[{type:'text',text:'Done',status:'complete'}],createdAt:'now',forkAnchor:{nativeId:'native',turnId:'turn',messageId:'msg'}}]);
 });
+test('Session.terminalAgent is an optional additive provider id on shell/custom terminals',()=>{
+ const base={id:'s',title:'PowerShell',provider:'shell',mode:'terminal',status:'running',createdAt:'now',updatedAt:'now'};
+ // Older runtimes omit the field; newer ones may set a detected agent id.
+ validateResult('session.create',{...base});
+ validateResult('session.create',{...base,terminalAgent:'claude'});
+ validateResult('session.create',{...base,terminalAgent:'codex'});
+ assert.throws(()=>validateResult('session.create',{...base,terminalAgent:1}));
+});
 // Feedback is additive and remains fenced by a lease and a stable operation ID.
 test('feedback notes validate leases, unicode limits and delivery status',()=>{
  const request={sessionId:'s',turnId:'turn',text:'note',operationId:'op',leaseEpoch:1};
