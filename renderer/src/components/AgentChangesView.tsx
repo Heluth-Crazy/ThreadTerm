@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
 import type { AgentReview, AgentReviewScope, ProviderCapability, ReviewCheckpoint, ReviewFile, ReviewState, Session } from '@threadterm/protocol';
 import { operationId, request, subscribeEvents } from '../bridge';
-import { AgentIcon, Icon } from './PrototypeIcon';
+import { Icon, SessionIcon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Select } from './ui/Select';
 import { relativeTime } from './CodeEditor';
@@ -198,7 +198,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
   {sessions.length > 1 && <Select className="wb-session-select" value={sessionId ?? ''} aria-label={text('Session', '会话')} onChange={event => setSessionId(event.target.value)}>
    {sessions.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}
   </Select>}
-  {session && sessions.length === 1 && <div className="wb-review-session"><AgentIcon provider={session.provider}/><span>{session.title}</span></div>}
+  {session && sessions.length === 1 && <div className="wb-review-session"><SessionIcon session={session}/><span>{session.title}</span></div>}
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   {state && !state.available && <div className="wb-empty-state"><Icon name="spark"/><strong>{text('Change review is unavailable', '无法审查改动')}</strong>
    <p>{state.reason === 'git_unavailable' ? text('Checkpoints need a Git repository. Files and search still work.', '检查点需要 Git 仓库；文件和搜索功能仍可使用。') : text('This session is not attached to a project folder.', '此会话未关联项目目录。')}</p></div>}

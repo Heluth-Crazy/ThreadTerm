@@ -47,6 +47,9 @@ pub struct Session {
     /// Present when this Chat session is a Chat Code Review finder or verifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_review: Option<SessionCodeReview>,
+    /// Provider id of the agent CLI currently running inside a shell/custom terminal; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_agent: Option<String>,
     #[serde(flatten, default)]
     pub organization: SessionOrganization,
 }

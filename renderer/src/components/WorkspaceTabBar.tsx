@@ -3,7 +3,7 @@ import type { PaneLayout, Session } from '@threadterm/protocol';
 import { contentTitle, workspaceTabs, type WorkspaceTabTarget } from '../workspaceTabs';
 import { isFileTab, type FileTab } from '../workspaceTabs';
 import { useTranslation } from '../i18n';
-import { AgentIcon, Icon } from './PrototypeIcon';
+import { Icon, SessionIcon } from './PrototypeIcon';
 import { showContextMenu, type ContextMenuItem } from './ContextMenu';
 import { FILE_DRAG_TYPE, fileDragData } from '../fileDrag';
 
@@ -85,7 +85,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
         if(from>=0&&to>=0)onReorder(paneId,from,to);
        }catch{/* Ignore foreign drag data. */}
       }}>
-      <span className="workspace-tab-icon">{details?.loading?<span className="browser-page-loading" aria-hidden="true"/>:details?.favicon?<img className="browser-page-favicon" src={details.favicon} width={16} height={16} alt="" aria-hidden="true" onError={details.onFaviconError}/>:session?<AgentIcon provider={session.provider}/>:<Icon name={tab.kind==='map'?'flow':tab.kind==='usage'?'layers':tab.kind==='group'||tab.kind==='roundtable'?'agents':browser?'globe':'file'}/>} {details?.marker&&<span className="workspace-tab-marker" title={details.marker.tooltip} aria-hidden="true">{details.marker.icon}</span>}</span><span className={`workspace-tab-label${browser?' browser-page-tab-title':''}`}>{label}</span>{details?.provider&&<small>{details.provider}</small>}{details?.marker&&<span id={markerId} className="workspace-tab-marker-description">{details.marker.description}</span>}
+      <span className="workspace-tab-icon">{details?.loading?<span className="browser-page-loading" aria-hidden="true"/>:details?.favicon?<img className="browser-page-favicon" src={details.favicon} width={16} height={16} alt="" aria-hidden="true" onError={details.onFaviconError}/>:session?<SessionIcon session={session}/>:<Icon name={tab.kind==='map'?'flow':tab.kind==='usage'?'layers':tab.kind==='group'||tab.kind==='roundtable'?'agents':browser?'globe':'file'}/>} {details?.marker&&<span className="workspace-tab-marker" title={details.marker.tooltip} aria-hidden="true">{details.marker.icon}</span>}</span><span className={`workspace-tab-label${browser?' browser-page-tab-title':''}`}>{label}</span>{details?.provider&&<small>{details.provider}</small>}{details?.marker&&<span id={markerId} className="workspace-tab-marker-description">{details.marker.description}</span>}
      </button>
      <button type="button" className={`workspace-tab-close${browser?' browser-page-tab-close':''}`} disabled={busy} title={browser?(zh?'关闭页面':'Close page'):(zh?'关闭标签':'Close tab')} aria-label={closeLabel} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onClose(target,'current');}}><Icon name="close"/></button>
     </div>;

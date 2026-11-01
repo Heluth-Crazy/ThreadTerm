@@ -1151,6 +1151,13 @@ impl RuntimeService {
             .unwrap_or_default();
         std::thread::spawn(move || retry_runner(service, &mut cursor));
     }
+    pub fn start_terminal_agent_watcher(self: &Arc<Self>) {
+        // PTYs do not survive a restart; drop any stale agent detections first.
+        if let Err(error) = crate::terminal_agents::clear_all(&self.db) {
+            eprintln!("terminal agent startup clear failed: {error}");
+        }
+        crate::terminal_agents::spawn(&self.db, &self.pty);
+    }
     fn dispatch_retry_attempt(&self, attempt: &crate::retry_scheduler::RetryAttempt) {
         let Ok(_relocation) = self.relocation_gate.read() else {
             return;

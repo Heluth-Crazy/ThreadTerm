@@ -65,7 +65,7 @@ import {
 } from "./navigation";
 import { isActionableInboxItem } from "./inboxVisibility";
 import { sameCanonicalScope, sessionsInProjectScope, unreadInboxInScope } from "./projectScope";
-import { AgentIconsProvider, AgentIcon, Icon } from "./components/PrototypeIcon";
+import { AgentIconsProvider, Icon } from "./components/PrototypeIcon";
 import { UsagePage } from "./components/UsagePage";
 import { ProjectOverview } from "./components/ProjectOverview";
 import { AllTerminalsPage } from "./components/AllTerminalsPage";

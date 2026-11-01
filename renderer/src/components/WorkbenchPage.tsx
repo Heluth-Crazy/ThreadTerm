@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderId, Session, Snapshot, Worktree } from "@threadterm/protocol";
 import { request } from "../bridge";
 import { sessionTime } from "../sessionTime";
-import { AgentIcon, Icon } from "./PrototypeIcon";
+import { AgentIcon, Icon, SessionIcon } from "./PrototypeIcon";
 import { isActionableInboxItem } from "../inboxVisibility";
 import { displayPath } from "../projectScope";
 import { workbenchAgents, type WorkbenchAgent } from "./workbenchAgents";
@@ -100,4 +100,4 @@ function AgentPicker({ value, onChange, agents, label, data, projectId, zh, onCr
 }
 function Label({ text }: { text: string }) { return <div className="start-label">{text}</div>; }
 function Empty({ text }: { text: string }) { return <div className="quiet-row placeholder"><span className="quiet-name grow">{text}</span></div>; }
-function Row({ session, project, onSession, zh, continuing = false }: { session: Session; project: string; onSession: (id: string) => void; zh: boolean; continuing?: boolean }) { return <button className="quiet-row" onClick={() => onSession(session.id)}>{continuing ? <span className={`dot ${stateClass(session)}`} /> : <AgentIcon provider={session.provider} />}<span className="quiet-name grow">{session.title}</span><span className="meta">{project} · {sessionTime(session.updatedAt, zh ? "zh-CN" : "en")}</span><span className={`chip ${stateClass(session)}`}>{statusLabel(session, zh)}</span>{continuing && <span className="meta">{zh ? "继续" : "Continue"} <Icon name="chevR" /></span>}</button>; }
+function Row({ session, project, onSession, zh, continuing = false }: { session: Session; project: string; onSession: (id: string) => void; zh: boolean; continuing?: boolean }) { return <button className="quiet-row" onClick={() => onSession(session.id)}>{continuing ? <span className={`dot ${stateClass(session)}`} /> : <SessionIcon session={session} />}<span className="quiet-name grow">{session.title}</span><span className="meta">{project} · {sessionTime(session.updatedAt, zh ? "zh-CN" : "en")}</span><span className={`chip ${stateClass(session)}`}>{statusLabel(session, zh)}</span>{continuing && <span className="meta">{zh ? "继续" : "Continue"} <Icon name="chevR" /></span>}</button>; }

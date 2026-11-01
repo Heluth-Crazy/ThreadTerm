@@ -506,12 +506,14 @@ textarea.create-input { height:88px; min-height:88px; max-height:240px; padding:
 .chat-connect-mark { position:relative; width:96px; height:96px; display:grid; place-items:center; }
 .chat-connect-mark, .chat-connect-logo, .chat-connect-wave { border:0; outline:0; box-shadow:none; background:none; padding:0; border-radius:0; }
 .chat-connect-logo { position:relative; display:block; width:64px; height:64px; color:var(--text, CanvasText); }
-.chat-connect-logo > svg { display:block; width:100%; height:100%; opacity:.2; }
+.chat-connect-logo > svg,
+.chat-connect-logo > .agent-tile { display:block; width:100%; height:100%; opacity:.2; }
 .chat-connect-logo .codex-tile { display:none; }
 .chat-connect-wave { position:absolute; inset:0; display:block; pointer-events:none;
   mask-image:radial-gradient(circle at 0 0, transparent max(0px, calc(var(--chat-wave-radius) - 30px)), #000 var(--chat-wave-radius), transparent calc(var(--chat-wave-radius) + 30px));
   animation:chat-logo-corner-wave 2.4s linear infinite; }
-.chat-connect-wave > svg { display:block; width:100%; height:100%; opacity:.46; }
+.chat-connect-wave > svg,
+.chat-connect-wave > .agent-tile { display:block; width:100%; height:100%; opacity:.46; }
 .chat-connect-status, .chat-connect-slow, .chat-connect-hint { margin:0; font-size:13px; line-height:1.45; }
 .chat-connect-slow, .chat-connect-hint { color:var(--muted); font-size:12px; }
 .chat-connect-retry { margin-top:4px; }
@@ -582,7 +584,8 @@ textarea.create-input { height:88px; min-height:88px; max-height:240px; padding:
 @media (prefers-reduced-motion:reduce) {
   .chat-connect-mask { animation:none; }
   .chat-connect-wave { display:none; animation:none; }
-  .chat-connect-logo > svg { opacity:.5; }
+  .chat-connect-logo > svg,
+  .chat-connect-logo > .agent-tile { opacity:.5; }
 }
 /* The composer shares the transcript's 920px reading column so wide panes do not stretch it. */
 .chat-compose-shell { margin:8px max(16px, calc((100% - 920px) / 2)) 16px; padding:2px 8px 8px 12px; border:1px solid var(--border); border-radius:20px; background:var(--surface); box-shadow:var(--shadow-soft, 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent)); transition:border-color .15s ease, box-shadow .15s ease; }
@@ -751,3 +754,85 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 .desktop-companion-inbox, .desktop-companion-reset { width:100%; margin-top:6px; }
 
 @media (prefers-reduced-motion:reduce) { .spinner, .chat-first-response-dots i { animation:none; } }
+
+/* Agent tiles (Rex-style): brand fills are set inline; edge/sheen/shadow follow theme tokens. */
+:root {
+  --shell-a: color-mix(in srgb, var(--surface) 88%, var(--text));
+  --shell-b: color-mix(in srgb, var(--surface) 72%, var(--text));
+  --shell-ink: var(--muted);
+  --tile-edge: color-mix(in srgb, var(--text) 20%, transparent);
+  --tile-drop: color-mix(in srgb, var(--text) 18%, transparent);
+}
+/* Dark themes have light text: an edge or shadow mixed from it would glow, so use black. */
+[data-theme="dark"] {
+  --tile-edge: color-mix(in srgb, black 45%, transparent);
+  --tile-drop: color-mix(in srgb, black 50%, transparent);
+}
+.agent-tile {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--s, 16px);
+  height: var(--s, 16px);
+  border-radius: calc(var(--s, 16px) * 0.27);
+  background: var(--tile-bg);
+  color: var(--shell-ink);
+  box-shadow:
+    inset 0 0 0 1px var(--tile-edge),
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
+    0 1px 2px var(--tile-drop);
+  vertical-align: -2px;
+}
+.agent-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, white 26%, transparent),
+    color-mix(in srgb, white 4%, transparent) 48%,
+    color-mix(in srgb, black 6%, transparent)
+  );
+}
+.agent-tile svg,
+.agent-tile img {
+  position: relative;
+  width: 72%;
+  height: 72%;
+  display: block;
+  filter: drop-shadow(0 0.5px 0.6px color-mix(in srgb, black 22%, transparent));
+}
+.agent-tile-shell {
+  --tile-bg: linear-gradient(180deg, var(--shell-a), var(--shell-b));
+}
+.agent-tile-shell::after { opacity: 0.6; }
+.agent-tile-shell svg,
+.agent-tile-gemini-mark svg { filter: none; }
+.agent-tile-codex-mark svg { width: 84%; height: 84%; }
+.agent-tile-opencode-mark svg { width: 56%; height: 56%; }
+@keyframes agent-tile-pop {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+.agent-tile-pop { animation: agent-tile-pop 280ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-tile-pop { animation: none; }
+}
+/* Keep session-icon slots the same size as the old flat marks. */
+.session-agent-icon .agent-tile,
+.bico .agent-tile,
+.workspace-tab-icon .agent-tile,
+.quiet-row .agent-tile,
+.ov-row .agent-tile,
+.tc-name .agent-tile,
+.t-inspect-title .agent-tile,
+.cmd-row .agent-tile,
+.switcher-row .agent-tile,
+.wb-review-session .agent-tile,
+.chat-connect-logo .agent-tile { flex: none; }
+.chat-connect-logo .agent-tile { width: 64px; height: 64px; }
+.chat-connect-logo .agent-tile svg,
+.chat-connect-logo .agent-tile img { width: 72%; height: 72%; }
