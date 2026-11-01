@@ -671,7 +671,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       {onCloseView && <button className="menu-item" onClick={onCloseView}>{zh ? "关闭视图" : "Close view"}</button>}
     </SurfaceActions>
     </div>
-    {storageNote && <p className="term-storage-degraded" role="alert"><strong>{terminalStorageLabel(zh)}</strong><span>{terminalStorageAttention(zh)}</span></p>}
+    {storageNote && <p className="term-storage-degraded" role="alert"><strong>{terminalStorageLabel(zh, storageNote.reason)}</strong><span>{terminalStorageAttention(zh, storageNote.reason)}</span></p>}
     {fidelity.kind === 'inexact' && <p className="term-legacy-note term-fidelity-note" role="status"><strong>{screenFidelityLabel(zh)}</strong>{screenFidelityDetail(zh)}</p>}
     {unknownGeometry && <p className="term-legacy-note" role="status">{zh ? "该历史会话未记录终端尺寸，部分全屏界面可能错位。重新运行可生成可稳定回放的新记录。" : "This historical session has no recorded terminal size; full-screen interfaces may be misaligned. Rerun it to create a new record that replays reliably."}</p>}
     <div className="term-content"><div className={`terminal-host term-output${fixedSize ? " fixed-geometry" : ""}`} ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />

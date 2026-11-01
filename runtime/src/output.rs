@@ -1,10 +1,11 @@
 use crate::db::Database;
+use crate::output_loss::{LossRecord, SidecarWriter};
 use anyhow::Result;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -35,6 +36,9 @@ pub struct OutputStore {
     notify: Notify,
     retry: Arc<(Mutex<RetryState>, Condvar)>,
     pending_bytes: AtomicUsize,
+    // Independent of stream/DB locks so shutdown can snapshot a blocked retry.
+    losses: Mutex<HashMap<String, LossRecord>>,
+    sidecars: OnceLock<SidecarWriter>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum FlushOutcome {
@@ -55,6 +59,7 @@ struct Stream {
     /// Drained bytes the database has not accepted yet (see `append`).
     pending: Vec<u8>,
     degraded: bool,
+    marker_pending: bool,
     retry_at: Instant,
     backoff: Duration,
 }
@@ -66,6 +71,7 @@ impl Stream {
             bytes: 0,
             pending: Vec::new(),
             degraded: false,
+            marker_pending: false,
             retry_at: Instant::now(),
             backoff: Duration::from_millis(250),
         }
@@ -149,7 +155,7 @@ impl OutputStore {
         batch.extend_from_slice(data);
         self.pending_bytes.fetch_add(data.len(), Ordering::Relaxed);
         if batch.is_empty() {
-            Self::recover_marker(db, session_id, stream);
+            self.recover_marker(db, session_id, stream);
             return Ok(stream.cursor);
         }
         // Bounded memory: discarded bytes are skipped by advancing the durable
@@ -161,6 +167,11 @@ impl OutputStore {
             stream.cursor += dropped as i64;
         }
         let start = stream.cursor;
+        // Include in-flight bytes: shutdown cannot take this stream lock while
+        // its first INSERT is waiting for the database connection.
+        self.losses.lock().unwrap().insert(
+            session_id.to_owned(), LossRecord::new(session_id, start, batch.len()),
+        );
         let written = {
             let _gate = self.commit_gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             db.append_output(session_id, start, &batch)
@@ -171,11 +182,15 @@ impl OutputStore {
                 stream.degraded = true;
                 stream.retry_at = Instant::now() + Duration::from_millis(250);
                 eprintln!("Terminal output for {session_id} could not be saved: {error}");
-                let _ = db.mark_terminal_storage_degraded(session_id, start);
+                // Record independently before trying the marker: its connection
+                // mutex may itself be blocked after the refused output INSERT.
+                self.sidecars(db).write(LossRecord::new(session_id, start, stream.pending.len()));
+                stream.marker_pending = db.mark_terminal_storage_degraded(session_id, start).is_err();
             }
             return Err(error);
         }
         self.pending_bytes.fetch_sub(batch.len(), Ordering::Relaxed);
+        self.losses.lock().unwrap().remove(session_id);
         stream.cursor += batch.len() as i64;
         stream.bytes += batch.len();
         stream.chunks.push_back((start, batch));
@@ -184,13 +199,20 @@ impl OutputStore {
                 stream.bytes -= chunk.len()
             }
         }
-        Self::recover_marker(db, session_id, stream);
+        self.recover_marker(db, session_id, stream);
         Ok(start)
     }
 
-    fn recover_marker(db: &Database, session_id: &str, stream: &mut Stream) {
+    fn sidecars(&self, db: &Database) -> &SidecarWriter {
+        self.sidecars.get_or_init(|| SidecarWriter::new(db.path()))
+    }
+
+    fn recover_marker(&self, db: &Database, session_id: &str, stream: &mut Stream) {
         if stream.degraded && db.clear_terminal_storage_degraded(session_id).is_ok() {
             stream.degraded = false;
+            stream.marker_pending = false;
+            self.losses.lock().unwrap().remove(session_id);
+            self.sidecars(db).remove(session_id);
             eprintln!("Terminal output storage recovered for {session_id}");
         }
         if !stream.degraded {
@@ -252,6 +274,12 @@ impl OutputStore {
                     }
                     let now = Instant::now();
                     if now >= stream.retry_at {
+                        if stream.marker_pending {
+                            stream.marker_pending = db.mark_terminal_storage_degraded(&id, stream.cursor).is_err();
+                            if stream.marker_pending {
+                                store.sidecars(&db).write(LossRecord::new(&id, stream.cursor, stream.pending.len()));
+                            }
+                        }
                         let result = store.commit(&db, &id, &mut stream, &[]);
                         if result.is_err() || stream.degraded {
                             stream.backoff = (stream.backoff * 2).min(Duration::from_secs(5));
@@ -331,6 +359,41 @@ impl OutputStore {
         pending
     }
 
+    /// The caller waits at most 125 ms; filesystem fallback never waits on SQLite.
+    pub fn record_shutdown_loss(&self, db: &Arc<Database>) {
+        let records: Vec<_> = self.losses.lock().unwrap().values().cloned().collect();
+        if records.is_empty() { return; }
+        let (sent, received) = std::sync::mpsc::channel();
+        let database = db.clone();
+        let sidecars = self.sidecars(db).clone();
+        let pending = records.clone();
+        let _ = thread::Builder::new().name("output-loss-shutdown".into()).spawn(move || {
+            for record in pending {
+                if database.mark_terminal_output_lost(&record).is_ok() {
+                    sidecars.remove(&record.session_id);
+                    let _ = sent.send(record.session_id);
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let mut remaining: HashMap<_, _> = records.into_iter()
+            .map(|record| (record.session_id.clone(), record)).collect();
+        while !remaining.is_empty() {
+            match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(id) => { remaining.remove(&id); }
+                Err(_) => break,
+            }
+        }
+        if !remaining.is_empty() {
+            self.sidecars(db).write_all(remaining.into_values().collect());
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_byte_count(&self) -> usize {
+        self.pending_bytes.load(Ordering::Relaxed)
+    }
+
     pub fn notified(&self) -> impl std::future::Future<Output = ()> + '_ {
         self.notify.notified()
     }
@@ -360,6 +423,8 @@ impl Default for OutputStore {
             notify: Notify::new(),
             retry: Arc::new((Mutex::new(RetryState::default()), Condvar::new())),
             pending_bytes: AtomicUsize::new(0),
+            losses: Mutex::new(HashMap::new()),
+            sidecars: OnceLock::new(),
         }
     }
 }

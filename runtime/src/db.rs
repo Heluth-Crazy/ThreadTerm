@@ -13,12 +13,16 @@ use std::{
     sync::Mutex,
 };
 use uuid::Uuid;
+use crate::output_loss::LossRecord;
 
 /// Reason carried by the terminal storage-degraded marker and event (F23).
 pub const TERMINAL_STORAGE_FAILED: &str = "terminal_output_storage_failed";
+pub const TERMINAL_OUTPUT_LOST: &str = "terminal_output_lost";
 
 pub struct Database {
     connection: Mutex<Connection>,
+    #[cfg(test)]
+    pub(crate) refuse_terminal_marker: std::sync::atomic::AtomicBool,
     path: PathBuf,
     quiet_terminal_exits: std::sync::atomic::AtomicBool,
     pub(crate) retention: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
@@ -203,6 +207,8 @@ impl Database {
         schema::migrate_main(&mut connection, upgrade_backup)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            #[cfg(test)]
+            refuse_terminal_marker: std::sync::atomic::AtomicBool::new(false),
             path: path.to_owned(),
             quiet_terminal_exits: std::sync::atomic::AtomicBool::new(false),
             retention: Mutex::new(None),
@@ -316,12 +322,18 @@ impl Database {
     /// (bounded) while the PTY reader keeps draining the process, so the session
     /// keeps its running status. This durable marker is the visible state.
     pub fn mark_terminal_storage_degraded(&self, session_id: &str, cursor: i64) -> Result<()> {
+        #[cfg(test)]
+        anyhow::ensure!(!self.refuse_terminal_marker.load(std::sync::atomic::Ordering::Relaxed), "test marker refused");
         self.transaction(|tx| {
-            let marker = json!({"degraded":true,"reason":TERMINAL_STORAGE_FAILED,"cursor":cursor});
-            tx.execute(
-                "INSERT INTO metadata(key,value) SELECT ?,? WHERE EXISTS(SELECT 1 FROM sessions WHERE id=?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                params![format!("terminal.storage:{session_id}"), serde_json::to_string(&marker)?, session_id],
-            )?;
+            let prior: Option<String> = tx.query_row("SELECT value FROM metadata WHERE key=?", [format!("terminal.storage:{session_id}")], |row| row.get(0)).optional()?;
+            let historical = prior.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()).and_then(|marker| marker.get("reason").and_then(Value::as_str).map(str::to_owned)).as_deref() == Some(TERMINAL_OUTPUT_LOST);
+            if !historical {
+                let marker = json!({"degraded":true,"reason":TERMINAL_STORAGE_FAILED,"cursor":cursor});
+                tx.execute(
+                    "INSERT INTO metadata(key,value) SELECT ?,? WHERE EXISTS(SELECT 1 FROM sessions WHERE id=?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    params![format!("terminal.storage:{session_id}"), serde_json::to_string(&marker)?, session_id],
+                )?;
+            }
             emit(tx, "terminal.storage", json!({"sessionId":session_id,"degraded":true,"reason":TERMINAL_STORAGE_FAILED,"cursor":cursor}))?;
             Ok(())
         })
@@ -330,10 +342,11 @@ impl Database {
     /// unchanged cursor, so the client reads them instead of a gap.
     pub fn clear_terminal_storage_degraded(&self, session_id: &str) -> Result<()> {
         self.transaction(|tx| {
-            tx.execute(
+            let lost: bool = tx.query_row("SELECT value FROM metadata WHERE key=?", [format!("terminal.storage:{session_id}")], |row| row.get::<_, String>(0)).optional()?.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()).and_then(|marker| marker.get("reason").and_then(Value::as_str).map(str::to_owned)).as_deref() == Some(TERMINAL_OUTPUT_LOST);
+            if !lost { tx.execute(
                 "DELETE FROM metadata WHERE key=?",
                 [format!("terminal.storage:{session_id}")],
-            )?;
+            )?; }
             emit(tx, "terminal.storage", json!({"sessionId":session_id,"degraded":false}))?;
             Ok(())
         })
@@ -352,6 +365,47 @@ impl Database {
             .optional()?;
         raw.map(|value| serde_json::from_str(&value).map_err(Into::into))
             .transpose()
+    }
+    /// Persists a historical loss marker without emitting a new event; the live
+    /// terminal.storage event remains compatible with older clients.
+    pub fn mark_terminal_output_lost(&self, record: &LossRecord) -> Result<()> {
+        #[cfg(test)]
+        anyhow::ensure!(!self.refuse_terminal_marker.load(std::sync::atomic::Ordering::Relaxed), "test marker refused");
+        self.transaction(|tx| {
+            let marker = json!({"degraded":true,"reason":TERMINAL_OUTPUT_LOST,"cursor":record.cursor,"pendingBytes":record.pending_bytes,"time":record.time});
+            tx.execute("INSERT INTO metadata(key,value) SELECT ?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=? AND mode='terminal') ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("terminal.storage:{}", record.session_id), serde_json::to_string(&marker)?, record.session_id])?;
+            Ok(())
+        })
+    }
+    /// Imports independent sidecars after startup has classified live sessions.
+    /// Returned ids may be removed only after this method has committed.
+    pub fn recover_terminal_output_loss(&self) -> Result<Vec<String>> {
+        #[cfg(test)]
+        anyhow::ensure!(!self.refuse_terminal_marker.load(std::sync::atomic::Ordering::Relaxed), "test marker refused");
+        let mut removable = Vec::new();
+        for entry in crate::output_loss::read_records(&self.path) {
+            let record = match entry { Ok(record) => record, Err(error) => { eprintln!("Terminal output loss sidecar retained: {error}"); continue; } };
+            let outcome = self.transaction(|tx| {
+                let session: Option<(String, String)> = tx.query_row("SELECT mode,status FROM sessions WHERE id=?", [&record.session_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+                let Some((mode, status)) = session else { return Ok(true); };
+                if mode != "terminal" { return Ok(true); }
+                if matches!(status.as_str(), "interrupted" | "exited" | "error") {
+                    let marker = json!({"degraded":true,"reason":TERMINAL_OUTPUT_LOST,"cursor":record.cursor,"pendingBytes":record.pending_bytes,"time":record.time});
+                    tx.execute("INSERT INTO metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("terminal.storage:{}", record.session_id), serde_json::to_string(&marker)?])?;
+                } else {
+                    let marker = json!({"degraded":true,"reason":TERMINAL_STORAGE_FAILED,"cursor":record.cursor,"pendingBytes":record.pending_bytes,"time":record.time});
+                    tx.execute("INSERT INTO metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("terminal.storage:{}", record.session_id), serde_json::to_string(&marker)?])?;
+                }
+                Ok(true)
+            })?;
+            if outcome { removable.push(record.session_id); }
+        }
+        // Markers from builds before sidecars need the same historical meaning.
+        self.transaction(|tx| {
+            tx.execute("UPDATE metadata SET value=json_set(value, '$.reason', ?, '$.degraded', json('true')) WHERE key LIKE 'terminal.storage:%' AND json_extract(value, '$.reason')=? AND substr(key,18) IN (SELECT id FROM sessions WHERE mode='terminal' AND status IN ('interrupted','exited','error'))", params![TERMINAL_OUTPUT_LOST, TERMINAL_STORAGE_FAILED])?;
+            Ok(())
+        })?;
+        Ok(removable)
     }
     /// Whether an external effect was claimed without a completed operation receipt.
     pub fn external_operation_pending(&self, operation_id: &str) -> Result<bool> {
@@ -4365,6 +4419,85 @@ mod tests {
         let activity = after.activity.unwrap();
         assert_eq!(activity.state, "unknown");
         assert_eq!(activity.reason.as_deref(), Some("runtime_interrupted"));
+    }
+    #[test]
+    fn sidecar_import_marks_historical_terminal_loss_after_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let db = Database::open(&path).unwrap();
+        let session = db.create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "sidecar-import" }).unwrap();
+        db.set_session_status(&session.id, "exited", Some(0)).unwrap();
+        let record = LossRecord::new(&session.id, 12, 5);
+        let loss_dir = crate::output_loss::sidecar_directory(&path);
+        std::fs::create_dir_all(&loss_dir).unwrap();
+        std::fs::write(loss_dir.join(format!("{}.json", session.id)), serde_json::to_vec(&record).unwrap()).unwrap();
+        assert_eq!(db.recover_terminal_output_loss().unwrap(), vec![session.id.clone()]);
+        let marker = db.terminal_storage_degraded(&session.id).unwrap().unwrap();
+        assert_eq!(marker["reason"], TERMINAL_OUTPUT_LOST);
+        assert_eq!(marker["cursor"], 12);
+        assert_eq!(marker["pendingBytes"], 5);
+        let file = loss_dir.join(format!("{}.json", session.id));
+        assert!(file.exists(), "import commits before its caller may delete the sidecar");
+        crate::output_loss::SidecarWriter::new(&path).remove(&session.id);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while file.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn sidecar_import_keeps_a_running_terminal_in_live_storage_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let db = Database::open(&path).unwrap();
+        let session = db.create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "live-sidecar-import" }).unwrap();
+        db.set_session_status(&session.id, "running", None).unwrap();
+        let file = crate::output_loss::sidecar_path(&path, &session.id).unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&LossRecord::new(&session.id, 2, 3)).unwrap()).unwrap();
+        db.recover_terminal_output_loss().unwrap();
+        assert_eq!(db.terminal_storage_degraded(&session.id).unwrap().unwrap()["reason"], TERMINAL_STORAGE_FAILED);
+    }
+
+    #[test]
+    fn refused_sidecar_import_is_retained() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let db = Database::open(&path).unwrap();
+        let session = db.create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "refused-import" }).unwrap();
+        let record = LossRecord::new(&session.id, 1, 2);
+        let file = crate::output_loss::sidecar_path(&path, &session.id).unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+        db.refuse_terminal_marker.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(db.recover_terminal_output_loss().is_err());
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn orphan_sidecar_can_be_removed_after_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let db = Database::open(&path).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let file = crate::output_loss::sidecar_path(&path, &id).unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&LossRecord::new(&id, 0, 1)).unwrap()).unwrap();
+        assert_eq!(db.recover_terminal_output_loss().unwrap(), vec![id.clone()]);
+        crate::output_loss::SidecarWriter::new(&path).remove(&id);
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn historical_marker_survives_a_later_live_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db.create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "historical-marker" }).unwrap();
+        db.mark_terminal_output_lost(&LossRecord::new(&session.id, 3, 4)).unwrap();
+        db.mark_terminal_storage_degraded(&session.id, 8).unwrap();
+        db.clear_terminal_storage_degraded(&session.id).unwrap();
+        assert_eq!(db.terminal_storage_degraded(&session.id).unwrap().unwrap()["reason"], TERMINAL_OUTPUT_LOST);
     }
     #[test]
     fn completed_chat_attention_survives_failed_reconnect_and_already_interrupted_recovery() {
