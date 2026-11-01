@@ -34,7 +34,7 @@ const rootSession = { id: 'qa-root', projectId: project.id, worktreePath: projec
 const terminalSession = { id: 'qa-terminal', projectId: project.id, worktreePath: project.path, title: 'Panel header terminal', provider: 'codex', mode: 'terminal' as const, status: 'exited' as const, readOnly: true, cols: 100, rows: 30, createdAt: project.createdAt, updatedAt: project.createdAt };
 const delegates = [
   { ...rootSession, id: 'qa-delegate-running', title: 'Check inspector treatment', provider: 'claude', delegation: { id: 'qa-delegation-running', parentSessionId: rootSession.id, workspace: 'worktree' as const, branch: 'qa/header-audit', state: 'running' as const, userMessages: 2 } },
-  { ...rootSession, id: 'qa-delegate-done', title: 'Review dialog headers', provider: 'kimi', delegation: { id: 'qa-delegation-done', parentSessionId: rootSession.id, workspace: 'shared' as const, state: 'completed' as const } },
+  { ...rootSession, id: 'qa-delegate-done', title: 'Review dialog headers', provider: 'kimi', delegation: { id: 'qa-delegation-done', parentSessionId: rootSession.id, workspace: 'shared' as const, state: 'completed' as const, outcome: 'Fixture delegation result.' } },
 ];
 const commits = [
   { hash: 'b1c2d3e4f5a6', parents: ['a1b2c3d4e5f6'], refs: ['HEAD -> main'], subject: 'Align panel headers', authorName: 'QA Author', authorEmail: 'qa@example.invalid', authoredAt: '2026-10-22T12:00:00.000Z' },

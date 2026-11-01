@@ -508,12 +508,14 @@ test('terminal.host reports only the two console hosts',()=>{
  assert.throws(()=>validateResult('terminal.host',{conptyHost:'bundled',bundledAvailable:true,build:1}));
 });
 
-test('a delegation may say how many of the user\'s messages were attached, and nothing else new',()=>{
+test('a delegation may say how many of the user\'s messages were attached, and may carry a terminal outcome preview',()=>{
  const delegation={id:'d',parentSessionId:'p',workspace:'shared',state:'running'};
  const session={id:'s',title:'Chat',provider:'codex',mode:'chat',status:'idle',createdAt:'now',updatedAt:'now',delegation};
  validateResult('session.attention.acknowledge',session);
  validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,userMessages:3}});
+ validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,state:'completed',outcome:'DONE'}});
  assert.throws(()=>validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,userMessages:'3'}}));
+ assert.throws(()=>validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,outcome:3}}));
  assert.throws(()=>validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,attachedMessages:3}}));
 });
 test('catalog and device admin results keep scope metadata additive and credentials write-only',()=>{

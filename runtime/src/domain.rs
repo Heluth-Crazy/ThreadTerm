@@ -90,6 +90,10 @@ pub struct SessionDelegation {
     /// read_only | ask_before_writes | writes_in_workspace | full_access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority: Option<String>,
+    /// Preview of the delegated turn's answer (or failure). Present only for
+    /// terminal states, and only when there is text to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 /// Present on a Chat session participating in a group chat.

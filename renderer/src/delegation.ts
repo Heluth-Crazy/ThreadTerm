@@ -1,4 +1,4 @@
-import type { ChatItem, ChatPart, Session, SessionDelegation, SessionDelegationState } from '@threadterm/protocol';
+import type { ChatPart, Session, SessionDelegation, SessionDelegationState } from '@threadterm/protocol';
 
 const DELEGATION_TOOLS = ['delegate_start', 'delegate_status', 'delegate_wait', 'delegate_respond', 'delegate_result', 'delegate_cancel'] as const;
 export type DelegationTool = typeof DELEGATION_TOOLS[number];
@@ -119,19 +119,6 @@ export function attachedMessagesLabel(count: number, copy: (en: string, zh: stri
       'ThreadTerm 已把本对话中的这些消息原样发给委派代理。打开委派会话即可查看。',
     ),
   };
-}
-
-/**
- * What a finished delegate's card previews from its chat: its last assistant
- * text, or the error it failed with (its last text when it has no error).
- */
-export function delegateOutcomePreview(items: readonly ChatItem[], failed: boolean, limit = 280): string | undefined {
-  const last = (type: 'text' | 'error') => [...items].reverse()
-    .filter(item => item.role === 'assistant')
-    .flatMap(item => item.parts.filter(part => part.type === type && part.text?.trim()).map(part => part.text!.trim()))
-    .find(Boolean);
-  const text = (failed && last('error')) || last('text');
-  return text && text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
 /** Sessions that some shown session delegated, i.e. render nested under it. */

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ChatItem, Session, SessionDelegationState } from '@threadterm/protocol';
-import { attachedMessagesLabel, authorityLabel, wideningRequestLabel, delegateOutcomePreview, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, delegationStateSummary, delegationStripVisible, nestedDelegateIds, withDelegates } from './delegation';
+import type { Session, SessionDelegationState } from '@threadterm/protocol';
+import { attachedMessagesLabel, authorityLabel, wideningRequestLabel, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, delegationStateSummary, delegationStripVisible, nestedDelegateIds, withDelegates } from './delegation';
 
 const session = (id: string, createdAt: string, parent?: string, branch?: string): Session => ({
   id, title: id, provider: 'codex', mode: 'chat', status: 'running', createdAt, updatedAt: createdAt,
@@ -109,21 +109,6 @@ test("a delegate card says how many of the user's messages were attached, in bot
   assert.equal(attachedMessagesLabel(1, zh).label, '已附上你的 1 条消息');
   assert.match(attachedMessagesLabel(2, en).title, /word for word/);
   assert.match(attachedMessagesLabel(2, zh).title, /原样/);
-});
-
-test('a finished delegate previews its answer, or the error it failed with', () => {
-  const item = (role: ChatItem['role'], ...parts: ChatItem['parts']): ChatItem => ({ id: `${role}-${parts.length}`, role, parts, createdAt: '2026-10-02T10:00:00Z' });
-  const answered = [
-    item('user', { type: 'text', text: 'Delegated prompt' }),
-    item('assistant', { type: 'thinking', text: 'thinking' }, { type: 'text', text: '  DONE  ' }),
-  ];
-  assert.equal(delegateOutcomePreview(answered, false), 'DONE');
-  const failed = [...answered, item('assistant', { type: 'error', text: 'Authentication required: 403 quota' })];
-  assert.equal(delegateOutcomePreview(failed, true), 'Authentication required: 403 quota');
-  assert.equal(delegateOutcomePreview(failed, false), 'DONE', 'a completed delegate never previews an error');
-  assert.equal(delegateOutcomePreview(answered, true), 'DONE', 'a failed delegate without an error part keeps its last text');
-  assert.equal(delegateOutcomePreview([item('user', { type: 'text', text: 'only the prompt' })], false), undefined);
-  assert.equal(delegateOutcomePreview([item('assistant', { type: 'text', text: 'x'.repeat(300) })], false), `${'x'.repeat(280)}…`);
 });
 
 test("ThreadTerm's own delegation tools are recognised in every agent's tool-call shape", () => {
