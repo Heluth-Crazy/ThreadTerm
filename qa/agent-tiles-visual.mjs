@@ -32,7 +32,7 @@ const rows = [
   session('r1', 'custom', 'npm run dev'),
 ];
 const sizes = [14, 16, 20, 28, 64];
-const brands = ['claude', 'codex', 'gemini', 'kimi', 'grok', 'opencode', 'shell'];
+const brands = ['claude', 'codex', 'gemini', 'kimi', 'grok', 'opencode', 'pi', 'shell'];
 
 function Gallery({ theme }) {
   const [shell, setShell] = useState(session('live', 'shell', 'PowerShell'));

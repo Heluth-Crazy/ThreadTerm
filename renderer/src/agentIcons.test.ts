@@ -41,7 +41,7 @@ test("sessionIconProvider prefers terminalAgent over the session provider", () =
 });
 
 test("AgentTile maps every built-in provider and falls back to a neutral shell tile", () => {
-  for (const id of ["claude", "codex", "gemini", "kimi", "grok", "opencode", "shell", "custom"]) {
+  for (const id of ["claude", "codex", "gemini", "kimi", "grok", "opencode", "pi", "shell", "custom"]) {
     const html = renderTile(id);
     assert.match(html, /class="[^"]*agent-tile/);
     assert.match(html, new RegExp(`data-agent-tile="${id === "custom" ? "custom" : id}"`));
@@ -49,7 +49,10 @@ test("AgentTile maps every built-in provider and falls back to a neutral shell t
   assert.match(renderTile("claude"), /agent-tile-claude/);
   assert.match(renderTile("codex"), /agent-tile-codex/);
   assert.match(renderTile("shell"), /agent-tile-shell/);
-  assert.match(renderTile("pi"), /agent-tile-shell/);
+  // Pi has its own mark (pi.dev logo), in the tile and as a flat icon, not the terminal glyph.
+  assert.match(renderTile("pi"), /agent-tile-pi/);
+  assert.match(renderTile("pi"), /#F09082/);
+  assert.match(agentIconMarkup("pi") ?? "", /#F09082/);
   assert.match(renderTile("echo", [capability("echo")]), /<img /);
   assert.match(renderTile("unknown-plugin"), /agent-tile-shell/);
 });

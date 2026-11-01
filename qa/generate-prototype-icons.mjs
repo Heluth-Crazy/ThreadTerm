@@ -9,6 +9,8 @@ const brands=extract('const AGENT_BRAND =','function agentIcon','AGENT_BRAND');
 const extras=extract('const extra =','const body = AGENT_BRAND','extra');
 Object.assign(icons,{flow:'<rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h6M6 9v9h9"/>',globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',image:'<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="1.5"/><path d="m4 17 5-5 3 3 2-2 6 4"/>',plug:'<path d="M8 3v6M16 3v6M6 9h12v3a6 6 0 0 1-6 6v3M12 18v3"/>',wrench:'<path d="M14 6a5 5 0 0 0-6 6L3 17l4 4 5-5a5 5 0 0 0 6-6l-3 3-3-3z"/>',agents:'<circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 16a5 5 0 0 1 7 4"/>',minimize:'<path d="M5 12h14"/>',maximize:'<rect x="5" y="5" width="14" height="14"/>',arrowUp:'<path d="M12 19V5M5 12l7-7 7 7"/>',send:'<path d="M21 3 3 10.5l7.5 3 3 7.5z"/><path d="M21 3 10.5 13.5"/>'});
 Object.assign(brands,extras);
+// Pi has no mark in the reference prototype: its official pi.dev logo (logo-auto.svg), rescaled to 24x24.
+brands.pi='<path fill="#F09082" d="M2 2H17V12H12V7H2Z"/><path fill="#4D9ABF" d="M2 7H7V12H12V17H7V22H2Z"/><path fill="#F1BE58" d="M17 12H22V22H17Z"/>';
 const normalized=Object.fromEntries(Object.entries(brands).map(([name,value])=>[name.toLowerCase(),value.replaceAll('stopColor=','stop-color=').replaceAll('stopOpacity=','stop-opacity=')]));
 // White marks for Rex-style tiles (not derived from the prototype brand fills).
 const tileMarks={
@@ -17,6 +19,7 @@ const tileMarks={
   kimi:'<path fill="#3B9BFF" d="M21.846 0a1.923 1.923 0 110 3.846H20.15a.226.226 0 01-.227-.226V1.923C19.923.861 20.784 0 21.846 0z"/><path fill="#fff" d="M11.065 11.199l7.257-7.2c.137-.136.06-.41-.116-.41H14.3a.164.164 0 00-.117.051l-7.82 7.756c-.122.12-.302.013-.302-.179V3.82c0-.127-.083-.23-.185-.23H3.186c-.103 0-.186.103-.186.23V19.77c0 .128.083.23.186.23h2.69c.103 0 .186-.102.186-.23v-3.25c0-.069.025-.135.069-.178l2.424-2.406a.158.158 0 01.205-.023l6.484 4.772a7.677 7.677 0 003.453 1.283c.108.012.2-.095.2-.23v-3.06c0-.117-.07-.212-.164-.227a5.028 5.028 0 01-2.027-.807l-5.613-4.064c-.117-.078-.132-.279-.028-.381z"/>',
   grok:'<path fill="#fff" fill-rule="evenodd" d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/>',
   opencode:'<path fill="#fff" fill-rule="evenodd" d="M16 6H8v12h8V6zm4 16H4V2h16v20z"/>',
+  pi:'<path fill="#F09082" d="M2 2H17V12H12V7H2Z"/><path fill="#4D9ABF" d="M2 7H7V12H12V17H7V22H2Z"/><path fill="#F1BE58" d="M17 12H22V22H17Z"/>',
   shell:'<path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m6 8 4.5 4L6 16M12.5 16.5h6"/>',
 };
 const tileFill={
@@ -26,6 +29,7 @@ const tileFill={
   kimi:'linear-gradient(180deg,#34343A,#111114)',
   grok:'linear-gradient(180deg,#3A3A3F,#0E0E10)',
   opencode:'linear-gradient(180deg,#4A4441,#211E1D)',
+  pi:'linear-gradient(180deg,#34343A,#111114)',
 };
 await writeFile(new URL('renderer/src/components/PrototypeIcon.tsx',root),`import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode, type SVGProps } from 'react';
 import type { ProviderCapability, Session } from '@threadterm/protocol';
@@ -65,7 +69,7 @@ export function sessionIconProvider(session: Pick<Session, 'provider' | 'termina
 const tileMarks: Record<string, string> = ${JSON.stringify(tileMarks,null,2)};
 const tileMarkHtml = Object.fromEntries(Object.entries(tileMarks).map(([name, __html]) => [name, Object.freeze({ __html })]));
 const tileFill: Record<string, string> = ${JSON.stringify(tileFill,null,2)};
-const BRAND_TILES = new Set(['claude', 'codex', 'gemini', 'kimi', 'grok', 'opencode']);
+const BRAND_TILES = new Set(['claude', 'codex', 'gemini', 'kimi', 'grok', 'opencode', 'pi']);
 
 /** Rex-style tactile session tile. Brand fills are fixed; edge/sheen/shadow come from theme vars. */
 export function AgentTile({ provider, size = 16, animate = false }: { provider: string; size?: number; animate?: boolean }) {
