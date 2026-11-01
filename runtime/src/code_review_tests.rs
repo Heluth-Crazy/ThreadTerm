@@ -1107,3 +1107,41 @@ fn standard_with_no_candidates_skips_the_verifier_and_raises_no_notices() {
         .unwrap();
     assert_eq!(notices, 0);
 }
+
+#[test]
+fn a_running_reviewers_approval_is_answered_through_the_chat_that_owns_the_review() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    let owner = fixture.session(&repo, "approval-owner");
+    let reviewer = fixture.session(&repo, "approval-reviewer");
+    let stranger = fixture.session(&repo, "approval-stranger");
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO code_reviews(id,session_id,item_id,provider,depth,scope_json,scope_label,root,state,stage,stages_total,created_at,updated_at) VALUES('rev-approval',?,'item','kimi','standard','{}','Uncommitted','C:/repo','verifying','verifying',2,'t','t')",
+                [&owner],
+            )?;
+            tx.execute(
+                "INSERT INTO code_review_sessions(review_id,session_id,role,stage_index,turn_id) VALUES('rev-approval',?,'verifier',1,'reviewer-turn')",
+                [&reviewer],
+            )?;
+            let item = json!({"id":"ask","role":"assistant","createdAt":"t","turnId":"reviewer-turn","parts":[{"type":"approval","approvalId":"1","title":"Bash"}]});
+            tx.execute(
+                "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES('ask',?,'reviewer-turn','message',?,'t')",
+                rusqlite::params![reviewer, item.to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let owner_of = |chat: &str, turn: &str, approval: &str| code_review::approval_owner(&fixture.db, chat, turn, approval).unwrap();
+    assert_eq!(owner_of(&owner, "reviewer-turn", "1"), Some(reviewer.clone()), "the owning chat answers its reviewer");
+    assert_eq!(owner_of(&owner, "reviewer-turn", "2"), None, "an approval the reviewer never asked stays with the chat");
+    assert_eq!(owner_of(&owner, "owner-turn", "1"), None, "the chat's own turn is never rerouted");
+    assert_eq!(owner_of(&stranger, "reviewer-turn", "1"), None, "another chat cannot answer the reviewer");
+    fixture
+        .db
+        .transaction(|tx| Ok(tx.execute("UPDATE code_reviews SET state='done' WHERE id='rev-approval'", [])?))
+        .unwrap();
+    assert_eq!(owner_of(&owner, "reviewer-turn", "1"), None, "a finished review no longer routes approvals");
+}

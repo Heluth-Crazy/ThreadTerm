@@ -1651,6 +1651,41 @@ fn run_pipeline(
 /// share of its newest items, so a long finder never hides the verifier.
 const TRANSCRIPT_ITEMS: usize = 500;
 
+/// The hidden reviewer that asked `approval_id` in `turn_id`, when the chat owning a running
+/// review answers it from the review card; `None` for the chat's own requests. Reviewers whose
+/// read-only mode is only requested (Kimi and other ACP agents) still ask before running tools.
+pub fn approval_owner(db: &Database, owner: &str, turn_id: &str, approval_id: &str) -> Result<Option<String>> {
+    let reviewers = db.transaction(|tx| {
+        // A database that never ran a review (Code Review's schema is created at startup) has none to route to.
+        let reviews: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_review_sessions')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !reviews {
+            return Ok(Vec::new());
+        }
+        let mut statement = tx.prepare(
+            "SELECT crs.session_id FROM code_review_sessions crs JOIN code_reviews cr ON cr.id=crs.review_id \
+             WHERE cr.session_id=? AND cr.state IN ('preparing','finding','verifying') AND (crs.turn_id=? OR crs.turn_id IS NULL)",
+        )?;
+        let rows = statement
+            .query_map(params![owner, turn_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    })?;
+    for reviewer in reviewers {
+        let asked = db.chat_items(&reviewer)?.iter().any(|item| {
+            item.turn_id.as_deref() == Some(turn_id)
+                && item.parts.iter().any(|part| part.get("approvalId").and_then(Value::as_str) == Some(approval_id))
+        });
+        if asked {
+            return Ok(Some(reviewer));
+        }
+    }
+    Ok(None)
+}
+
 pub fn read_session_transcript(db: &Database, parent: &str, key: &str) -> Result<Value> {
     let review_id = key.strip_prefix("review:").ok_or_else(|| fault("invalid_request"))?;
     let (rev, ended, rows) = db.transaction(|tx| {
