@@ -2056,10 +2056,14 @@ impl RuntimeService {
                     if let Some(result) = self.approve_delegation_authority(&p)? {
                         return Ok(result);
                     }
+                    // A running review's hidden reviewers ask through the chat that owns it;
+                    // holding that chat's lease is the authority to answer them.
+                    let target = crate::code_review::approval_owner(&self.db, &p.session_id, &p.turn_id, &p.approval_id)?
+                        .unwrap_or_else(|| p.session_id.clone());
                     approve_chat_request(
                         &self.db,
                         &self.providers,
-                        &p.session_id,
+                        &target,
                         &p.turn_id,
                         &p.approval_id,
                         &p.choice_id,
@@ -2073,8 +2077,10 @@ impl RuntimeService {
                         return Err(crate::providers::ProviderError::new("answer_invalid", "Question identifiers must not be empty").into());
                     }
                     let chat_tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
+                    let target = crate::code_review::approval_owner(&self.db, &p.session_id, &p.turn_id, &p.approval_id)?
+                        .unwrap_or_else(|| p.session_id.clone());
                     answer_chat_request(&self.db, &self.providers, &chat_tools, AnswerChatRequest {
-                        session_id: &p.session_id,
+                        session_id: &target,
                         turn_id: &p.turn_id,
                         approval_id: &p.approval_id,
                         response: &p.response,
