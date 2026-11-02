@@ -1,7 +1,7 @@
 use crate::{
     code_review,
     db::{CreateSession, Database},
-    providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, Providers, TerminalCommand},
+    providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderRuntime, Providers, TerminalCommand},
     review::ReviewFile,
     session_configs::{self, LaunchSpec},
 };
@@ -23,6 +23,7 @@ use std::{
 struct ChatLog {
     opens: Vec<String>,
     sends: Vec<String>,
+    option_sets: Vec<String>,
     in_flight: usize,
     max_in_flight: usize,
 }
@@ -75,6 +76,7 @@ struct Adapter {
     gate: Arc<Gate>,
     hang_ms: Arc<AtomicUsize>,
     hold_turn: Arc<AtomicUsize>,
+    options: Arc<Mutex<Value>>,
 }
 
 impl ProviderAdapter for Adapter {
@@ -121,6 +123,7 @@ impl ProviderAdapter for Adapter {
             gate: Arc::clone(&self.gate),
             hang_ms: Arc::clone(&self.hang_ms),
             hold_turn: Arc::clone(&self.hold_turn),
+            options: Arc::clone(&self.options),
         }))
     }
 }
@@ -134,6 +137,7 @@ struct FixtureChat {
     gate: Arc<Gate>,
     hang_ms: Arc<AtomicUsize>,
     hold_turn: Arc<AtomicUsize>,
+    options: Arc<Mutex<Value>>,
 }
 
 impl ChatSession for FixtureChat {
@@ -183,9 +187,11 @@ impl ChatSession for FixtureChat {
     fn stop(&mut self) -> Result<(), ProviderError> {
         Ok(())
     }
-    fn set_option(&mut self, _: &str, value: &str) -> Result<Value, ProviderError> {
+    fn set_option(&mut self, id: &str, value: &str) -> Result<Value, ProviderError> {
+        self.log.lock().unwrap().option_sets.push(format!("{id}={value}"));
         Ok(json!({"value": value}))
     }
+    fn ui_state(&self) -> Value { self.options.lock().unwrap().clone() }
 }
 
 /// Completes a reviewer turn the way a provider does: its events arrive on another
@@ -224,6 +230,7 @@ struct Fixture {
     gate: Arc<Gate>,
     hang_ms: Arc<AtomicUsize>,
     hold_turn: Arc<AtomicUsize>,
+    options: Arc<Mutex<Value>>,
 }
 
 impl Fixture {
@@ -241,6 +248,7 @@ impl Fixture {
         let gate = Arc::new(Gate::new());
         let hang_ms = Arc::new(AtomicUsize::new(0));
         let hold_turn = Arc::new(AtomicUsize::new(0));
+        let options = Arc::new(Mutex::new(json!({"options":[]})));
         let adapter = Adapter {
             installed: true,
             chat: true,
@@ -251,6 +259,7 @@ impl Fixture {
             gate: Arc::clone(&gate),
             hang_ms: Arc::clone(&hang_ms),
             hold_turn: Arc::clone(&hold_turn),
+            options: Arc::clone(&options),
         };
         Self {
             root,
@@ -262,6 +271,7 @@ impl Fixture {
             gate,
             hang_ms,
             hold_turn,
+            options,
         }
     }
 
@@ -532,6 +542,58 @@ fn catalog_stays_valid_json_with_many_long_choices() {
 }
 
 #[test]
+fn refreshed_catalog_replaces_removed_choices_and_uses_its_new_default() {
+    let fixture = Fixture::new();
+    code_review::remember_provider_options(
+        &fixture.db,
+        "reviewer",
+        &json!({"options":[{"id":"model","category":"model","value":"removed-model","recommended":"old-default","choices":[{"value":"removed-model","name":"Removed"},{"value":"old-default","name":"Old default"}]}]}),
+    )
+    .unwrap();
+    code_review::remember_provider_options(
+        &fixture.db,
+        "reviewer",
+        &json!({"options":[{"id":"model","category":"model","value":"running-model","recommended":"new-default","choices":[{"value":"running-model","name":"Running"},{"value":"new-default","name":"New default"}]}]}),
+    )
+    .unwrap();
+
+    let options: Value = fixture
+        .db
+        .transaction(|tx| {
+            let text: String = tx.query_row(
+                "SELECT options_json FROM provider_option_catalog WHERE provider='reviewer'",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&text)?)
+        })
+        .unwrap();
+    let model = &options[0];
+    assert_eq!(model["value"], "new-default");
+    assert!(
+        !model["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|choice| choice["value"] == "removed-model")
+    );
+}
+
+#[test]
+fn options_revalidates_catalog_from_an_open_chat_without_spawning_a_provider() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    let parent = fixture.session(&repo, "parent-live-catalog");
+    code_review::remember_provider_options(&fixture.db, "reviewer", &json!({"options":[{"id":"model","category":"model","recommended":"old","choices":[{"value":"old"}]}]})).unwrap();
+    *fixture.options.lock().unwrap() = json!({"options":[{"id":"model","category":"model","recommended":"new","choices":[{"value":"new"}]}]});
+    fixture.providers.chat_open(&parent, "reviewer", repo.to_str().unwrap(), None).unwrap();
+
+    let result = code_review::dispatch(&fixture.db, &fixture.providers, "codeReview.options", &json!({"sessionId":parent}), &|_, _| Ok(()), &|_| unreachable!()).unwrap();
+    assert_eq!(result["providers"][0]["model"]["recommended"], "new");
+    assert_eq!(result["providers"][0]["model"]["choices"], json!([{"value":"new"}]));
+}
+
+#[test]
 fn staging_uses_catalog_option_id() {
     let fixture = Fixture::new();
     let repo = repository(fixture.root.path());
@@ -545,6 +607,13 @@ fn staging_uses_catalog_option_id() {
     )
     .unwrap();
     let parent = fixture.session(&repo, "parent-model");
+    *fixture.options.lock().unwrap() = json!({"options":[
+        {"id":"model_id","name":"Model","category":"model","value":"fast","recommended":"fast","choices":[{"value":"fast","name":"Fast"},{"value":"slow","name":"Slow"}]}
+    ]});
+    fixture
+        .providers
+        .chat_open(&parent, "reviewer", repo.to_str().unwrap(), None)
+        .unwrap();
     fixture.push_answer(json!([]));
     let create = fixture.create();
     let started = code_review::dispatch(
@@ -558,24 +627,10 @@ fn staging_uses_catalog_option_id() {
     .unwrap();
     let summary = wait_done(&fixture.db, started["reviewId"].as_str().unwrap());
     assert_eq!(summary["stage"], "done", "staging review summary={summary}");
-    let reviewer: String = fixture
-        .db
-        .transaction(|tx| {
-            Ok(tx.query_row(
-                "SELECT session_id FROM code_review_sessions WHERE review_id=?",
-                [started["reviewId"].as_str().unwrap()],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
-    let options = fixture.db.pending_fork_options(&reviewer).unwrap();
+    let option_sets = fixture.log.lock().unwrap().option_sets.clone();
     assert!(
-        options
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["id"] == "model_id" && row["value"] == "fast"),
-        "expected catalog option id model_id, got {options}"
+        option_sets.iter().any(|row| row == "model_id=fast"),
+        "expected applied catalog option id model_id, got {option_sets:?}"
     );
     let err = code_review::dispatch(
         &fixture.db,
@@ -587,6 +642,118 @@ fn staging_uses_catalog_option_id() {
     )
     .unwrap_err();
     assert_eq!(code(err), "invalid_request");
+}
+
+#[test]
+fn missing_catalog_rejects_an_explicit_model_for_new_review_work() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    let parent = fixture.session(&repo, "parent-model-missing-catalog");
+    let create = fixture.create();
+
+    let error = code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.start",
+        &json!({"sessionId":parent,"provider":"reviewer","model":"removed-model","depth":"quick","scope":{"kind":"uncommitted"},"operationId":"removed-model","leaseEpoch":1}),
+        &|_, _| Ok(()),
+        &create,
+    )
+    .unwrap_err();
+
+    assert_eq!(code(error), "invalid_request");
+}
+
+#[test]
+fn no_live_catalog_source_drops_stale_models_from_options_and_start() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    let parent = fixture.session(&repo, "parent-stale-catalog");
+    code_review::remember_provider_options(
+        &fixture.db,
+        "reviewer",
+        &json!({"options":[{"id":"model","category":"model","recommended":"removed-model","choices":[{"value":"removed-model","name":"Removed"}]}]}),
+    )
+    .unwrap();
+
+    let options = code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.options",
+        &json!({"sessionId":parent}),
+        &|_, _| Ok(()),
+        &|_| unreachable!(),
+    )
+    .unwrap();
+    assert!(options["providers"][0].get("model").is_none());
+
+    let create = fixture.create();
+    let error = code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.start",
+        &json!({"sessionId":parent,"provider":"reviewer","model":"removed-model","depth":"quick","scope":{"kind":"uncommitted"},"operationId":"stale-model","leaseEpoch":1}),
+        &|_, _| Ok(()),
+        &create,
+    )
+    .unwrap_err();
+    assert_eq!(code(error), "invalid_request");
+    assert!(!fixture.providers.chat_is_open(&parent));
+}
+
+#[test]
+fn empty_live_catalog_rejects_an_explicit_model_for_new_review_work() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    let parent = fixture.session(&repo, "parent-empty-catalog");
+    *fixture.options.lock().unwrap() = json!({"options":[{
+        "id":"model","category":"model","value":"running-model","recommended":"default-model","choices":[]
+    }]});
+    fixture
+        .providers
+        .chat_open(&parent, "reviewer", repo.to_str().unwrap(), None)
+        .unwrap();
+
+    let create = fixture.create();
+    let error = code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.start",
+        &json!({"sessionId":parent,"provider":"reviewer","model":"removed-model","depth":"quick","scope":{"kind":"uncommitted"},"operationId":"empty-catalog","leaseEpoch":1}),
+        &|_, _| Ok(()),
+        &create,
+    )
+    .unwrap_err();
+    assert_eq!(code(error), "invalid_request");
+}
+
+#[test]
+fn fresh_catalog_survives_a_current_selection_error() {
+    let fixture = Fixture::new();
+    let repo = repository(fixture.root.path());
+    let parent = fixture.session(&repo, "parent-fresh-error-catalog");
+    *fixture.options.lock().unwrap() = json!({
+        "loadState":"error","error":{"code":"chat_option_invalid","message":"Removed model"},
+        "options":[{"id":"model","category":"model","value":"","recommended":"fresh-model","choices":[{"value":"fresh-model","name":"Fresh"}]}]
+    });
+    fixture
+        .providers
+        .chat_open(&parent, "reviewer", repo.to_str().unwrap(), None)
+        .unwrap();
+
+    let options = code_review::dispatch(
+        &fixture.db,
+        &fixture.providers,
+        "codeReview.options",
+        &json!({"sessionId":parent}),
+        &|_, _| Ok(()),
+        &|_| unreachable!(),
+    )
+    .unwrap();
+    assert_eq!(options["providers"][0]["model"]["recommended"], "fresh-model");
 }
 
 #[test]

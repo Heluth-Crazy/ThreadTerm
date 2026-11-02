@@ -1298,6 +1298,31 @@ impl ChatSession for CodexChat {
         Ok(())
     }
 
+    fn refresh_ui_options(&mut self) -> Result<(), ProviderError> {
+        let gate = self.ui.lock()
+            .map_err(|_| ProviderError::new("provider_internal", "Codex UI lock poisoned"))?
+            .options_refresh.clone();
+        let requester = self.process.requester();
+        let ui = self.ui.clone();
+        let events = self.events.clone();
+        let session_id = self.session_id.clone();
+        let native_id = self.native_id.clone();
+        let worker_token = self.worker_token.clone();
+        super::spawn_ui_options_refresh(&gate, move || {
+            let Ok(catalog) = model_catalog_with_requester(&requester) else { return; };
+            {
+                let Ok(mut state) = ui.lock() else { return; };
+                if state.retiring { return; }
+                state.catalog = catalog;
+                state.options_error = None;
+                let settings = state.status.thread_settings.clone();
+                adopt_codex_settings(&mut state, &settings);
+            }
+            emit_chat_ui(&events, &session_id, Some(&native_id), &ui, &worker_token);
+        });
+        Ok(())
+    }
+
     fn ui_state(&self) -> Value {
         self.ui
             .lock()
@@ -1831,6 +1856,7 @@ const CODEX_SLASH_COMMANDS: &[(&str, &str)] = &[
 
 #[derive(Clone, Default)]
 struct CodexUiState {
+    options_refresh: Arc<std::sync::atomic::AtomicBool>,
     browser_activity: super::browser_activity::BrowserActivityTracker,
     options: Vec<Value>,
     commands: Vec<Value>,
@@ -3109,6 +3135,10 @@ fn schedule_codex_status_reads(
 }
 
 fn model_catalog(process: &JsonLineProcess) -> Result<Value, ProviderError> {
+    model_catalog_with_requester(&process.requester())
+}
+
+fn model_catalog_with_requester(process: &super::common::JsonLineRequester) -> Result<Value, ProviderError> {
     let mut models = Vec::new();
     let mut cursor = None::<String>;
     for _ in 0..20 {
@@ -3117,7 +3147,8 @@ fn model_catalog(process: &JsonLineProcess) -> Result<Value, ProviderError> {
         if let Some(cursor) = &cursor {
             params.insert("cursor".to_owned(), json!(cursor));
         }
-        let page = codex_request(process, "model/list", Value::Object(params))?;
+        let page = process.request("model/list", Value::Object(params))
+            .map_err(|error| codex_protocol_error("model/list", error))?;
         if let Some(data) = page.get("data").and_then(Value::as_array) {
             models.extend(data.iter().cloned());
         }
@@ -3195,7 +3226,7 @@ fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
         .collect();
     let current_effort = thread_effort(thread);
     let current_mode = thread_mode(thread);
-    let mut model_choices: Vec<Value> = visible
+    let model_choices: Vec<Value> = visible
         .iter()
         .filter_map(|model| {
             let value = model.get("id").and_then(Value::as_str)?;
@@ -3212,13 +3243,6 @@ fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
             })
         })
         .collect();
-    if !current_model.is_empty()
-        && !model_choices.iter().any(|choice| {
-            choice.get("value").and_then(Value::as_str) == Some(current_model.as_str())
-        })
-    {
-        model_choices.insert(0, json!({"value":current_model,"name":current_model}));
-    }
     let efforts = visible
         .iter()
         .find(|model| model.get("id").and_then(Value::as_str) == Some(current_model.as_str()))
@@ -6718,6 +6742,7 @@ process.on('exit', () => clearTimeout(timeout));
         );
         assert_eq!(options.len(), 5);
         assert_eq!(options[0]["value"], "custom-model");
+        assert!(options[0]["choices"].as_array().unwrap().iter().all(|choice| choice["value"] != "custom-model"));
         assert_eq!(options[1]["id"], "collaboration");
     }
 
@@ -7621,4 +7646,262 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             "threadId":"thread-resume", "cwd":cwd, "approvalPolicy":"never", "sandbox":"danger-full-access"
         })));
     }
+
+    #[test]
+    fn reopening_chat_reads_the_current_model_catalog() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex catalog-refresh fixture");
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let hits = scratch.path().join("model-list-hits");
+        let script = scratch.path().join("fake-codex-catalog-refresh.mjs");
+        std::fs::write(&script, format!(r#"import {{ existsSync, readFileSync, writeFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+const hits = {hits};
+const thread = {{ id: 'thread', model: 'actual-model', status: {{ type: 'idle' }} }};
+const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') return write({{ id: request.id, result: {{ capabilities: {{}} }} }});
+  if (request.method === 'thread/start') return write({{ id: request.id, result: {{ thread, threadSettings: {{ model: 'actual-model' }} }} }});
+  if (request.method === 'thread/read') return write({{ id: request.id, result: {{ thread }} }});
+  if (request.method === 'model/list') {{
+    const count = existsSync(hits) ? Number(readFileSync(hits, 'utf8')) : 0;
+    writeFileSync(hits, String(count + 1));
+    const data = count === 0
+      ? [{{ id: 'actual-model', displayName: 'Actual model' }}]
+      : [{{ id: 'new-default', displayName: 'New default', isDefault: true }}];
+    return write({{ id: request.id, result: {{ data }} }});
+  }}
+  if (request.method === 'skills/list' || request.method === 'account/rateLimits/read') return write({{ id: request.id, result: {{ data: [] }} }});
+  if (request.method === 'account/read') return write({{ id: request.id, result: {{ account: {{ type: 'chatgpt' }} }} }});
+  write({{ id: request.id, result: {{}} }});
+}});
+"#, hits = serde_json::to_string(&hits.to_string_lossy()).unwrap())).unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, _) = crate::provider_events::tap_channel(8);
+        let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
+        let cwd = scratch.path().to_string_lossy().into_owned();
+        let mut first = adapter.open_chat("catalog-first", &cwd, None).unwrap();
+        assert!(first.ui_state()["options"][0]["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "actual-model"));
+        first.stop().unwrap();
+        let mut reopened = adapter.open_chat("catalog-reopened", &cwd, None).unwrap();
+        let model = &reopened.ui_state()["options"][0];
+        assert_eq!(model["value"], "actual-model");
+        assert!(model["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "new-default"));
+        assert!(model["choices"].as_array().unwrap().iter().all(|choice| choice["value"] != "actual-model"));
+        reopened.stop().unwrap();
+    }
+
+    #[test]
+    fn chat_options_refreshes_the_live_model_catalog() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex catalog-refresh fixture");
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let catalog = scratch.path().join("catalog-version");
+        std::fs::write(&catalog, "old").unwrap();
+        let script = scratch.path().join("fake-codex-live-catalog.mjs");
+        std::fs::write(&script, format!(r#"import {{ readFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+const catalog = {catalog};
+const thread = {{ id: 'thread', model: 'actual-model', status: {{ type: 'idle' }} }};
+const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') return write({{ id: request.id, result: {{ capabilities: {{}} }} }});
+  if (request.method === 'thread/start') return write({{ id: request.id, result: {{ thread, threadSettings: {{ model: 'actual-model' }} }} }});
+  if (request.method === 'thread/read') return write({{ id: request.id, result: {{ thread }} }});
+  if (request.method === 'model/list') {{
+    const data = readFileSync(catalog, 'utf8').trim() === 'old'
+      ? [{{ id: 'old-model', displayName: 'Old model' }}]
+      : [{{ id: 'new-default', displayName: 'New default', isDefault: true }}];
+    return write({{ id: request.id, result: {{ data }} }});
+  }}
+  if (request.method === 'skills/list' || request.method === 'account/rateLimits/read') return write({{ id: request.id, result: {{ data: [] }} }});
+  if (request.method === 'account/read') return write({{ id: request.id, result: {{ account: {{ type: 'chatgpt' }} }} }});
+  write({{ id: request.id, result: {{}} }});
+}});
+"#, catalog = serde_json::to_string(&catalog.to_string_lossy()).unwrap())).unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, _) = crate::provider_events::tap_channel(8);
+        let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
+        let cwd = scratch.path().to_string_lossy().into_owned();
+        let mut chat = adapter.open_chat("catalog-live", &cwd, None).unwrap();
+        assert!(chat.ui_state()["options"][0]["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "old-model"));
+        std::fs::write(&catalog, "new").unwrap();
+        chat.refresh_ui_options().unwrap();
+        wait_for_catalog_choice(chat.as_ref(), "new-default");
+        let model = &chat.ui_state()["options"][0];
+        assert!(model["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "new-default"));
+        assert!(!model["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "old-model"));
+        assert!(!model["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "actual-model"));
+        assert_eq!(model["value"], "actual-model");
+        chat.stop().unwrap();
+    }
+
+    #[test]
+    fn successful_catalog_refresh_clears_the_initial_error() {
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex catalog-refresh fixture");
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let catalog = scratch.path().join("catalog-version");
+        std::fs::write(&catalog, "fail").unwrap();
+        let script = scratch.path().join("fake-codex-catalog-recovery.mjs");
+        std::fs::write(&script, format!(r#"import {{ readFileSync }} from 'node:fs';
+import {{ createInterface }} from 'node:readline';
+const catalog = {catalog};
+const thread = {{ id: 'thread', model: 'actual-model', status: {{ type: 'idle' }} }};
+const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') return write({{ id: request.id, result: {{ capabilities: {{}} }} }});
+  if (request.method === 'thread/start' || request.method === 'thread/read') return write({{ id: request.id, result: {{ thread, threadSettings: {{ model: 'actual-model' }} }} }});
+  if (request.method === 'model/list') {{
+    if (readFileSync(catalog, 'utf8').trim() === 'fail') return write({{ id: request.id, error: {{ code: -32603, message: 'catalog unavailable' }} }});
+    return write({{ id: request.id, result: {{ data: [{{ id: 'new-default', isDefault: true }}] }} }});
+  }}
+  if (request.method === 'skills/list' || request.method === 'account/rateLimits/read') return write({{ id: request.id, result: {{ data: [] }} }});
+  if (request.method === 'account/read') return write({{ id: request.id, result: {{ account: {{ type: 'chatgpt' }} }} }});
+  write({{ id: request.id, result: {{}} }});
+}});
+"#, catalog = serde_json::to_string(&catalog.to_string_lossy()).unwrap())).unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, _) = crate::provider_events::tap_channel(8);
+        let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
+        let cwd = scratch.path().to_string_lossy().into_owned();
+        let mut chat = adapter.open_chat("catalog-recovery", &cwd, None).unwrap();
+        assert_eq!(chat.ui_state()["loadState"], "error");
+        std::fs::write(&catalog, "new").unwrap();
+        chat.refresh_ui_options().unwrap();
+        wait_for_catalog_choice(chat.as_ref(), "new-default");
+        let model = &chat.ui_state()["options"][0];
+        assert!(chat.ui_state().get("loadState").is_none());
+        assert_eq!(model["value"], "actual-model");
+        assert!(model["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "new-default"));
+        chat.stop().unwrap();
+    }
+
+    fn wait_for_catalog_choice(chat: &dyn ChatSession, value: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if chat.ui_state()["options"][0]["choices"].as_array().is_some_and(|choices| choices.iter().any(|choice| choice["value"] == value)) { return; }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("catalog choice {value} did not arrive");
+    }
+
+    fn catalog_refresh_fixture() -> (tempfile::TempDir, Arc<super::super::Providers>, broadcast::Receiver<super::super::ProviderEvent>) {
+        let node = crate::providers::common::find_executable("node").expect("node fixture runtime");
+        let scratch = tempfile::tempdir().unwrap();
+        let script = scratch.path().join("catalog-refresh.mjs");
+        std::fs::write(scratch.path().join("mode"), "cached").unwrap();
+        std::fs::write(&script, r#"import {readFileSync, appendFileSync} from 'node:fs';
+import {createInterface} from 'node:readline';
+const write = value => process.stdout.write(JSON.stringify(value)+'\n');
+const thread = {id:'thread',model:'actual-model',status:{type:'idle'}};
+createInterface({input:process.stdin}).on('line', line => {
+ const q=JSON.parse(line);
+ if(q.method==='model/list') {
+  const mode=readFileSync(new URL('mode',import.meta.url),'utf8');
+  appendFileSync(new URL('requests',import.meta.url),'1\n');
+  const reply=()=>write(mode==='fail'?{id:q.id,error:{code:-32603,message:'offline'}}:{id:q.id,result:{data:[{id:mode==='cached'?'old-model':'new-model'}]}});
+  if(mode==='slow') setTimeout(reply,1200); else reply();
+ } else if(q.method==='thread/start'||q.method==='thread/read') write({id:q.id,result:{thread,threadSettings:{model:'actual-model'}}});
+ else if(q.method==='account/read') write({id:q.id,result:{account:{type:'chatgpt'}}});
+ else write({id:q.id,result:{data:[]}});
+});
+"#).unwrap();
+        let providers = Arc::new(super::super::Providers::native(scratch.path()));
+        let receiver = providers.events.subscribe();
+        let adapter = CodexAdapter::with_test_app_server_spec(providers.events.clone(), CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap());
+        let chat = adapter.open_chat("refresh", &scratch.path().to_string_lossy(), None).unwrap();
+        let mut slot = super::super::ChatSlot::new();
+        slot.worker = Some(Arc::new(Mutex::new(chat)));
+        providers.chats.lock().unwrap().insert("refresh".into(), slot);
+        (scratch, providers, receiver)
+    }
+
+    fn wait_catalog_ui(receiver: &mut broadcast::Receiver<super::super::ProviderEvent>) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(event) = receiver.try_recv() {
+                if event.kind == "chat.ui" && event.data["options"][0]["choices"].as_array().is_some_and(|choices| choices.iter().any(|choice| choice["value"] == "new-model")) {
+                    return event.data;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("refreshed catalog did not arrive through chat.ui");
+    }
+
+    #[test]
+    fn failing_model_list_keeps_cached_options_and_load_state() {
+        use super::super::ProviderRuntime;
+        let (scratch, providers, mut receiver) = catalog_refresh_fixture();
+        let before = providers.chat("refresh", |chat| Ok(super::super::normalize_chat_ui(chat.ui_state()))).unwrap();
+        std::fs::write(scratch.path().join("mode"), "fail").unwrap();
+        let after = providers.chat_options("refresh").unwrap();
+        assert_eq!(after, before);
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(providers.chat("refresh", |chat| Ok(super::super::normalize_chat_ui(chat.ui_state()))).unwrap(), before);
+        std::fs::write(scratch.path().join("mode"), "new").unwrap();
+        providers.chat_options("refresh").unwrap();
+        wait_catalog_ui(&mut receiver);
+    }
+
+    #[test]
+    fn chat_options_returns_without_waiting_for_slow_model_list() {
+        use super::super::ProviderRuntime;
+        let (scratch, providers, _) = catalog_refresh_fixture();
+        std::fs::write(scratch.path().join("mode"), "slow").unwrap();
+        let start = Instant::now();
+        let state = providers.chat_options("refresh").unwrap();
+        assert!(start.elapsed() < Duration::from_millis(500), "cached read waited {:?}", start.elapsed());
+        assert_eq!(state["options"][0]["choices"][0]["value"], "old-model");
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while std::fs::read_to_string(scratch.path().join("requests")).unwrap().lines().count() < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read_to_string(scratch.path().join("requests")).unwrap().lines().count(), 2);
+        let start = Instant::now();
+        providers.chat("refresh", |_| Ok(())).unwrap();
+        assert!(start.elapsed() < Duration::from_millis(500), "refresh held worker lock");
+    }
+
+    #[test]
+    fn refreshed_model_catalog_arrives_through_chat_ui() {
+        use super::super::ProviderRuntime;
+        let (scratch, providers, mut receiver) = catalog_refresh_fixture();
+        std::fs::write(scratch.path().join("mode"), "new").unwrap();
+        providers.chat_options("refresh").unwrap();
+        let state = wait_catalog_ui(&mut receiver);
+        assert_eq!(state["options"][0]["value"], "actual-model");
+        assert!(state["options"][0]["choices"].as_array().unwrap().iter().all(|choice| choice["value"] != "old-model" && choice["value"] != "actual-model"));
+    }
+
+    #[test]
+    fn concurrent_chat_options_coalesce_model_list_refreshes() {
+        use super::super::ProviderRuntime;
+        let (scratch, providers, mut receiver) = catalog_refresh_fixture();
+        let before = std::fs::read_to_string(scratch.path().join("requests")).unwrap().lines().count();
+        std::fs::write(scratch.path().join("mode"), "slow").unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        let threads: Vec<_> = (0..8).map(|_| {
+            let providers = providers.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || { barrier.wait(); providers.chat_options("refresh").unwrap(); })
+        }).collect();
+        barrier.wait();
+        for thread in threads { thread.join().unwrap(); }
+        let count = std::fs::read_to_string(scratch.path().join("requests")).unwrap().lines().count();
+        assert!(count <= before + 1, "concurrent calls started {} refreshes", count - before);
+        wait_catalog_ui(&mut receiver);
+        assert_eq!(std::fs::read_to_string(scratch.path().join("requests")).unwrap().lines().count(), before + 1);
+    }
+
 }

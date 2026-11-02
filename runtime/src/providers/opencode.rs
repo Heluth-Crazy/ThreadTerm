@@ -4,7 +4,7 @@ use super::{
         command_output, find_executable, history_page, insert_optional, spawn_managed_service,
         validate_native_id, version_probe, CommandSpec,
     },
-    emit_scoped, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
+    emit_scoped, spawn_ui_options_refresh, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
     TerminalCommand,
 };
 use crate::chat_questions::answer_summary;
@@ -289,6 +289,43 @@ struct OpenCodeServer {
     _job: crate::job::SessionJob,
 }
 
+#[derive(Clone)]
+struct OpenCodeOptionsRequester {
+    base_url: String,
+    cwd: String,
+    username: String,
+    password: String,
+    client: Client,
+}
+
+impl OpenCodeOptionsRequester {
+    fn from_server(server: &OpenCodeServer) -> Self {
+        Self {
+            base_url: server.base_url.clone(),
+            cwd: server.cwd.clone(),
+            username: server.username.clone(),
+            password: server.password.clone(),
+            client: server.client.clone(),
+        }
+    }
+
+    fn get_json(&self, path: &str) -> Result<Value, ProviderError> {
+        let response = self.client
+            .get(format!("{}{}", self.base_url, path))
+            .basic_auth(&self.username, Some(&self.password))
+            .query(&[("directory", &self.cwd)])
+            .send()
+            .map_err(|error| ProviderError::new("provider_disconnected", format!("OpenCode request failed: {error}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let message = response.text().unwrap_or_default();
+            return Err(ProviderError::new("provider_error", format!("OpenCode returned {status}: {message}"))
+                .with_details(json!({"httpStatus":status.as_u16()})));
+        }
+        response.json().map_err(|error| ProviderError::new("provider_protocol", format!("invalid OpenCode response: {error}")))
+    }
+}
+
 /// The turn marker used when a reconnect finds the native session still busy.
 /// It blocks new sends until the native turn finishes; it is never a real
 /// ThreadTerm turn id.
@@ -560,6 +597,7 @@ impl OpenCodeServer {
             abort_pending: Mutex::new(None),
             retry_visible: AtomicBool::new(false),
             compact_pending: Mutex::new(None),
+            ui_options_refreshing: Arc::new(AtomicBool::new(false)),
         });
         // The SSE response is already buffering. Hydrate before draining it so
         // replied/updated events win over these read-only snapshots.
@@ -708,6 +746,35 @@ impl OpenCodeOptions {
             Err(error) => ui.error = Some(error),
         }
         ui
+    }
+    fn refresh_catalogues(
+        &mut self,
+        providers: Result<Value, ProviderError>,
+        agents: Result<Value, ProviderError>,
+        commands: Result<Value, ProviderError>,
+    ) {
+        let mut refreshed = Self::from_catalogues(providers, agents);
+        if refreshed.error.is_some() {
+            return;
+        }
+        if !commands.as_ref().ok().is_some_and(Value::is_array) {
+            return;
+        }
+        refreshed.commands = self.commands.clone();
+        refreshed.load_commands(commands);
+        refreshed.effective_model = self.effective_model.clone();
+        if !self.model.is_empty() && refreshed.models.iter().all(|model| model.value != self.model) {
+            refreshed.selection_error = Some(ProviderError::new("chat_option_invalid", "OpenCode no longer offers the selected model. It was not applied; the available next-turn selections are shown below. / OpenCode 不再提供所选模型。未应用该选择；下方显示下一轮可用选项。"));
+        } else {
+            refreshed.model = self.model.clone();
+            if refreshed.selected_model().is_some_and(|model| model.variants.iter().any(|variant| variant == &self.variant)) {
+                refreshed.variant = self.variant.clone();
+            }
+        }
+        if !self.agent.is_empty() && refreshed.agents.iter().any(|agent| agent["value"].as_str() == Some(self.agent.as_str())) {
+            refreshed.agent = self.agent.clone();
+        }
+        *self = refreshed;
     }
     fn load_commands(&mut self, commands: Result<Value, ProviderError>) {
         self.commands.clear();
@@ -1009,6 +1076,40 @@ impl ChatSession for OpenCodeChat {
     }
     fn ui_state(&self) -> Value {
         self.sse_target.ui.lock().map(|ui| ui.wire()).unwrap_or_else(|_| json!({"options":[],"commands":[],"loadState":"error"}))
+    }
+    fn refresh_ui_options(&mut self) -> Result<(), ProviderError> {
+        let requester = OpenCodeOptionsRequester::from_server(&self.server);
+        let target = Arc::clone(&self.sse_target);
+        let gate = Arc::clone(&target.ui_options_refreshing);
+        let events = self.events.clone();
+        let session_id = self.session_id.clone();
+        let native_id = self.native_id.clone();
+        let worker_token = self.worker_token.clone();
+        spawn_ui_options_refresh(&gate, move || {
+            let providers = requester.get_json("/provider");
+            let agents = requester.get_json("/agent");
+            let commands = requester.get_json("/command");
+            let (providers, agents, commands) = match (providers, agents, commands) {
+                (Ok(providers), Ok(agents), Ok(commands)) => (providers, agents, commands),
+                (providers, agents, commands) => {
+                    let error = providers.err().or_else(|| agents.err()).or_else(|| commands.err()).expect("catalogue error checked");
+                    eprintln!("[opencode-options] catalogue refresh unavailable ({})", error.code);
+                    return;
+                }
+            };
+            if target.stopped.load(Ordering::SeqCst) || !target.liveness.load(Ordering::SeqCst) {
+                return;
+            }
+            let state = match target.ui.lock() {
+                Ok(mut ui) => {
+                    ui.refresh_catalogues(Ok(providers), Ok(agents), Ok(commands));
+                    ui.wire()
+                }
+                Err(_) => return,
+            };
+            emit_scoped(&events, "opencode", &session_id, Some(&native_id), None, "chat.ui", state, Some(&worker_token));
+        });
+        Ok(())
     }
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
         let (state, result) = {
@@ -2141,6 +2242,7 @@ struct EventTarget {
     abort_pending: Mutex<Option<OpenCodeAbort>>,
     retry_visible: AtomicBool,
     compact_pending: Mutex<Option<OpenCodeCompact>>,
+    ui_options_refreshing: Arc<AtomicBool>,
 }
 
 impl EventTarget {
@@ -3564,11 +3666,95 @@ mod tests {
         assert_eq!(ui.prompt("default"), json!({"parts":[{"type":"text","text":"default"}]}));
     }
     #[test]
+    fn chat_options_refresh_is_nonblocking_coalesced_and_publishes_the_live_catalogue() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let request_count = Arc::clone(&requests);
+        thread::spawn(move || {
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+                request_count.fetch_add(1, Ordering::SeqCst);
+                let body = if request.starts_with("GET /provider?") {
+                    thread::sleep(Duration::from_millis(250));
+                    json!({"all":[{"id":"provider","models":{"fresh":{"id":"fresh","name":"Fresh"}}}],"connected":["provider"]}).to_string()
+                } else if request.starts_with("GET /agent?") {
+                    json!([]).to_string()
+                } else {
+                    json!([]).to_string()
+                };
+                let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                std::io::Write::write_all(&mut stream, reply.as_bytes()).unwrap();
+            }
+        });
+        #[cfg(windows)]
+        let spec = CommandSpec::from_path(
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            vec!["-NoProfile".into(), "-Command".into(), "Start-Sleep -Seconds 30".into()],
+        ).unwrap();
+        #[cfg(not(windows))]
+        let spec = CommandSpec::from_path(std::path::PathBuf::from("/bin/sh"), vec!["-c".into(), "sleep 30".into()]).unwrap();
+        let (child, job) = spawn_managed_service(&spec, None, &[]).unwrap();
+        let child = Arc::new(Mutex::new(child));
+        let _child_cleanup = TestChildCleanup(Arc::clone(&child));
+        let (events, mut rx) = crate::provider_events::tap_channel(8);
+        let active = Arc::new(Mutex::new(None));
+        let target = Arc::new(event_target(&events, Arc::clone(&active)));
+        let mut initial = options_fixture();
+        initial.effective_model = Some(json!({"providerID":"retired","modelID":"footer-model"}));
+        *target.ui.lock().unwrap() = initial;
+        let mut chat = OpenCodeChat {
+            server: OpenCodeServer {
+                base_url: format!("http://{address}"), cwd: String::new(), username: String::new(), password: String::new(),
+                client: Client::builder().timeout(Duration::from_secs(5)).build().unwrap(), child,
+                stopped: Arc::clone(&target.stopped), event_gate: Arc::clone(&target.event_gate), active_turn: active,
+                permissions: Arc::clone(&target.permissions), events: events.clone(), threadterm_session: "chat-s".into(), worker_token: "test-worker".into(), _job: job,
+            },
+            session_id: "chat-s".into(), native_id: "native-1".into(), events, sse_target: Arc::clone(&target), worker_token: "test-worker".into(),
+        };
+        let started = Instant::now();
+        chat.refresh_ui_options().unwrap();
+        chat.refresh_ui_options().unwrap();
+        assert!(started.elapsed() < Duration::from_millis(100), "catalogue reads must not hold the chat worker");
+        assert_eq!(chat.ui_state()["options"][0]["choices"][1]["name"], "First · Slash model", "the cached options are returned before the delayed catalogue arrives");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let event = loop {
+            if let Ok(event) = rx.try_recv() { break event; }
+            assert!(Instant::now() < deadline, "refreshed chat.ui");
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(event.kind, "chat.ui");
+        assert_eq!(event.data["options"][0]["choices"][1]["name"], "provider · Fresh");
+        let state = chat.ui_state();
+        assert_eq!(state["options"][0]["choices"][1]["name"], "provider · Fresh");
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "concurrent reads share one catalogue request");
+        assert_eq!(target.ui.lock().unwrap().effective_model, Some(json!({"providerID":"retired","modelID":"footer-model"})), "catalogue refresh must keep the actual footer model");
+    }
+    #[test]
     fn catalogue_failure_is_visible_without_breaking_the_other_controls() {
         let ui = OpenCodeOptions::from_catalogues(Err(ProviderError::new("provider_error", "catalogue unavailable")), Ok(json!([{"name":"build","mode":"primary"}])));
         assert_eq!(ui.wire()["loadState"], "error");
         assert_eq!(ui.wire()["error"]["message"], "catalogue unavailable");
         assert_eq!(ui.wire()["options"][0]["id"], "agent");
+    }
+    #[test]
+    fn refresh_catalogue_failure_keeps_the_cached_options() {
+        for (providers, agents, commands) in [
+            (Err(ProviderError::new("provider_error", "provider unavailable")), Ok(json!([])), Ok(json!([]))),
+            (Ok(json!({"all":[],"connected":[]})), Err(ProviderError::new("provider_error", "agents unavailable")), Ok(json!([]))),
+            (Ok(json!({"malformed":true})), Ok(json!([])), Ok(json!([]))),
+            (Ok(json!({"all":[],"connected":[]})), Ok(json!({"malformed":true})), Ok(json!([]))),
+            (Ok(json!({"all":[],"connected":[]})), Ok(json!([])), Err(ProviderError::new("provider_error", "commands unavailable"))),
+            (Ok(json!({"all":[],"connected":[]})), Ok(json!([])), Ok(json!({"malformed":true}))),
+        ] {
+            let mut ui = options_fixture();
+            ui.select("next-model", &ui.models[0].value.clone()).unwrap();
+            let cached = ui.wire();
+            ui.refresh_catalogues(providers, agents, commands);
+            assert_eq!(ui.wire(), cached, "a background catalogue failure must not degrade a working composer");
+        }
     }
     #[test]
     fn typed_errors_are_readable_and_categorized_without_raw_response_bodies() {
@@ -3951,6 +4137,7 @@ mod tests {
             abort_pending: Mutex::new(None),
             retry_visible: AtomicBool::new(false),
             compact_pending: Mutex::new(None),
+            ui_options_refreshing: Arc::new(AtomicBool::new(false)),
         }
     }
 

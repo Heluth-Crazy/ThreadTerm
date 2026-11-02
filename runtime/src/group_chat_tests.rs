@@ -1158,6 +1158,39 @@ fn member_crud_rename_and_archive_preserve_linked_chats() {
 }
 
 #[test]
+fn group_member_rejects_a_removed_model_from_live_choices_before_send() {
+    let fixture = Fixture::new();
+    fixture.script.lock().unwrap().options = json!({"options":[{
+        "id":"model","category":"model","value":"current-model",
+        "choices":[{"value":"current-model","name":"Current"}]
+    }]});
+    let group = fixture.create_with_members(
+        vec![json!({"provider":"fixture","model":"removed-model"})],
+        "Model guard",
+    );
+    let id = group["id"].as_str().unwrap();
+
+    fixture.dispatch(
+        "group.send",
+        json!({"id":id,"text":"question","to":["fixture"],"operationId":"removed-model"}),
+    );
+    wait_for(|| {
+        fixture
+            .db
+            .transaction(|tx| {
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM group_deliveries WHERE group_id=? AND state='failed')",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(Into::into)
+            })
+            .unwrap()
+    });
+    assert!(fixture.script.lock().unwrap().sent.is_empty());
+}
+
+#[test]
 fn read_only_member_gets_reviewer_instruction_and_guard_reports_changes() {
     let fixture = Fixture::new();
     let group = fixture.create_with_members(

@@ -786,6 +786,16 @@ fn project_provider_event(db: &Arc<Database>, providers: &Providers, event: &Pro
                 return false;
             }
         }
+        if event.kind == "chat.ui"
+            && (event.data.get("loadState").and_then(Value::as_str) != Some("error")
+                || event
+                    .data
+                    .pointer("/error/code")
+                    .and_then(Value::as_str)
+                    == Some("chat_option_invalid"))
+        {
+            let _ = crate::code_review::remember_provider_options(db, &event.provider, &event.data);
+        }
         true
     });
     if accepted == Some(true) && event.kind == "session.closed" {
@@ -957,6 +967,7 @@ impl RuntimeService {
     }
 
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
+        crate::code_review::forget_provider_options(&db);
         crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
         crate::group_chat::initialize(&db).expect("initialize group chats");
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
@@ -1840,12 +1851,18 @@ impl RuntimeService {
                     let settings =
                         self.db
                             .update_settings(&p.patch, p.expected_revision, &p.operation_id)?;
+                    if p.patch.get("providerNetwork").is_some() {
+                        crate::code_review::forget_provider_options(&self.db);
+                    }
                     self.providers.configure_network(&settings.value)?;
                     if p.patch.get("modelPrices").is_some() { crate::usage_ledger::schedule_pricing(&self.db)?; }
                     Ok(serde_json::to_value(settings)?)
                 }
                 "provider.list" => Ok(Value::Array(self.providers.capability_snapshot_result()?)),
-                "provider.refresh" => Ok(json!({"refreshId": self.providers.request_capability_refresh()})),
+                "provider.refresh" => {
+                    crate::code_review::forget_provider_options(&self.db);
+                    Ok(json!({"refreshId": self.providers.request_capability_refresh()}))
+                }
                 "plugin.list" | "plugin.setEnabled" | "plugin.reload" | "plugin.selectBrowserBinding" => {
                     let _plugins = self.plugin_gate.lock().map_err(|_| anyhow::anyhow!("plugin registry lock poisoned"))?;
                     let _settings = self.settings_apply_gate.lock().map_err(|_| anyhow::anyhow!("settings apply lock poisoned"))?;
@@ -4261,6 +4278,73 @@ mod tests {
         assert!(!project_provider_event(&db, &providers, &conflict));
         assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().native_id.as_deref(), Some("pi-after-new"));
         assert_eq!(db.chat_context(&session.id).unwrap().unwrap()["usedTokens"], 321);
+    }
+
+    #[test]
+    fn current_chat_ui_replaces_the_code_review_catalog_and_ignores_stale_or_failed_refreshes() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        crate::code_review::initialize(&db).unwrap();
+        let session = db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "codex",
+            mode: "chat",
+            native_id: Some("native"),
+            operation_id: "catalog-projection",
+        }).unwrap();
+        let providers = Providers::for_test(vec![]);
+        providers.preview_test_worker(&session.id, Some("worker-current"));
+        crate::code_review::remember_provider_options(
+            &db,
+            "codex",
+            &json!({"options":[{"id":"model","category":"model","recommended":"old","choices":[{"value":"old"}]}]}),
+        ).unwrap();
+        let catalog = || db.transaction(|tx| {
+            tx.query_row(
+                "SELECT options_json FROM provider_option_catalog WHERE provider='codex'",
+                [],
+                |row| row.get::<_, String>(0),
+            ).map_err(Into::into)
+        }).unwrap();
+
+        let fresh = ProviderEvent {
+            provider: "codex".into(),
+            session_id: session.id.clone(),
+            native_id: Some("native".into()),
+            turn_id: None,
+            kind: "chat.ui".into(),
+            data: json!({"options":[{"id":"model","category":"model","recommended":"new","choices":[{"value":"new"}]}]}),
+            worker_token: Some("worker-current".into()),
+        };
+        assert!(project_provider_event(&db, &providers, &fresh));
+        assert!(catalog().contains("new"));
+        assert!(!catalog().contains("old"));
+
+        let stale = ProviderEvent {
+            worker_token: Some("worker-old".into()),
+            data: json!({"options":[{"id":"model","category":"model","recommended":"stale","choices":[{"value":"stale"}]}]}),
+            ..fresh.clone()
+        };
+        assert!(!project_provider_event(&db, &providers, &stale));
+        assert!(catalog().contains("new"));
+        assert!(!catalog().contains("stale"));
+
+        let failed = ProviderEvent {
+            data: json!({"options":[{"id":"model","category":"model","recommended":"failed","choices":[{"value":"failed"}]}],"loadState":"error","error":{"code":"provider_timeout"}}),
+            ..fresh.clone()
+        };
+        assert!(project_provider_event(&db, &providers, &failed));
+        assert!(catalog().contains("new"));
+        assert!(!catalog().contains("failed"));
+
+        let unavailable_selection = ProviderEvent {
+            data: json!({"options":[{"id":"model","category":"model","recommended":"listed","choices":[{"value":"listed"}]}],"loadState":"error","error":{"code":"chat_option_invalid"}}),
+            ..fresh
+        };
+        assert!(project_provider_event(&db, &providers, &unavailable_selection));
+        assert!(catalog().contains("listed"));
+        assert!(!catalog().contains("new"));
     }
 
     #[test]

@@ -257,6 +257,30 @@ pub(crate) fn remember_provider_options(db: &Database, provider: &str, state: &V
     })
 }
 
+/// Catalogues describe a provider at one point in time. After a provider or
+/// runtime configuration change, wait for a live Chat to publish fresh choices.
+pub(crate) fn forget_provider_options(db: &Database) {
+    let _ = db.transaction(|tx| {
+        tx.execute("DELETE FROM provider_option_catalog", [])?;
+        Ok(())
+    });
+}
+
+fn refresh_provider_options(db: &Database, providers: &Providers) -> Result<()> {
+    forget_provider_options(db);
+    for session in db.snapshot()?.sessions.into_iter().filter(|session| {
+        session.mode == "chat" && providers.chat_is_open(&session.id)
+    }) {
+        let state = providers.chat_options(&session.id)?;
+        if state.get("loadState").and_then(Value::as_str) != Some("error")
+            || state.pointer("/error/code").and_then(Value::as_str) == Some("chat_option_invalid")
+        {
+            let _ = remember_provider_options(db, &session.provider, &state);
+        }
+    }
+    Ok(())
+}
+
 /// Drop trailing choices, then whole options, until the JSON fits in 16 KiB.
 pub(crate) fn fit_catalog_json(options: &[Value]) -> Result<String> {
     let mut kept = options.to_vec();
@@ -1369,6 +1393,7 @@ fn options(db: &Database, providers: &Providers, session_id: &str) -> Result<Val
     };
     let root = crate::git_read::plain_path(&root);
     let capabilities = providers.capabilities();
+    refresh_provider_options(db, providers)?;
     let mut provider_rows = Vec::new();
     for capability in capabilities {
         let id = capability.get("id").and_then(Value::as_str).unwrap_or_default();
@@ -1493,13 +1518,13 @@ fn stage_catalog_selection(
 
 fn validate_catalog_selection(db: &Database, provider: &str, category: &str, value: &str) -> Result<()> {
     let Some(option) = catalog_option(db, provider, category)? else {
-        return Ok(());
+        return Err(fault("invalid_request"));
     };
     let Some(choices) = option.get("choices").and_then(Value::as_array) else {
-        return Ok(());
+        return Err(fault("invalid_request"));
     };
     if choices.is_empty() {
-        return Ok(());
+        return Err(fault("invalid_request"));
     }
     if choices
         .iter()
@@ -1958,6 +1983,7 @@ pub fn dispatch(
             if !crate::delegation::available_agents(providers).contains(&request.provider) {
                 return Err(fault("provider_unavailable"));
             }
+            refresh_provider_options(db, providers)?;
             if let Some(model) = &request.model {
                 validate_catalog_selection(db, &request.provider, "model", model)?;
             }
