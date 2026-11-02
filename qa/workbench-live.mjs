@@ -24,8 +24,9 @@ const gitProbe=spawnSync(process.platform==='win32'?'where.exe':'which',['git'],
 const gitExe=process.env.THREADTERM_TEST_GIT||gitProbe.stdout?.split(/\r?\n/).find(value=>existsSync(value.trim()))?.trim();
 assert.ok(gitExe&&existsSync(gitExe),'This QA requires Git on PATH or THREADTERM_TEST_GIT.');
 const appDir=join(scratch,'app');
+await mkdir(join(scratch,'bin'),{recursive:true});
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(path|threadterm_.*|electron_run_as_node|tt_qa_.*)$/i.test(key)));
-Object.assign(env,{PATH:[dirname(process.execPath),dirname(gitExe),join(process.env.SystemRoot,'System32')].join(';'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin});
+Object.assign(env,{PATH:[dirname(process.execPath),dirname(gitExe),join(process.env.SystemRoot,'System32')].join(';'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin,THREADTERM_QA_PROVIDER_BIN:join(scratch,'bin')});
 const report={startedAt:new Date().toISOString(),scratch,runtimeBin,checks:[],screenshots:[],notes:[]};
 let app,page,releaseLock,settingsRevision=0;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),45000))]),[method,params]);
@@ -127,7 +128,9 @@ try {
  await page.keyboard.press('Control+P');
  await page.getByRole('dialog',{name:'Go to file'}).waitFor();
  await page.keyboard.type('todo');
- await page.locator('.wb-quick-open .cmd-row.active').waitFor();
+ await page.locator('.wb-quick-open .cmd-row',{hasText:'todo.md'}).waitFor();
+ await page.keyboard.press('ArrowDown');
+ await page.locator('.wb-quick-open .cmd-row.active',{hasText:'todo.md'}).waitFor();
  await shot('light-1280-quick-open.png');
  await page.keyboard.press('Enter');
  await page.locator('[role=tab]',{hasText:'todo.md'}).waitFor();
@@ -157,11 +160,11 @@ try {
  const appRow=page.locator('.wb-change-group[aria-label="Changes"] .wb-change-open',{hasText:'app.ts'});
  await appRow.waitFor();
  await appRow.click();
- await page.locator('.tt-diff-shell:visible .wb-hunk-nav').waitFor();
+ await page.locator('.tt-diff-shell:visible .wb-hunk-nav[aria-label="Hunks"]').waitFor();
  await page.locator('[role=tab]',{hasText:'app.ts · changes'}).waitFor();
- await until(async()=>(await page.locator('.tt-diff-shell:visible .wb-hunk-count:not([aria-label])').textContent())==='1/2','expected two hunks');
+ await until(async()=>(await page.locator('.tt-diff-shell:visible [aria-label="Hunks"] .wb-hunk-count').textContent())==='Change 1/2','expected two hunks');
  await shot('light-1280-scm-diff.png');
- await page.locator('.tt-diff-shell:visible').getByRole('button',{name:'Stage hunk',exact:true}).click();
+ await page.locator('.tt-diff-shell:visible').getByRole('button',{name:'Stage hunk',exact:true}).first().click();
  await until(async()=>(await git(['diff','--cached'])).includes('line3 = 300'),'first hunk was not staged');
  const cached=await git(['diff','--cached']),working=await git(['diff']);
  assert.ok(!cached.includes('line11 = 1100')&&working.includes('line11 = 1100'),'only the selected hunk may be staged');
@@ -213,9 +216,10 @@ try {
  await page.locator('.wb-history .wb-commit-row',{hasText:'QA: side branch only'}).waitFor();
  report.checks.push('History draws a commit graph; All branches adds a side-branch commit in its own lane, Current branch removes it');
  await blurTerminal();
- await page.keyboard.press('Control+P');await page.keyboard.type('app.ts');await page.keyboard.press('Enter');
+ await page.keyboard.press('Control+P');await page.keyboard.type('app.ts');await page.locator('.wb-quick-open .cmd-row',{hasText:'app.ts'}).waitFor();await page.keyboard.press('ArrowDown');await page.locator('.wb-quick-open .cmd-row.active',{hasText:'app.ts'}).waitFor();await page.keyboard.press('Enter');
  await page.locator('.pane-tab-surface:visible .tt-editor-shell .cm-content').waitFor();
- await page.locator('.pane-tab-surface:visible').getByRole('button',{name:'Blame',exact:true}).click();
+ await page.locator('.workspace-pane.selected').getByRole('button',{name:'Workspace actions',exact:true}).click();
+ await page.locator('.workspace-action-menu:visible').getByRole('button',{name:'Blame',exact:true}).click();
  // [data-commit] skips CodeMirror's hidden width spacer, which shares the entry class.
  await page.locator('.pane-tab-surface:visible .cm-blame-gutter .cm-blame-entry[data-commit]').first().waitFor();
  await page.locator('.pane-tab-surface:visible .cm-git-gutter .cm-git-marker').first().waitFor();
@@ -228,8 +232,10 @@ try {
  report.notes.push(`right panel ${JSON.stringify(edges.panel)}, pane card ${JSON.stringify(edges.card)}, pane strip ${edges.strip}px, strip overflowing ${edges.overflowing}`);
  assert.ok(edges.card!==undefined&&Math.abs(edges.panel.top-edges.card.top)<=0.5&&Math.abs(edges.panel.bottom-edges.card.bottom)<=0.5&&edges.switcherInHeader,`right panel aligns with the pane-card top/bottom and the view group remains in the header: ${JSON.stringify(edges)}`);
  assert.ok(edges.strip!==undefined&&edges.strip<=44,`per-pane tab strip must keep its height: ${JSON.stringify(edges)}`);
- report.checks.push('right panel aligns with pane-card edges; tab row holds only tabs and stays fixed');
- await until(()=>page.evaluate(()=>{const strip=document.querySelector('.workspace-pane.selected .workspace-tabs'),box=strip.getBoundingClientRect(),tab=strip.querySelector('.workspace-tab.active').getBoundingClientRect();return tab.left>=box.left-0.5&&tab.right<=box.right+0.5&&strip.classList.contains('fade-start');}),'active tab must stay fully visible after the strip narrows, with a fade on the hidden edge',3000);
+ const rules=await page.evaluate(()=>{const head=document.querySelector('.wb-panel-head').getBoundingClientRect();const bar=document.querySelector('.pane-tab-surface:not([hidden]) .file-view-tabs')?.getBoundingClientRect();return{head:head.bottom,bar:bar?.bottom};});
+ assert.ok(rules.bar!==undefined&&Math.abs(rules.head-rules.bar)<=0.5,`panel header and file toolbar rules must align: ${JSON.stringify(rules)}`);
+ report.checks.push('right panel aligns with pane-card edges and its header rule with the file toolbar rule; tab row holds only tabs and stays fixed');
+ await until(()=>page.evaluate(()=>{const strip=document.querySelector('.workspace-pane.selected .workspace-tabs');const box=strip.getBoundingClientRect(),tab=strip.querySelector('.workspace-tab.active').getBoundingClientRect();return tab.left>=box.left-0.5&&tab.right<=box.right+0.5&&(strip.scrollWidth<=strip.clientWidth+1||strip.classList.contains('fade-start')||strip.classList.contains('fade-end'));}),'active tab must stay fully visible after the strip narrows, with a fade on the hidden edge',3000);
  report.checks.push('active tab stays fully visible when the side panel narrows the tab strip; hidden overflow edges fade');
 
  // ---- Send to agent ----

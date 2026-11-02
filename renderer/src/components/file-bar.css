@@ -1,0 +1,49 @@
+/* Container width follows the editor, including split panes and standalone tools. */
+.file-workspace .editor-area{container-type:inline-size;container-name:file-surface}
+.file-workspace :is(.file-view-tabs,.file-bar).file-workspace-bar{display:flex;flex-flow:row nowrap;align-items:center;gap:4px;box-sizing:border-box;height:38px;min-height:38px;max-height:38px;padding:0 8px;overflow:visible;border-bottom:1px solid var(--border);background:var(--editor);white-space:nowrap}
+.file-workspace-bar>*,.file-workspace-bar .icon-btn{flex-shrink:0}
+.file-workspace-bar span{margin:0;padding:0;font-size:11px}
+.file-workspace-bar .file-bar-breadcrumb{display:flex;flex:1 1 0px;min-width:0;gap:0;color:var(--text);font-size:12px;overflow:hidden}
+.file-bar-folders{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;color:var(--muted)}
+.file-bar-name{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.file-workspace-bar .file-bar-state{display:flex;align-items:center;gap:4px;min-width:0;flex:0 1 auto}
+.file-workspace-bar .file-dirty{color:var(--warning);border:0;background:var(--soft);border-radius:var(--radius);padding:2px 5px}
+.file-bar-save-slot{display:flex;justify-content:flex-end;min-width:48px}
+.file-bar-segments{display:flex;align-items:center;gap:1px;padding:2px!important;border:1px solid var(--border);border-radius:var(--radius);background:var(--soft)}
+.file-bar-segments button{height:24px;padding:0 7px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;color:var(--muted);font:inherit;font-size:11px;cursor:pointer}
+.file-bar-segments button[aria-pressed=true]{background:var(--raised);color:var(--text);box-shadow:0 1px 3px color-mix(in srgb,var(--text) 12%,transparent);font-weight:600}
+.file-workspace-bar .file-bar-diff-state .tt-select-trigger{height:26px;min-height:26px;padding:0 5px;border:0;background:var(--soft);font-size:11px}
+.file-workspace-bar .file-bar-diff-state{flex:0 0 auto;min-width:0;max-width:140px}
+.file-workspace .file-workspace-bar .external-file-boundary{display:flex;flex:1 1 0px;flex-wrap:nowrap;min-width:0;gap:4px}
+.file-workspace-bar .external-file-boundary-path{display:flex;flex:1 1 auto;min-width:0;padding:0;font-size:12px}
+.file-workspace-bar .external-file-path-prefix{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.file-workspace-bar .external-file-path-name{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.file-workspace-bar .external-file-boundary-chip{flex:none;white-space:nowrap;font-size:11px}
+.file-workspace-bar .external-file-chip-short{display:none}
+@container file-surface (max-width:560px){.file-workspace-bar .external-file-chip-full{display:none}.file-workspace-bar .external-file-chip-short{display:inline}}
+.file-workspace-bar .external-file-boundary-notice{position:absolute;top:38px;left:8px;right:8px;z-index:10;padding:8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--raised);color:var(--text);white-space:normal;box-shadow:var(--shadow-soft)}
+.file-workspace-bar{position:relative}
+.file-workspace.embedded .file-view-tabs.external-file-toolbar.file-workspace-bar{flex-wrap:nowrap;align-items:center;padding:0 8px;gap:4px}
+.file-workspace .file-workspace-bar .external-file-boundary-action{width:28px;height:28px;padding:0;flex:none}
+.file-workspace .file-workspace-bar .external-file-boundary-path{min-width:0}
+.file-workspace-bar [hidden]{display:none!important}
+.file-workspace-bar .embedded-file-navigation{flex:1 1 auto;min-width:0;max-width:240px}
+.file-workspace-bar .wb-hunk-nav{display:inline-flex;flex-wrap:nowrap;gap:1px;align-items:center}
+.file-workspace-bar .wb-hunk-count{min-width:0;white-space:nowrap;font-size:11px}
+@container file-surface (max-width:520px){.file-workspace-bar .file-bar-secondary{display:none}}
+@container file-surface (max-width:480px){.file-workspace .file-workspace-bar .file-bar-optional{display:none}.file-workspace-bar .external-file-path-prefix{display:none}.file-workspace-bar .file-dirty{padding:2px 4px}.file-workspace-bar .file-bar-diff-state{max-width:90px}.file-workspace-bar{gap:2px;padding-inline:4px!important}}
+@container file-surface (max-width:440px){.file-workspace-bar .file-bar-folders{display:none}}
+@container file-surface (max-width:480px){.file-workspace-bar .file-change-label,.file-workspace-bar .file-tools-button{display:none}.file-workspace-bar .wb-hunk-nav .icon-btn{width:24px;height:26px}}
+@container file-surface (max-width:360px){.file-workspace-bar .file-bar-diff-state .tt-select-value{display:none}.file-workspace-bar .file-bar-diff-state .tt-select-trigger{width:26px;min-width:26px;padding:0;justify-content:center}.file-workspace-bar .wb-file-nav .icon-btn{display:none}.file-workspace-bar .file-bar-save-slot{min-width:44px}.file-workspace-bar .btn{padding-inline:6px}}
+@container file-surface (max-width:480px){.file-workspace-bar .file-dirty{font-size:11px}.file-workspace-bar .file-dirty-label{display:none}}
+.file-workspace-bar .file-dirty{height:22px;box-sizing:border-box;gap:4px;color:var(--warning,#bf7a1a)}
+.file-workspace .file-workspace-bar .path.file-bar-breadcrumb{flex:1 1 0px;min-width:0}
+
+@container file-surface (max-width:320px){.file-workspace .file-workspace-bar.file-workspace-bar{gap:2px}.file-workspace-bar .wb-hunk-nav:not(.wb-file-nav) .icon-btn{display:none}}
+
+.file-workspace-bar .file-bar-location{display:flex;flex:1 1 auto;align-items:center;gap:6px;min-width:0}
+.file-workspace .file-workspace-bar .file-bar-location .path.file-bar-breadcrumb{flex:0 1 auto;min-width:0}
+.file-workspace-bar .file-bar-location:has(.file-bar-diff-state){min-width:28px}
+.file-workspace-bar .wb-file-nav{border-left:1px solid var(--border);padding-left:4px;margin-left:2px}
+@container file-surface (max-width:320px){.file-workspace .file-workspace-bar .btn{font-size:11px;padding-inline:4px}.file-workspace-bar .file-bar-segments button{padding-inline:4px}}
+@container file-surface (max-width:240px){.file-workspace-bar .file-bar-segments button{font-size:10px}.file-workspace-bar .file-bar-location{gap:3px}}
