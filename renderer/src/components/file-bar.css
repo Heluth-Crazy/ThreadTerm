@@ -7,7 +7,7 @@
 .file-bar-folders{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;color:var(--muted)}
 .file-bar-name{flex:0 0 auto;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .file-workspace-bar .file-bar-state{display:flex;align-items:center;gap:4px;min-width:0;flex:0 1 auto}
-.file-workspace-bar .file-dirty{color:var(--warning);border:0;background:var(--soft);border-radius:var(--radius);padding:2px 5px}
+.file-workspace-bar .file-dirty{color:var(--primary);border:0;background:var(--primary-tint);border-radius:var(--radius);padding:2px 5px}
 .file-bar-save-slot{display:flex;justify-content:flex-end;min-width:48px}
 .file-bar-segments{display:flex;align-items:center;gap:1px;padding:2px!important;border:1px solid var(--border);border-radius:var(--radius);background:var(--soft)}
 .file-bar-segments button{height:24px;padding:0 7px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;color:var(--muted);font:inherit;font-size:11px;cursor:pointer}
@@ -36,7 +36,7 @@
 @container file-surface (max-width:480px){.file-workspace-bar .file-change-label,.file-workspace-bar .file-tools-button{display:none}.file-workspace-bar .wb-hunk-nav .icon-btn{width:24px;height:26px}}
 @container file-surface (max-width:360px){.file-workspace-bar .file-bar-diff-state .tt-select-value{display:none}.file-workspace-bar .file-bar-diff-state .tt-select-trigger{width:26px;min-width:26px;padding:0;justify-content:center}.file-workspace-bar .wb-file-nav .icon-btn{display:none}.file-workspace-bar .file-bar-save-slot{min-width:44px}.file-workspace-bar .btn{padding-inline:6px}}
 @container file-surface (max-width:480px){.file-workspace-bar .file-dirty{font-size:11px}.file-workspace-bar .file-dirty-label{display:none}}
-.file-workspace-bar .file-dirty{height:22px;box-sizing:border-box;gap:4px;color:var(--warning,#bf7a1a)}
+.file-workspace-bar .file-dirty{height:22px;box-sizing:border-box;gap:4px}
 .file-workspace .file-workspace-bar .path.file-bar-breadcrumb{flex:1 1 0px;min-width:0}
 
 @container file-surface (max-width:320px){.file-workspace .file-workspace-bar.file-workspace-bar{gap:2px}.file-workspace-bar .wb-hunk-nav:not(.wb-file-nav) .icon-btn{display:none}}
