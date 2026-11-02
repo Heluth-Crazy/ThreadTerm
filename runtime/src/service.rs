@@ -2657,6 +2657,8 @@ impl RuntimeService {
         p: &SessionCreate,
         cwd: &str,
     ) -> Result<Value> {
+        let _decision = (!matches!(p.provider.as_str(), "shell" | "custom"))
+            .then(crate::environment::provider_decision);
         let admission = crate::chat_fork::session_admission(db, session_id)?;
         let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
         if p.mode == "terminal" {
@@ -2705,6 +2707,11 @@ impl RuntimeService {
                 .map(|v| serde_json::from_value(v.clone()))
                 .transpose()?
                 .unwrap_or_else(|| p.args.clone());
+            if agent_provider && executable.is_some_and(|program| !std::path::Path::new(program).is_file()) {
+                return Err(crate::providers::ProviderError::unavailable(
+                    &p.provider, format!("{} executable was not found on PATH", p.provider),
+                ).into());
+            }
             if let Some(assign_id) = assign_id.as_deref() {
                 // Persist before the process can receive user input. Binding
                 // failure must not leave an unowned, unrecoverable terminal.
@@ -3145,6 +3152,7 @@ fn run_deferred_codex_launch<P, L>(
     P: FnOnce() -> Result<String>,
     L: FnOnce(&str) -> Result<()>,
 {
+    let _decision = crate::environment::provider_decision();
     let prepared = prepare();
     let Ok(mut owner) = gate.lock() else {
         eprintln!("deferred Codex launch gate poisoned for {session_id}");

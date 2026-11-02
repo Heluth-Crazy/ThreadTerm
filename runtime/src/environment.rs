@@ -12,7 +12,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ffi::{OsStr, OsString},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 pub type Vars = Vec<(OsString, OsString)>;
@@ -39,7 +39,120 @@ pub fn initialize() {
 /// The environment for a new terminal, or `None` to keep the inherited one (not initialized, or
 /// Windows could not build it).
 pub fn for_terminal() -> Option<Vars> {
+    if let Some(environment) = PROVIDER_ENVIRONMENT.with(|value| value.borrow().clone()) {
+        return environment.refreshed.then(|| environment.vars.clone());
+    }
+    #[cfg(test)]
+    if let Some(vars) = TEST_ENVIRONMENT.with(|value| value.borrow().clone()) {
+        return Some(vars);
+    }
     compose(START.get()?.as_ref()?, snapshot)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ENVIRONMENT: std::cell::RefCell<Option<Vars>> = const { std::cell::RefCell::new(None) };
+    static TEST_START: std::cell::RefCell<Option<Vars>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_snapshot<T>(start: &Vars, now: Snapshot, run: impl FnOnce() -> T) -> T {
+    let vars = compose(start, || Ok(now)).unwrap();
+    TEST_ENVIRONMENT.with(|value| *value.borrow_mut() = Some(vars));
+    TEST_START.with(|value| *value.borrow_mut() = Some(start.clone()));
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_ENVIRONMENT.with(|value| *value.borrow_mut() = None);
+            TEST_START.with(|value| *value.borrow_mut() = None);
+        }
+    }
+    let _reset = Reset;
+    run()
+}
+
+#[derive(Debug)]
+pub(crate) struct ProviderEnvironment {
+    pub vars: Vars,
+    pub search_paths: Vec<std::path::PathBuf>,
+    refreshed: bool,
+}
+
+thread_local! {
+    static PROVIDER_ENVIRONMENT: std::cell::RefCell<Option<Arc<ProviderEnvironment>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A synchronous provider decision shares one snapshot, including nested probes.
+/// Specs retain the snapshot when their spawn happens after this scope ends.
+pub(crate) struct ProviderDecision {
+    previous: Option<Arc<ProviderEnvironment>>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for ProviderDecision {
+    fn drop(&mut self) {
+        PROVIDER_ENVIRONMENT.with(|value| *value.borrow_mut() = self.previous.take());
+    }
+}
+
+pub(crate) fn provider_decision() -> ProviderDecision {
+    let environment = provider_environment();
+    let previous = PROVIDER_ENVIRONMENT.with(|value| value.borrow_mut().replace(environment));
+    ProviderDecision { previous, _thread: std::marker::PhantomData }
+}
+
+pub(crate) fn provider_environment() -> Arc<ProviderEnvironment> {
+    if let Some(environment) = PROVIDER_ENVIRONMENT.with(|value| value.borrow().clone()) {
+        return environment;
+    }
+    let current = std::env::vars_os().collect::<Vars>();
+    #[cfg(test)]
+    if let Some(vars) = TEST_ENVIRONMENT.with(|value| value.borrow().clone()) {
+        let start = TEST_START.with(|value| value.borrow().clone()).unwrap();
+        return Arc::new(provider_search_environment(vars, &start, &current, true));
+    }
+    Arc::new(capture_provider_environment(START.get().and_then(Option::as_ref), &current, snapshot))
+}
+
+fn capture_provider_environment(
+    start: Option<&Vars>,
+    current: &Vars,
+    now: impl FnOnce() -> anyhow::Result<Snapshot>,
+) -> ProviderEnvironment {
+    let Some(start) = start else {
+        return provider_search_environment(current.clone(), current, current, false);
+    };
+    match now() {
+        Ok(now) => provider_search_environment(merge(&now, start, current), start, current, true),
+        Err(error) => {
+            static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("provider environment: keeping the inherited one: {error:#}");
+            }
+            provider_search_environment(current.clone(), current, current, false)
+        }
+    }
+}
+
+pub(crate) fn value<'a>(vars: &'a Vars, name: &str) -> Option<&'a OsStr> {
+    vars.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_os_str())
+}
+
+fn provider_search_environment(vars: Vars, start: &Vars, current: &Vars, refreshed: bool) -> ProviderEnvironment {
+    let paths = |vars: &Vars| value(vars, "PATH").map(std::env::split_paths).into_iter().flatten().collect::<Vec<_>>();
+    let mut search_paths = paths(&vars);
+    let startup = paths(start);
+    // Current Windows Path first; append only directories deliberately added by
+    // the launcher, never ordinary startup entries Windows has since removed.
+    for path in paths(current) {
+        let same = |other: &std::path::PathBuf| {
+            if cfg!(windows) { other.as_os_str().eq_ignore_ascii_case(path.as_os_str()) } else { *other == path }
+        };
+        if !startup.iter().any(same) && !search_paths.iter().any(same) {
+            search_paths.push(path);
+        }
+    }
+    ProviderEnvironment { vars, search_paths, refreshed }
 }
 
 fn compose(start: &[(OsString, OsString)], now: impl FnOnce() -> anyhow::Result<Snapshot>) -> Option<Vars> {
@@ -259,6 +372,48 @@ fn block() -> anyhow::Result<Vars> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_search_refreshes_before_launcher_only_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old");
+        let fresh = root.path().join("fresh");
+        let launcher = root.path().join("launcher");
+        let path = |paths: &[&std::path::Path]| vec![("Path".into(), std::env::join_paths(paths).unwrap())];
+        let start = path(&[&old]);
+        let current = path(&[&launcher, &old]);
+        let environment = provider_search_environment(path(&[&fresh]), &start, &current, true);
+        assert_eq!(environment.search_paths, [fresh.clone(), launcher]);
+        assert_eq!(value(&environment.vars, "PATH"), Some(fresh.as_os_str()));
+    }
+
+    #[test]
+    fn provider_snapshot_failure_uses_inherited_search_and_child_variables() {
+        let current = vars(&[("PATH", "inherited"), ("PATHEXT", ".EXE"), ("QA_HOME", "private")]);
+        let environment = capture_provider_environment(Some(&vars(&[("PATH", "old")])), &current, || anyhow::bail!("injected failure"));
+        assert_eq!(environment.vars, current);
+        assert_eq!(environment.search_paths, [std::path::PathBuf::from("inherited")]);
+        assert!(!environment.refreshed);
+        let environment = capture_provider_environment(None, &current, || panic!("startup failure must retain inherited environment"));
+        assert_eq!(environment.vars, current);
+    }
+
+    #[test]
+    fn provider_decisions_reuse_one_snapshot_and_restore_on_unwind() {
+        let start = vars(&[("PATH", "old")]);
+        with_test_snapshot(&start, Snapshot { block: vars(&[("Path", "fresh")]), registry: ["PATH".into()].into_iter().collect() }, || {
+            let _outer = provider_decision();
+            let original = provider_environment();
+            let _ = std::panic::catch_unwind(|| {
+                let _inner = provider_decision();
+                assert!(Arc::ptr_eq(&original, &provider_environment()));
+                assert_eq!(for_terminal(), Some(original.vars.clone()));
+                panic!("injected decision unwind");
+            });
+            assert!(Arc::ptr_eq(&original, &provider_environment()));
+        });
+        assert!(PROVIDER_ENVIRONMENT.with(|value| value.borrow().is_none()));
+    }
 
     fn vars(pairs: &[(&str, &str)]) -> Vars {
         pairs.iter().map(|(name, value)| ((*name).into(), (*value).into())).collect()
