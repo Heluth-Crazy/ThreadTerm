@@ -74,13 +74,13 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
  listener({type:'state',state});assert.equal(render(),'true','pending navigation is enough after native creation');
  assert.equal(render(false),undefined,'hidden tabs cannot acknowledge a visible presentation');
  listener({type:'state',state:{...state,snapshot:'data:image/png;base64,c25hcHNob3Q=',snapshotGeneration:7}});render();
- const image=placeholder.children;assert.equal(image.type,'img');assert.equal(commands.length,0,'render alone cannot acknowledge an undecoded image');
+ const image=[placeholder.children].flat().find(child=>child?.type==='img');assert.equal(image.type,'img');assert.equal(commands.length,0,'render alone cannot acknowledge an undecoded image');
  image.props.onLoad();assert.equal(commands.length,0,'image load schedules a paint before acknowledgement');
  frames.shift()();assert.equal(commands.length,0,'the loaded replacement gets a full paint opportunity');
  frames.shift()();assert.equal(commands.length,1);assert.equal(commands[0].type,'snapshotReady');assert.equal(commands[0].generation,7);assert.equal(commands[0].tabId,'tab-a');
  placeholder.ref.current={getBoundingClientRect:()=>({x:100,y:100,width:400,height:300}),closest:()=>null};effects.find(effect=>String(effect).includes('ResizeObserver'))();
  listener({type:'state',state:{...state,snapshot:'data:image/png;base64,bmV3',snapshotGeneration:8}});render();
  finishShow(state);await Promise.resolve();await Promise.resolve();render();
- assert.equal(placeholder.children.props.src,'data:image/png;base64,bmV3','a delayed show reply cannot erase the published snapshot');
+ assert.equal([placeholder.children].flat().find(child=>child?.type==='img').props.src,'data:image/png;base64,bmV3','a delayed show reply cannot erase the published snapshot');
  listener({type:'state',state:{...state,unloaded:true}});assert.equal(render(),undefined);
 });

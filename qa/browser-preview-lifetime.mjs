@@ -133,6 +133,7 @@ try {
     HOME: join(scratch, 'home'), USERPROFILE: join(scratch, 'home'), CODEX_HOME: join(scratch, 'home', '.codex'),
     THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
     THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-browser-lifetime-${randomUUID()}`,
+    THREADTERM_QA_PROVIDER_BIN: bin,
     THREADTERM_V3_RUNTIME: runtime, THREADTERM_V3_PLUGIN_DIRS: plugins,
     THREADTERM_QA_BROWSER_EVENTS: eventFile, THREADTERM_QA_BROWSER_CWD: work, THREADTERM_QA_BROWSER_URL: previewUrl,
   });

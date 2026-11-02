@@ -17,13 +17,13 @@ import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import '../workbench/workbench.css';
 import './panel-headers.css';
 
-export type WorkbenchView = 'files'|'search'|'scm'|'run'|'changes'|'details';
+export type WorkbenchView = 'files'|'search'|'scm'|'run'|'changes'|'browser'|'details';
 export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeKey?:string };
 // Remember each view's width and the last view, but always start a workspace with the panel closed.
 type Stored = { view:WorkbenchView; widths:Record<WorkbenchView,number> };
 const STORAGE_KEY = 'threadterm.workbench.sidebar';
 const MIN_WIDTH = 220, MAX_WIDTH = 520;
-const VIEW_IDS:WorkbenchView[] = ['files', 'search', 'scm', 'run', 'changes', 'details'];
+const VIEW_IDS:WorkbenchView[] = ['files', 'search', 'scm', 'run', 'changes', 'browser', 'details'];
 const clampWidth = (width:number) => Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width));
 
 function readStored():Stored {
@@ -34,7 +34,7 @@ function readStored():Stored {
   view:VIEW_IDS.includes(value.view as WorkbenchView) ? value.view as WorkbenchView : 'files',
   widths:Object.fromEntries(VIEW_IDS.map(view => {
    const width = Number(value.widths?.[view]);
-   return [view, clampWidth(Number.isFinite(width)&&width>0 ? width : Number.isFinite(legacy)&&legacy>0 ? legacy : view==='details'?320:300)];
+   return [view, view==='browser' ? (Number.isFinite(width)&&width>0?width:0) : clampWidth(Number.isFinite(width)&&width>0 ? width : Number.isFinite(legacy)&&legacy>0 ? legacy : view==='details'?320:300)];
   })) as Record<WorkbenchView,number>,
  };
 }
@@ -84,8 +84,8 @@ export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath
 }
 
 /** Fixed header tools and a single right panel aligned with the pane cards. */
-export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], activeSessionId, activePath, command, headerHost, details, zh}:{
- scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; headerHost?:HTMLElement|null; details?:ReactNode; zh:boolean;
+export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], activeSessionId, activePath, command, headerHost, details, browser, browserActions, zh}:{
+ scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; headerHost?:HTMLElement|null; details?:ReactNode; browser?:(close:()=>void)=>ReactNode; browserActions?:ReactNode; zh:boolean;
 }) {
  const [stored, setStored] = useState(readStored);
  const [open, setOpen] = useState(false);
@@ -111,8 +111,18 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   if(command.view === 'toggle') setOpen(value => !value);
   else select(command.view, true);
  }, [command?.key]);
- const width = stored.widths[stored.view];
- const resizeWidth = (value:number) => update({widths:{...stored.widths,[stored.view]:clampWidth(value)}});
+ const slot=useRef<HTMLDivElement>(null);
+ const [workspaceWidth,setWorkspaceWidth]=useState(0);
+ useEffect(()=>{
+  if(!open)return;
+  const workspace=slot.current?.closest('.ws-content');if(!workspace)return;
+  const observer=new ResizeObserver(()=>setWorkspaceWidth(workspace.getBoundingClientRect().width));
+  setWorkspaceWidth(workspace.getBoundingClientRect().width);observer.observe(workspace);return()=>observer.disconnect();
+ },[open]);
+ const browserWidth=stored.view==='browser';
+ const maxWidth=browserWidth?Math.max(MIN_WIDTH,workspaceWidth*.7):MAX_WIDTH;
+ const width = browserWidth?Math.min(maxWidth,Math.max(MIN_WIDTH,stored.widths.browser||workspaceWidth*.45)):stored.widths[stored.view];
+ const resizeWidth = (value:number) => update({widths:{...stored.widths,[stored.view]:browserWidth?Math.min(maxWidth,Math.max(MIN_WIDTH,value)):clampWidth(value)}});
  const resize = (event:ReactPointerEvent<HTMLDivElement>) => {
   event.preventDefault();
   const start = event.clientX, target = event.currentTarget, width = target.parentElement!.getBoundingClientRect().width;
@@ -127,9 +137,10 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   {id:'search', icon:'search', label:text('Search', '搜索'), shortcut:'Ctrl+Shift+F'},
   {id:'scm', icon:'branch', label:text('Source Control', '源代码管理'), shortcut:'Ctrl+Shift+G', badge:changeCount || undefined},
   {id:'changes', icon:'spark', label:text('Agent changes', 'Agent 改动'), shortcut:''},
+  ...(browser?[{id:'browser' as const,icon:'globe',label:text('Browser','浏览器'),shortcut:''}]:[]),
   {id:'details', icon:'info', label:text('Session details', '会话详情面板'), shortcut:''},
  ];
- const current = stored.view==='run' ? {label:text('Run', '运行')} : stored.view==='details' ? {label:text('Session details', '会话详情')} : views.find(view => view.id === stored.view)!;
+ const current = stored.view==='browser' ? {label:text('Browser','浏览器')} : stored.view==='run' ? {label:text('Run', '运行')} : stored.view==='details' ? {label:text('Session details', '会话详情')} : views.find(view => view.id === stored.view)!;
  const switcher = <nav className="wb-switcher" aria-label={text('Workbench views', '侧栏视图')}>
   {views.map(view => <button key={view.id} type="button" className={`wb-switch-btn${open && stored.view === view.id ? ' active' : ''}`}
    data-view={view.id} aria-pressed={open && stored.view === view.id} aria-label={view.label}
@@ -140,11 +151,12 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
  </nav>;
  return <>
   {headerHost&&createPortal(switcher, headerHost)}
-  {open && <div className="wb-sidebar-slot" style={{width}}><div className="wb-sidebar-strip" aria-hidden="true"/><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>
+  {open && <div ref={slot} className={`wb-sidebar-slot${browserWidth?' wb-sidebar-browser':''}`} style={{width:browserWidth&&!workspaceWidth?'45%':width}}><div className="wb-sidebar-strip" aria-hidden="true"/><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>
    <section className="wb-panel" aria-label={current.label}>
-    <header className="wb-panel-head"><strong>{current.label}</strong><div className="wb-panel-actions" ref={setActionsHost}/>
+    <header className="wb-panel-head"><strong>{current.label}</strong><div className="wb-panel-actions" ref={setActionsHost}>{browserWidth&&browserActions}</div>
      <button type="button" className="icon-btn wb-panel-close" title={text('Close side bar (Ctrl+B)', '关闭侧栏（Ctrl+B）')} aria-label={text('Close side bar', '关闭侧栏')} onClick={() => setOpen(false)}><Icon name="close"/></button></header>
     <div className="wb-panel-body">
+     {stored.view==='browser'&&browser?.(()=>setOpen(false))}
      {stored.view==='details'&&details}
      {visited.has('files') && <div className="wb-view" hidden={stored.view !== 'files'}><ExplorerView scope={scope} actions={actions} git={git} zh={zh} activePath={activePath} focusKey={stored.view === 'files' ? focusKey : undefined} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/></div>}
      {visited.has('search') && <div className="wb-view" hidden={stored.view !== 'search'}><SearchView scope={scope} actions={actions} zh={zh} focusKey={stored.view === 'search' ? focusKey : undefined}/></div>}
@@ -153,7 +165,7 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
      {visited.has('changes') && <div className="wb-view" hidden={stored.view !== 'changes'}><AgentChangesView sessions={sessions} activeSessionId={activeSessionId} actions={actions} zh={zh} visible={stored.view === 'changes'} toolbarHost={stored.view === 'changes' ? actionsHost : undefined}/></div>}
     </div>
    </section>
-   <div className="wb-resize" role="separator" aria-orientation="vertical" aria-label={text('Resize side bar', '调整侧栏宽度')} aria-valuenow={width} aria-valuemin={MIN_WIDTH} aria-valuemax={MAX_WIDTH} tabIndex={0} onPointerDown={resize}
+   <div className="wb-resize" role="separator" aria-orientation="vertical" aria-label={text('Resize side bar', '调整侧栏宽度')} aria-valuenow={width} aria-valuemin={MIN_WIDTH} aria-valuemax={maxWidth} tabIndex={0} onPointerDown={resize}
     onKeyDown={event => { if(event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const width = event.currentTarget.parentElement!.getBoundingClientRect().width; resizeWidth(width + (event.key === 'ArrowLeft' ? 16 : -16)); } }}/>
   </aside></div>}
  </>;

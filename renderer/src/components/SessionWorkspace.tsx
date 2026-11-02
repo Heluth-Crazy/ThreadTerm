@@ -1,7 +1,7 @@
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
-import { openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
+import { browserCommand, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
 import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
@@ -14,6 +14,9 @@ import { focusedWorkspaceTab, isFileTab, isWebTabUrl, removeWorkspaceTabs, works
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { sameDiffTabKey } from '../workbench/branchScope';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
+import { PanelBrowser } from './PanelBrowser';
+import { usePanelBrowser } from '../panelBrowser';
+import { BROWSER_NEW_TAB_URL } from '../browserNewTab';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
 import { currentRunEntry, runCurrentConfigs, runKeyCommand, type RunCommandRequest } from '../workbench/runView';
 import { executeRunCommand } from '../workbench/runController';
@@ -92,6 +95,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const providerName=(id:string)=>agentName(id,data.providers);
  const {locale}=useTranslation(),zh=locale==='zh-CN';
  const project=data.projects.find(p=>p.id===session.projectId),path=session.worktreePath??project?.path;
+ const browserOpenGeneration=useRef(0);
+ const panelBrowser=usePanelBrowser(session.projectId??'',path??'');
  const restored=data.workspaces.find(w=>w.projectId===session.projectId&&sameCanonicalScope(w.worktreePath??project?.path,path));
  // A session opens with its sessions and independent browser pages. Restored file/Git/history/review tabs are not
  // shown again; file tabs with unsaved edits come back once draft.list answers (restoreUnsaved). Browser pages are
@@ -532,8 +537,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   },
   sessionDocuments:canPin&&project&&documentsRoot?{...documents,projectId:project.id,rootPath:documentsRoot,projectRoot:project.path}:undefined,
   sendToAgent,openHistory,comments:commentsHost,commentScope:project&&path?{projectId:project.id,root:path}:undefined,
-  // Like review/history tabs: an independent tab placed beside the sessions, one per address.
-  openWeb:url=>{if(isWebTabUrl(url))openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url);},
+  // User previews belong to this worktree's Browser panel; agent presentations use their associated tabs above.
+  openWeb:url=>{if(!isWebTabUrl(url))return;const generation=++browserOpenGeneration.current;void browserCommand({type:'preferences'}).then(preferences=>{
+   if(!live.current||generation!==browserOpenGeneration.current||workbenchScopeRef.current?.projectId!==session.projectId||!sameCanonicalScope(workbenchScopeRef.current?.rootPath,path))return;
+   if(preferences&&'linkTarget' in preferences&&preferences.linkTarget==='system'){void openExternal(url).catch(fail);return;}
+   panelBrowser.open(url);setWorkbenchCommand({view:'browser',key:crypto.randomUUID()});
+  }).catch(fail);},
   openFile:target=>{if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent');return;}void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail);},
   historyFocus,
  };
@@ -623,7 +632,14 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
       focusTarget={focusTarget} fileReveal={fileReveal} onOpenPath={openPaneFile} projectPath={project?.path} onWebClosed={closeRuntimePreview} onWebNavigation={observeRuntimePreview} previewProvenance={pageCommentProvenance} previewLabels={previewLabels}
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
-   </div>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} headerHost={headerTools} zh={zh} details={<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-scroll">
+   </div>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} headerHost={headerTools} zh={zh}
+    browser={()=> <PanelBrowser key={panelBrowser.key} browser={panelBrowser} sessions={treeSessions} zh={zh} onOpenTab={url=>openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url)}/>}
+    browserActions={panelBrowser.url!==BROWSER_NEW_TAB_URL&&<button type="button" className="btn btn-sm btn-ghost" aria-label={zh?'作为标签页打开':'Open as tab'} onClick={()=>{
+     if(openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url:panelBrowser.url},candidate=>candidate.kind==='web'&&candidate.url===panelBrowser.url)){
+      panelBrowser.reset();setWorkbenchCommand({view:'toggle',key:crypto.randomUUID()});
+     }
+    }}>{zh?'作为标签页打开':'Open as tab'}</button>}
+    details={<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-scroll">
     <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path??'')}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
     {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}
     <div className="ins-block"><h3>{zh?'重点关注':'Following'}</h3><button className="btn" onClick={follow} aria-pressed={session.followed}><Icon name="star"/>{zh?(session.followed?'已关注 · 点击取消':'关注此会话'):(session.followed?'Following · Unfollow':'Follow session')}</button></div>
