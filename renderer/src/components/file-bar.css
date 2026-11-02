@@ -30,8 +30,9 @@
 .file-workspace-bar .embedded-file-navigation{flex:1 1 auto;min-width:0;max-width:240px}
 .file-workspace-bar .wb-hunk-nav{display:inline-flex;flex-wrap:nowrap;gap:1px;align-items:center}
 .file-workspace-bar .wb-hunk-count{min-width:0;white-space:nowrap;font-size:11px}
-@container file-surface (max-width:520px){.file-workspace-bar .file-bar-secondary{display:none}}
-@container file-surface (max-width:480px){.file-workspace .file-workspace-bar .file-bar-optional{display:none}.file-workspace-bar .external-file-path-prefix{display:none}.file-workspace-bar .file-dirty{padding:2px 4px}.file-workspace-bar .file-bar-diff-state{max-width:90px}.file-workspace-bar{gap:2px;padding-inline:4px!important}}
+@container file-surface (max-width:400px){.file-workspace-bar .file-bar-secondary{display:none}}
+@container file-surface (max-width:340px){.file-workspace .file-workspace-bar .file-bar-optional{display:none}}
+@container file-surface (max-width:480px){.file-workspace-bar .external-file-path-prefix{display:none}.file-workspace-bar .file-dirty{padding:2px 4px}.file-workspace-bar .file-bar-diff-state{max-width:90px}.file-workspace-bar{gap:2px;padding-inline:4px!important}}
 @container file-surface (max-width:440px){.file-workspace-bar .file-bar-folders{display:none}}
 @container file-surface (max-width:480px){.file-workspace-bar .file-change-label,.file-workspace-bar .file-tools-button{display:none}.file-workspace-bar .wb-hunk-nav .icon-btn{width:24px;height:26px}}
 @container file-surface (max-width:360px){.file-workspace-bar .file-bar-diff-state .tt-select-value{display:none}.file-workspace-bar .file-bar-diff-state .tt-select-trigger{width:26px;min-width:26px;padding:0;justify-content:center}.file-workspace-bar .wb-file-nav .icon-btn{display:none}.file-workspace-bar .file-bar-save-slot{min-width:44px}.file-workspace-bar .btn{padding-inline:6px}}
