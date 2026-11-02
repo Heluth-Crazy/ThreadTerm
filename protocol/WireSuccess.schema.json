@@ -1837,6 +1837,9 @@
             },
             "cursor": {
               "type": "number"
+            },
+            "pendingBytes": {
+              "type": "number"
             }
           },
           "required": [

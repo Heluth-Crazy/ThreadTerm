@@ -6,10 +6,28 @@ pub(crate) const HISTORY_DAYS: i64 = 30;
 pub(crate) const GIT_UNDO_HISTORY_DAYS: i64 = 7;
 pub(crate) const GIT_UNDO_PER_WORKTREE: usize = 50;
 pub(crate) const OUTBOX_FLOOR: i64 = 10_000;
-// An ended terminal retains a useful scrollback suffix. Live replay has no
-// durable screen checkpoint, so its only redraw basis must remain untouched.
+// Ended terminals retain a useful scrollback suffix. Live replay has no durable
+// screen checkpoint; a trimmed prefix is explicitly reported to readers.
 pub(crate) const TERMINAL_BYTES: i64 = 8 * 1024 * 1024;
+// User decision (2026-11-01): running terminals keep the newest 128 MiB.
+pub(crate) const ACTIVE_TERMINAL_BYTES: i64 = 128 * 1024 * 1024;
+// Amortize checks and compaction over 16 MiB (256 normal 64 KiB writes).
+pub(crate) const ACTIVE_OUTPUT_MARGIN: i64 = 16 * 1024 * 1024;
+const OUTPUT_BATCH_ROWS: usize = 32;
 pub(crate) const BATCH_ROWS: usize = 200;
+
+// Benchmark-only epoch: an odd value means a trim transaction is mutating rows.
+#[cfg(test)]
+pub(crate) static OUTPUT_TRIM_EPOCH: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+struct OutputTrimProbe;
+#[cfg(test)]
+impl Drop for OutputTrimProbe {
+    fn drop(&mut self) {
+        OUTPUT_TRIM_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Between batches, step away from the shared writer long enough for waiting
 /// requests to take it: the database mutex is not fair, so a bare yield let one
@@ -20,7 +38,7 @@ fn pause_for_foreground() {
 
 impl Database {
     /// Called only after the first snapshot response is delivered. The worker
-    /// sleeps on a bounded channel; session ends coalesce, with no idle timer.
+    /// sleeps on a bounded channel; output growth and session ends coalesce, with no idle timer.
     pub(crate) fn start_retention(self: &std::sync::Arc<Self>) {
         let mut slot = self.retention.lock().expect("retention lock poisoned");
         if slot.is_some() {
@@ -152,7 +170,7 @@ pub(crate) fn compact(db: &Database) -> Result<usize> {
     let mut after = String::new();
     loop {
         let sessions = db.transaction(|tx| {
-            Ok(tx.prepare("SELECT id FROM sessions WHERE id>? AND status IN ('exited','interrupted','error') ORDER BY id LIMIT ?")?
+            Ok(tx.prepare("SELECT id FROM sessions WHERE id>? AND (status IN ('exited','interrupted','error') OR (mode='terminal' AND status IN ('starting','running','idle','waiting'))) ORDER BY id LIMIT ?")?
                 .query_map(rusqlite::params![after,BATCH_ROWS],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
         if sessions.is_empty() {
@@ -333,31 +351,78 @@ fn compact_git_undo(db: &Database) -> Result<usize> {
 }
 
 fn compact_output(db: &Database, id: &str, cutoff: &str) -> Result<usize> {
+    compact_output_with_limits(db, id, cutoff, ACTIVE_TERMINAL_BYTES, ACTIVE_OUTPUT_MARGIN)
+}
+
+fn compact_output_with_limits(
+    db: &Database,
+    id: &str,
+    cutoff: &str,
+    active_bytes: i64,
+    margin: i64,
+) -> Result<usize> {
     use rusqlite::OptionalExtension;
     let mut removed = 0;
+    // Fix the active target for this pass so a busy producer cannot make a pass
+    // chase its tail forever. Later growth coalesces another pass.
+    let mut active_from = None;
     loop {
         let count = batch(db, |tx| {
-            // Recheck under the writer lock: a concurrent explicit resume must
-            // retain its complete live replay basis.
-            let ended: Option<String> = tx.query_row("SELECT updated_at FROM sessions WHERE id=? AND status IN ('exited','interrupted','error')",[id],|row|row.get(0)).optional()?;
-            let Some(ended) = ended else {
+            // Status can change between batches (including explicit resume).
+            let session: Option<(String, String, String)> = tx
+                .query_row(
+                    "SELECT status,updated_at,mode FROM sessions WHERE id=?",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let Some((status, updated, mode)) = session else {
                 return Ok(0);
             };
             let end: i64 = tx.query_row("SELECT COALESCE((SELECT start_cursor+length(data) FROM output_chunks WHERE session_id=? ORDER BY start_cursor DESC LIMIT 1),0)",[id],|row|row.get(0))?;
             if end == 0 {
                 return Ok(0);
             }
-            let from = if ended.as_str() < cutoff {
-                end
+            let from = if matches!(status.as_str(), "exited" | "interrupted" | "error") {
+                active_from = None;
+                if updated.as_str() < cutoff {
+                    end
+                } else {
+                    (end - TERMINAL_BYTES).max(0)
+                }
+            } else if mode == "terminal"
+                && matches!(status.as_str(), "starting" | "running" | "idle" | "waiting")
+            {
+                match active_from {
+                    Some(from) => from,
+                    None => {
+                        let start: i64 = tx.query_row(
+                            "SELECT MIN(start_cursor) FROM output_chunks WHERE session_id=?",
+                            [id],
+                            |row| row.get(0),
+                        )?;
+                        if end - start <= active_bytes + margin {
+                            return Ok(0);
+                        }
+                        let from = (end - active_bytes).max(0);
+                        active_from = Some(from);
+                        from
+                    }
+                }
             } else {
-                (end - TERMINAL_BYTES).max(0)
+                return Ok(0);
             };
             if from == 0 {
                 return Ok(0);
             }
+            #[cfg(test)]
+            let _probe = {
+                OUTPUT_TRIM_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                OutputTrimProbe
+            };
             tx.execute("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(metadata.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",rusqlite::params![format!("terminal.outputEnd:{id}"),end.to_string()])?;
             let cursors = tx.prepare("SELECT start_cursor FROM output_chunks WHERE session_id=? AND start_cursor<? ORDER BY start_cursor LIMIT ?")?
-                .query_map(rusqlite::params![id,from,BATCH_ROWS],|row|row.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                .query_map(rusqlite::params![id,from,OUTPUT_BATCH_ROWS],|row|row.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for cursor in &cursors {
                 let size: i64 = tx.query_row(
                     "SELECT length(data) FROM output_chunks WHERE session_id=? AND start_cursor=?",
@@ -376,7 +441,7 @@ fn compact_output(db: &Database, id: &str, cutoff: &str) -> Result<usize> {
             Ok(cursors.len())
         })?;
         removed += count;
-        if count < BATCH_ROWS {
+        if count < OUTPUT_BATCH_ROWS {
             break;
         }
         pause_for_foreground();
@@ -385,10 +450,110 @@ fn compact_output(db: &Database, id: &str, cutoff: &str) -> Result<usize> {
 }
 
 #[cfg(test)]
+pub(crate) fn compact_active_for_test(
+    db: &Database,
+    id: &str,
+    cap: i64,
+    margin: i64,
+) -> Result<usize> {
+    compact_output_with_limits(db, id, "2000-01-01T00:00:00Z", cap, margin)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::CreateSession;
     use rusqlite::params;
+
+    fn running_terminal(db: &Database) -> String {
+        let id = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "active",
+            })
+            .unwrap()
+            .id;
+        db.set_session_status(&id, "running", None).unwrap();
+        id
+    }
+
+    #[test]
+    fn active_output_caps_exact_suffix_splits_boundary_and_reports_truncation() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("active.sqlite")).unwrap();
+        let id = running_terminal(&db);
+        let store = crate::output::OutputStore::default();
+        store.append(&db, &id, b"abcdefghij").unwrap();
+        store.append(&db, &id, b"klmnopqrst").unwrap();
+        // Exactly cap + margin is left alone, even on an unrelated retention pass.
+        assert_eq!(compact_active_for_test(&db, &id, 16, 4).unwrap(), 0);
+        assert_eq!(db.output_start(&id).unwrap(), Some(0));
+        store.append(&db, &id, b"u").unwrap();
+        assert!(compact_active_for_test(&db, &id, 16, 4).unwrap() > 0);
+        assert_eq!(db.output_end(&id).unwrap(), 21);
+        let (from, next, truncated, bytes) = db.read_output_window(&id, Some(0), false, 64).unwrap();
+        assert_eq!((from, next, truncated), (5, 21, true));
+        assert_eq!(bytes, b"fghijklmnopqrstu");
+        let rows = db.output_from(&id, 5, 64).unwrap();
+        assert_eq!(rows[0], (5, b"fghij".to_vec()));
+        assert!(db
+            .output_from(&id, 0, 64)
+            .unwrap_err()
+            .to_string()
+            .contains("terminal_history_gap"));
+        // Pending/loss cursors are absolute; retention never rewrites their metadata.
+        db.transaction(|tx| {
+            let end: String = tx.query_row(
+                "SELECT value FROM metadata WHERE key=?",
+                [format!("terminal.outputEnd:{id}")],
+                |row| row.get(0),
+            )?;
+            assert_eq!(end, "21");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn active_trim_and_concurrent_appends_keep_contiguous_absolute_cursors() {
+        use std::sync::{Arc, Barrier};
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("concurrent.sqlite")).unwrap());
+        let id = running_terminal(&db);
+        let store = Arc::new(crate::output::OutputStore::default());
+        // More than one trim batch; boundary falls inside a chunk.
+        for _ in 0..100 {
+            store.append(&db, &id, b"abcd").unwrap();
+        }
+        let barrier = Arc::new(Barrier::new(2));
+        let writer = {
+            let db = db.clone();
+            let id = id.clone();
+            let store = store.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for i in 0..100 {
+                    assert_eq!(store.append(&db, &id, b"efgh").unwrap(), 400 + i * 4);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            })
+        };
+        barrier.wait();
+        compact_active_for_test(&db, &id, 129, 16).unwrap();
+        writer.join().unwrap();
+        compact_active_for_test(&db, &id, 129, 16).unwrap();
+        let (from, next, truncated, bytes) = db.read_output_window(&id, Some(0), false, 1024).unwrap();
+        assert_eq!((from, next, truncated), (671, 800, true));
+        assert_eq!(bytes, b"efgh".repeat(100)[271..]);
+        assert_eq!(store.cursor(&id), 800);
+        assert_eq!(store.append(&db, &id, b"tail").unwrap(), 800);
+        assert_eq!(db.output_end(&id).unwrap(), 804);
+    }
 
     #[test]
     fn retention_keeps_recent_floor_and_pending_receipts_and_caps_only_ended_output() {

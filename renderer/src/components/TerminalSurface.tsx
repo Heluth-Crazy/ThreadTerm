@@ -33,6 +33,7 @@ import {
 import { TerminalContextAction } from './TerminalContextAction';
 import { useTerminalContextMenu } from './TerminalContextMenu';
 import { claimDevServerOffer, createDevServerLineDetector, type DevServerOffer } from '../../../desktop/src/browser/devServer';
+import { replayRetentionBoundary, retainedOutputTrimmedNote } from './terminalReplayRetention';
 
 type Props = { sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
 // A failed screen recovery is shown once, in the overlay: a plain-language reason for the
@@ -170,6 +171,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const [replay, setReplay] = useState(() => ({ key: replayKey, phase: "catching" as "catching" | "ready" | "failed" }));
   const [replayAttempt, setReplayAttempt] = useState(0);
   const [replayFailure, setReplayFailure] = useState<ReplayFailure>();
+  const [replayTrimmed, setReplayTrimmed] = useState(false);
   if (replay.key !== replayKey) setReplay({ key: replayKey, phase: "catching" });
   const replaying = replay.key !== replayKey || replay.phase === "catching";
   const replayFailed = replay.key === replayKey && replay.phase === "failed";
@@ -303,7 +305,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     const scrollDisposable = terminal.onScroll(() => {
       if (terminal.buffer.active.viewportY >= terminal.buffer.active.baseY) setUnread(0);
     });
-    terminal.options.disableStdin = true; setIssue(undefined); setReplayFailure(undefined); setCompletionHint(false); setStorageNote(undefined); setFidelity(EXACT);
+    terminal.options.disableStdin = true; setIssue(undefined); setReplayFailure(undefined); setReplayTrimmed(false); setCompletionHint(false); setStorageNote(undefined); setFidelity(EXACT);
     // Legacy records have no trustworthy geometry. Keep their documented
     // best-effort current-pane replay instead of inventing an 80x24 history.
     if (!fixedSize) { try { fit.fit(); } catch { /* host may not be measurable yet */ } }
@@ -400,11 +402,15 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         setStorageNote(storageNoteFromRead(boundary.storageDegraded));
         const replayEnd = boundary.nextCursor;
         if (!Number.isSafeInteger(replayEnd) || replayEnd < 0) throw new Error("Terminal replay returned an invalid history boundary.");
+        const initial = await request('terminal.read', { sessionId, cursor: 0, limit: 1 });
+        if (disposed || replayAborted) return;
+        const retained = replayRetentionBoundary(initial, replayEnd);
         replayTotal = replayEnd;
         // ANSI and UTF-8 are stateful across arbitrary byte boundaries. Until
-        // we have a real terminal checkpoint, every replay must begin at zero.
-        const replayStart = 0;
-        const pagedReplay = replayEnd > REPLAY_PAGE_BYTES;
+        // we have a real terminal checkpoint, replay every retained byte.
+        const replayStart = retained.cursor;
+        const pagedReplay = replayStart > 0 || replayEnd > REPLAY_PAGE_BYTES;
+        setReplayTrimmed(retained.trimmed);
         let replaySubscribed = false;
         replayCursor = replayStart;
         replayLastProgress = Date.now();
@@ -671,7 +677,8 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       {onCloseView && <button className="menu-item" onClick={onCloseView}>{zh ? "关闭视图" : "Close view"}</button>}
     </SurfaceActions>
     </div>
-    {storageNote && <p className="term-storage-degraded" role="alert"><strong>{terminalStorageLabel(zh)}</strong><span>{terminalStorageAttention(zh)}</span></p>}
+    {storageNote && <p className="term-storage-degraded" role="alert"><strong>{terminalStorageLabel(zh, storageNote.reason)}</strong><span>{terminalStorageAttention(zh, storageNote.reason)}</span></p>}
+    {replayTrimmed && <p className="term-legacy-note" role="status">{retainedOutputTrimmedNote(zh, isLive(session))}</p>}
     {fidelity.kind === 'inexact' && <p className="term-legacy-note term-fidelity-note" role="status"><strong>{screenFidelityLabel(zh)}</strong>{screenFidelityDetail(zh)}</p>}
     {unknownGeometry && <p className="term-legacy-note" role="status">{zh ? "该历史会话未记录终端尺寸，部分全屏界面可能错位。重新运行可生成可稳定回放的新记录。" : "This historical session has no recorded terminal size; full-screen interfaces may be misaligned. Rerun it to create a new record that replays reliably."}</p>}
     <div className="term-content"><div className={`terminal-host term-output${fixedSize ? " fixed-geometry" : ""}`} ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />

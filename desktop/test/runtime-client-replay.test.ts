@@ -785,6 +785,26 @@ test('gap-only page at the captured boundary completes the late consumer', async
   client.dispose();
 });
 
+test('late shared consumer receives a retained-prefix gap before retained output', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  await client.subscribeOutput('trimmed-with-output', 0, () => undefined);
+  await internal.handleOutputFrame(outputFrame('trimmed-with-output', 0, Uint8Array.of(1, 2, 3, 4)));
+  const received: Array<{ cursor: number; gap: boolean; data: number[] }> = [];
+  internal.request = (async () => ({
+    sessionId: 'trimmed-with-output', fromCursor: 2, nextCursor: 4, truncated: true,
+    encoding: 'base64', data: Buffer.from([3, 4]).toString('base64'),
+  })) as RuntimeClient['request'];
+  await client.subscribeOutput('trimmed-with-output', 0, (chunk) => {
+    received.push({ cursor: chunk.cursor, gap: Boolean(chunk.gap), data: [...chunk.data] });
+  });
+  assert.deepEqual(received, [
+    { cursor: 2, gap: true, data: [] },
+    { cursor: 2, gap: false, data: [3, 4] },
+  ]);
+  client.dispose();
+});
+
 test('a runtime gap advances only its group and preserves later live output', async () => {
   const { client } = clientWithPipes();
   const internal = client as unknown as ClientInternals;

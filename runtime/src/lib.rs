@@ -44,6 +44,7 @@ pub(crate) mod git_selected_commit;
 pub mod job;
 pub mod leases;
 pub mod output;
+pub mod output_loss;
 pub(crate) mod retention;
 pub mod project_catalog;
 pub mod providers;

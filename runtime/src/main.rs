@@ -54,6 +54,9 @@ async fn run() -> Result<()> {
     threadterm_v3_runtime::agent_review::initialize(&db)?;
     threadterm_v3_runtime::code_review::initialize(&db)?;
     db.mark_live_sessions_interrupted()?;
+    let sidecars = db.recover_terminal_output_loss()?;
+    let sidecar_writer = threadterm_v3_runtime::output_loss::SidecarWriter::new(db.path());
+    for session_id in sidecars { sidecar_writer.remove(&session_id); }
     threadterm_v3_runtime::delegation::reconcile_interrupted(&db)?;
     threadterm_v3_runtime::code_review::reconcile_interrupted(&db)?;
     threadterm_v3_runtime::quick_launch::mark_setup_runs_interrupted(&db)?;

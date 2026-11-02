@@ -360,3 +360,84 @@ fn concurrent_session_appends_and_flush_have_continuous_non_overlapping_offsets(
         assert_eq!(actual, *wanted, "{session_id} lost or duplicated output");
     }
 }
+
+
+#[test]
+fn retry_worker_makes_a_refused_marker_durable_without_new_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+    let id = session(&db, "retry-refused-marker");
+    db.append_output(&id, 0, b"occupied").unwrap();
+    db.refuse_terminal_marker.store(true, Ordering::Relaxed);
+    let store = Arc::new(OutputStore::default());
+    assert!(store.append_shared(&db, &id, b"quiet-lost-tail").is_err());
+    assert!(db.terminal_storage_degraded(&id).unwrap().is_none());
+    db.refuse_terminal_marker.store(false, Ordering::Relaxed);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while db.terminal_storage_degraded(&id).unwrap().is_none() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(db.terminal_storage_degraded(&id).unwrap().unwrap()["reason"], crate::db::TERMINAL_STORAGE_FAILED);
+    assert_eq!(store.pending_bytes.load(Ordering::Relaxed), 15);
+    store.stop_retry_worker();
+}
+
+#[test]
+fn recovering_pending_output_removes_the_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+    let id = session(&db, "recover-sidecar");
+    db.append_output(&id, 0, b"occupied").unwrap();
+    db.refuse_terminal_marker.store(true, Ordering::Relaxed);
+    let store = OutputStore::default();
+    assert!(store.append(&db, &id, b"tail").is_err());
+    let sidecar = dir.path().join("terminal-output-loss").join(format!("{id}.json"));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !sidecar.exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }
+    assert!(sidecar.exists());
+    db.refuse_terminal_marker.store(false, Ordering::Relaxed);
+    db.transaction(|tx| {
+        tx.execute("DELETE FROM output_chunks WHERE session_id=?", [&id])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(store.flush_pending(&db, &id).unwrap(), FlushOutcome::Clean { durable_end: 4 });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while sidecar.exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }
+    assert!(!sidecar.exists());
+    assert!(db.terminal_storage_degraded(&id).unwrap().is_none());
+}
+
+#[test]
+fn shutdown_loss_sidecar_does_not_wait_for_the_database_or_stream_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+    let id = session(&db, "blocked-loss-diagnostic");
+    db.append_output(&id, 0, b"occupied").unwrap();
+    let store = Arc::new(OutputStore::default());
+    assert!(store.append(&db, &id, b"tail").is_err());
+    let stream = store.stream(&id);
+    let held_stream = stream.lock().unwrap();
+    let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let blocked_db = db.clone();
+    let holder = thread::spawn(move || {
+        blocked_db.transaction(|_| {
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        }).unwrap();
+    });
+    locked_rx.recv().unwrap();
+    let start = Instant::now();
+    store.record_shutdown_loss(&db);
+    let elapsed = start.elapsed();
+    let sidecar = dir.path().join("terminal-output-loss").join(format!("{id}.json"));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !sidecar.exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }
+    let recorded = sidecar.exists();
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    drop(held_stream);
+    assert!(elapsed < Duration::from_millis(500), "diagnostics exceeded shutdown bound: {elapsed:?}");
+    assert!(recorded, "sidecar waited for SQLite or stream lock");
+}

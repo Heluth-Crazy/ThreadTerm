@@ -1174,33 +1174,56 @@ impl RuntimeService {
         let _ = crate::retry_scheduler::finish(&self.db, &attempt.id, success);
     }
     pub fn shutdown(&self) {
-        if let Ok(chat_tools) = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db)) {
-            if let Err(error) = chat_tools.revoke_all() {
-                eprintln!("app-hosted Chat tool shutdown failed: {error}");
+        let db = self.db.clone();
+        let config = self.config.clone();
+        let deferred = self.deferred_launch.clone();
+        let remote = self.remote.get().cloned();
+        let pty = self.pty.clone();
+        let (sent, received) = std::sync::mpsc::sync_channel(1);
+        // Teardown can itself wait on SQLite. Keep that wait off the caller so
+        // an unavailable writer cannot prevent the independent loss record.
+        let _ = std::thread::Builder::new().name("runtime-shutdown-prepare".into()).spawn(move || {
+            if let Ok(chat_tools) = crate::chat_tools::shared(&config.database_path, Arc::clone(&db)) {
+                if let Err(error) = chat_tools.revoke_all() {
+                    eprintln!("app-hosted Chat tool shutdown failed: {error}");
+                }
             }
+            if let Err(error) = Self::cancel_deferred_launches(&db, &deferred) {
+                eprintln!("deferred terminal shutdown failed: {error}");
+            }
+            let _ = crate::retry_scheduler::cancel_all(&db);
+            if let Some(remote) = remote { remote.shutdown(); }
+            pty.terminate_all(&db);
+            let _ = sent.send(());
+        });
+        if received.recv_timeout(std::time::Duration::from_millis(2100)).is_err() {
+            eprintln!("Runtime shutdown preparation exceeded its deadline");
         }
-        if let Err(error) = self.cancel_all_deferred_launches() {
-            eprintln!("deferred terminal shutdown failed: {error}");
-        }
-        let _ = crate::retry_scheduler::cancel_all(&self.db);
-        if let Some(remote) = self.remote.get() {
-            remote.shutdown();
-        }
-        self.pty.terminate_all(&self.db);
-        self.output.drain_pending(
+        let pending = self.output.drain_pending(
             &self.db,
             std::time::Instant::now() + std::time::Duration::from_secs(2),
         );
-        let _ = crate::settings_services::release_relocation(&self.config);
+        if pending != 0 {
+            self.output.record_shutdown_loss(&self.db);
+        }
+        let config = self.config.clone();
+        let (sent, received) = std::sync::mpsc::sync_channel(1);
+        let _ = std::thread::Builder::new().name("runtime-shutdown-release".into()).spawn(move || {
+            let _ = crate::settings_services::release_relocation(&config);
+            let _ = sent.send(());
+        });
+        let _ = received.recv_timeout(std::time::Duration::from_millis(25));
     }
     fn cancel_all_deferred_launches(&self) -> Result<()> {
-        let mut gate = self
-            .deferred_launch
+        Self::cancel_deferred_launches(&self.db, &self.deferred_launch)
+    }
+    fn cancel_deferred_launches(db: &Database, deferred: &Mutex<DeferredLaunchGate>) -> Result<()> {
+        let mut gate = deferred
             .lock()
             .map_err(|_| anyhow::anyhow!("deferred launch gate poisoned"))?;
         gate.stopping = true;
         for session_id in gate.generations.keys() {
-            self.db.cancel_deferred_codex_launch(session_id)?;
+            db.cancel_deferred_codex_launch(session_id)?;
         }
         gate.generations.clear();
         Ok(())
@@ -1610,15 +1633,17 @@ impl RuntimeService {
                     let (from, next, truncated, data) = self.db.read_output_window(
                         &p.session_id, p.cursor, p.tail, limit as usize,
                     )?;
-                    // A terminal whose durable recording is degraded keeps
-                    // running; the surface needs that state on load, not only
-                    // from the live `terminal.storage` event.
+                    // Replay needs persistent loss diagnostics as well as live
+                    // recording failures, independently of terminal.storage events.
                     let mut result = json!({"sessionId":p.session_id,"fromCursor":from,"nextCursor":next,"truncated":truncated,"encoding":"base64","data":base64::engine::general_purpose::STANDARD.encode(data)});
                     if let Some(degraded) = self.db.terminal_storage_degraded(&p.session_id)? {
                         result["storageDegraded"] = json!({
                             "reason": degraded.get("reason").cloned().unwrap_or_else(|| json!(crate::db::TERMINAL_STORAGE_FAILED)),
                             "cursor": degraded.get("cursor").cloned().unwrap_or_else(|| json!(next)),
                         });
+                        if let Some(pending) = degraded.get("pendingBytes") {
+                            result["storageDegraded"]["pendingBytes"] = pending.clone();
+                        }
                     }
                     Ok(result)
                 }
@@ -4392,13 +4417,10 @@ mod tests {
                 operation_id: "pruned-terminal-read",
             })
             .unwrap();
-        // Compaction deletes complete old chunks and leaves their original
-        // cursor coordinates intact.
+        db.set_session_status(&session.id, "running", None).unwrap();
+        db.append_output(&session.id, 0, &vec![b'x'; 4_096]).unwrap();
         db.append_output(&session.id, 4_096, b"retained output").unwrap();
-        db.transaction(|tx| {
-            tx.execute("INSERT INTO metadata(key,value) VALUES(?, '4111')", [format!("terminal.outputEnd:{}", session.id)])?;
-            Ok(())
-        }).unwrap();
+        crate::retention::compact_active_for_test(&db, &session.id, 15, 1).unwrap();
         let service = test_service(root.path(), db);
         let read = service
             .dispatch(
@@ -5110,6 +5132,100 @@ mod tests {
         let launch = db.deferred_codex_launch(&id).unwrap().unwrap();
         assert_eq!(launch["phase"], "failed");
         assert_eq!(launch["error"]["code"], "runtime_stopping");
+    }
+
+    fn reproduce_output_loss(quit: bool, refuse_marker: bool) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("runtime.sqlite");
+        let id = {
+            let db = Arc::new(Database::open(&path).unwrap());
+            let session = db.create_session(CreateSession {
+                project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None,
+                operation_id: "output-loss-reproduction",
+            }).unwrap();
+            db.set_session_status(&session.id, "running", None).unwrap();
+            db.append_output(&session.id, 0, b"durable-prefix").unwrap();
+            db.refuse_terminal_marker.store(refuse_marker, std::sync::atomic::Ordering::Relaxed);
+            let service = test_service(root.path(), Arc::clone(&db));
+            // No retry worker owns the DB during the simulated hard kill.
+            assert!(service.output.append(&db, &session.id, b"UNIQUE-REFUSED-TAIL").is_err());
+            if quit { service.shutdown(); }
+            if refuse_marker {
+                let sidecar = root.path().join("terminal-output-loss").join(format!("{}.json", session.id));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while !sidecar.exists() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                assert!(sidecar.exists(), "failure record must be durable before the later hard kill");
+            }
+            session.id
+        };
+        let db = Arc::new(Database::open(&path).unwrap());
+        db.mark_live_sessions_interrupted().unwrap();
+        let sidecars = crate::output_loss::SidecarWriter::new(db.path());
+        for id in db.recover_terminal_output_loss().unwrap() { sidecars.remove(&id); }
+        let status = db.session_by_id(&id).unwrap().unwrap().status;
+        let service = test_service(root.path(), db);
+        let read = service.dispatch("desktop", RpcRequest {
+            v: 1, id: "loss-read".into(), method: "terminal.read".into(),
+            params: json!({"sessionId":id,"cursor":0}),
+        }).unwrap();
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(read["data"].as_str().unwrap()).unwrap(), b"durable-prefix");
+        assert_eq!(status, "interrupted");
+        assert_eq!(read["storageDegraded"]["reason"], crate::db::TERMINAL_OUTPUT_LOST);
+        assert_eq!(read["storageDegraded"]["cursor"], 0);
+        if refuse_marker { assert_eq!(read["storageDegraded"]["pendingBytes"], 19); }
+    }
+
+    #[test]
+    fn output_loss_a_quit_with_refused_marker() { reproduce_output_loss(true, true); }
+    #[test]
+    fn output_loss_b_hard_kill_with_refused_marker() { reproduce_output_loss(false, true); }
+    #[test]
+    fn output_loss_c_hard_kill_with_durable_marker() { reproduce_output_loss(false, false); }
+
+    #[test]
+    fn output_loss_shutdown_is_bounded_even_before_the_drain_when_sqlite_is_blocked() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let session = db.create_session(CreateSession {
+            project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None,
+            operation_id: "shutdown-blocked-sqlite",
+        }).unwrap();
+        db.append_output(&session.id, 0, b"occupied").unwrap();
+        let service = test_service(root.path(), Arc::clone(&db));
+        let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let blocked = db.clone();
+        let holder = std::thread::spawn(move || blocked.transaction(|_| {
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        }).unwrap());
+        locked_rx.recv().unwrap();
+        let output = service.output.clone();
+        let writer_db = db.clone();
+        let id = session.id.clone();
+        let writer = std::thread::spawn(move || output.append(&writer_db, &id, b"pending"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while service.output.pending_byte_count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let start = std::time::Instant::now();
+        service.shutdown();
+        let elapsed = start.elapsed();
+        let exists = root.path().join("terminal-output-loss").join(format!("{}.json", session.id)).exists();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(writer.join().unwrap().is_err());
+        // Let delayed helpers finish their observable DB work before dropping the fixture.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while db.terminal_storage_degraded(&session.id).unwrap().as_ref()
+            .is_none_or(|marker| marker["reason"] != crate::db::TERMINAL_OUTPUT_LOST)
+            && std::time::Instant::now() < deadline
+        { std::thread::sleep(std::time::Duration::from_millis(10)); }
+        assert!(elapsed < std::time::Duration::from_secs(5), "shutdown waited on SQLite: {elapsed:?}");
+        assert!(exists, "shutdown must leave its independent loss record");
     }
 
     #[test]

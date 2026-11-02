@@ -93,36 +93,57 @@ try {
   });
   const bad = await create(randomUUID());
   const good = await create(randomUUID());
+  const retained = await create(randomUUID());
   await shutdown();
 
   const badFirst = Buffer.from('bad').toString('hex');
   const badLater = Buffer.from('gap').toString('hex');
   const goodFirst = Buffer.from('good-').toString('hex');
   const goodLater = Buffer.from('stream').toString('hex');
+  const retainedStart = 7;
+  const retainedBytes = Buffer.from('newest-output');
   await seed(`PRAGMA foreign_keys=ON;
     INSERT INTO output_chunks(session_id,start_cursor,data) VALUES ('${bad.id}',0,X'${badFirst}');
     INSERT INTO output_chunks(session_id,start_cursor,data) VALUES ('${bad.id}',8,X'${badLater}');
     INSERT INTO output_chunks(session_id,start_cursor,data) VALUES ('${good.id}',0,X'${goodFirst}');
-    INSERT INTO output_chunks(session_id,start_cursor,data) VALUES ('${good.id}',5,X'${goodLater}');`);
+    INSERT INTO output_chunks(session_id,start_cursor,data) VALUES ('${good.id}',5,X'${goodLater}');
+    INSERT INTO output_chunks(session_id,start_cursor,data) VALUES ('${retained.id}',${retainedStart},X'${retainedBytes.toString('hex')}');
+    INSERT INTO metadata(key,value) VALUES ('terminal.outputEnd:${retained.id}','${retainedStart + retainedBytes.length}');`);
   const badEnd = 11;
 
   await start();
+  await seed(`UPDATE sessions SET mode='terminal', status='running' WHERE id='${retained.id}';`);
+  const running = (await control.request('runtime.snapshot')).sessions.find(session => session.id === retained.id);
+  assert.equal(running?.status, 'running', 'retained-prefix subscription must belong to a running terminal');
+  assert.equal(running?.mode, 'terminal');
   output = await connect(`${pipe}-output`);
   output.binary(3, {sessionId: bad.id, cursor: 0});
   output.binary(3, {sessionId: good.id, cursor: 0});
+  output.binary(3, {sessionId: retained.id, cursor: 0});
   output.binary(2, {sessionId: bad.id, credit: 1024});
   output.binary(2, {sessionId: good.id, credit: 1024});
+  output.binary(2, {sessionId: retained.id, credit: retainedBytes.length});
 
   let gap;
+  let retainedGap;
+  let retainedOutput;
   const goodBytes = [];
-  for (let count = 0; count < 8 && (!gap || Buffer.concat(goodBytes).toString() !== 'good-stream'); count++) {
+  for (let count = 0; count < 12 && (!gap || !retainedGap || !retainedOutput || Buffer.concat(goodBytes).toString() !== 'good-stream'); count++) {
     const frame = await nextOutput();
     if (frame.kind === 4 && frame.header.sessionId === bad.id) gap = frame;
+    if (frame.kind === 4 && frame.header.sessionId === retained.id) retainedGap = frame;
     if (frame.kind === 1 && frame.header.sessionId === good.id) goodBytes.push(frame.data);
+    if (frame.kind === 1 && frame.header.sessionId === retained.id) retainedOutput = frame;
   }
   assert.ok(gap, 'the corrupt session must receive an isolated gap frame');
   assert.equal(gap.header.cursor, badEnd, 'gap cursor must advance to bad durable end');
   assert.equal(gap.data.length, 0);
+  assert.ok(retainedGap, 'a running terminal with a retained prefix must receive a gap frame');
+  assert.equal(retainedGap.header.cursor, retainedStart, 'retained prefix gap must advance to its first durable byte');
+  assert.equal(retainedGap.data.length, 0);
+  assert.ok(retainedOutput, 'retained output must follow the gap without more credit');
+  assert.equal(retainedOutput.header.cursor, retainedStart);
+  assert.deepEqual(retainedOutput.data, retainedBytes, 'the retained running-terminal bytes must stream exactly');
   assert.equal(Buffer.concat(goodBytes).toString(), 'good-stream', 'healthy session must fully stream on the same pipe');
   assert.ok(await control.request('runtime.health'), 'control pipe remains usable after peer gap');
 
@@ -140,7 +161,8 @@ try {
   console.log(JSON.stringify({
     passed: true,
     checks: [
-      'gap emits kind=4 only for the corrupt subscription',
+      'corrupt subscription gap resyncs at its durable end',
+      'running retained prefix emits kind=4 at its retained start before exact durable bytes',
       'healthy subscription fully streams on the same output pipe',
       'retained credit delivers contiguous bytes appended after the gap',
     ],
