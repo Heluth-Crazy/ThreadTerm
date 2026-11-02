@@ -54,6 +54,7 @@ struct RetryState {
 struct Stream {
     /// The durable cursor: only advanced after the database accepted the bytes.
     cursor: i64,
+    retention_check_at: i64,
     chunks: VecDeque<(i64, Vec<u8>)>,
     bytes: usize,
     /// Drained bytes the database has not accepted yet (see `append`).
@@ -67,6 +68,7 @@ impl Stream {
     fn new() -> Self {
         Self {
             cursor: 0,
+            retention_check_at: crate::retention::ACTIVE_TERMINAL_BYTES + crate::retention::ACTIVE_OUTPUT_MARGIN,
             chunks: VecDeque::new(),
             bytes: 0,
             pending: Vec::new(),
@@ -192,6 +194,22 @@ impl OutputStore {
         self.pending_bytes.fetch_sub(batch.len(), Ordering::Relaxed);
         self.losses.lock().unwrap().remove(session_id);
         stream.cursor += batch.len() as i64;
+        if stream.cursor > stream.retention_check_at {
+            // One indexed retained-start check per margin, never a scan/trim per chunk.
+            // Failed checks retry on a later append without making a durable write fail.
+            match db.output_start(session_id) {
+                Ok(Some(from)) => {
+                    if stream.cursor - from > crate::retention::ACTIVE_TERMINAL_BYTES + crate::retention::ACTIVE_OUTPUT_MARGIN {
+                        db.schedule_retention();
+                        stream.retention_check_at = stream.cursor + crate::retention::ACTIVE_OUTPUT_MARGIN;
+                    } else {
+                        stream.retention_check_at = from + crate::retention::ACTIVE_TERMINAL_BYTES + crate::retention::ACTIVE_OUTPUT_MARGIN;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("Output retention check deferred: {error:#}"),
+            }
+        }
         stream.bytes += batch.len();
         stream.chunks.push_back((start, batch));
         while stream.bytes > RETAINED_MEMORY_BYTES {

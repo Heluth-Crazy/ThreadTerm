@@ -4409,13 +4409,10 @@ mod tests {
                 operation_id: "pruned-terminal-read",
             })
             .unwrap();
-        // Compaction deletes complete old chunks and leaves their original
-        // cursor coordinates intact.
+        db.set_session_status(&session.id, "running", None).unwrap();
+        db.append_output(&session.id, 0, &vec![b'x'; 4_096]).unwrap();
         db.append_output(&session.id, 4_096, b"retained output").unwrap();
-        db.transaction(|tx| {
-            tx.execute("INSERT INTO metadata(key,value) VALUES(?, '4111')", [format!("terminal.outputEnd:{}", session.id)])?;
-            Ok(())
-        }).unwrap();
+        crate::retention::compact_active_for_test(&db, &session.id, 15, 1).unwrap();
         let service = test_service(root.path(), db);
         let read = service
             .dispatch(

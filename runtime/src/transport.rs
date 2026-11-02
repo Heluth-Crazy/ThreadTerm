@@ -29,6 +29,17 @@ fn is_terminal_history_gap(error: &anyhow::Error) -> bool {
         .any(|cause| cause.to_string() == TERMINAL_HISTORY_GAP)
 }
 
+fn output_gap_cursor(db: &crate::db::Database, id: &str, cursor: i64) -> Result<i64> {
+    // The boundary read checks its watermark under one DB lock, distinguishing
+    // retention from corruption before falling back to the current durable end.
+    match db.read_output_window(id, Some(cursor), false, 1) {
+        Ok((from, _, _, _)) if from > cursor => Ok(from),
+        Ok(_) => db.output_end(id),
+        Err(error) if is_terminal_history_gap(&error) => db.output_end(id),
+        Err(error) => Err(error),
+    }
+}
+
 fn advance_cursor_past_history_gap(cursor: &mut i64, durable_end: i64) {
     *cursor = durable_end;
 }
@@ -695,17 +706,14 @@ async fn serve_output(
                     {
                         Ok(chunks) => chunks,
                         Err(error) if is_terminal_history_gap(&error) => {
-                            // A corrupt/legacy gap belongs to this subscription,
-                            // not to every terminal multiplexed on this pipe.  Do
-                            // not invent bytes across it: tell the consumer to
-                            // skip to the durable end.  Keep the existing credit:
-                            // kind 4 carries no bytes to acknowledge, and that
-                            // credit must remain available for later live output.
-                            let end = service.db.output_end(id)?;
-                            write_output(&mut pipe, 4, &json!({"sessionId":id,"cursor":end}), &[])
+                            // A pruned prefix resumes at retained bytes; an internal
+                            // hole keeps the existing durable-end resync. Neither
+                            // consumes credit or drops the multiplexed pipe.
+                            let next = output_gap_cursor(&service.db, id, *cursor)?;
+                            write_output(&mut pipe, 4, &json!({"sessionId":id,"cursor":next}), &[])
                                 .await?;
-                            advance_cursor_past_history_gap(cursor, end);
-                            break;
+                            advance_cursor_past_history_gap(cursor, next);
+                            continue;
                         }
                         Err(error) => return Err(error),
                     };
@@ -1010,6 +1018,44 @@ mod decoder_tests {
         assert_eq!(decoder.read(&mut reader).await.unwrap(), body);
         writer.write_all(&frame).await.unwrap();
         assert_eq!(decoder.read(&mut reader).await.unwrap(), body);
+    }
+
+    #[test]
+    fn trimmed_running_subscription_gaps_to_retained_start_and_keeps_credit() {
+        let root = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(&root.path().join("trimmed.sqlite")).unwrap();
+        let id = db
+            .create_session(crate::db::CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "trimmed",
+            })
+            .unwrap()
+            .id;
+        db.set_session_status(&id, "running", None).unwrap();
+        db.append_output(&id, 0, b"abcdefghij").unwrap();
+        crate::retention::compact_active_for_test(&db, &id, 5, 1).unwrap();
+        let mut cursor = 0;
+        let credit = 100;
+        assert!(is_terminal_history_gap(
+            &db.output_from(&id, cursor, credit).unwrap_err()
+        ));
+        let gap = output_gap_cursor(&db, &id, cursor).unwrap();
+        assert_eq!(gap, 5);
+        advance_cursor_past_history_gap(&mut cursor, gap);
+        assert_eq!(credit, 100);
+        assert_eq!(
+            db.output_from(&id, cursor, credit).unwrap(),
+            vec![(5, b"fghij".to_vec())]
+        );
+        db.append_output(&id, 10, b"tail").unwrap();
+        assert_eq!(
+            db.output_from(&id, 10, credit).unwrap(),
+            vec![(10, b"tail".to_vec())]
+        );
     }
 
     #[test]
