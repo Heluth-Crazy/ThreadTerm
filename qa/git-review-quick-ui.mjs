@@ -33,7 +33,7 @@ try {
   const page = await app.firstWindow({ timeout: 20_000 }); page.setDefaultTimeout(10_000);
   const shell = page.getByTestId('review-diff-surface'); await shell.waitFor();
   const nav = shell.getByRole('group', { name: 'File navigation' });
-  await nav.getByText('2 / 3', { exact: true }).waitFor();
+  await nav.getByText('File 2/3', { exact: true }).waitFor();
   await nav.getByRole('button', { name: 'Previous file', exact: true }).click();
   await shell.getByText('a.ts', { exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.qa.navigated), ['a.ts'], 'previous retargets the review host');
@@ -48,13 +48,13 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="review-diff-surface"] .cm-content'));
   await page.evaluate(() => { window.qa.reviewGate = undefined; });
   await nav.getByRole('button', { name: 'Previous file', exact: true }).click();
-  await nav.getByText('2 / 3', { exact: true }).waitFor();
+  await nav.getByText('File 2/3', { exact: true }).waitFor();
   await nav.getByRole('button', { name: 'Previous file', exact: true }).click();
-  await nav.getByText('1 / 3', { exact: true }).waitFor();
+  await nav.getByText('File 1/3', { exact: true }).waitFor();
   await page.evaluate(() => { window.qa.reviewFailure = 'b.ts'; });
   await nav.getByRole('button', { name: 'Next file', exact: true }).click();
   await shell.getByRole('alert').getByText('The file is too large (over 1 MB).', { exact: true }).waitFor();
-  await nav.getByText('2 / 3', { exact: true }).waitFor();
+  await nav.getByText('File 2/3', { exact: true }).waitFor();
   assert.equal(await shell.locator('.cm-content').count(), 0, 'a failed destination has no editable editor');
   assert.equal(await nav.getByRole('button', { name: 'Previous file', exact: true }).isEnabled(), true, 'a failed diff does not block navigating back');
   assert.equal(await nav.getByRole('button', { name: 'Next file', exact: true }).isEnabled(), true, 'a failed diff does not block moving to the next listed file');
@@ -65,7 +65,7 @@ try {
   assert.equal(await shell.getByRole('alert').count(), 0, 'navigating back recovers from persistent file_too_large');
   await page.evaluate(() => { window.qa.reviewFailure = undefined; });
   await page.evaluate(() => { window.qa.setReviewPath('b.ts'); window.qa.files = [{ path: 'a.ts' }, { path: 'c.ts' }]; window.qa.emit(); });
-  await nav.getByText('0 / 2', { exact: true }).waitFor();
+  await nav.getByText('File 0/2', { exact: true }).waitFor();
   assert.equal(await nav.getByRole('button', { name: 'Previous file', exact: true }).isDisabled(), true, 'a disappeared current file cannot choose a previous file');
   assert.equal(await nav.getByRole('button', { name: 'Next file', exact: true }).isDisabled(), true, 'a disappeared current file cannot choose a next file');
   const changes = await page.evaluate(() => window.qa.calls.filter(([method]) => method === 'review.changes').map(([, params]) => params));
@@ -81,7 +81,7 @@ try {
   const frozen = await page.evaluate(() => window.qa.calls.find(([method, params]) => method === 'review.changes' && params.to === 'fixed')[1]);
   assert.deepEqual(frozen, { sessionId: 's', from: 'cp', to: 'fixed' }, 'fixed review navigation uses its frozen checkpoint pair');
   const gitShell = page.getByTestId('file-diff-surface'); await gitShell.waitFor();
-  const gitNav = gitShell.getByRole('group', { name: 'File navigation' }); await gitNav.getByText('1 / 2', { exact: true }).waitFor();
+  const gitNav = gitShell.getByRole('group', { name: 'File navigation' }); await gitNav.getByText('File 1/2', { exact: true }).waitFor();
   await page.evaluate(() => { window.qa.fileGate = 'b.ts'; });
   await gitNav.getByRole('button', { name: 'Next file', exact: true }).click();
   assert.equal(await gitNav.getByRole('button', { name: 'Next file', exact: true }).isDisabled(), true, 'Git navigation locks while a read is pending');
@@ -89,7 +89,7 @@ try {
   await gitShell.locator('.cm-content').last().click(); await page.keyboard.type('blocked');
   assert.equal((await gitShell.locator('.cm-content').last().innerText()).includes('blocked'), false, 'typing cannot change the source editor while navigation is pending');
   await page.evaluate(() => window.qa.rejectFile());
-  await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid="file-diff-surface"] button')].find(button => button.textContent === 'Next file').disabled);
+  await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid="file-diff-surface"] button')].find(button => button.getAttribute('aria-label') === 'Next file').disabled);
   assert.equal(await page.evaluate(() => window.qa.fileIsReadOnly()), false, 'a failed destination read restores editing');
   assert.ok(await gitShell.getByText('a.ts', { exact: true }).count(), 'a failed Git read preserves the source document');
   await page.evaluate(() => { window.qa.fileGate = 'b.ts'; });
@@ -98,11 +98,11 @@ try {
   await gitShell.getByText('b.ts', { exact: true }).waitFor();
   await page.evaluate(() => { window.qa.fileGate = 'a.ts'; });
   await gitNav.getByRole('button', { name: 'Previous file', exact: true }).click();
-  await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="file-diff-surface"] button')].find(button => button.textContent === 'Previous file').disabled);
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="file-diff-surface"] button')].find(button => button.getAttribute('aria-label') === 'Previous file').disabled);
   await page.evaluate(() => { window.qa.forceFileEdit(); window.qa.draftPutBefore = window.qa.calls.filter(([method]) => method === 'draft.put').length; window.qa.resolveFile(); });
   await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="file-diff-surface"] .cm-content')].some(content => content.textContent.includes('forced source')));
   assert.equal(await page.evaluate(() => window.qa.calls.filter(([method]) => method === 'draft.put').length), await page.evaluate(() => window.qa.draftPutBefore), 'the response is rejected before the draft debounce persists the forced edit');
-  await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid="file-diff-surface"] button')].find(button => button.textContent === 'Previous file').disabled);
+  await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid="file-diff-surface"] button')].find(button => button.getAttribute('aria-label') === 'Previous file').disabled);
   assert.ok(await gitShell.locator('.cm-content').last().innerText().then(text => text.includes('forced source')), 'a late destination cannot replace edits made while navigation was pending');
   assert.ok(await gitShell.getByText('b.ts', { exact: true }).count(), 'dirty recheck aborts the Git retarget');
   console.log('PASS Review Diff and Git diff navigation: persistent file_too_large recovery, loading locks, clean retarget, and late dirty edits');

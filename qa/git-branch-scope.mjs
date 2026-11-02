@@ -104,7 +104,7 @@ try {
  await wait(async()=>/renamed\.txt/.test(await diffPath()),'renamed.txt diff opens');
  await wait(async()=>/one\ntwo\nthree/.test(await diffSurface.innerText()),'the base side comes from the pre-rename path');
  // ...and Alt+→ must not carry that path to the next file: its own base side is read from its own path.
- await wait(async()=>/3 \/ 4/.test(await page.locator('[aria-label="File navigation"] .wb-hunk-count').innerText()),'navigation counts the branch files');
+ await wait(async()=>/File 3\/4/.test(await page.locator('[aria-label="File navigation"] .wb-hunk-count').innerText()),'navigation counts the branch files');
  await diffSurface.locator('.cm-editor').first().click();
  await page.keyboard.press('Alt+ArrowRight');
  await wait(async()=>/working\.txt/.test(await diffPath()),'Alt+ArrowRight reaches the next file');
@@ -133,16 +133,18 @@ try {
  await page.getByLabel('Committed only').uncheck();
  await wait(async()=>/4 files/.test(await summary.innerText()),'the working-tree scope is back');
  await page.locator('[data-branch-path="renamed.txt"] button.wb-change-open').click();
- await wait(async()=>/Working tree · vs origin\/main/.test(await diffSurface.innerText()),'the tab follows the working-tree scope again');
- assert.equal(await diffSurface.getByRole('button',{name:'Save changes',exact:true}).count(),1,'the working side is editable');
+ await wait(async()=>/Working tree · vs origin\/main/.test((await diffSurface.locator('.file-bar-compare').getAttribute('title'))??''),'the tab follows the working-tree scope again');
+ assert.equal(await diffSurface.getByRole('button',{name:'Save changes',exact:true}).count(),0,'a clean working side hides Save');
+ const workingEditor=diffSurface.locator('.cm-merge-b .cm-content');await workingEditor.click();await workingEditor.press('Control+End');await page.keyboard.type('scope-qa');await diffSurface.getByRole('button',{name:'Save changes',exact:true}).waitFor();await workingEditor.press('Control+z');await wait(async()=>await diffSurface.getByRole('button',{name:'Save changes',exact:true}).count()===0,'working-side edits reveal Save and undo restores the clean state');
  await page.getByLabel('Committed only').check();
  await page.locator('[data-branch-path="renamed.txt"] button.wb-change-open').click();
- await wait(async()=>/Committed changes only · vs origin\/main/.test(await diffSurface.innerText()),'the same tab adopts the committed-only scope');
- assert.equal(await diffSurface.getByRole('button',{name:'Save changes',exact:true}).count(),0,'the committed side is read-only');
+ await wait(async()=>/Committed changes only · vs origin\/main/.test((await diffSurface.locator('.file-bar-compare').getAttribute('title'))??''),'the same tab adopts the committed-only scope');
+ assert.equal(await diffSurface.getByRole('button',{name:'Save changes',exact:true}).count(),0,'the committed side has no Save');
+ const committedEditor=diffSurface.locator('.cm-merge-b .cm-content');const committedText=await committedEditor.innerText();await committedEditor.click();await committedEditor.press('Control+End');await page.keyboard.type('readonly-qa');assert.equal(await committedEditor.innerText(),committedText,'the committed side rejects edits');
  await page.getByLabel('Committed only').uncheck();
  await wait(async()=>/4 files/.test(await summary.innerText()),'the working-tree scope is back again');
  await page.locator('[data-branch-path="renamed.txt"] button.wb-change-open').click();
- await wait(async()=>/Working tree · vs origin\/main/.test(await diffSurface.innerText()),'the tab is back in the working-tree scope');
+ await wait(async()=>/Working tree · vs origin\/main/.test((await diffSurface.locator('.file-bar-compare').getAttribute('title'))??''),'the tab is back in the working-tree scope');
 
  // 4. A base that moved under an open compare tab offers a reload, and the tab adopts the fresh base.
  await mkdir(peerDir,{recursive:true});
@@ -170,6 +172,13 @@ try {
  await wait(async()=>/base2/.test(await summary.innerText()),'the header names the chosen base');
  await wait(async()=>/5 files/.test(await summary.innerText()),'base2 adds the file that only main changed');
  assert.equal(await page.locator('[data-branch-path="a.txt"]').getAttribute('data-branch-status'),'modified');
+
+ // Switching the same standalone tab back to an ordinary diff restores its gutter actions.
+ assert.equal(await diffSurface.locator('.cm-merge-stage:visible').count(),0,'compare scope has no index staging action');
+ await page.getByRole('tab',{name:'Changes',exact:true}).click();
+ await page.locator('.probe-scm .wb-changes .wb-change-open',{hasText:'working.txt'}).first().click();
+ await wait(async()=>await diffSurface.locator('.file-bar-compare').count()===0,'ordinary scope replaces the compare pill');
+ await diffSurface.getByRole('button',{name:'Stage hunk',exact:true}).first().waitFor();
 
  const requests=await page.evaluate(()=>window.__requests??[]);
  assert.ok(requests.includes('git.compare.diff'),'the diff uses git.compare.diff');

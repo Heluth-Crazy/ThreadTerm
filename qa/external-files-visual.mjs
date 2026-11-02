@@ -89,7 +89,7 @@ function environment(pickerPaths) {
     TEMP: scratchBase, TMP: scratchBase, HOME: join(scratch, 'home'), USERPROFILE: join(scratch, 'home'),
     APPDATA: join(scratch, 'appdata'), LOCALAPPDATA: join(scratch, 'localappdata'), CODEX_HOME: join(scratch, 'home', '.codex'),
     THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
-    THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-x1c-external-files-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime, THREADTERM_V3_RUNTIME_BIN: runtime,
+    THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-x1c-external-files-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime, THREADTERM_QA_PROVIDER_BIN: bin, THREADTERM_V3_RUNTIME_BIN: runtime,
     TT_QA_NODE: process.execPath, TT_QA_SCRIPT: join(bin, 'fake-grok.mjs'),
     TT_QA_OUTSIDE_PATH: join(outside, 'outside.ts'), TT_QA_MISSING_PATH: join(outside, 'missing.ts'),
     THREADTERM_V3_OPEN_EXTERNAL_QA: JSON.stringify(pickerPaths),
@@ -113,22 +113,23 @@ const shot = async name => {
   await until(() => page.evaluate(() => { const splash = document.getElementById('boot-splash'); return !splash || getComputedStyle(splash).opacity === '0'; }), 'boot splash clears before screenshot', 12_000);
   await page.screenshot({ path: join(out, name) }); report.screenshots.push(name);
 };
-const rgb = value => value.match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number) ?? [];
-async function assertEditorSurfacePixel(label, selector) {
-  const sample = await page.locator(`${selector}:visible`).first().evaluate(node => {
+async function assertEditorSurfacePixel(label, selector, token = '--editor') {
+  const sample = await page.locator(`${selector}:visible`).first().evaluate((node, token) => {
     const rect = node.getBoundingClientRect(), probe = document.createElement('i');
-    probe.style.cssText = 'position:fixed;visibility:hidden;background:var(--editor)'; document.body.append(probe);
-    const expected = getComputedStyle(probe).backgroundColor; probe.remove();
+    probe.style.cssText = `position:fixed;visibility:hidden;background:var(${token})`; document.body.append(probe);
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d'); context.fillStyle = getComputedStyle(probe).backgroundColor; context.fillRect(0, 0, 1, 1);
+    const expected = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3); probe.remove();
     const candidates = [0.1, 0.25, 0.5, 0.75, 0.9].flatMap(x => [0.15, 0.5, 0.85].map(y => ({ x:rect.left + rect.width * x, y:rect.top + rect.height * y })));
     const point = candidates.find(value => document.elementFromPoint(value.x, value.y) === node) ?? { x:rect.left + 2, y:rect.top + 2 };
     return { ...point, expected };
-  });
+  }, token);
   const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, scale: devicePixelRatio }));
   const image = PNG.sync.read(await page.screenshot({ animations: 'disabled' }));
   const x = Math.max(0, Math.min(image.width - 1, Math.round(sample.x * image.width / viewport.width)));
   const y = Math.max(0, Math.min(image.height - 1, Math.round(sample.y * image.height / viewport.height)));
-  const at = (y * image.width + x) * 4, actual = [...image.data.slice(at, at + 3)], expected = rgb(sample.expected);
-  assert.ok(expected.length === 3 && actual.every((channel, index) => Math.abs(channel - expected[index]) <= 4), `${label}: sampled editor pixel ${actual} matches --editor ${expected}`);
+  const at = (y * image.width + x) * 4, actual = [...image.data.slice(at, at + 3)], expected = sample.expected;
+  assert.ok(expected.length === 3 && actual.every((channel, index) => Math.abs(channel - expected[index]) <= 4), `${label}: sampled surface pixel ${actual} matches ${token} ${expected}`);
 }
 async function assertExternalVisualGeometry() {
   const geometry = await page.evaluate(() => {
@@ -143,12 +144,12 @@ async function assertExternalVisualGeometry() {
     const toolbar = boundary?.closest('.file-view-tabs');
     const marker = tab?.querySelector('.workspace-tab-icon .workspace-tab-marker');
     const icon = tab?.querySelector('.workspace-tab-icon');
-    const controls = [...(boundary?.querySelectorAll('button[title]') ?? [])].map(button => ({ title:button.title, icon:button.classList.contains('icon-btn'), label:button.textContent?.trim() ?? '', rect:rect(button) }));
+    const controls = [...(boundary?.querySelectorAll('button[title]') ?? [])].filter(button=>button.getBoundingClientRect().width>0).map(button => ({ title:button.title, icon:button.classList.contains('icon-btn'), label:button.textContent?.trim() ?? '', rect:rect(button) }));
     return { boundary:rect(boundary), toolbar:rect(toolbar), marker:rect(marker), icon:rect(icon), controls, tab:rect(tab), frame:rect(frame), pane:rect(pane), previewAddress:Boolean(document.querySelector('.pane-tab-surface:not([hidden]) .preview-address')), normal:rect(normal), recent:rect(recent), recentPath:recent?.querySelector('.external-file-open-row span')?.textContent ?? '', forget:recent?.querySelector('.external-file-forget') ? { rect:rect(recent.querySelector('.external-file-forget')), opacity:getComputedStyle(recent.querySelector('.external-file-forget')).opacity } : undefined };
   });
   assert.ok(geometry.boundary && geometry.toolbar && geometry.controls.every(control => control.rect && control.rect.top >= geometry.toolbar.top - 1 && control.rect.bottom <= geometry.toolbar.bottom + 1), `external boundary actions share the file toolbar row ${JSON.stringify(geometry)}`);
   assert.ok(geometry.marker && geometry.icon && geometry.marker.left >= geometry.icon.left - 4 && geometry.marker.right <= geometry.icon.right + 4 && geometry.marker.bottom >= geometry.icon.bottom - 4, `external marker is a badge inside its tab icon ${JSON.stringify(geometry)}`);
-  assert.ok(geometry.controls.length >= 3 && geometry.controls.every(control => control.rect && Math.abs(control.rect.height - 28) <= 2), `boundary chip/actions use one 28px control row ${JSON.stringify(geometry.controls)}`);
+  assert.ok(geometry.controls.length >= 1 && geometry.controls.every(control => control.rect && Math.abs(control.rect.height - 28) <= 2), `visible boundary chip/actions use one 28px row; rare actions remain in Workspace actions ${JSON.stringify(geometry.controls)}`);
   if (geometry.frame && geometry.pane) {
     assert.equal(geometry.previewAddress, false, 'external HTML does not render a development preview address bar');
     assert.ok(geometry.frame.left >= geometry.pane.left && geometry.frame.right <= geometry.pane.right && geometry.frame.top >= geometry.pane.top && geometry.frame.bottom <= geometry.pane.bottom, `external HTML iframe stays within its pane ${JSON.stringify(geometry)}`);
@@ -180,13 +181,13 @@ async function assertCompactExternalTabs() {
   assert.equal(await select.locator('xpath=..').locator('.workspace-tab-close').evaluate(node => getComputedStyle(node).opacity), '1', 'keyboard focus reveals compact tab close action');
 }
 async function assertExternalToolbarActions() {
-  const { actions, compact } = await visible('[data-testid="external-file-boundary"]').evaluate(boundary => ({ actions:[...boundary.querySelectorAll('button[title]')].map(button => ({ title:button.title, icon:button.classList.contains('icon-btn'), visibleLabel:(button).innerText.trim(), rect:button.getBoundingClientRect().toJSON() })), compact:(boundary.closest('.file-workspace')?.getBoundingClientRect().width ?? 0) < 780 }));
-  const copy = actions.find(action => /Copy path|复制路径/.test(action.title)), reload = actions.find(action => /Reload from disk|从磁盘重新载入/.test(action.title));
-  assert.ok(copy && reload, `external toolbar exposes Copy path and Reload actions ${JSON.stringify(actions)}`);
-  if (compact) {
-    assert.ok(copy.icon && reload.icon && !copy.visibleLabel && !reload.visibleLabel, `under 780px, boundary actions are icon buttons with hidden labels ${JSON.stringify({copy,reload})}`);
-    assert.ok(Math.abs(copy.rect.top - reload.rect.top) <= 1, `under 780px, boundary actions remain on one toolbar row ${JSON.stringify({copy,reload})}`);
-  } else assert.ok(copy.visibleLabel && reload.visibleLabel, `wide boundary actions retain their labels ${JSON.stringify({copy,reload})}`);
+  const bar = visible('.file-workspace-bar'); await bar.waitFor();
+  const geometry = await bar.evaluate(node => { const rect=node.getBoundingClientRect(); return {height:rect.height,overflows:node.scrollWidth>node.clientWidth+1}; });
+  assert.ok(geometry.height <= 40 && !geometry.overflows, `external file bar stays one row ${JSON.stringify(geometry)}`);
+  const actions = page.locator('.workspace-pane.selected').getByRole('button',{name:/^(Workspace actions|工作区操作)$/}); await actions.click();
+  const menu = page.locator('.workspace-action-menu:visible').last(); await menu.getByRole('button',{name:/^(Copy path|复制路径)$/}).waitFor();
+  await menu.getByRole('button',{name:/^(Reload from disk|从磁盘重新载入)$/}).waitFor();
+  await page.keyboard.press('Escape');
 }
 async function setAppearance(language, theme, width) {
   await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setContentSize(width, 900), width);
@@ -284,7 +285,8 @@ try {
 
   // Disk mutation must only be observed after an explicit reload; it never creates a draft.
   await writeFile(join(outside, 'outside.ts'), sourceV2);
-  const reload = visible('button').filter({ hasText: /Reload/i }).first(); await reload.click();
+  await page.locator('.workspace-pane.selected').getByRole('button',{name:/^(Workspace actions|工作区操作)$/}).last().click();
+  await page.locator('.workspace-action-menu:visible').last().getByRole('button',{name:/^(Reload from disk|从磁盘重新载入)$/}).click();
   await until(async () => (await text('.pane-tab-surface:not([hidden])')).includes('a + b + 1'), 'external reload content');
   assert.equal(await request('draft.list', { projectId: added.id }).then(rows => rows.filter(row => String(row.path ?? '').includes('outside.ts')).length), 0, 'reload did not create an external draft');
   check('external text is read-only, reloads from disk on demand, and creates no draft');
@@ -310,11 +312,12 @@ try {
   // The renderer-owned comment/send controls vary by final UI placement.  These role-based assertions deliberately
   // exercise the production controls without depending on a private CSS implementation.
   await activateTab('outside.ts');
-  const commentButton = visible('button').filter({ hasText: /^(Comment|评论)$/ }).first();
-  assert.equal(await commentButton.count(), 1, 'external editor exposes the required Comment action');
+  const commentButton = visible('.file-selection-actions').getByRole('button', { name: /^(Comment|评论)$/ }).first();
+  assert.equal(await commentButton.count(), 0, 'external editor hides Comment until there is a selection');
   {
     await visible('.cm-line').filter({ hasText: 'return a + b + 1' }).first().click();
-    await until(async () => !(await commentButton.isDisabled()), 'external Comment action enables for selected line'); await commentButton.click();
+    await page.keyboard.press('Home'); await page.keyboard.down('Shift'); await page.keyboard.press('End'); await page.keyboard.up('Shift');
+    await commentButton.waitFor(); await commentButton.click();
     const form = visible('.wb-review-comment-form'); await form.locator('textarea').fill('External QA comment'); await form.getByRole('button', { name: /Add comment|添加评论/ }).click();
     await until(async () => /External QA comment/.test(await text('.wb-review-comments')), 'external pending comment');
     assert.ok((await text('.wb-review-comments')).replaceAll('/', '\\').includes(join(outside, 'outside.ts')), 'pending comment retains the absolute external path');
@@ -328,7 +331,8 @@ try {
 
     // Leave a second comment pending so restart proves its absolute-path draft survives.
     await visible('.cm-line').filter({ hasText: 'export const outsideValue' }).first().click();
-    await until(async () => !(await commentButton.isDisabled()), 'second external Comment action enables'); await commentButton.click();
+    await page.keyboard.press('Home'); await page.keyboard.down('Shift'); await page.keyboard.press('End'); await page.keyboard.up('Shift');
+    await commentButton.waitFor(); await commentButton.click();
     const persistentForm = visible('.wb-review-comment-form'); await persistentForm.locator('textarea').fill('External persistent comment'); await persistentForm.getByRole('button', { name: /Add comment|添加评论/ }).click();
     await until(async () => /External persistent comment/.test(await text('.wb-review-comments')), 'pending external comment before restart');
   }
@@ -418,7 +422,8 @@ try {
   assert.ok(stale, 'outside.ts stays registered before unknown-id recovery');
   await request('filesystem.external.forget', { id: stale.id, operationId: randomUUID() });
   await rm(join(outside, 'outside.ts'));
-  await visible('button').filter({ hasText: /Reload from disk|从磁盘重新载入/ }).click();
+  await page.locator('.workspace-pane.selected').getByRole('button',{name:/^(Workspace actions|工作区操作)$/}).click();
+  await page.locator('.workspace-action-menu:visible').last().getByRole('button',{name:/^(Reload from disk|从磁盘重新载入)$/}).click();
   await until(async () => /missing|no longer exists/i.test(await text('.workspace-file-error, .runtime-overlay, [role="alert"], .pane-tab-surface:not([hidden])')), 'unknown external id recovers to a missing-file card');
   await writeFile(join(outside, 'outside.ts'), sourceV2);
   await visible('button').filter({ hasText: /Retry|重试/ }).click();
@@ -455,7 +460,7 @@ try {
     await page.keyboard.press('Escape').catch(() => {}); await setAppearance(language, selection, width); await reveal();
     if (state === 'ts-comments') { await assertExternalVisualGeometry(); await assertEditorSurfacePixel(`${label}/${locale}/${width} boundary`, '[data-testid="external-file-boundary"]'); }
     if (state === 'html-sandbox' || state === 'quick-open-recents' || state === 'permission-disclosure') await assertExternalVisualGeometry();
-    if (state === 'permission-disclosure') await assertEditorSurfacePixel(`${label}/${locale}/${width} permission notice`, '.external-file-boundary-notice');
+    if (state === 'permission-disclosure') await assertEditorSurfacePixel(`${label}/${locale}/${width} permission notice`, '.external-file-boundary-notice', '--raised');
     if (state === 'large-error' || state === 'binary-error') await assertEditorSurfacePixel(`${label}/${locale}/${width} ${state} card`, '.external-file-error');
     await shot(`theme-${label}-${locale}-${width}-${state}.png`);
   }
@@ -466,11 +471,11 @@ try {
     const chip = visible('.external-file-boundary-chip'); if (await chip.getAttribute('aria-expanded') === 'true') await chip.click();
     await assertExternalToolbarActions();
     const header = await visible('.file-view-tabs').evaluate(node => ({width:node.closest('.file-workspace').getBoundingClientRect().width,height:node.getBoundingClientRect().height, name:node.querySelector('.external-file-path-name').getBoundingClientRect().width, fullName:node.querySelector('.external-file-path-name').scrollWidth}));
-    assert.ok(header.height <= (header.width < 520 ? 76 : 40), `toolbar uses one row above 520px and at most two below it ${JSON.stringify(header)}`);
+    assert.ok(header.height <= 40, `toolbar stays one row at narrow and wide widths ${JSON.stringify(header)}`);
     assert.ok(header.name >= header.fullName - 1, `middle ellipsis retains the complete file name ${JSON.stringify(header)}`);
     await shot(`aux-en-light-${width}-toolbar.png`);
   }
-  check('toolbar geometry covers panes below 520px and wide labeled controls, preserving the complete file name');
+  check('one-row toolbar geometry covers narrow and wide panes, preserving the complete file name');
 
   // Playwright cannot synthesize a native Explorer drop that preserves Windows file paths. The product unit tests
   // cover the injected drop handler; provider-authored file links above run against the fake ACP provider for real.

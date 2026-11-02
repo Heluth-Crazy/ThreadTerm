@@ -24,8 +24,9 @@ const gitProbe=spawnSync(process.platform==='win32'?'where.exe':'which',['git'],
 const gitExe=process.env.THREADTERM_TEST_GIT||gitProbe.stdout?.split(/\r?\n/).find(value=>existsSync(value.trim()))?.trim();
 assert.ok(gitExe&&existsSync(gitExe),'This QA requires Git on PATH or THREADTERM_TEST_GIT.');
 const appDir=join(scratch,'app');
+await mkdir(join(scratch,'bin'),{recursive:true});
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(path|threadterm_.*|electron_run_as_node|tt_qa_.*)$/i.test(key)));
-Object.assign(env,{PATH:[dirname(process.execPath),dirname(gitExe),join(process.env.SystemRoot,'System32')].join(';'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin});
+Object.assign(env,{PATH:[dirname(process.execPath),dirname(gitExe),join(process.env.SystemRoot,'System32')].join(';'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtimeBin,THREADTERM_QA_PROVIDER_BIN:join(scratch,'bin')});
 const report={startedAt:new Date().toISOString(),scratch,runtimeBin,checks:[],screenshots:[],notes:[]};
 let app,page,releaseLock,settingsRevision=0;
 const rpc=(method,params={})=>page.evaluate(([m,p])=>Promise.race([window.threadterm.request(m,p),new Promise((_,reject)=>setTimeout(()=>reject(new Error('RPC timeout: '+m)),45000))]),[method,params]);
@@ -67,7 +68,7 @@ try {
  await page.reload();await page.waitForFunction(()=>!!window.threadterm);await page.locator('.app-shell').waitFor();
  await rpc('session.present',{sessionId:session.id,placement:'workspace',presentation:'focused',operationId:randomUUID()});
  await page.locator('.xterm').first().waitFor();
- await page.locator('.wb-tabrow .wb-switcher').waitFor();
+ await page.locator('.wb-switcher:visible').waitFor();
  // Terminal fit: the host is content-box and the rendered xterm screen fits inside its content box
  // (a border-box host let FitAddon count the padding and clipped the last column/row).
  await page.waitForFunction(()=>document.querySelector('.terminal-host .xterm-screen')?.getBoundingClientRect().width>0);
@@ -78,7 +79,7 @@ try {
  const viewportBg=await page.evaluate(()=>getComputedStyle(document.querySelector('.terminal-host .xterm-viewport')).backgroundColor);
  assert.equal(viewportBg,'rgba(0, 0, 0, 0)','xterm viewport must be transparent (its #000 showed as a strip below the last row)');
  report.checks.push('terminal host is content-box, the fitted xterm screen fits inside it and the viewport paints no black strip');
- report.checks.push('session workspace shows the workbench view switcher in the tab bar row beside a live shell terminal');
+ report.checks.push('session workspace exposes the workbench view switcher beside a live shell terminal');
 
  // A session opens as just a session: no side panel until a view is chosen; the panel has a close button.
  assert.equal(await page.locator('.wb-sidebar').count(),0,'side panel must start closed when a session opens');
@@ -127,7 +128,9 @@ try {
  await page.keyboard.press('Control+P');
  await page.getByRole('dialog',{name:'Go to file'}).waitFor();
  await page.keyboard.type('todo');
- await page.locator('.wb-quick-open .cmd-row.active').waitFor();
+ await page.locator('.wb-quick-open .cmd-row',{hasText:'todo.md'}).waitFor();
+ await page.keyboard.press('ArrowDown');
+ await page.locator('.wb-quick-open .cmd-row.active',{hasText:'todo.md'}).waitFor();
  await shot('light-1280-quick-open.png');
  await page.keyboard.press('Enter');
  await page.locator('[role=tab]',{hasText:'todo.md'}).waitFor();
@@ -157,11 +160,11 @@ try {
  const appRow=page.locator('.wb-change-group[aria-label="Changes"] .wb-change-open',{hasText:'app.ts'});
  await appRow.waitFor();
  await appRow.click();
- await page.locator('.tt-diff-shell:visible .wb-hunk-nav').waitFor();
+ await page.locator('.tt-diff-shell:visible .wb-hunk-nav[aria-label="Hunks"]').waitFor();
  await page.locator('[role=tab]',{hasText:'app.ts · changes'}).waitFor();
- await until(async()=>(await page.locator('.tt-diff-shell:visible .wb-hunk-count').textContent())==='1/2','expected two hunks');
+ await until(async()=>(await page.locator('.tt-diff-shell:visible [aria-label="Hunks"] .wb-hunk-count').textContent())==='Change 1/2','expected two hunks');
  await shot('light-1280-scm-diff.png');
- await page.locator('.tt-diff-shell:visible').getByRole('button',{name:'Stage hunk',exact:true}).click();
+ await page.locator('.tt-diff-shell:visible').getByRole('button',{name:'Stage hunk',exact:true}).first().click();
  await until(async()=>(await git(['diff','--cached'])).includes('line3 = 300'),'first hunk was not staged');
  const cached=await git(['diff','--cached']),working=await git(['diff']);
  assert.ok(!cached.includes('line11 = 1100')&&working.includes('line11 = 1100'),'only the selected hunk may be staged');
@@ -213,9 +216,10 @@ try {
  await page.locator('.wb-history .wb-commit-row',{hasText:'QA: side branch only'}).waitFor();
  report.checks.push('History draws a commit graph; All branches adds a side-branch commit in its own lane, Current branch removes it');
  await blurTerminal();
- await page.keyboard.press('Control+P');await page.keyboard.type('app.ts');await page.keyboard.press('Enter');
+ await page.keyboard.press('Control+P');await page.keyboard.type('app.ts');await page.locator('.wb-quick-open .cmd-row',{hasText:'app.ts'}).waitFor();await page.keyboard.press('ArrowDown');await page.locator('.wb-quick-open .cmd-row.active',{hasText:'app.ts'}).waitFor();await page.keyboard.press('Enter');
  await page.locator('.pane-tab-surface:visible .tt-editor-shell .cm-content').waitFor();
- await page.locator('.pane-tab-surface:visible').getByRole('button',{name:'Blame',exact:true}).click();
+ await page.locator('.workspace-pane.selected').getByRole('button',{name:'Workspace actions',exact:true}).click();
+ await page.locator('.workspace-action-menu:visible').getByRole('button',{name:'Blame',exact:true}).click();
  // [data-commit] skips CodeMirror's hidden width spacer, which shares the entry class.
  await page.locator('.pane-tab-surface:visible .cm-blame-gutter .cm-blame-entry[data-commit]').first().waitFor();
  await page.locator('.pane-tab-surface:visible .cm-git-gutter .cm-git-marker').first().waitFor();
@@ -224,12 +228,12 @@ try {
  // Sizing: the side panel header rule lines up with the file toolbar rule in the neighbouring card,
  // and the tab row keeps its height although the strip overflows (no scrollbar row).
  await openView('Files');
- const edges=await page.evaluate(()=>{const head=document.querySelector('.wb-panel-head').getBoundingClientRect();const bar=document.querySelector('.pane-tab-surface:not([hidden]) .file-view-tabs')?.getBoundingClientRect();const row=document.querySelector('.wb-tabrow').getBoundingClientRect();const tabs=document.querySelector('.wb-tabrow .workspace-tabs');return{head:head.bottom,bar:bar?.bottom,row:row.height,overflowing:tabs.scrollWidth>tabs.clientWidth};});
+ const edges=await page.evaluate(()=>{const head=document.querySelector('.wb-panel-head').getBoundingClientRect();const bar=document.querySelector('.pane-tab-surface:not([hidden]) .file-view-tabs')?.getBoundingClientRect();const row=document.querySelector('.workspace-pane.selected .workspace-tabbar').getBoundingClientRect();const tabs=document.querySelector('.workspace-pane.selected .workspace-tabs');return{head:head.bottom,bar:bar?.bottom,row:row.height,overflowing:tabs.scrollWidth>tabs.clientWidth};});
  report.notes.push(`panel head bottom ${edges.head}, file toolbar bottom ${edges.bar}, tab row ${edges.row}px, strip overflowing ${edges.overflowing}`);
  assert.ok(edges.bar!==undefined&&Math.abs(edges.head-edges.bar)<=0.5,`panel header and file toolbar rules must align: ${JSON.stringify(edges)}`);
  assert.ok(edges.row<=44,`tab row must keep its height: ${JSON.stringify(edges)}`);
  report.checks.push('side panel header rule aligns with the file toolbar rule; tab row height stays fixed');
- await until(()=>page.evaluate(()=>{const strip=document.querySelector('.wb-tabrow .workspace-tabs');const box=strip.getBoundingClientRect(),tab=strip.querySelector('.workspace-tab.active').getBoundingClientRect();return tab.left>=box.left-0.5&&tab.right<=box.right+0.5&&strip.classList.contains('fade-start');}),'active tab must stay fully visible after the strip narrows, with a fade on the hidden edge',3000);
+ await until(()=>page.evaluate(()=>{const strip=document.querySelector('.workspace-pane.selected .workspace-tabs');const box=strip.getBoundingClientRect(),tab=strip.querySelector('.workspace-tab.active').getBoundingClientRect();return tab.left>=box.left-0.5&&tab.right<=box.right+0.5&&(strip.scrollWidth<=strip.clientWidth+1||strip.classList.contains('fade-start')||strip.classList.contains('fade-end'));}),'active tab must stay fully visible after the strip narrows, with a fade on the hidden edge',3000);
  report.checks.push('active tab stays fully visible when the side panel narrows the tab strip; hidden overflow edges fade');
 
  // ---- Send to agent ----
@@ -303,12 +307,12 @@ try {
  const appEditor=page.locator('.pane-tab-surface:visible .tt-editor-shell .cm-content');
  await appEditor.click();await page.keyboard.press('Control+End');await page.keyboard.type('// unsaved QA edit');
  await until(async()=>(await rpc('draft.list',{projectId:added.id,worktreePath:session.worktreePath??added.path})).some(draft=>draft.path==='src/app.ts'),'the unsaved edit did not reach the draft store',15000);
- const beforeTabs=await page.locator('.wb-tabrow .workspace-tab').allTextContents();
+ const beforeTabs=await page.locator('.workspace-pane .workspace-tab').allTextContents();
  await page.reload();await page.waitForFunction(()=>!!window.threadterm);await page.locator('.app-shell').waitFor();
  await rpc('session.present',{sessionId:session.id,placement:'workspace',presentation:'focused',operationId:randomUUID()});
  await page.locator('.xterm').first().waitFor();
- await until(async()=>(await page.locator('.wb-tabrow .workspace-tab').allTextContents()).some(label=>label.includes('app.ts')),'the tab with unsaved edits must come back');
- const afterTabs=await page.locator('.wb-tabrow .workspace-tab').allTextContents();
+ await until(async()=>(await page.locator('.workspace-pane .workspace-tab').allTextContents()).some(label=>label.includes('app.ts')),'the tab with unsaved edits must come back');
+ const afterTabs=await page.locator('.workspace-pane .workspace-tab').allTextContents();
  report.notes.push(`tabs before reopen ${JSON.stringify(beforeTabs)}, after ${JSON.stringify(afterTabs)}`);
  assert.deepEqual(afterTabs.map(label=>label.trim()),['Workbench shell','app.ts'],'only the session and the file with unsaved edits reopen');
  assert.equal(await page.locator('.wb-sidebar').count(),0,'side panel stays closed on reopen');
@@ -318,7 +322,7 @@ try {
  await until(async()=>(await page.locator('.pane-tab-surface:visible .tt-editor-shell .cm-content').textContent()).includes('unsaved QA edit'),'the reopened tab must show the unsaved edit');
  await page.getByRole('button',{name:'Close tab src/app.ts',exact:true}).click();
  await page.getByRole('button',{name:'Discard changes',exact:true}).click();
- await until(async()=>(await page.locator('.wb-tabrow .workspace-tab').count())===1,'discarding the unsaved tab must leave just the session');
+ await until(async()=>(await page.locator('.workspace-pane .workspace-tab').count())===1,'discarding the unsaved tab must leave just the session');
  report.checks.push('Opening the session again shows just the session and the one file with unsaved edits; other tabs and the panel stay closed');
 
  // ---- Closing the only view in a pane closes the pane ----

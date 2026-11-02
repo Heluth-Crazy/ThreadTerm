@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { buildQaApp } from './lib/qa-app.mjs';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
 import { installVisualFixture } from './parity/fixture.mjs';
 
@@ -25,6 +27,7 @@ async function open(profile) {
 // This wraps the QA-only memory bridge: the renderer gets protocol-shaped
 // responses and every intercepted call is retained as test evidence.
 function extensions() {
+  window.threadterm.onPageContextMenu = () => () => {};
   const prior = window.threadterm.request.bind(window.threadterm);
   const calls = window.__parityFixture.calls;
   let workspaceRevision = 0, fileRevision = 0, draftRevision = 0;
@@ -84,14 +87,14 @@ async function openFileWorkspace(page) {
   await fileRows(page, /\.(?:tsx?|jsx?|json|rs|txt)$/i).first().click();
   await page.locator('.tt-editor-shell .cm-content:visible').waitFor();
 }
-async function workspaceAction(page,name){await page.getByRole('button',{name:/workspace actions|工作区操作/i}).click();await page.getByRole('button',{name}).click();await page.keyboard.press('Escape');}
+async function workspaceAction(page,name){await page.locator('.workspace-pane.selected').getByRole('button',{name:/workspace actions|工作区操作/i}).click();await page.getByRole('button',{name}).click();await page.keyboard.press('Escape');}
 async function openDiff(page){await sideView(page,/^(source control|源代码管理)$/i);await page.locator('.wb-changes .wb-change-open').first().click();await page.locator('.tt-diff-shell:visible').waitFor();}
 async function editCurrentFile(page, marker) {
   const editor = page.locator('.tt-editor-shell .cm-content:visible');
   await editor.click();
   await page.keyboard.press('Control+End');
   await page.keyboard.type(marker);
-  await page.locator('.file-workspace.embedded:visible .file-view-tabs button:not([disabled])').filter({hasText:/^(save file|保存文件)$/i}).waitFor();
+  await page.locator('.file-workspace.embedded:visible .file-workspace-bar').getByRole('button',{name:/^(save file|保存文件)$/i}).waitFor();
   assert.ok((await editor.innerText()).includes(marker.trim()), 'visible editor retains the unsaved marker');
 }
 async function dirtyExit(page, choice) {
@@ -114,8 +117,8 @@ async function runCase(name, page, url, action) {
 async function run() {
   await mkdir(out, { recursive: true });
   const scratch = await mkdtemp(join(tmpdir(), 'tt-ws-actions-'));
-  let referenceServer, productionServer, page;
-  const deadline = setTimeout(() => { report.errors.push('Hard 150s deadline exceeded'); void closeAll(); }, 150_000);
+  let referenceServer, productionServer, page, cleanupApp;
+  const deadline = setTimeout(() => { report.errors.push('Hard 240s deadline exceeded'); void closeAll(); }, 240_000);
   try {
     referenceServer = await startReadonlyReferenceServer(join(root, 'reference'));
     const reference = await open(join(scratch, 'reference'));
@@ -136,9 +139,12 @@ async function run() {
 
     const production = await open(join(scratch, 'production'));
     page = production.page;
+    page.on('pageerror',error=>{ report.errors.push(error.stack??String(error)); console.error(error); });
     await page.addInitScript(installVisualFixture, { seed, theme: 'light' });
     await page.addInitScript(extensions);
-    productionServer = await startReadonlyReferenceServer(join(root, 'desktop-dist/renderer'));
+    const built = await buildQaApp({ root, outDir: join(scratch, 'app') });
+    cleanupApp = built.cleanup;
+    productionServer = await startReadonlyReferenceServer(join(built.appDir, 'renderer'));
     const url = productionServer.origin + '/?theme=light';
 
     await runCase('workspace-split-save-and-exit', page, url, async () => {
@@ -193,8 +199,8 @@ async function run() {
       await page.keyboard.press('Control+z');
       assert.doesNotMatch(await current.innerText(), /QA-DIFF-UNDO/);
       await page.keyboard.type(' QA-DIFF-SAVE');
-      await page.getByRole('button', { name: /revert current line|还原当前行/i }).click();
-      await page.getByRole('button', { name: /revert current hunk|还原当前块/i }).click();
+      await workspaceAction(page,/revert current line|还原当前行/i);
+      await workspaceAction(page,/revert current hunk|还原当前块/i);
       await current.click();
       await page.keyboard.press('Control+End');
       await page.keyboard.type(' QA-DIFF-FINAL');
@@ -214,13 +220,15 @@ async function run() {
     await closeAll();
     await productionServer?.close().catch(() => {});
     await referenceServer?.close().catch(() => {});
+    await cleanupApp?.().catch(() => {});
     report.completedAt = new Date().toISOString();
     if(report.errors.length||report.checks.some(check=>check.passed===false))process.exitCode=1;
     await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ out, report }, null, 2));
   }
 }
-await run();
+const releaseLock = await acquireElectronQaLock({ directory: tmpdir() });
+try { await run(); } finally { await releaseLock(); }
 
 
 

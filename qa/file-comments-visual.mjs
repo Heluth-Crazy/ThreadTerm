@@ -104,8 +104,13 @@ const userMessages = async id => (await request('chat.read', { sessionId: id }))
 async function comment(host, text, body, { side, expectPlace } = {}) {
   const line = host.locator(side ? `.cm-merge-${side} .cm-line` : '.cm-line', { hasText: text }).first();
   await line.click();
-  const button = host.getByRole('button', { name: /^(Comment|评论)$/ }).first();
-  await until(async () => !(await button.isDisabled()), `Comment enabled for "${text}"`);
+  const fileWorkspace = await host.evaluate(node => node.classList.contains('file-workspace') || Boolean(node.querySelector('.file-workspace')));
+  const button = fileWorkspace ? host.locator('.file-selection-actions').getByRole('button', { name: /^(Comment|评论)$/ }).first() : host.getByRole('button', { name: /^(Comment|评论)$/ }).first();
+  if (fileWorkspace) {
+    await page.keyboard.press('Home');
+    await page.keyboard.down('Shift'); await page.keyboard.press('End'); await page.keyboard.up('Shift');
+    await button.waitFor();
+  } else await until(async () => !(await button.isDisabled()), `Comment enabled for "${text}"`);
   await button.click();
   const form = host.locator('.wb-review-comment-form');
   await form.waitFor();
@@ -211,7 +216,7 @@ try {
   await page.locator('.wb-tree-row[data-path="src"]').click().catch(() => {});
   await page.locator('.wb-tree-row[data-path="README.md"]').click();
   // Markdown opens as a preview (no text lines to comment on); its source view is a text view like any other.
-  await visible('.file-workspace').first().getByRole('button', { name: 'Source code', exact: true }).click();
+  await visible('.file-workspace').first().getByRole('button', { name: 'Source', exact: true }).click();
   await until(async () => /4 comments/.test(await strip().innerText()), 'the 4 comments show in another file of the folder after a reload');
   check('one list per folder: all 4 comments show in README.md (source view) after a window reload');
 

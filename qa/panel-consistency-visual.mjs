@@ -41,7 +41,7 @@ const request=(method,params={})=>page.evaluate(([method,params])=>window.thread
 async function until(probe,label,ms=30000){const end=Date.now()+ms;for(;;){if(await probe())return;if(Date.now()>end)throw Error(`Timed out: ${label}`);await sleep(100)}}
 function env(){
  const value=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe','threadterm_v3_plugin_dirs'].includes(key.toLowerCase())));
- Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_QA_BROWSER_URL:baseUrl});
+ Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_QA_PROVIDER_BIN:bin,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_QA_BROWSER_URL:baseUrl});
  assert.equal(Object.keys(value).filter(key=>key.toLowerCase()==='path').length,1);return value;
 }
 async function settings(language,theme){const snap=await request('runtime.snapshot');await request('settings.update',{patch:{language,theme,themeSelection:theme,notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:snap.settings.revision,operationId:randomUUID()});await page.waitForFunction(({language,theme})=>document.documentElement.lang===(language==='zh-CN'?'zh-CN':'en')&&document.documentElement.dataset.theme===theme,{language,theme})}
@@ -54,8 +54,8 @@ async function capture(name){
  await page.mouse.move(0,0);await settled();
  const definitions=[
   ['Workbench','docked','.wb-panel-head','strong'],['Session details','docked','.inspector > .ins-head','span'],
-  ['Pane tabs','pane','.workspace-pane > .workspace-tabbar.ws-strip','.workspace-tab.active .workspace-tab-label'],['File editor/preview','file','.tt-editor-tabs.file-view-tabs','.embedded-file-breadcrumb, .tt-editor-tab.active'],
-  ['File/diff/review toolbar','file','.file-bar:not(.wb-browser-toolbar)','.path, .embedded-file-breadcrumb'],['Browser toolbar','browser-toolbar','.wb-browser-toolbar',null],['Files & Git','docked','.wb-tools-head','strong'],
+  ['Pane tabs','pane','.workspace-pane > .workspace-tabbar.ws-strip','.workspace-tab.active .workspace-tab-label'],['File editor/preview','file','.tt-editor-tabs.file-view-tabs','.file-bar-breadcrumb, .embedded-file-breadcrumb, .tt-editor-tab.active'],
+  ['File/diff/review toolbar','file','.file-bar:not(.wb-browser-toolbar)','.file-bar-breadcrumb, .path, .embedded-file-breadcrumb'],['Browser toolbar','browser-toolbar','.wb-browser-toolbar',null],['Files & Git','docked','.wb-tools-head','strong'],
   ['Git history','docked','.wb-history-title','strong'],['Task map','toolbar','.task-map-toolbar','.task-map-title strong'],
   ['Task map details','docked','.task-graph-details > header','strong'],['Block inspector','floating','.block-inspector-heading','h2'],
   ['Worktree list','docked','.wtm-list > header','strong'],['Worktree details','docked','.wtm-detail > header','h3'],
@@ -91,7 +91,7 @@ async function capture(name){
   return rows;
  },definitions);
  for(const row of rows){
-  const controls=await checkControlConsistency(page,row.selector,{index:row.index,...(isPaneStrip(row)?{controlSelector:PANE_STRIP_CONTROL_SELECTOR}:{})});
+  const controls=await checkControlConsistency(page,row.selector,{index:row.index,...(isPaneStrip(row)?{controlSelector:PANE_STRIP_CONTROL_SELECTOR}:row.family==='file'?{controlSelector:'button:not(.file-reference-link):not(.file-bar-segments button), [role=button]:not(.file-bar-segments [role=button]), .chip'}:{})});
   row.controlConsistency=controls;
   // A selector the helper cannot resolve must fail loudly: a silent error would disable
   // the shared-control rule for every row of that surface.
@@ -108,6 +108,17 @@ async function capture(name){
   if(controls.violations?.length)errors.push(...controls.violations.map(v=>v.message??JSON.stringify(v)));
   if(verify&&row.family==='docked'&&Math.abs(row.rect.height-38)>.5)errors.push(`docked header height ${row.rect.height} != 38`);
   if(errors.length)report.violations.push({name,surface:row.surface,errors});
+ }
+ // The segmented mode switch is a nested control group; compare its siblings separately from bar actions.
+ const switches=page.locator('.file-bar-segments');
+ for(let index=0;index<await switches.count();index++){
+  if(!await switches.nth(index).isVisible())continue;
+  const result=await checkControlConsistency(page,'.file-bar-segments',{index});
+  if(result.error)throw Error(`File view switch: ${result.error}`);
+  const state=await switches.nth(index).evaluate(node=>({buttons:node.querySelectorAll('button').length,pressed:node.querySelectorAll('button[aria-pressed=true]').length}));
+  assert.equal(state.buttons,2,'Source/Preview switch retains both segments');assert.equal(state.pressed,1,'Source/Preview has exactly one pressed segment');
+  if(result.violations?.length)report.violations.push({name,surface:'File view switch',errors:result.violations.map(v=>v.message??JSON.stringify(v))});
+  (report.segmentChecks??=[]).push({name,index,state,consistency:result});
  }
  const peers=rows.filter(row=>['Workbench','Session details','Worktree list','Worktree details'].includes(row.surface));
  const adjacent=peers.filter(row=>Math.abs(row.rect.y-peers[0].rect.y)<=1);
