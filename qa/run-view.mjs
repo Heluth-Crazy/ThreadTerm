@@ -125,14 +125,14 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   await page.evaluate(([projectId,sessionId])=>{window.__projectId=projectId;window.__runViewSession=sessionId;},[project.id,seed.id]);
   await page.locator('[data-testid="quick-launch-split"]').waitFor();
 
-  // Open the actual sidebar Run tab; production F5/palette routing below is exercised through SessionWorkspace.
-  await page.locator('.wb-switch-btn[data-view="run"]').click();
+  // Open Run through the header split button; production F5/palette routing below is exercised through SessionWorkspace.
+  await page.getByTestId('quick-launch-dropdown').click(); await page.getByTestId('open-run-view').click();
   const view = page.getByTestId('run-view');
   await view.waitFor();
   await view.getByTestId('quick-launch-detected-entry-node:package.json:dev').waitFor();
   assert.match(await view.getByTestId('run-entries').innerText(), /Node/i);
   // The view has no shortcut of its own: Ctrl+Shift+R is Electron's Force Reload.
-  const runTitle = await page.locator('.wb-switch-btn[data-view="run"]').getAttribute('title');
+  const runTitle = await page.getByTestId('quick-launch-main').getAttribute('aria-label');
   assert.match(runTitle, /^Run/);
   assert.doesNotMatch(runTitle, /Ctrl\+Shift\+R/);
   check('The Run view lists detected entries through the real SessionWorkspace sidebar');
@@ -278,7 +278,7 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   const tree = await request('worktree.create', {projectId: await page.evaluate(() => window.__projectId), path: second, branch: 'qa-run-view', createBranch: true, operationId: randomUUID()});
   assert.ok(samePath(tree.path, second));
   const other = await request('quickLaunch.run', {detectedKey: 'node:package.json:dev', projectId: await page.evaluate(() => window.__projectId), cwd: second, operationId: randomUUID()});
-  await page.locator('.wb-switch-btn[data-view="run"]').click();
+  await page.getByTestId('quick-launch-dropdown').click(); await page.getByTestId('open-run-view').click();
   const foreign = await until(async () => {
     const row = page.locator(`[data-testid="run-running-row"][data-session-id="${other.session.id}"]`);
     return await row.count() ? row : undefined;

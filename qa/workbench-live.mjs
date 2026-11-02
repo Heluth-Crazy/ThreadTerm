@@ -67,7 +67,7 @@ try {
  await page.reload();await page.waitForFunction(()=>!!window.threadterm);await page.locator('.app-shell').waitFor();
  await rpc('session.present',{sessionId:session.id,placement:'workspace',presentation:'focused',operationId:randomUUID()});
  await page.locator('.xterm').first().waitFor();
- await page.locator('.wb-tabrow .wb-switcher').waitFor();
+ await page.locator('.ws-top .wb-switcher').waitFor();
  // Terminal fit: the host is content-box and the rendered xterm screen fits inside its content box
  // (a border-box host let FitAddon count the padding and clipped the last column/row).
  await page.waitForFunction(()=>document.querySelector('.terminal-host .xterm-screen')?.getBoundingClientRect().width>0);
@@ -78,14 +78,14 @@ try {
  const viewportBg=await page.evaluate(()=>getComputedStyle(document.querySelector('.terminal-host .xterm-viewport')).backgroundColor);
  assert.equal(viewportBg,'rgba(0, 0, 0, 0)','xterm viewport must be transparent (its #000 showed as a strip below the last row)');
  report.checks.push('terminal host is content-box, the fitted xterm screen fits inside it and the viewport paints no black strip');
- report.checks.push('session workspace shows the workbench view switcher in the tab bar row beside a live shell terminal');
+ report.checks.push('session workspace shows the workbench view group at the session-header right beside a live shell terminal');
 
- // A session opens as just a session: no side panel until a view is chosen; the panel has a close button.
+ // A session opens as just a session: the header group remains present but no right panel until a view is chosen.
  assert.equal(await page.locator('.wb-sidebar').count(),0,'side panel must start closed when a session opens');
  await openView('Files');await page.locator('.wb-sidebar').waitFor();
  await page.locator('.wb-panel-close').click();await page.locator('.wb-sidebar').waitFor({state:'detached'});
  assert.equal(await rail('Files').getAttribute('aria-pressed'),'false');
- report.checks.push('side panel starts closed on session open and closes with its close button');
+ report.checks.push('right panel starts closed on session open and closes with its close button while the header group remains available');
 
  // ---- Files ----
  await openView('Files');
@@ -159,7 +159,7 @@ try {
  await appRow.click();
  await page.locator('.tt-diff-shell:visible .wb-hunk-nav').waitFor();
  await page.locator('[role=tab]',{hasText:'app.ts · changes'}).waitFor();
- await until(async()=>(await page.locator('.tt-diff-shell:visible .wb-hunk-count').textContent())==='1/2','expected two hunks');
+ await until(async()=>(await page.locator('.tt-diff-shell:visible .wb-hunk-count:not([aria-label])').textContent())==='1/2','expected two hunks');
  await shot('light-1280-scm-diff.png');
  await page.locator('.tt-diff-shell:visible').getByRole('button',{name:'Stage hunk',exact:true}).click();
  await until(async()=>(await git(['diff','--cached'])).includes('line3 = 300'),'first hunk was not staged');
@@ -221,15 +221,15 @@ try {
  await page.locator('.pane-tab-surface:visible .cm-git-gutter .cm-git-marker').first().waitFor();
  await shot('light-1280-blame.png');
  report.checks.push('Editor shows blame and index change markers for the open file');
- // Sizing: the side panel header rule lines up with the file toolbar rule in the neighbouring card,
- // and the tab row keeps its height although the strip overflows (no scrollbar row).
+ // Sizing: the shared right panel aligns to neighbouring pane cards, and the tab row
+ // contains tabs only while retaining its height under overflow (no scrollbar row).
  await openView('Files');
- const edges=await page.evaluate(()=>{const head=document.querySelector('.wb-panel-head').getBoundingClientRect();const bar=document.querySelector('.pane-tab-surface:not([hidden]) .file-view-tabs')?.getBoundingClientRect();const row=document.querySelector('.wb-tabrow').getBoundingClientRect();const tabs=document.querySelector('.wb-tabrow .workspace-tabs');return{head:head.bottom,bar:bar?.bottom,row:row.height,overflowing:tabs.scrollWidth>tabs.clientWidth};});
- report.notes.push(`panel head bottom ${edges.head}, file toolbar bottom ${edges.bar}, tab row ${edges.row}px, strip overflowing ${edges.overflowing}`);
- assert.ok(edges.bar!==undefined&&Math.abs(edges.head-edges.bar)<=0.5,`panel header and file toolbar rules must align: ${JSON.stringify(edges)}`);
- assert.ok(edges.row<=44,`tab row must keep its height: ${JSON.stringify(edges)}`);
- report.checks.push('side panel header rule aligns with the file toolbar rule; tab row height stays fixed');
- await until(()=>page.evaluate(()=>{const strip=document.querySelector('.wb-tabrow .workspace-tabs');const box=strip.getBoundingClientRect(),tab=strip.querySelector('.workspace-tab.active').getBoundingClientRect();return tab.left>=box.left-0.5&&tab.right<=box.right+0.5&&strip.classList.contains('fade-start');}),'active tab must stay fully visible after the strip narrows, with a fade on the hidden edge',3000);
+ const edges=await page.evaluate(()=>{const pane=document.querySelector('.workspace-pane.selected'),panel=document.querySelector('.wb-sidebar .wb-panel').getBoundingClientRect(),card=pane?.querySelector('.pane-card')?.getBoundingClientRect(),strip=pane?.querySelector('.workspace-tabbar.ws-strip'),tabs=strip?.querySelector('.workspace-tabs');return{panel,card,strip:strip?.getBoundingClientRect().height,overflowing:Boolean(tabs&&tabs.scrollWidth>tabs.clientWidth),switcherInHeader:!!document.querySelector('.ws-top .wb-switcher')};});
+ report.notes.push(`right panel ${JSON.stringify(edges.panel)}, pane card ${JSON.stringify(edges.card)}, pane strip ${edges.strip}px, strip overflowing ${edges.overflowing}`);
+ assert.ok(edges.card!==undefined&&Math.abs(edges.panel.top-edges.card.top)<=0.5&&Math.abs(edges.panel.bottom-edges.card.bottom)<=0.5&&edges.switcherInHeader,`right panel aligns with the pane-card top/bottom and the view group remains in the header: ${JSON.stringify(edges)}`);
+ assert.ok(edges.strip!==undefined&&edges.strip<=44,`per-pane tab strip must keep its height: ${JSON.stringify(edges)}`);
+ report.checks.push('right panel aligns with pane-card edges; tab row holds only tabs and stays fixed');
+ await until(()=>page.evaluate(()=>{const strip=document.querySelector('.workspace-pane.selected .workspace-tabs'),box=strip.getBoundingClientRect(),tab=strip.querySelector('.workspace-tab.active').getBoundingClientRect();return tab.left>=box.left-0.5&&tab.right<=box.right+0.5&&strip.classList.contains('fade-start');}),'active tab must stay fully visible after the strip narrows, with a fade on the hidden edge',3000);
  report.checks.push('active tab stays fully visible when the side panel narrows the tab strip; hidden overflow edges fade');
 
  // ---- Send to agent ----
@@ -279,7 +279,7 @@ try {
  report.checks.push('light/dark captures at 1280 and 1920');
  // Narrowest and widest panel, then Chinese labels (longer/denser) at 1280.
  const separator=page.getByRole('separator',{name:'Resize side bar'});
- await separator.focus();for(let i=0;i<24;i++)await page.keyboard.press('ArrowLeft');
+ await separator.focus();for(let i=0;i<24;i++)await page.keyboard.press('ArrowRight');
  await size(1280);
  for(const view of ['Files','Search','Source Control','Agent changes']){
   await openView(view);
@@ -287,14 +287,14 @@ try {
   assert.deepEqual(overflow.bad,[],`${view} must not overflow the ${overflow.width}px panel`);
   await shot(`light-1280-min-${view.toLowerCase().replace(/ /g,'-')}.png`);
  }
- report.checks.push('every side bar view fits the minimum panel width without horizontal overflow');
- await separator.focus();for(let i=0;i<30;i++)await page.keyboard.press('ArrowRight');
+ report.checks.push('every right-panel view fits the minimum panel width without horizontal overflow');
+ await separator.focus();for(let i=0;i<30;i++)await page.keyboard.press('ArrowLeft');
  await openView('Source Control');await shot('light-1280-max-scm.png');
  await setSettings({language:'zh-CN'});
  await page.locator('.wb-panel-head strong',{hasText:'源代码管理'}).waitFor();
  await shot('zh-1280-scm.png');
- await page.locator('.wb-switcher button').nth(3).click();await page.locator('.wb-panel-head strong',{hasText:'Agent 改动'}).waitFor();await shot('zh-1280-changes.png');
- await page.locator('.wb-switcher button').nth(0).click();await shot('zh-1280-files.png');
+ await page.locator('.ws-top .wb-switcher button[data-view="changes"]').click();await page.locator('.wb-panel-head strong',{hasText:'Agent 改动'}).waitFor();await shot('zh-1280-changes.png');
+ await page.locator('.ws-top .wb-switcher button[data-view="files"]').click();await shot('zh-1280-files.png');
  await setSettings({language:'en'});
  report.checks.push('Chinese captures of Files, Source Control and Agent changes');
 
@@ -303,12 +303,12 @@ try {
  const appEditor=page.locator('.pane-tab-surface:visible .tt-editor-shell .cm-content');
  await appEditor.click();await page.keyboard.press('Control+End');await page.keyboard.type('// unsaved QA edit');
  await until(async()=>(await rpc('draft.list',{projectId:added.id,worktreePath:session.worktreePath??added.path})).some(draft=>draft.path==='src/app.ts'),'the unsaved edit did not reach the draft store',15000);
- const beforeTabs=await page.locator('.wb-tabrow .workspace-tab').allTextContents();
+ const beforeTabs=await page.locator('.workspace-pane .workspace-tab').allTextContents();
  await page.reload();await page.waitForFunction(()=>!!window.threadterm);await page.locator('.app-shell').waitFor();
  await rpc('session.present',{sessionId:session.id,placement:'workspace',presentation:'focused',operationId:randomUUID()});
  await page.locator('.xterm').first().waitFor();
- await until(async()=>(await page.locator('.wb-tabrow .workspace-tab').allTextContents()).some(label=>label.includes('app.ts')),'the tab with unsaved edits must come back');
- const afterTabs=await page.locator('.wb-tabrow .workspace-tab').allTextContents();
+ await until(async()=>(await page.locator('.workspace-pane .workspace-tab').allTextContents()).some(label=>label.includes('app.ts')),'the tab with unsaved edits must come back');
+ const afterTabs=await page.locator('.workspace-pane .workspace-tab').allTextContents();
  report.notes.push(`tabs before reopen ${JSON.stringify(beforeTabs)}, after ${JSON.stringify(afterTabs)}`);
  assert.deepEqual(afterTabs.map(label=>label.trim()),['Workbench shell','app.ts'],'only the session and the file with unsaved edits reopen');
  assert.equal(await page.locator('.wb-sidebar').count(),0,'side panel stays closed on reopen');
@@ -318,7 +318,7 @@ try {
  await until(async()=>(await page.locator('.pane-tab-surface:visible .tt-editor-shell .cm-content').textContent()).includes('unsaved QA edit'),'the reopened tab must show the unsaved edit');
  await page.getByRole('button',{name:'Close tab src/app.ts',exact:true}).click();
  await page.getByRole('button',{name:'Discard changes',exact:true}).click();
- await until(async()=>(await page.locator('.wb-tabrow .workspace-tab').count())===1,'discarding the unsaved tab must leave just the session');
+ await until(async()=>(await page.locator('.workspace-pane .workspace-tab').count())===1,'discarding the unsaved tab must leave just the session');
  report.checks.push('Opening the session again shows just the session and the one file with unsaved edits; other tabs and the panel stay closed');
 
  // ---- Closing the only view in a pane closes the pane ----

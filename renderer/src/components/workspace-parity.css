@@ -79,17 +79,6 @@
 .workspace-tab-select:focus-visible,.workspace-tab-close:focus-visible { outline:none; }
 .workspace-tab-close:focus-visible { background:var(--border); }
 .workspace-tab-prefix,.workspace-tab-add-slot,.workspace-tab-actions,.workspace-primary-actions { display:flex; align-items:center; flex:none; gap:5px; height:32px; margin-bottom:1px; }
-.pane-switcher-host .wb-switcher { height:32px; padding:0; gap:0; }
-.pane-switcher-host .wb-switcher::after { margin-left:4px; }
-.workspace-tab-prefix:has(.wb-switcher) + .workspace-tabs { padding-left:4px; }
-/* In a narrow pane the side-bar switcher gives way before the selected tab: the tabs keep room for one readable tab
-   (the tabs take the shrink first), and switcher icons that no longer fit wrap onto a clipped second line. */
-.workspace-tab-prefix:has(> .pane-switcher-host .wb-switcher) { flex:0 1 auto; min-width:0; overflow:clip; overflow-clip-margin:4px; }
-.workspace-tab-prefix:has(> .pane-switcher-host .wb-switcher) + .workspace-tabs { flex-shrink:100; min-width:min(136px,100%); }
-.pane-switcher-host { min-width:0; height:32px; overflow:clip; overflow-clip-margin:4px; }
-.pane-switcher-host .wb-switcher { flex-wrap:wrap; align-content:flex-start; row-gap:8px; box-sizing:border-box; padding:2px 0; overflow:clip; overflow-clip-margin:4px; }
-/* Zero-width first item: when not even one icon fits, every icon wraps (none is shown cut in half). */
-.pane-switcher-host .wb-switcher::before { content:""; flex:none; width:0; height:28px; }
 .workspace-tab-actions { margin-left:auto; }
 .workspace-tab-add-slot { position:sticky; right:0; z-index:2; padding:0 2px; background:var(--workspace-bg,transparent); }
 .workspace-tab-add { width:28px; height:28px; }

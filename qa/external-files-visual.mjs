@@ -89,7 +89,7 @@ function environment(pickerPaths) {
     TEMP: scratchBase, TMP: scratchBase, HOME: join(scratch, 'home'), USERPROFILE: join(scratch, 'home'),
     APPDATA: join(scratch, 'appdata'), LOCALAPPDATA: join(scratch, 'localappdata'), CODEX_HOME: join(scratch, 'home', '.codex'),
     THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
-    THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-x1c-external-files-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime, THREADTERM_V3_RUNTIME_BIN: runtime,
+    THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-x1c-external-files-${randomUUID()}`, THREADTERM_V3_RUNTIME: runtime, THREADTERM_QA_PROVIDER_BIN: bin, THREADTERM_V3_RUNTIME_BIN: runtime,
     TT_QA_NODE: process.execPath, TT_QA_SCRIPT: join(bin, 'fake-grok.mjs'),
     TT_QA_OUTSIDE_PATH: join(outside, 'outside.ts'), TT_QA_MISSING_PATH: join(outside, 'missing.ts'),
     THREADTERM_V3_OPEN_EXTERNAL_QA: JSON.stringify(pickerPaths),

@@ -73,7 +73,7 @@ async function showRun(rootPath=work) {
  if(!host){host=await request('session.create',{projectId:project.id,cwd:rootPath,title:'Setup QA host',provider:'custom',mode:'terminal',executable:process.execPath,args:['-e','setTimeout(()=>{},300000)'],operationId:randomUUID()});hosts.set(rootPath,host);}
  await request('session.present',{sessionId:host.id,placement:'workspace',presentation:'focused',operationId:randomUUID()});
  await page.locator('.session-screen').waitFor();
- if(!await page.getByTestId('run-view').isVisible())await page.locator('.wb-switch-btn[data-view="run"]').click();
+ if(!await page.getByTestId('run-view').isVisible()){await page.getByTestId('quick-launch-dropdown').click();await page.getByTestId('open-run-view').click();}
  await page.getByTestId('run-view').waitFor();
 }
 async function saveSetupInDialog(commands) {

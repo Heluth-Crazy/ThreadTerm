@@ -227,7 +227,7 @@ try {
   const savedRun = await until(async () => { const run = await runById(started.runId); return run && active(run) && run.run?.readiness === 'ready' ? run : undefined; }, 'the saved entry runs');
   assert.equal(savedRun.run.commandId, saved.id);
   assert.equal(savedRun.run.startedBy, chat.session.id, 'the run records the chat that started it');
-  await page.locator('.wb-switch-btn[data-view="run"]').click();
+  await page.getByTestId('quick-launch-dropdown').click(); await page.getByTestId('open-run-view').click();
   const view = page.getByTestId('run-view');
   await view.waitFor();
   const savedRow = view.locator(`[data-testid="run-running-row"][data-run-entry="${saved.id}"]`);

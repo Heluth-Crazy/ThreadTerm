@@ -16,7 +16,7 @@ import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const runtime = process.env.THREADTERM_V3_RUNTIME_BIN || join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-assert.ok(!/\/runtime\/target\/(debug|release)\/threadterm-v3-runtime\.exe$/i.test(runtime.replaceAll('\\', '/')), 'never launch the user runtime build');
+assert.ok(Boolean(process.env.THREADTERM_V3_RUNTIME_BIN) || !/\/runtime\/target\/(debug|release)\/threadterm-v3-runtime\.exe$/i.test(runtime.replaceAll('\\', '/')), 'never launch the user runtime build unless THREADTERM_V3_RUNTIME_BIN explicitly authorizes it');
 const out = process.env.THREADTERM_QA_OUTPUT_DIR || join(root, 'qa/results/idle-workbench-ac2');
 const scratchBase = resolve(process.env.TEMP ?? (() => { throw Error('TEMP must point to tt-qa-temp'); })());
 assert.match(scratchBase.replaceAll('\\', '/').toLowerCase(), /\/tt-qa-temp$/, 'TEMP must be tt-qa-temp');
@@ -97,7 +97,7 @@ async function shot(name) {
   await writeFile(join(out, name), Buffer.from(png, 'base64'));
   report.screenshots.push(name);
 }
-const rail = name => page.locator('.wb-switcher').getByRole('button', { name, exact: true });
+const rail = name => page.locator('.ws-top .wb-switcher').getByRole('button', { name, exact: true });
 async function openView(name) {
   if (await rail(name).getAttribute('aria-pressed') !== 'true') await rail(name).click();
   await page.locator('.wb-sidebar').waitFor();
@@ -119,7 +119,7 @@ async function assertAgentChangesHeader() {
     const title = document.querySelector('.wb-panel-head strong');
     return { panelWidth: panel?.width, title: title?.textContent, titleFits: title ? title.scrollWidth <= title.clientWidth : false };
   });
-  assert.ok(layout.panelWidth && Math.abs(layout.panelWidth - 280) <= 1, `the default side bar must be 280px: ${JSON.stringify(layout)}`);
+  assert.ok(layout.panelWidth && Math.abs(layout.panelWidth - 300) <= 1, `the default right panel must be 300px: ${JSON.stringify(layout)}`);
   assert.equal(layout.title, 'Agent changes', `the Agent changes title must remain readable: ${JSON.stringify(layout)}`);
   assert.equal(layout.titleFits, true, `the Agent changes title must not be truncated: ${JSON.stringify(layout)}`);
 }
@@ -181,7 +181,7 @@ try {
   const scope = { projectId: project.id, ...(worktree ? { worktreePath: worktree } : {}) };
   report.notes.push(`session worktree ${JSON.stringify(worktree)}`);
   await page.locator('.xterm').first().waitFor();
-  await page.locator('.wb-switcher').waitFor();
+  await page.locator('.ws-top .wb-switcher').waitFor();
   assert.equal(await page.locator('.wb-sidebar').count(), 0, 'the side bar starts closed');
 
   // Source Control: the panel is visible with a real change present, and opening it reads the status once.
@@ -207,7 +207,7 @@ try {
   assert.deepEqual(changes, {}, `an open Agent changes panel must not poll: ${JSON.stringify(changes)}`);
   check(`Agent changes makes zero git.*/review.* requests in ${IDLE_MS} ms while idle`);
   await assertAgentChangesHeader();
-  check('the default 280px Workbench header keeps Agent changes readable and aligns CHANGES select-all with file rows');
+  check('the default 300px right-panel header keeps Agent changes readable and aligns CHANGES select-all with file rows');
   await shot('en-light-agent-changes.png');
 
   // A commit through the Source Control UI costs exactly one status refresh, and none of it repeated.

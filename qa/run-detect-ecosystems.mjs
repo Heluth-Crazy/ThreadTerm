@@ -98,7 +98,7 @@ import './renderer/src/styles.css';
 import './renderer/src/workbench/workbench.css';
 const work=${JSON.stringify(work)};
 function Probe(){
- const [snapshot,setSnapshot]=useState(),[project,setProject]=useState(),[command,setCommand]=useState({view:'run',key:'initial'}),[switcherHost,setSwitcherHost]=useState(),[opened,setOpened]=useState(),[error,setError]=useState();
+ const [snapshot,setSnapshot]=useState(),[project,setProject]=useState(),[command,setCommand]=useState({view:'run',key:'initial'}),[headerHost,setHeaderHost]=useState(),[opened,setOpened]=useState(),[error,setError]=useState();
  useEffect(()=>{(async()=>{const first=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{language:'en',notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:first.settings.revision,operationId:crypto.randomUUID()});const added=await window.threadterm.request('project.add',{path:work,name:'Run ecosystems QA',operationId:crypto.randomUUID()});window.__projectId=added.id;setProject(added.id);setSnapshot(await window.threadterm.request('runtime.snapshot',{}));})().catch(value=>setError(String(value)));},[]);
  useEffect(()=>{if(!project)return;let live=true;const poll=async()=>{for(;live;){try{setSnapshot(await window.threadterm.request('runtime.snapshot',{}));}catch{}await new Promise(done=>setTimeout(done,300));}};void poll();return()=>{live=false;};},[project]);
  if(error)return <p role='alert'>{error}</p>;
@@ -106,9 +106,9 @@ function Probe(){
  const actions={openFile:()=>{},openDiff:()=>{},dirtyPaths:()=>[],renamed:()=>{},deleted:()=>{},openSession:id=>setOpened(id),openPreview:()=>{}};
  return <I18nProvider locale='en'><section className='runtime-workspace' data-run-workbench data-run-workbench-host='run-ecosystems-qa' data-run-project-id={project} data-run-worktree-path={work} style={{width:1100}}>
   <QuickLaunchMenu projectId={project} root={work} data={snapshot} onOpenSession={id=>setOpened(id)} onOpenRunView={()=>setCommand({view:'run',key:crypto.randomUUID()})}/>
-  <div ref={setSwitcherHost}/>
+  <div ref={setHeaderHost}/>
   <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-   <WorkbenchSideBar scope={{projectId:project,worktreePath:work,rootPath:work}} actions={actions} sessions={[]} allSessions={snapshot.sessions} command={command} switcherHost={switcherHost} zh={false}/>
+   <WorkbenchSideBar scope={{projectId:project,worktreePath:work,rootPath:work}} actions={actions} sessions={[]} allSessions={snapshot.sessions} command={command} headerHost={headerHost} zh={false}/>
    <p data-testid='opened-session' style={{fontSize:11}}>{opened}</p>
   </div>
  </section></I18nProvider>;

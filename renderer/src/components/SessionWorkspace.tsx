@@ -115,8 +115,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const previewCancelled=useRef(new Set<string>());
  const [previewAttachEpoch,setPreviewAttachEpoch]=useState(0);
  const [,setPreviewAssociationRevision]=useState(0);
- const [switcherHost,setSwitcherHost]=useState<HTMLDivElement|null>(null);
- // Split decisions use the space the panes actually get (the side bar and inspector take their own share).
+ const [headerTools,setHeaderTools]=useState<HTMLDivElement|null>(null);
+ // Split decisions use the space the panes actually get after the workspace panel takes its share.
  const paneArea=useRef<HTMLDivElement>(null),wideForSplit=()=>Boolean(paneArea.current&&canSplitPaneArea(paneArea.current.clientWidth));
  const [focusTarget,setFocusTarget]=useState<{paneId:string;tabId:string;key:string}|undefined>(()=>{const target=workspaceTabs(layout).find(item=>item.tab.kind==='session'&&item.tab.sessionId===session.id);return target?{paneId:target.paneId,tabId:target.tab.id,key:'initial'}:undefined;});
  const [fileReveal,setFileReveal]=useState<{tabId:string;line:number;column?:number;key:string}>();
@@ -127,7 +127,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const gitWorkbenchHost=useRef(crypto.randomUUID());
  // The Run palette entries are addressed to this workspace's worktree, never to a background one.
  const runWorkbenchHost=useRef(crypto.randomUUID());
- const [inspector,setInspector]=useState(false);
  const [pinPicker,setPinPicker]=useState(false);
  const [picker,setPicker]=useState<{mode:'switch'|'add'|'fill';paneId?:string}>(),[query,setQuery]=useState(''),[allProjects,setAllProjects]=useState(false);
  const [configOpen,setConfigOpen]=useState(false);
@@ -602,13 +601,13 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    {project&&path&&<QuickLaunchMenu key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb} onOpenRunView={()=>setWorkbenchCommand({view:'run',key:crypto.randomUUID()})} openSignal={quickPickSignal}/>}
    {session.run&&<QuickLaunchRunChip session={session} onOpenPreview={paneWorkbench.openWeb}/>}
    <div className="top-spacer"/>
-   <button className="icon-btn" onClick={()=>setInspector(value=>!value)} aria-pressed={inspector} aria-label={zh?'会话详情面板':'Session details'}><Icon name="panel"/></button>
+   <div className="ws-tools-host" ref={setHeaderTools}/>
   </header>
   <div className="ws-body"><div className="ws-center">
    {issue&&<p className="surface-error" role="alert">{issue}</p>}
    {commentNotice&&<div className="ws-notice-anchor"><p role="status">{commentNotice}</p></div>}
    {fileIssue&&<div className="workspace-file-error" role="alert"><span>{fileIssue.message} <code title={displayPath(fileIssue.path)}>{displayPath(fileIssue.path)}</code></span><button type="button" className="btn" onClick={()=>void navigator.clipboard.writeText(fileIssue.path).catch(fail)}>{zh?'复制路径':'Copy path'}</button><button type="button" className="icon-btn" aria-label={zh?'关闭提示':'Dismiss notice'} onClick={()=>setFileIssue(undefined)}><Icon name="close"/></button></div>}
-   <div className={`ws-content${inspector?' with-drawer':''}`}>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} switcherHost={switcherHost} zh={zh}/>}<div className="ws-pane" ref={paneArea}>
+   <div className="ws-content"><div className="ws-pane" ref={paneArea}>
     <div className="workspace-content-host">
      <ContextHost.Provider value={commentsHost}><PaneWorkspace
       layout={layout} sessions={data.sessions} data={data} theme={theme}
@@ -617,7 +616,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
       onChange={save} onSessionChanged={onChanged} onOpenSession={onSelect} ownerSessionId={previewSessionId}
       prepareBrowserShare={prepareBrowserShare}
       onPickSession={(paneId)=>{setPicker({mode:'fill',paneId});setQuery('');}}
-      onSwitcherHost={setSwitcherHost}
       onEmpty={()=>{void saving.current.then(()=>{if(live.current&&persistedLayout.current===latestLayout.current&&!workspaceTabs(visibleSessionLayout(latestLayout.current,previewSessionId)).length)onBack();});}}
       onActiveSession={id=>{setPreviewSessionId(id);onActiveSession?.(id);}}
       onInteraction={()=>{fileOpenGeneration.current++;}}
@@ -625,12 +623,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
       focusTarget={focusTarget} fileReveal={fileReveal} onOpenPath={openPaneFile} projectPath={project?.path} onWebClosed={closeRuntimePreview} onWebNavigation={observeRuntimePreview} previewProvenance={pageCommentProvenance} previewLabels={previewLabels}
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
-   </div>{inspector&&<div className="inspector-slot"><aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head"><span>{zh?'会话详情':'Session details'}</span><button type="button" className="icon-btn icon-btn-sm" aria-label={zh?'关闭会话详情':'Close session details'} onClick={()=>setInspector(false)}><Icon name="close"/></button></div><div className="ins-scroll">
+   </div>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} headerHost={headerTools} zh={zh} details={<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-scroll">
     <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path??'')}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
     {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}
     <div className="ins-block"><h3>{zh?'重点关注':'Following'}</h3><button className="btn" onClick={follow} aria-pressed={session.followed}><Icon name="star"/>{zh?(session.followed?'已关注 · 点击取消':'关注此会话'):(session.followed?'Following · Unfollow':'Follow session')}</button></div>
     <div className="ins-block runtime-session-actions"><SessionActions session={session}/></div><div className="ins-block session-fullscreen-row"><button className="btn" title={zh?'隐藏工作区界面，按 Esc 退出':'Hide workspace chrome; press Esc to leave'} onClick={()=>setFullscreen(value=>!value)}>{session.mode==='chat'?(zh?'全屏':'Fullscreen'):(zh?'全屏终端':'Fullscreen terminal')}</button></div>
-   </div></aside></div>}</div>
+   </div></aside>}/>}</div>
   </div></div>
   {picker&&<SurfaceDialog title={zh?(picker.mode==='switch'?'切换会话':picker.mode==='add'?'选择并排会话':'选择会话'):(picker.mode==='switch'?'Switch session':picker.mode==='add'?'Choose session for split':'Choose session')} onClose={cancelPicker} size="sm"><div className="switcher"><div className="tools"><div className="input-wrap"><Icon name="search"/><input type="search" autoFocus value={query} onChange={event=>setQuery(event.target.value)} placeholder={zh?'搜索会话':'Search sessions'}/></div>{picker.mode==='switch'&&<Select value={allProjects?'all':'tree'} onChange={event=>setAllProjects(event.target.value==='all')}><option value="tree">{zh?'当前工作树':'Current worktree'}</option><option value="all">{zh?'全部项目':'All projects'}</option></Select>}</div><div className="switcher-list">{available.filter(s=>`${s.title} ${s.provider}`.toLowerCase().includes(query.toLowerCase())).map(s=><button className="switcher-row" key={s.id} onClick={()=>{if(picker.mode==='switch'){setPicker(undefined);onSelect(s.id);}else if(picker.mode==='add')addSessionPane(s);else fillPane(s);}}><SessionIcon session={s}/>{s.title}<small>{providerName(s.provider)}</small></button>)}</div>{!available.length&&<p className="note">{zh?'没有其他可选会话。':'No other sessions are available.'}</p>}</div></SurfaceDialog>}
   {configOpen&&<SessionConfigDialog session={session} data={data} onClose={()=>setConfigOpen(false)} onRerun={onSelect}/>}

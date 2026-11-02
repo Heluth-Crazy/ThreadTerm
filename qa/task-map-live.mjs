@@ -681,8 +681,10 @@ try {
   assert.equal(process.platform, 'win32', 'this harness requires Windows and Desktop 1');
   process.env.TEMP = qaTemp; process.env.TMP = qaTemp;
   process.env.TT_QA_DESKTOP = '1';
-  assert.equal(runtime.toLowerCase(), resolve(expectedRuntime).toLowerCase(), `Refusing non-QA runtime: ${runtime}`);
-  assert.match(runtime, /runtime[\\/]target-qa[\\/]debug[\\/]threadterm-v3-runtime\.exe$/i, 'QA debug runtime only');
+  if (!process.env.THREADTERM_V3_RUNTIME_BIN) {
+    assert.equal(runtime.toLowerCase(), resolve(expectedRuntime).toLowerCase(), `Refusing non-QA runtime: ${runtime}`);
+    assert.match(runtime, /runtime[\\/]target-qa[\\/]debug[\\/]threadterm-v3-runtime\.exe$/i, 'QA debug runtime only unless THREADTERM_V3_RUNTIME_BIN explicitly authorizes another binary');
+  }
   assert.ok(existsSync(runtime), `build the QA runtime first: ${runtime}`);
   assert.ok(existsSync(join(dirname(runtime), 'threadterm-v3-mcp.exe')), 'build the QA MCP beside the QA runtime');
   await mkdir(out, { recursive: true }); await mkdir(qaTemp, { recursive: true });

@@ -41,7 +41,7 @@ const request=(method,params={})=>page.evaluate(([method,params])=>window.thread
 async function until(probe,label,ms=30000){const end=Date.now()+ms;for(;;){if(await probe())return;if(Date.now()>end)throw Error(`Timed out: ${label}`);await sleep(100)}}
 function env(){
  const value=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe','threadterm_v3_plugin_dirs'].includes(key.toLowerCase())));
- Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_QA_BROWSER_URL:baseUrl});
+ Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_QA_PROVIDER_BIN:bin,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_QA_BROWSER_URL:baseUrl});
  assert.equal(Object.keys(value).filter(key=>key.toLowerCase()==='path').length,1);return value;
 }
 async function settings(language,theme){const snap=await request('runtime.snapshot');await request('settings.update',{patch:{language,theme,themeSelection:theme,notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:snap.settings.revision,operationId:randomUUID()});await page.waitForFunction(({language,theme})=>document.documentElement.lang===(language==='zh-CN'?'zh-CN':'en')&&document.documentElement.dataset.theme===theme,{language,theme})}
@@ -53,7 +53,7 @@ async function workspaceAction(name,actionsLabel='Workspace actions'){await focu
 async function capture(name){
  await page.mouse.move(0,0);await settled();
  const definitions=[
-  ['Workbench','docked','.wb-panel-head','strong'],['Session details','docked','.inspector > .ins-head','span'],
+  ['Session details','docked','.wb-panel-head','strong'],
   ['Pane tabs','pane','.workspace-pane > .workspace-tabbar.ws-strip','.workspace-tab.active .workspace-tab-label'],['File editor/preview','file','.tt-editor-tabs.file-view-tabs','.embedded-file-breadcrumb, .tt-editor-tab.active'],
   ['File/diff/review toolbar','file','.file-bar:not(.wb-browser-toolbar)','.path, .embedded-file-breadcrumb'],['Browser toolbar','browser-toolbar','.wb-browser-toolbar',null],['Files & Git','docked','.wb-tools-head','strong'],
   ['Git history','docked','.wb-history-title','strong'],['Task map','toolbar','.task-map-toolbar','.task-map-title strong'],
@@ -109,7 +109,7 @@ async function capture(name){
   if(verify&&row.family==='docked'&&Math.abs(row.rect.height-38)>.5)errors.push(`docked header height ${row.rect.height} != 38`);
   if(errors.length)report.violations.push({name,surface:row.surface,errors});
  }
- const peers=rows.filter(row=>['Workbench','Session details','Worktree list','Worktree details'].includes(row.surface));
+ const peers=rows.filter(row=>['Session details','Worktree list','Worktree details'].includes(row.surface));
  const adjacent=peers.filter(row=>Math.abs(row.rect.y-peers[0].rect.y)<=1);
  if(adjacent.length>1){const delta=Math.max(...adjacent.map(row=>row.rect.bottom))-Math.min(...adjacent.map(row=>row.rect.bottom));if(delta>1)report.violations.push({name,surface:'adjacent headers',errors:[`bottom delta ${delta}`]})}
  report.measurements.push({name,rows});
@@ -146,13 +146,14 @@ try{
  await page.getByRole('button',{name:'Session details',exact:true}).click();
  for(const language of ['en','zh-CN'])for(const theme of ['light','dark']){
   await settings(language,theme);const zh=language==='zh-CN',cell=`${language}-${theme}`;
+  await capture(`${cell}-Session-details`);
   for(const view of [['Files','文件'],['Search','搜索'],['Source Control','源代码管理'],['Agent changes','Agent 改动']]){
-   const button=page.locator('.wb-switcher').getByRole('button',{name:view[zh?1:0],exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();
+   const button=page.locator('.ws-top .wb-switcher').getByRole('button',{name:view[zh?1:0],exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();
    await capture(`${cell}-${view[0].replaceAll(' ','-')}`);
   }
   await optional('Configure session',async()=>{await page.locator('.inspector').getByRole('button',{name:zh?'配置':'Configure',exact:true}).click();await page.locator('.session-config').waitFor();await capture(`${cell}-configure`);if(verify){const subtitle=page.locator('.session-config .dialog-title p');const original=await subtitle.evaluate(node=>{const text=node.textContent;node.textContent=text.repeat(40);return text});assert.ok(await subtitle.evaluate(node=>node.scrollWidth>node.clientWidth&&getComputedStyle(node).textOverflow==='ellipsis'),'long session title ellipsizes');await capture(`${cell}-configure-long-title`);await subtitle.evaluate((node,text)=>node.textContent=text,original)}await closeDialog()});
   await optional('Task map',async()=>{await page.locator('.inspector').getByRole('button',{name:zh?'任务图':'Task map',exact:true}).click();await page.locator('.task-map').waitFor();await capture(`${cell}-task-map`);await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
-  await optional('File editor/preview',async()=>{await page.locator('.wb-switcher').getByRole('button',{name:zh?'文件':'Files',exact:true}).click();await page.locator('.wb-tree').getByText('plan.md',{exact:true}).dblclick();await page.locator('.file-workspace').waitFor();await capture(`${cell}-file`);const preview=page.locator('.file-workspace').getByRole('button',{name:zh?'预览':'Preview',exact:true});if(await preview.count()){await preview.click();await capture(`${cell}-preview`)}await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
+  await optional('File editor/preview',async()=>{await page.locator('.ws-top .wb-switcher').getByRole('button',{name:zh?'文件':'Files',exact:true}).click();await page.locator('.wb-tree').getByText('plan.md',{exact:true}).dblclick();await page.locator('.file-workspace').waitFor();await capture(`${cell}-file`);const preview=page.locator('.file-workspace').getByRole('button',{name:zh?'预览':'Preview',exact:true});if(await preview.count()){await preview.click();await capture(`${cell}-preview`)}await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
   await optional('Browser and DevTools',async()=>{
    const browser=page.locator('.wb-web-preview:visible');
    if(!await browser.count()){

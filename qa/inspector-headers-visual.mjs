@@ -20,9 +20,9 @@ const scratch=await mkdtemp(join(scratchBase,'tt-inspector-headers-'));
 assert.equal(dirname(scratch).toLowerCase(),scratchBase.toLowerCase());
 const appDir=join(scratch,'app'),bin=join(scratch,'bin'),work=join(scratch,'work'),plugins=join(scratch,'plugins');
 const out=join(root,'qa/results/inspector-headers',process.argv[2]&&/^[\w.-]+$/.test(process.argv[2])?process.argv[2]:'current');
-const runtime=join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),pipe=`\\\\.\\pipe\\tt-inspector-headers-${randomUUID()}`;
+const runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),pipe=`\\\\.\\pipe\\tt-inspector-headers-${randomUUID()}`;
 const lock=join(scratchBase,'qa-electron.lock');
-const report={passed:false,checks:[],screenshots:[],geometry:[],errors:[],limitations:['Inspector width is fixed at 320px; narrow-window coverage retains that width. A separate 260px stress probe temporarily constrains the inspector.']};
+const report={passed:false,checks:[],screenshots:[],geometry:[],errors:[],limitations:['Session details is the shared right-panel Details view with a 320px default. A separate 260px stress probe temporarily constrains that panel.']};
 let app,page,runtimeProcess,locked=false;
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));
 const check=value=>{report.checks.push(value);console.log(`PASS ${value}`)};
@@ -30,7 +30,7 @@ async function until(probe,label,ms=30000){const end=Date.now()+ms;for(;;){if(aw
 const request=(method,params={})=>page.evaluate(([method,params])=>window.threadterm.request(method,params),[method,params]);
 function env(){
  const value=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe','threadterm_v3_plugin_dirs'].includes(key.toLowerCase())));
- Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work});
+ Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_QA_PROVIDER_BIN:bin,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work});
  assert.equal(Object.keys(value).filter(key=>key.toLowerCase()==='path').length,1);
  return value;
 }
@@ -42,19 +42,19 @@ async function settings(language,theme){
 }
 async function settled(){await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))))}
 async function headers(label,controlOptions={}){
- const rows=await page.locator('.inspector').evaluate(panel=>[...panel.querySelectorAll('.ins-head,h3,h4')].map(heading=>{
+ const rows=await page.locator('.wb-sidebar .wb-panel').evaluate(panel=>[...panel.querySelectorAll('.wb-panel-head strong,.inspector h3,.inspector h4')].map(heading=>{
   const box=heading.getBoundingClientRect(),style=getComputedStyle(heading),parent=heading.parentElement;
   const peers=[...parent.children].filter(node=>node!==heading&&node.matches('button')).map(node=>{const b=node.getBoundingClientRect();return{text:node.textContent,overlap:box.left<b.right&&box.right>b.left&&box.top<b.bottom&&box.bottom>b.top,width:b.width,marginTop:getComputedStyle(node).marginTop}});
   const range=document.createRange();range.selectNodeContents(heading);const textBox=range.getBoundingClientRect();
   return{text:heading.textContent,width:box.width,scrollWidth:heading.scrollWidth,clientWidth:heading.clientWidth,ellipsis:style.textOverflow==='ellipsis'&&style.overflowX==='hidden',textInside:textBox.left>=box.left-1&&textBox.right<=box.right+1,peers};
  }));
- assert.ok(rows.length>=5,`${label}: inspector title and all four sections mounted`);
+ assert.ok(rows.length>=5,`${label}: shared-panel title and all four Session details sections mounted`);
  for(const row of rows){assert.ok(row.width>0,`${label}: ${row.text} has width`);assert.ok(row.peers.every(peer=>!peer.overlap),`${label}: ${row.text} never overlaps actions`);assert.ok(row.scrollWidth<=row.clientWidth+1||row.ellipsis,`${label}: ${row.text} fits or intentionally ellipsizes`);if(!label.includes('long-heading'))assert.ok(row.textInside,`${label}: ${row.text} reads in full`)}
  const docs=rows.find(row=>/Plans & docs|计划与文档/.test(row.text));assert.ok(docs,`${label}: document heading exists`);
  assert.ok(docs.peers[0].width<130,`${label}: Add file keeps natural width`);assert.equal(docs.peers[0].marginTop,'0px');
  const fullWidth=await page.locator('.inspector .ins-block > .btn').evaluateAll(nodes=>nodes.map(node=>({text:node.textContent,width:node.getBoundingClientRect().width,parent:node.parentElement.clientWidth})));
  for(const action of fullWidth)assert.ok(Math.abs(action.width-action.parent)<2,`${label}: ${action.text} remains full width`);
- const consistency=await checkControlConsistency(page,'.inspector',controlOptions);assertNoControlViolations(consistency,label);assert.ok(consistency.checked>0);
+ const consistency=await checkControlConsistency(page,'.wb-sidebar .wb-panel',controlOptions);assertNoControlViolations(consistency,label);assert.ok(consistency.checked>0);
  report.geometry.push({label,rows,fullWidth,consistency});
 }
 async function shot(name){await page.screenshot({path:join(out,name),animations:'disabled'});report.screenshots.push(name)}
@@ -78,16 +78,16 @@ try{
  const chat=await request('session.create',{projectId:project.id,cwd:work,provider:'codex',mode:'chat',title:'Inspector header QA',operationId:randomUUID()});
  await app.evaluate(({BrowserWindow},id)=>BrowserWindow.getAllWindows()[0].webContents.send('threadterm:desktop-navigate',{sessionId:id}),chat.id);
  await page.locator('.chat-compose-shell textarea').waitFor();
- await page.getByRole('button',{name:'Session details',exact:true}).click();await page.locator('.inspector').waitFor();
+ await page.getByRole('button',{name:'Session details',exact:true}).click();await page.locator('.wb-sidebar .wb-panel').waitFor();await page.locator('.inspector').waitFor();
  await page.waitForFunction(()=>document.querySelector('.session-documents-count')?.textContent==='0');
  for(const language of ['en','zh-CN'])for(const theme of ['light','dark','custom']){
   await settings(language,theme);
   for(const [width,label] of [[1440,'default'],[900,'narrow']]){
    await app.evaluate(({BrowserWindow},width)=>BrowserWindow.getAllWindows()[0].setContentSize(width,1000),width);await settled();
-   assert.equal(Math.round((await page.locator('.inspector').boundingBox()).width),320,'fixed minimum/default inspector width');
+   assert.equal(Math.round((await page.locator('.wb-sidebar .wb-panel').boundingBox()).width),320,'Session details uses the 320px shared-panel default');
    const name=`${language}-${theme}-${label}`;await headers(name);await shot(`${name}.png`);check(`${name}: all inspector headings fit, actions do not overlap, control consistency passes`);
   }
-  await page.locator('.inspector').evaluate(node=>{node.style.width='260px';node.style.flexBasis='260px'});await settled();
+  await page.locator('.wb-sidebar .wb-panel').evaluate(node=>{node.style.width='260px';node.style.flexBasis='260px'});await settled();
   await headers(`${language}-${theme}-260-stress`);await shot(`${language}-${theme}-260-stress.png`);
   const heading=page.locator('.session-documents-head h3');
   const original=await heading.evaluate(node=>{const value=node.firstChild.textContent;node.firstChild.textContent=value.repeat(12);return value});
@@ -95,7 +95,7 @@ try{
   assert.ok(await heading.evaluate(node=>node.scrollWidth>node.clientWidth),'long-heading probe actually overflows');
   await shot(`${language}-${theme}-long-heading.png`);
   await heading.evaluate((node,text)=>{node.firstChild.textContent=text},original);
-  await page.locator('.inspector').evaluate(node=>{node.style.removeProperty('width');node.style.removeProperty('flex-basis')});
+  await page.locator('.wb-sidebar .wb-panel').evaluate(node=>{node.style.removeProperty('width');node.style.removeProperty('flex-basis')});
   check(`${language}-${theme}: 260px stress and long-heading ellipsis pass`);
  }
  await request('session.documents.pin',{sessionId:chat.id,path:'plan.md',operationId:randomUUID()});
