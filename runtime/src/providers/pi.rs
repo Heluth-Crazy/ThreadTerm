@@ -10,7 +10,7 @@ use super::{
         history_page, percent_used, validate_native_id, version_probe, CommandSpec, EnvelopeStyle,
         JsonLineProcess, JsonLineRequester, JsonLineResponder,
     },
-    emit_bound as emit, ChatSession, NativeForkAnchor, ProviderAdapter, ProviderCapability, ProviderError,
+    emit_bound as emit, spawn_ui_options_refresh, ChatSession, NativeForkAnchor, ProviderAdapter, ProviderCapability, ProviderError,
     ScopedProviderEvents, TerminalCapture, TerminalCommand,
 };
 use crate::pi_project_trust;
@@ -21,7 +21,7 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 use uuid::Uuid;
@@ -493,6 +493,8 @@ struct PiShared {
     reply_text: Mutex<Option<(String, bool)>>,
     /// Token usage summed over the turn's assistant messages, for its footer.
     turn_usage: Mutex<Option<(String, Value)>>,
+    /// Coalesces non-blocking `chat.options` catalogue reads for this chat.
+    ui_options_refreshing: Arc<AtomicBool>,
 }
 
 const PI_TOOL_CALL_LIMIT: usize = 128;
@@ -1202,6 +1204,60 @@ impl ChatSession for PiChat {
             Ok(ui) => pi_ui_state(&ui),
             Err(_) => json!({"options":[],"commands":[]}),
         }
+    }
+
+    fn refresh_ui_options(&mut self) -> Result<(), ProviderError> {
+        let requester = self.process.requester();
+        let shared = Arc::clone(&self.shared);
+        let gate = Arc::clone(&shared.ui_options_refreshing);
+        let observed_state = shared.ui.lock().ok().and_then(|ui| ui.state.clone());
+        let events = self.events.clone();
+        let session_id = self.session_id.clone();
+        spawn_ui_options_refresh(&gate, move || {
+            let refresh = || -> Result<(), ProviderError> {
+                // Read the complete snapshot before taking the UI lock. A failed
+                // catalogue query must leave the working cached controls intact.
+                let models = requester
+                    .request("get_available_models", json!({}))?
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .ok_or_else(|| ProviderError::new("provider_protocol", "Pi returned an invalid model catalogue"))?;
+                let levels = requester
+                    .request("get_available_thinking_levels", json!({}))?
+                    .get("levels")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .ok_or_else(|| ProviderError::new("provider_protocol", "Pi returned invalid thinking levels"))?;
+                let commands = requester
+                    .request("get_commands", json!({}))?
+                    .get("commands")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .ok_or_else(|| ProviderError::new("provider_protocol", "Pi returned an invalid command catalogue"))?;
+                let mut data = {
+                    let mut ui = shared.ui.lock().map_err(|_| ProviderError::new("provider_internal", "Pi UI lock poisoned"))?;
+                    if ui.state != observed_state {
+                        return Ok(());
+                    }
+                    // Keep the cached state selected by the worker. In
+                    // particular, a slow catalogue request must not put back
+                    // the model it observed before a concurrent selection.
+                    ui.models = models;
+                    ui.thinking_levels = levels.iter().filter_map(|value| value.as_str().map(ToOwned::to_owned)).collect();
+                    ui.commands = merge_builtin_commands(commands);
+                    pi_ui_state(&ui)
+                };
+                data["sessionId"] = json!(session_id);
+                let native = shared.native_id.lock().ok().and_then(|value| value.clone());
+                emit(&events, "pi", &session_id, native.as_deref(), None, "chat.ui", data);
+                Ok(())
+            };
+            if let Err(error) = refresh() {
+                eprintln!("[pi-options] catalogue refresh unavailable ({})", error.code);
+            }
+        });
+        Ok(())
     }
 
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
@@ -3868,7 +3924,14 @@ rl.on('line', line => {
     case 'get_entries': return out({id,type:'response',command:'get_entries',success:true,data:{leafId:'next-user',entries:[{type:'message',id:'first-user',parentId:null,message:{role:'user'}},{type:'message',id:'reply',parentId:'first-user',message:{role:'assistant'}},{type:'message',id:'next-user',parentId:'reply',message:{role:'user'}}]}});
     case 'fork': fs.appendFileSync(path.join(__dirname,'fork-requests.jsonl'),JSON.stringify(cmd)+'\n'); forked=true; return out({id,type:'response',command:'fork',success:true,data:{cancelled:false}});
     case 'clone': fs.appendFileSync(path.join(__dirname,'fork-requests.jsonl'),JSON.stringify(cmd)+'\n'); forked=true; return out({id,type:'response',command:'clone',success:true,data:{cancelled:false}});
-    case 'get_available_models': return out({id,type:'response',command:'get_available_models',success:true,data:{models:[{id:'fake-model',name:'Fake',provider:'fake'}]}});
+    case 'get_available_models': {
+      const catalogue = fs.readFileSync(path.join(__dirname,'catalogue.txt'),'utf8').trim();
+      if (catalogue === 'fail') return out({id,type:'response',command:'get_available_models',success:false,error:'catalogue unavailable'});
+      const fresh = catalogue === 'fresh';
+      const model = fresh ? {id:'fresh-model',name:'Fresh',provider:'fake'} : {id:'fake-model',name:'Fake',provider:'fake'};
+      if (fresh) return setTimeout(() => out({id,type:'response',command:'get_available_models',success:true,data:{models:[model]}}), 100);
+      return out({id,type:'response',command:'get_available_models',success:true,data:{models:[model]}});
+    }
     case 'get_available_thinking_levels': return out({id,type:'response',command:'get_available_thinking_levels',success:true,data:{levels:['off','high']}});
     case 'get_commands': return out({id,type:'response',command:'get_commands',success:true,data:{commands:[{name:'demo',description:'Demo'}]}});
     case 'prompt':
@@ -3909,6 +3972,7 @@ rl.on('line', line => {
             "@echo off\r\nnode \"%~dp0fake-pi.cjs\" %*\r\n",
         )
         .unwrap();
+        std::fs::write(dir.path().join("catalogue.txt"), "old").unwrap();
         let previous = std::env::var("PATH").unwrap_or_default();
         std::env::set_var(
             "PATH",
@@ -3926,6 +3990,40 @@ rl.on('line', line => {
             chat.ui_state()["options"][0]["value"],
             format!("fake{PI_MODEL_SEPARATOR}fake-model")
         );
+        std::fs::write(dir.path().join("catalogue.txt"), "fresh").unwrap();
+        let refresh_started = Instant::now();
+        chat.refresh_ui_options().expect("refresh model catalogue");
+        assert!(refresh_started.elapsed() < Duration::from_millis(50), "a delayed Pi catalogue cannot hold chat.options");
+        assert_eq!(
+            chat.ui_state()["options"][0]["choices"][0]["value"],
+            format!("fake{PI_MODEL_SEPARATOR}fake-model"),
+            "the cached Pi catalogue is returned before its asynchronous refresh"
+        );
+        let refresh_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(event) = receiver.try_recv() {
+                if event.kind == "chat.ui" && event.data["options"][0]["choices"][0]["value"] == format!("fake{PI_MODEL_SEPARATOR}fresh-model") {
+                    break;
+                }
+            }
+            assert!(Instant::now() < refresh_deadline, "Pi refresh publishes the replacement catalogue");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            chat.ui_state()["options"][0]["choices"][0]["value"],
+            format!("fake{PI_MODEL_SEPARATOR}fresh-model"),
+            "a chat-options read refreshes Pi's live model catalogue"
+        );
+        assert_eq!(
+            chat.ui_state()["options"][0]["value"],
+            format!("fake{PI_MODEL_SEPARATOR}fake-model"),
+            "catalogue refresh must keep the session's actual model"
+        );
+        let cached_after_refresh = chat.ui_state();
+        std::fs::write(dir.path().join("catalogue.txt"), "fail").unwrap();
+        chat.refresh_ui_options().expect("schedule failed catalogue refresh");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(chat.ui_state(), cached_after_refresh, "a failed Pi catalogue refresh keeps the cached options");
         chat.send("hello", "turn-fake").expect("send");
 
         let deadline = Instant::now() + Duration::from_secs(30);

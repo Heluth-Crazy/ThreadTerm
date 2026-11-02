@@ -566,6 +566,26 @@ pub struct JsonLineRequester {
 }
 
 impl JsonLineRequester {
+    pub fn request(&self, method: &str, params: Value) -> Result<Value, ProviderError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = envelope_request_frame(self.style, id, method, params);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.pending.lock()
+            .map_err(|_| ProviderError::new("provider_internal", "pending request lock poisoned"))?
+            .insert(id.to_string(), Pending::Blocking(sender));
+        if let Err(error) = write_stdin(&self.stdin, &self.label, frame) {
+            if let Ok(mut pending) = self.pending.lock() { pending.remove(&id.to_string()); }
+            return Err(error);
+        }
+        match receiver.recv_timeout(REQUEST_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => {
+                if let Ok(mut pending) = self.pending.lock() { pending.remove(&id.to_string()); }
+                Err(ProviderError::new("provider_timeout", format!("{} request {method} timed out", self.label)))
+            }
+        }
+    }
+
     pub fn request_async_latest(
         &self,
         tag: &str,

@@ -64,8 +64,11 @@ export function isBooleanOption(option: ChatSessionOption): boolean {
   return option.choices.length === 2 && option.choices.every(choice => /^(true|false|on|off)$/i.test(choice.value));
 }
 
-export function currentChoiceName(option: ChatSessionOption): string {
-  return option.choices.find(choice => choice.value === option.value)?.name ?? option.value;
+export function currentChoiceName(option: ChatSessionOption, zh = false): string {
+  const choice = option.choices.find(choice => choice.value === option.value);
+  if (choice) return choice.name || choice.value;
+  if (option.value && option.choices.length && optionCategory(option) === "model") return `${option.value}${zh ? "（不再列出）" : " (no longer listed)"}`;
+  return option.value;
 }
 
 /** A choice's display text: known provider values localize, everything else keeps the provider's own name. */
@@ -86,8 +89,8 @@ export function chipValueText(option: ChatSessionOption, zh: boolean): string {
   if (option.id === "threadterm-permission-recovery") {
     return option.value === "defaults" ? (zh ? "使用默认权限" : "Use defaults") : (zh ? "重置权限…" : "Reset permissions…");
   }
-  const choice = option.choices.find(entry => entry.value === option.value) ?? { value: option.value, name: option.value };
-  return choiceText(option, choice, zh);
+  const choice = option.choices.find(entry => entry.value === option.value);
+  return choice ? choiceText(option, choice, zh) : currentChoiceName(option, zh);
 }
 
 export function booleanText(value: string, copy: ComposerCopy): string {

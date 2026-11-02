@@ -2361,6 +2361,39 @@ mod tests {
     }
 
     #[test]
+    fn session_ui_replaces_the_model_catalog_without_overwriting_current_model() {
+        let (events, mut receiver) = crate::provider_events::tap_channel(2);
+        let ui = ClaudeUi::default();
+        let native = Mutex::new(Some("native".to_owned()));
+        let liveness = WorkerLiveness::default();
+        emit_claude_message(
+            &events,
+            "session",
+            &native,
+            &liveness,
+            &ui,
+            None,
+            json!({"ev":"session.ui","ui":{"options":[{"id":"model","value":"actual-model","choices":[{"value":"actual-model","name":"Actual model"}]}],"commands":[]}}),
+        );
+        emit_claude_message(
+            &events,
+            "session",
+            &native,
+            &liveness,
+            &ui,
+            None,
+            json!({"ev":"session.ui","ui":{"options":[{"id":"model","value":"actual-model","choices":[{"value":"new-default","name":"New default","recommended":true}]}],"commands":[]}}),
+        );
+        let _ = receiver.try_recv().unwrap();
+        let update = receiver.try_recv().unwrap();
+        let model = &update.data["options"][0];
+        assert_eq!(model["value"], "actual-model");
+        assert!(model["choices"].as_array().unwrap().iter().any(|choice| choice["value"] == "new-default"));
+        assert!(model["choices"].as_array().unwrap().iter().all(|choice| choice["value"] != "actual-model"));
+        assert_eq!(ui.wire()["options"], update.data["options"]);
+    }
+
+    #[test]
     fn per_message_speed_usage_uses_the_native_stream_message_id() {
         let stream = json!({"speedCallId":"message-a","message":{"type":"stream_event","event":{"usage":{"output_tokens":0}}}});
         let final_a = json!({"speedCallId":"message-a","message":{"type":"assistant","message":{"id":"message-a","usage":{"output_tokens":12}}}});

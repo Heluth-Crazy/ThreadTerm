@@ -114,6 +114,18 @@ window.qaTheme = theme => {
   document.documentElement.dataset.theme = theme === 'custom' ? 'dark' : theme;
   document.documentElement.dataset.customTheme = theme === 'custom' ? 'true' : 'false';
 };
+window.qaCatalogRefresh = (reconnect) => {
+  state = { ...state, options: state.options.map(option => option.category === 'model' ? {
+    ...option, recommended: 'new-default', choices: [
+      choice(option.value, 'Actual session model'),
+      choice('new-default', 'New default', { recommended: true }),
+    ],
+  } : option) };
+  const event = reconnect
+    ? { event: 'runtime.transport', data: { state: 'reconnected', epoch: 'epoch' } }
+    : { event: 'chat.ui', data: { ...state, sessionId } };
+  for (const listener of listeners) listener({ ...event, epoch: 'epoch', seq: sequence++ });
+};
 document.documentElement.dataset.theme = 'light';
 window.qaRender('en', 'codex');
 `;
@@ -219,6 +231,19 @@ try {
   page = await app.firstWindow();
   page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForFunction(() => typeof window.qaRender === 'function');
+
+  for (const reconnect of [false, true]) {
+    await setState({ scenario: 'codex' });
+    await page.waitForFunction(() => document.querySelector('.chat-model-chip')?.textContent?.includes('GPT Model 0'));
+    await page.evaluate(value => window.qaCatalogRefresh(value), reconnect);
+    await page.waitForFunction(() => document.querySelector('.chat-model-chip')?.textContent?.includes('Actual session model'));
+    await page.locator('.chat-model-chip').click();
+    await page.getByRole('menuitemradio', { name: /New default/ }).waitFor();
+    assert.equal(await page.getByRole('menuitemradio', { name: /GPT Model 1/ }).count(), 0, 'removed models disappear after a catalog refresh');
+    assert.equal(await page.evaluate(() => window.__setCalls.length), 0, 'catalog refresh never changes the existing session model');
+    await page.keyboard.press('Escape');
+  }
+  report.checks.push('catalog event and transport reconnect replace choices, preserve the actual model, and never call chat.option.set');
 
   // Fake Codex: one chip per option, mode + model + the extra chips, a boolean toggle.
   await setState({ scenario: 'codex' });

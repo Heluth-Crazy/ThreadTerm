@@ -769,6 +769,11 @@ pub(crate) trait ChatSession: Send {
     ) -> Result<(), ProviderError> {
         Err(ProviderError::new("answer_unsupported", "This provider does not support question answers"))
     }
+    /// Schedule a coalesced refresh without waiting for provider I/O.
+    /// Notification-owned adapters need no additional catalog request.
+    fn refresh_ui_options(&mut self) -> Result<(), ProviderError> {
+        Ok(())
+    }
     fn ui_state(&self) -> Value {
         json!({"options":[],"commands":[]})
     }
@@ -790,6 +795,20 @@ pub(crate) trait ChatSession: Send {
 }
 
 type SharedChat = Arc<Mutex<Box<dyn ChatSession>>>;
+
+fn spawn_ui_options_refresh(gate: &Arc<AtomicBool>, refresh: impl FnOnce() + Send + 'static) {
+    if gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
+    struct RefreshGuard(Arc<AtomicBool>);
+    impl Drop for RefreshGuard {
+        fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+    }
+    let guard = RefreshGuard(gate.clone());
+    // Dropping the captured guard also releases the gate if spawning fails.
+    let _ = std::thread::Builder::new().name("chat-options-refresh".into()).spawn(move || {
+        let _guard = guard;
+        refresh();
+    });
+}
 
 /// Worker liveness is read with the registry released (see the `chats` field
 /// for the lock order). Locking a worker while holding the registry lets a
@@ -2640,7 +2659,11 @@ impl ProviderRuntime for Providers {
             })
         }));
         if let Some(state) = failed { return Ok(state); }
-        match self.chat(session_id, |chat| Ok(chat.ui_state())) {
+        match self.chat(session_id, |chat| {
+            let cached = chat.ui_state();
+            let _ = chat.refresh_ui_options();
+            Ok(cached)
+        }) {
             Ok(value) => Ok(normalize_chat_ui(value)),
             Err(error) if error.code == "chat_not_open" => Ok(json!({
                 "options":[],

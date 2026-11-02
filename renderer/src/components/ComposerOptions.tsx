@@ -273,10 +273,10 @@ export function ComposerOptions({
               aria-haspopup="menu"
               aria-expanded={modelOpen}
               disabled={disabled}
-              title={`${optionTitle(model, copy)}: ${currentChoiceName(model) || model.value}${thinking ? ` · ${optionTitle(thinking, copy)}: ${currentChoiceName(thinking) || thinking.value}` : ""}`}
+              title={`${optionTitle(model, copy)}: ${currentChoiceName(model, zh) || model.value}${thinking ? ` · ${optionTitle(thinking, copy)}: ${currentChoiceName(thinking) || thinking.value}` : ""}`}
               onClick={() => setOpen(modelOpen ? undefined : { kind: "model" })}
             >
-              <span className="chat-model-name">{currentChoiceName(model) || copy("Model", "模型")}</span>
+              <span className="chat-model-name">{currentChoiceName(model, zh) || copy("Model", "模型")}</span>
               {thinking && !collapse.hideEffort && <span className="chat-model-think">{thinkingChipText(thinking, zh)}</span>}
               <Icon name="chevD" className="chat-model-chev" />
             </button>
@@ -294,7 +294,7 @@ export function ComposerOptions({
         ))}
         {model && (
           <span className="chip chip-btn chat-model-measure">
-            <span className="chat-model-measure-name">{currentChoiceName(model) || model.value}</span>
+            <span className="chat-model-measure-name">{currentChoiceName(model, zh) || model.value}</span>
             {thinking && <span className="chat-model-measure-think">{thinkingChipText(thinking, zh)}</span>}
             <Icon name="chevD" />
           </span>

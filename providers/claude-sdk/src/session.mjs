@@ -687,10 +687,9 @@ export class ClaudeSession {
   uiState() {
     const current = this.catalog.models.find(model => model.value === this.settings.model);
     const modelChoices = this.catalog.models.map(model => ({ value: model.value, name: model.displayName || model.value }));
-    if (this.settings.model && !current) modelChoices.push({ value: this.settings.model, name: this.settings.model });
     const efforts = Array.isArray(current?.supportedEffortLevels) ? current.supportedEffortLevels.filter(level => typeof level === 'string') : [];
     const options = [];
-    if (modelChoices.length) options.push({ id: 'model', name: 'Model', value: this.settings.model, choices: modelChoices });
+    if (modelChoices.length || this.settings.model) options.push({ id: 'model', name: 'Model', value: this.settings.model, choices: modelChoices });
     if (efforts.length && this.settings.effort) {
       options.push({ id: 'thinking', name: 'Thinking', value: this.settings.effort, choices: efforts.map(level => ({ value: level, name: EFFORT_NAMES[level] ?? level })) });
     }

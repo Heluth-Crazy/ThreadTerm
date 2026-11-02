@@ -184,11 +184,35 @@ test('without getSettings the model falls back to context usage and thinking sta
   assert.ok(sdk.state.calls.some(([name, detail]) => name === 'getContextUsage' && detail === 'summary'));
 });
 
-test('an unlisted applied model stays visible as its own choice', async () => {
+test('an unlisted applied model remains current without becoming a choice', async () => {
   const { session } = await started({ applied: { model: 'claude-opus-5[1m]', effort: 'high' } });
   const model = option(session.uiState(), 'model');
   assert.equal(model.value, 'claude-opus-5[1m]');
-  assert.ok(model.choices.some(choice => choice.value === 'claude-opus-5[1m]'));
+  assert.ok(model.choices.every(choice => choice.value !== 'claude-opus-5[1m]'));
+});
+
+test('an empty catalog retains the current model option without choices', async () => {
+  const { session } = await started({ init: { models: [] }, applied: { model: 'claude-opus-5[1m]', effort: 'high' } });
+  const model = option(session.uiState(), 'model');
+  assert.equal(model.value, 'claude-opus-5[1m]');
+  assert.deepEqual(model.choices, []);
+  await session.stop();
+});
+
+test('a restarted sidecar uses its new catalog without replacing the current model', async () => {
+  const actual = { value: 'actual', displayName: 'Actual', resolvedModel: 'claude-actual' };
+  const first = await started({ init: { models: [actual] }, applied: { model: 'claude-actual', effort: 'high' } });
+  assert.deepEqual(option(first.session.uiState(), 'model').choices.map(choice => choice.value), ['actual']);
+  await first.session.stop();
+
+  const next = await started({
+    init: { models: [{ value: 'new-default', displayName: 'New default', resolvedModel: 'claude-new', supportsAutoMode: true }] },
+    applied: { model: 'claude-actual', effort: 'high' },
+  });
+  const model = option(next.session.uiState(), 'model');
+  assert.equal(model.value, 'claude-actual');
+  assert.deepEqual(model.choices.map(choice => choice.value), ['new-default']);
+  await next.session.stop();
 });
 
 test('setOption switches model, effort and mode through SDK control requests and publishes the state', async () => {

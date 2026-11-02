@@ -63,6 +63,32 @@ test('labels localize known provider values and keep unknown ones', () => {
   assert.equal(currentChoiceName(custom), 'Custom value');
 });
 
+test('an existing model missing from a refreshed catalog stays selected and is marked in both languages', () => {
+  const model = option({
+    id: 'model',
+    category: 'model',
+    value: 'gpt-existing',
+    recommended: 'gpt-new-default',
+    choices: [{ value: 'gpt-new-default', name: 'GPT New Default' }],
+  });
+  assert.equal(currentChoiceName(model), 'gpt-existing (no longer listed)');
+  assert.equal(currentChoiceName(model, true), 'gpt-existing（不再列出）');
+  assert.equal(chipValueText(model, false), 'gpt-existing (no longer listed)');
+  assert.equal(chipValueText(model, true), 'gpt-existing（不再列出）');
+});
+
+test('a model with no catalogue yet is shown plainly, not as no longer listed', () => {
+  const model = option({ id: 'model', category: 'model', value: 'claude-current', choices: [] });
+  assert.equal(currentChoiceName(model), 'claude-current');
+  assert.equal(chipValueText(model, true), 'claude-current');
+});
+
+test('an empty model value remains the picker placeholder', () => {
+  const model = option({ id: 'model', category: 'model', value: '', choices: [] });
+  assert.equal(currentChoiceName(model), '');
+  assert.equal(chipValueText(model, false), '');
+});
+
 test('titles and boolean text are bilingual', () => {
   assert.equal(optionTitle(option({ id: 'fast', value: 'true' }), (en, zh) => zh), '快速模式');
   assert.equal(optionTitle(option({ id: 'reviewer', value: 'user' }), (en) => en), 'Approval reviewer');
@@ -123,6 +149,13 @@ test('modelRows inserts headers only when choices are grouped and supports searc
   assert.equal(isRecommended(option({ id: 'model', value: 'a', recommended: 'a' }), { value: 'a', name: 'A' }), true);
   assert.equal(isRecommended(option({ id: 'model', value: 'a' }), { value: 'a', name: 'A', recommended: true }), true);
   assert.equal(isRecommended(option({ id: 'model', value: 'a' }), { value: 'a', name: 'A' }), false);
+});
+
+test('modelRows offers only the latest catalog snapshot', () => {
+  const first = modelRows([{ value: 'gpt-removed', name: 'GPT Removed' }], '');
+  const refreshed = modelRows([{ value: 'gpt-added', name: 'GPT Added' }], '');
+  assert.deepEqual(first, [{ kind: 'choice', choice: { value: 'gpt-removed', name: 'GPT Removed' } }]);
+  assert.deepEqual(refreshed, [{ kind: 'choice', choice: { value: 'gpt-added', name: 'GPT Added' } }]);
 });
 
 test('virtualWindow clamps both bounds and keeps a nonempty terminal window', () => {

@@ -166,7 +166,13 @@ try {
   page.on('pageerror', (error) => report.errors.push(error.message));
   await page.waitForFunction(() => typeof window.qaRender === 'function');
 
+  await page.evaluate(() => localStorage.setItem('threadterm.codeReview.prefs', JSON.stringify({ provider: 'codex', model: 'removed-model' })));
   await render('dialog');
+  await page.getByTestId('code-review-model').waitFor({ state: 'visible' });
+  assert.equal(await page.getByTestId('code-review-model').inputValue(), '', 'a removed stored model falls back to Default model');
+  assert.equal(await page.getByTestId('code-review-model').locator('option[value="removed-model"]').count(), 0, 'removed models cannot be chosen for a new review');
+  assert.equal(await page.getByTestId('code-review-model').locator('option[value="qa-code-review-model"]').count(), 1, 'the current catalog is offered on open');
+  report.checks.push('opening Code Review offers the current catalog and replaces a removed stored selection with Default model');
   assert.match(await page.locator('body').textContent() ?? '', /Code review/i);
   assert.match(await page.locator('body').textContent() ?? '', /1 \/ 2 \/ 4 agent runs/);
   assert.equal(await page.getByTestId('code-review-provider-claude').isDisabled(), true);

@@ -2820,9 +2820,22 @@ fn merge_grok_ui(state: &mut GrokUiState, value: &Value) {
         .or_else(|| value.get("availableConfigOptions"))
         .and_then(Value::as_array)
     {
+        let previous_model = state
+            .options
+            .iter()
+            .find(|option| option.get("id").and_then(Value::as_str) == Some("model"))
+            .cloned();
         let parsed: Vec<Value> = options.iter().filter_map(parse_grok_option).collect();
-        if !parsed.is_empty() {
-            state.options = parsed;
+        state.options = parsed;
+        if !state
+            .options
+            .iter()
+            .any(|option| option.get("id").and_then(Value::as_str) == Some("model"))
+        {
+            if let Some(mut model) = previous_model {
+                model["choices"] = json!([]);
+                state.options.push(model);
+            }
         }
     }
     if let Some(option) = value.get("configOption").or_else(|| value.get("option")) {
@@ -2844,6 +2857,11 @@ fn merge_grok_ui(state: &mut GrokUiState, value: &Value) {
 }
 
 fn merge_models_update(state: &mut GrokUiState, value: &Value) {
+    let previous_model = state
+        .options
+        .iter()
+        .find(|option| option.get("id").and_then(Value::as_str) == Some("model"))
+        .cloned();
     let models = value
         .get("models")
         .cloned()
@@ -2851,6 +2869,8 @@ fn merge_models_update(state: &mut GrokUiState, value: &Value) {
     let current = models
         .get("currentModelId")
         .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| previous_model.as_ref().and_then(|model| model.get("value")).and_then(Value::as_str).map(ToOwned::to_owned))
         .unwrap_or_default();
     let available = models
         .get("availableModels")
@@ -2859,6 +2879,11 @@ fn merge_models_update(state: &mut GrokUiState, value: &Value) {
         .unwrap_or_default();
     if available.is_empty() {
         merge_grok_ui(state, value);
+        if let Some(mut model) = previous_model {
+            model["value"] = json!(current);
+            model["choices"] = json!([]);
+            upsert_option(state, model);
+        }
         merge_local_commands(state);
         return;
     }
@@ -2884,7 +2909,7 @@ fn merge_models_update(state: &mut GrokUiState, value: &Value) {
             .get("modelId")
             .or_else(|| model.get("id"))
             .and_then(Value::as_str)
-            == Some(current)
+            == Some(current.as_str())
     });
     if let Some(model) = current_model {
         let meta = model.get("_meta").unwrap_or(model);
@@ -5045,6 +5070,59 @@ mod tests {
         assert_eq!(state.options[1]["id"], "thinking");
         assert_eq!(state.options[1]["value"], "xhigh");
         assert_eq!(state.options[1]["choices"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn empty_models_update_removes_stale_choices_but_keeps_the_actual_model() {
+        let mut state = GrokUiState::default();
+        merge_models_update(&mut state, &json!({
+            "currentModelId":"retired",
+            "availableModels":[{"modelId":"retired","name":"Retired"}]
+        }));
+        merge_models_update(&mut state, &json!({"availableModels":[]}));
+        let model = state.options.iter().find(|option| option["id"] == "model").expect("actual model remains visible");
+        assert_eq!(model["value"], "retired");
+        assert_eq!(model["choices"], json!([]));
+    }
+
+    #[test]
+    fn empty_models_update_uses_the_reported_actual_model() {
+        let mut state = GrokUiState::default();
+        merge_models_update(&mut state, &json!({
+            "currentModelId":"old",
+            "availableModels":[{"modelId":"old","name":"Old"}]
+        }));
+        merge_models_update(&mut state, &json!({"currentModelId":"actual","availableModels":[]}));
+        let model = state.options.iter().find(|option| option["id"] == "model").unwrap();
+        assert_eq!(model["value"], "actual");
+        assert_eq!(model["choices"], json!([]));
+    }
+
+    #[test]
+    fn models_update_without_a_current_id_keeps_the_actual_model() {
+        let mut state = GrokUiState::default();
+        merge_models_update(&mut state, &json!({
+            "currentModelId":"actual",
+            "availableModels":[{"modelId":"actual","name":"Actual"}]
+        }));
+        merge_models_update(&mut state, &json!({
+            "availableModels":[{"modelId":"new-default","name":"New default"}]
+        }));
+        let model = state.options.iter().find(|option| option["id"] == "model").unwrap();
+        assert_eq!(model["value"], "actual");
+        assert_eq!(model["choices"][0]["value"], "new-default");
+    }
+
+    #[test]
+    fn config_catalogue_removal_clears_a_stale_model_choice() {
+        let mut state = GrokUiState::default();
+        merge_grok_ui(&mut state, &json!({
+            "configOptions":[{"id":"model","name":"Model","currentValue":"retired","options":[{"value":"retired"}]}]
+        }));
+        merge_grok_ui(&mut state, &json!({"configOptions":[]}));
+        let model = state.options.iter().find(|option| option["id"] == "model").expect("actual model remains visible");
+        assert_eq!(model["value"], "retired");
+        assert_eq!(model["choices"], json!([]), "an authoritative empty catalogue must remove retired choices");
     }
 
     #[test]

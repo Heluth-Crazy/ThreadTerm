@@ -521,3 +521,93 @@ fn provider_refresh_returns_before_the_probe_completes() {
     assert!(!service.providers.capability_snapshot().is_empty());
 }
 
+fn remember_catalog(db: &Database) {
+    crate::code_review::initialize(db).unwrap();
+    crate::code_review::remember_provider_options(
+        db,
+        "codex",
+        &json!({"options":[{"id":"model","category":"model","value":"old-model","recommended":"old-model","choices":[{"value":"old-model","name":"Old"}]}]}),
+    )
+    .unwrap();
+}
+
+fn catalog_present(db: &Database) -> bool {
+    db.transaction(|tx| {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM provider_option_catalog WHERE provider='codex')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    })
+    .unwrap()
+}
+
+#[test]
+fn provider_refresh_invalidates_persisted_model_catalogs() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+    let mut service = test_service(root.path(), Arc::clone(&db));
+    service.providers = Arc::new(Providers::for_test(Vec::new()));
+    remember_catalog(&db);
+    assert!(catalog_present(&db));
+    request(&service, "provider.refresh", json!({})).unwrap();
+
+    assert!(
+        !catalog_present(&db),
+        "a provider refresh must not leave a removed model selectable for new work"
+    );
+}
+
+#[test]
+fn provider_network_change_invalidates_persisted_model_catalogs() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+    let service = test_service(root.path(), Arc::clone(&db));
+    remember_catalog(&db);
+    assert!(catalog_present(&db));
+    request(
+        &service,
+        "settings.update",
+        json!({"patch":{"providerNetwork":{"grok":{"mode":"custom","proxyUrl":"http://localhost:8123"}}},"expectedRevision":0,"operationId":"catalog-network-change"}),
+    )
+    .unwrap();
+
+    assert!(
+        !catalog_present(&db),
+        "a provider network change must not leave a stale catalog available"
+    );
+}
+
+#[test]
+fn unrelated_settings_keep_persisted_model_catalogs() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+    let service = test_service(root.path(), Arc::clone(&db));
+    remember_catalog(&db);
+
+    request(
+        &service,
+        "settings.update",
+        json!({"patch":{"lightweightMode":true},"expectedRevision":0,"operationId":"catalog-unrelated-setting"}),
+    )
+    .unwrap();
+
+    assert!(catalog_present(&db));
+}
+
+#[test]
+fn runtime_start_invalidates_persisted_model_catalogs() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+    remember_catalog(&db);
+    assert!(catalog_present(&db));
+
+    let _service = test_service(root.path(), Arc::clone(&db));
+
+    assert!(
+        !catalog_present(&db),
+        "a new runtime instance must not offer models from its predecessor's catalog"
+    );
+}
+

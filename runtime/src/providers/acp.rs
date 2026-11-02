@@ -2703,13 +2703,26 @@ fn merge_acp_ui(state: &mut AcpUiState, value: &Value) {
         .or_else(|| value.get("availableConfigOptions"))
         .and_then(Value::as_array)
     {
+        let previous_model = state
+            .options
+            .iter()
+            .find(|option| option.get("id").and_then(Value::as_str) == Some("model"))
+            .cloned();
         let parsed: Vec<Value> = options.iter().filter_map(parse_acp_option).collect();
         modern_mode = parsed.iter().any(|option| {
             option.get("id").and_then(Value::as_str) == Some("mode")
                 && option.get("category").and_then(Value::as_str) == Some("mode")
         });
-        if !parsed.is_empty() {
-            state.options = parsed;
+        state.options = parsed;
+        if !state
+            .options
+            .iter()
+            .any(|option| option.get("id").and_then(Value::as_str) == Some("model"))
+        {
+            if let Some(mut model) = previous_model {
+                model["choices"] = json!([]);
+                state.options.push(model);
+            }
         }
     }
     if let Some(option) = value.get("configOption").or_else(|| value.get("option")) {
@@ -4650,6 +4663,18 @@ mod tests {
         assert_eq!(state.options[0]["id"], "model");
         assert_eq!(state.options[0]["value"], "kimi-for-coding");
         assert_eq!(state.commands[0]["name"], "compact");
+    }
+
+    #[test]
+    fn config_catalogue_removal_clears_a_stale_model_choice() {
+        let mut state = AcpUiState::default();
+        merge_acp_ui(&mut state, &json!({
+            "configOptions":[{"configId":"model","name":"Model","currentValue":"retired","options":[{"value":"retired"}]}]
+        }));
+        merge_acp_ui(&mut state, &json!({"configOptions":[]}));
+        let model = state.options.iter().find(|option| option["id"] == "model").expect("actual model remains visible");
+        assert_eq!(model["value"], "retired");
+        assert_eq!(model["choices"], json!([]), "an authoritative empty catalogue must remove retired choices");
     }
 
     #[test]
