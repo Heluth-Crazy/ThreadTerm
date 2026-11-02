@@ -50,6 +50,7 @@ pub(crate) fn pi_read_only_probe(
     cache: &Mutex<ProviderProbeCache>,
     version: Option<&str>,
 ) -> ReadOnlyProbe {
+    let _decision = crate::environment::provider_decision();
     let Some(version) = version.filter(|version| !version.is_empty()) else {
         return unavailable(
             "Pi version has not been detected. Refresh providers before enforcing read-only.",

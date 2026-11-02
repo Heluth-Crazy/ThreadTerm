@@ -1150,6 +1150,7 @@ impl CapabilityCache {
 }
 
 fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
+    let _decision = crate::environment::provider_decision();
     adapters
         .iter()
         .filter_map(|adapter| serde_json::to_value(adapter.capability()).ok())
@@ -2258,6 +2259,7 @@ impl Providers {
         options: &Value,
         recover_missing: &dyn Fn(Option<&str>) -> Result<bool, ProviderError>,
     ) -> Result<Value, ProviderError> {
+        let _decision = crate::environment::provider_decision();
         if session_id.trim().is_empty() || cwd.trim().is_empty() {
             return Err(ProviderError::new(
                 "invalid_chat_request",
@@ -2484,6 +2486,7 @@ impl ProviderRuntime for Providers {
         resume_id: Option<&str>,
         assign_id: Option<&str>,
     ) -> Result<Value, ProviderError> {
+        let _decision = crate::environment::provider_decision();
         if resume_id.is_some() && assign_id.is_some() {
             return Err(ProviderError::new(
                 "provider_internal",

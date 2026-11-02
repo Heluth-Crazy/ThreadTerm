@@ -81,6 +81,8 @@ function isolatedEnvironment() {
     THREADTERM_V3_USER_DATA: profile,
     THREADTERM_V3_PIPE: pipe,
     THREADTERM_V3_CONPTY: 'system',
+    // Explicit debug-only injection prevents snapshot-first discovery from running installed CLIs.
+    THREADTERM_QA_PROVIDER_BIN: bin,
     TT_QA_KIMI_LOG: logFile,
     TT_QA_KIMI_GATE: gateFile,
   });
