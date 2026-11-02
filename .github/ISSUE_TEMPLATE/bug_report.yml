@@ -1,0 +1,72 @@
+name: Bug 反馈
+description: 报告 ThreadTerm 的问题，并提供复现步骤和运行环境。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先搜索已有 Issue，避免重复报告。
+        提交前请移除日志、截图和补充信息中的密钥、令牌及个人信息。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 请简要说明遇到的问题及其影响。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 请从初始状态开始，按顺序描述操作；如仅偶发，请说明出现频率。
+      placeholder: |
+        1. 打开……
+        2. 执行……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 你预期上述操作应该产生什么结果？
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么？如有错误提示，请提供原文。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ThreadTerm 版本或 Git commit
+      description: 请填写安装版本；从源码运行时请填写 Git commit。
+      placeholder: 例如 0.1.0 或完整的 Git commit SHA
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统及版本
+      description: 请填写系统名称、版本及架构。
+      placeholder: 例如 Windows 11 24H2，x64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志（可选）
+      description: 可粘贴多行日志，无需添加代码围栏；请先移除密钥、令牌及个人信息。
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: 截图或补充信息（可选）
+      description: 可拖入截图或填写其他线索；请先移除密钥、令牌及个人信息。
+    validations:
+      required: false
