@@ -18,7 +18,7 @@ import {
 type ClientInternals = {
   control?: { write(payload: Buffer): void; close(): void };
   output?: { write(payload: Buffer): void; close(): void };
-  outputGroups: Map<string, { cursor: number }>;
+  outputGroups: Map<string, { cursor: number; fanout: { size: number; pendingBytes: number } }>;
   request: RuntimeClient['request'];
   handleControlFrame(frame: Buffer): void;
   handleOutputFrame(frame: Buffer, origin?: { write(payload: Buffer): void; close(): void }): Promise<void>;
@@ -603,12 +603,13 @@ test('a stale output delivery failure cannot disconnect the replacement transpor
     if (event.event === 'runtime.transport') states.push(String((event.data as {state?: unknown}).state));
   });
   try {
-    const pending = internal.handleOutputFrame(outputFrame('stale-delivery', 0, Uint8Array.of(1)), stale);
+    await internal.handleOutputFrame(outputFrame('stale-delivery', 0, Uint8Array.of(1)), stale);
     await started;
     internal.output = current;
     rejectDelivery(new Error('stale consumer failed'));
-    await assert.rejects(pending, /stale consumer failed/);
-    await new Promise(resolve => setImmediate(resolve));
+    await settle();
+    // A view failure is attributed to the transport which supplied its frame;
+    // it never disconnects the replacement transport.
     assert.equal(internal.output, current);
     assert.deepEqual(states, []);
   } finally {
@@ -618,13 +619,25 @@ test('a stale output delivery failure cannot disconnect the replacement transpor
   }
 });
 
-function clientWithPipes(): { client: RuntimeClient; writes: Buffer[] } {
-  const client = new RuntimeClient();
+function clientWithPipes(options: { maxConsumerQueueBytes?: number } = {}): { client: RuntimeClient; writes: Buffer[] } {
+  const client = new RuntimeClient(options);
   const writes: Buffer[] = [];
   const internal = client as unknown as ClientInternals;
   internal.control = { write() {}, close() {} };
   internal.output = { write(payload) { writes.push(payload); }, close() {} };
   return { client, writes };
+}
+
+function settle(): Promise<void> {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
+function creditFrames(writes: Buffer[], sessionId: string): number {
+  return writes.filter(payload => {
+    if (payload.readUInt8(0) !== 2) return false;
+    const header = JSON.parse(payload.subarray(5, 5 + payload.readUInt32LE(1)).toString('utf8')) as { sessionId?: unknown };
+    return header.sessionId === sessionId;
+  }).length;
 }
 
 function outputFrame(sessionId: string, cursor: number, data: Uint8Array): Buffer {
@@ -808,6 +821,7 @@ test('a runtime gap advances only its group and preserves later live output', as
 
   await internal.handleOutputFrame(outputFrame('gapped', 96, Uint8Array.of(7, 8)));
   await internal.handleOutputFrame(outputFrame('healthy', 0, Uint8Array.of(4, 5)));
+  await settle();
   assert.deepEqual(gapped, [
     { cursor: 96, gap: true, data: [] },
     { cursor: 96, gap: false, data: [7, 8] },
@@ -818,7 +832,29 @@ test('a runtime gap advances only its group and preserves later live output', as
   client.dispose();
 });
 
-test('a pending old frame cannot credit a reconnected or disposed output pipe', async () => {
+test('a stalled consumer never blocks other consumers of its session or its upstream credit', async () => {
+  const { client, writes } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  const healthy: number[] = [];
+  const other: number[] = [];
+  await client.subscribeOutput('stalled', 0, (chunk) => { healthy.push(...chunk.data); });
+  await client.subscribeOutput('stalled', 0, () => new Promise<void>(() => undefined));
+  await client.subscribeOutput('independent', 0, (chunk) => { other.push(...chunk.data); });
+
+  // Frames arrive like a transport delivers them: never awaited.
+  void internal.handleOutputFrame(outputFrame('stalled', 0, Uint8Array.of(1)));
+  void internal.handleOutputFrame(outputFrame('stalled', 1, Uint8Array.of(2)));
+  void internal.handleOutputFrame(outputFrame('stalled', 2, Uint8Array.of(3)));
+  void internal.handleOutputFrame(outputFrame('independent', 0, Uint8Array.of(9)));
+  await settle();
+  assert.deepEqual(healthy, [1, 2, 3], 'the healthy view keeps receiving every later chunk');
+  assert.deepEqual(other, [9], 'an unrelated session is unaffected');
+  assert.equal(creditFrames(writes, 'stalled'), 1 + 3, 'each chunk is credited while another view has not rendered');
+  assert.equal(creditFrames(writes, 'independent'), 1 + 1);
+  client.dispose();
+});
+
+test('a pending old frame credits only the pipe which supplied it', async () => {
   const { client, writes } = clientWithPipes();
   const internal = client as unknown as ClientInternals;
   let entered!: () => void;
@@ -826,13 +862,14 @@ test('a pending old frame cannot credit a reconnected or disposed output pipe', 
   let release!: () => void;
   const heldDelivery = new Promise<void>((resolve) => { release = resolve; });
   await client.subscribeOutput('pending', 0, async () => { entered(); await heldDelivery; });
-  const pending = internal.handleOutputFrame(outputFrame('pending', 0, Uint8Array.of(9)));
+  await internal.handleOutputFrame(outputFrame('pending', 0, Uint8Array.of(9)));
   await enteredDelivery;
+  assert.equal(writes.length, 3, 'credit is paid into the supplying pipe when the frame is enqueued');
   const reconnectedWrites: Buffer[] = [];
   internal.output = { write(payload) { reconnectedWrites.push(payload); }, close() {} };
   release();
-  await pending;
-  assert.equal(writes.length, 2, 'old delayed output must not credit after reconnect');
+  await settle();
+  assert.equal(writes.length, 3, 'a delayed view never pays credit twice or into the new pipe');
   assert.equal(reconnectedWrites.length, 0, 'old delayed output must not credit the new pipe');
 
   let secondEntered!: () => void;
@@ -840,12 +877,154 @@ test('a pending old frame cannot credit a reconnected or disposed output pipe', 
   let secondRelease!: () => void;
   const secondHeld = new Promise<void>((resolve) => { secondRelease = resolve; });
   const unsubscribe = await client.subscribeOutput('disposed', 0, async () => { secondEntered(); await secondHeld; });
-  const beforeDispose = reconnectedWrites.length;
-  const pendingDisposed = internal.handleOutputFrame(outputFrame('disposed', 0, Uint8Array.of(10)));
+  await internal.handleOutputFrame(outputFrame('disposed', 0, Uint8Array.of(10)));
   await secondStarted;
+  const beforeDispose = reconnectedWrites.length;
   client.dispose();
   secondRelease();
-  await pendingDisposed;
+  await settle();
   assert.equal(reconnectedWrites.length, beforeDispose, 'disposed client must not pay delayed credits');
   unsubscribe();
+});
+
+test('a lagging view catches up from durable history with byte equality and no duplicates', async () => {
+  const { client } = clientWithPipes({ maxConsumerQueueBytes: 8 });
+  const internal = client as unknown as ClientInternals;
+  const durable = Uint8Array.from({ length: 16 }, (_, index) => index + 1);
+  const stalled: Uint8Array[] = [];
+  const healthy: Uint8Array[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let first = true;
+  await client.subscribeOutput('capped', 0, async (chunk) => {
+    stalled.push(chunk.data);
+    if (first) { first = false; await held; }
+  });
+  await client.subscribeOutput('capped', 0, (chunk) => { healthy.push(chunk.data); });
+  const reads: number[] = [];
+  let durableBytes = durable;
+  internal.request = (async (_method, params) => {
+    const cursor = Number(params.cursor);
+    reads.push(cursor);
+    const nextCursor = Math.min(durableBytes.byteLength, cursor + Number(params.limit));
+    return {
+      sessionId: 'capped',
+      fromCursor: cursor,
+      nextCursor,
+      truncated: false,
+      encoding: 'base64',
+      data: Buffer.from(durableBytes.slice(cursor, nextCursor)).toString('base64'),
+    };
+  }) as RuntimeClient['request'];
+
+  for (const cursor of [0, 4, 8, 12]) {
+    await internal.handleOutputFrame(outputFrame('capped', cursor, durable.slice(cursor, cursor + 4)));
+    await settle();
+  }
+  assert.deepEqual(reads, [], 'the capped view re-reads nothing while its first chunk is still rendering');
+  assert.equal(internal.outputGroups.get('capped')?.fanout.pendingBytes, 0, 'the overflow dropped the backlog');
+
+  // A live frame lands while catch-up reads: it is dropped for the lagging view
+  // but advances the group cursor, so catch-up must re-read up to that point.
+  const liveDuringCatchUp = Uint8Array.of(99, 100, 101, 102);
+  let releaseRead!: () => void;
+  const heldRead = new Promise<void>((resolve) => { releaseRead = resolve; });
+  let readsHeld = false;
+  const serve = internal.request;
+  internal.request = (async (method, params) => {
+    if (!readsHeld) { readsHeld = true; await heldRead; }
+    return serve(method, params);
+  }) as RuntimeClient['request'];
+
+  release();
+  await settle();
+  assert.deepEqual(reads, [], 'the first read is still in flight');
+  // The runtime persists a frame before it multiplexes it, so the new bytes are
+  // already durable when they arrive.
+  durableBytes = Uint8Array.from([...durable, ...liveDuringCatchUp]);
+  await internal.handleOutputFrame(outputFrame('capped', 16, liveDuringCatchUp));
+  await settle();
+  releaseRead();
+  await settle();
+  assert.deepEqual(reads, [4, 16], 'catch-up re-reads the range a live frame advanced while it was reading');
+  assert.deepEqual(
+    [...Buffer.concat(stalled.map((data) => Buffer.from(data)))],
+    [...durable, 99, 100, 101, 102],
+    'caught-up bytes equal the durable bytes exactly, with no duplicates or reordering',
+  );
+  assert.deepEqual([...Buffer.concat(healthy.map((data) => Buffer.from(data)))], [...durable, 99, 100, 101, 102]);
+
+  await internal.handleOutputFrame(outputFrame('capped', 20, Uint8Array.of(103)));
+  await settle();
+  assert.deepEqual(
+    [...Buffer.concat(stalled.map((data) => Buffer.from(data)))],
+    [...durable, 99, 100, 101, 102, 103],
+    'the view rejoins live delivery after catching up',
+  );
+  client.dispose();
+});
+
+test('catch-up across a durable gap delivers an explicit gap instead of failing the view', async () => {
+  const { client } = clientWithPipes({ maxConsumerQueueBytes: 8 });
+  const internal = client as unknown as ClientInternals;
+  const stalled: Array<{ cursor: number; gap: boolean; data: number[] }> = [];
+  const healthy: number[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let first = true;
+  await client.subscribeOutput('hole', 0, async (chunk) => {
+    stalled.push({ cursor: chunk.cursor, gap: Boolean(chunk.gap), data: [...chunk.data] });
+    if (first) { first = false; await held; }
+  });
+  await client.subscribeOutput('hole', 0, (chunk) => { healthy.push(...chunk.data); });
+  internal.request = (async () => { throw new RuntimeUnavailableError('terminal_history_gap'); }) as RuntimeClient['request'];
+
+  for (const [cursor, data] of [[0, [1, 2, 3, 4]], [4, [5, 6, 7, 8]], [8, [9, 10, 11, 12]], [12, [13, 14, 15, 16]]] as const) {
+    await internal.handleOutputFrame(outputFrame('hole', cursor, Uint8Array.from(data)));
+    await settle();
+  }
+  release();
+  await settle();
+  assert.deepEqual(stalled, [
+    { cursor: 0, gap: false, data: [1, 2, 3, 4] },
+    { cursor: 16, gap: true, data: [] },
+  ], 'the view skips to the durable end with an explicit gap');
+  assert.deepEqual(healthy, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+
+  await internal.handleOutputFrame(outputFrame('hole', 16, Uint8Array.of(17)));
+  await settle();
+  assert.deepEqual(stalled.at(-1), { cursor: 16, gap: false, data: [17] }, 'live bytes continue after the gap');
+  assert.ok(internal.output, 'a durable gap never tears down the output transport');
+  client.dispose();
+});
+
+test('unsubscribing a stalled view frees its queue and the remaining view continues', async () => {
+  const { client } = clientWithPipes({ maxConsumerQueueBytes: 1024 });
+  const internal = client as unknown as ClientInternals;
+  const healthy: number[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let first = true;
+  const unsubscribeStalled = await client.subscribeOutput('shared', 0, async () => {
+    if (first) { first = false; await held; }
+  });
+  const unsubscribeHealthy = await client.subscribeOutput('shared', 0, (chunk) => { healthy.push(...chunk.data); });
+  await internal.handleOutputFrame(outputFrame('shared', 0, Uint8Array.of(1)));
+  await internal.handleOutputFrame(outputFrame('shared', 1, Uint8Array.of(2)));
+  await internal.handleOutputFrame(outputFrame('shared', 2, Uint8Array.of(3)));
+  await settle();
+  const group = internal.outputGroups.get('shared');
+  assert.ok(group);
+  assert.equal(group.fanout.size, 2);
+  assert.equal(group.fanout.pendingBytes, 2, 'the stalled view holds the queued backlog');
+
+  unsubscribeStalled();
+  assert.equal(group.fanout.size, 1);
+  assert.equal(group.fanout.pendingBytes, 0, 'unsubscribing releases the stalled queue');
+  await internal.handleOutputFrame(outputFrame('shared', 3, Uint8Array.of(4)));
+  await settle();
+  assert.deepEqual(healthy, [1, 2, 3, 4], 'the remaining view keeps receiving output');
+  unsubscribeHealthy();
+  assert.equal(internal.outputGroups.size, 0, 'the group is disposed with its last view');
+  release();
 });
