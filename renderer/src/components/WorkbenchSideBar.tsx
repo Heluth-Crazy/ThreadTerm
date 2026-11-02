@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { GitStatus, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
@@ -13,27 +13,30 @@ import { workbenchError } from '../workbench/errors';
 import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
-import { useRunProposalCount } from '../runProposals';
 import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import '../workbench/workbench.css';
 import './panel-headers.css';
 
-export type WorkbenchView = 'files'|'search'|'scm'|'run'|'changes';
+export type WorkbenchView = 'files'|'search'|'scm'|'run'|'changes'|'browser'|'details';
 export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeKey?:string };
-// Only the last view and the width are remembered. The panel starts closed whenever the workspace opens: a session
-// opens as just a session, and the panel appears only when a view is chosen (user decision 2026-09-28).
-type Stored = { view:WorkbenchView; width:number };
+// Remember each view's width and the last view, but always start a workspace with the panel closed.
+type Stored = { view:WorkbenchView; widths:Record<WorkbenchView,number> };
 const STORAGE_KEY = 'threadterm.workbench.sidebar';
 const MIN_WIDTH = 220, MAX_WIDTH = 520;
+const VIEW_IDS:WorkbenchView[] = ['files', 'search', 'scm', 'run', 'changes', 'browser', 'details'];
+const clampWidth = (width:number) => Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width));
 
 function readStored():Stored {
- try {
-  const value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Partial<Stored>;
-  return {
-   view:['files', 'search', 'scm', 'run', 'changes'].includes(String(value.view)) ? value.view as WorkbenchView : 'files',
-   width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Number(value.width) || 280)),
-  };
- } catch { return {view:'files', width:280}; }
+ let value:Partial<Stored>&{width?:number} = {};
+ try { value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') ?? {}; } catch { /* use defaults */ }
+ const legacy = Number(value.width);
+ return {
+  view:VIEW_IDS.includes(value.view as WorkbenchView) ? value.view as WorkbenchView : 'files',
+  widths:Object.fromEntries(VIEW_IDS.map(view => {
+   const width = Number(value.widths?.[view]);
+   return [view, view==='browser' ? (Number.isFinite(width)&&width>0?width:0) : clampWidth(Number.isFinite(width)&&width>0 ? width : Number.isFinite(legacy)&&legacy>0 ? legacy : view==='details'?320:300)];
+  })) as Record<WorkbenchView,number>,
+ };
 }
 
 /** Shared Git status for the side bar, refreshed only when this worktree can have changed: this app's own Git
@@ -80,12 +83,9 @@ export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath
  return {status, error, loading, refresh};
 }
 
-/**
- * View switcher + panel. An open panel owns its switcher above its card; otherwise the switcher is
- * portalled into the top-left pane strip. The panel card shares the pane cards' top and bottom edges.
- */
-export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], activeSessionId, activePath, command, switcherHost, zh}:{
- scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; switcherHost?:HTMLElement|null; zh:boolean;
+/** Fixed header tools and a single right panel aligned with the pane cards. */
+export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], activeSessionId, activePath, command, headerHost, details, browser, browserActions, zh}:{
+ scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; headerHost?:HTMLElement|null; details?:ReactNode; browser?:(close:()=>void)=>ReactNode; browserActions?:ReactNode; zh:boolean;
 }) {
  const [stored, setStored] = useState(readStored);
  const [open, setOpen] = useState(false);
@@ -93,14 +93,12 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
  const [focusKey, setFocusKey] = useState<string>();
  const [handledCommand,setHandledCommand]=useState<string>();
  const [actionsHost, setActionsHost] = useState<HTMLDivElement|null>(null);
- const switcherRef=useRef<HTMLElement>(null),switcherFocus=useRef<WorkbenchView|undefined>(undefined),switcherTarget=useRef<HTMLElement|null>(null),relocatingSwitcher=useRef(false);
  const git = useGitStatus(scope, open, zh, sessions.filter(session => session.projectId === scope.projectId && (session.worktreePath ?? '') === (scope.worktreePath ?? '')).map(session => session.id));
  const text = (en:string, cn:string) => zh ? cn : en;
- const update = (patch:Partial<Stored>) => setStored(current => {
-  const next = {...current, ...patch};
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* storage full or disabled: keep in memory */ }
-  return next;
- });
+ useEffect(() => {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(stored)); } catch { /* storage full or disabled: keep in memory */ }
+ }, [stored]);
+ const update = (patch:Partial<Stored>) => setStored(current => ({...current, ...patch}));
  const select = (view:WorkbenchView, focus = false) => {
   setVisited(current => current.has(view) ? current : new Set([...current, view]));
   // Clicking the active view collapses the panel, as in VS Code/Cursor.
@@ -113,53 +111,53 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   if(command.view === 'toggle') setOpen(value => !value);
   else select(command.view, true);
  }, [command?.key]);
- useLayoutEffect(()=>{
-  const target=open?null:switcherHost??null;
-  const moved=switcherTarget.current!==target;
-  switcherTarget.current=target;
-  const view=moved?switcherFocus.current:undefined;
-  switcherFocus.current=undefined; relocatingSwitcher.current=false;
-  if(view) switcherRef.current?.querySelector<HTMLButtonElement>(`[data-view="${view}"]`)?.focus();
-  return()=>{
-   const button=document.activeElement instanceof HTMLElement?document.activeElement.closest<HTMLButtonElement>('.wb-switcher [data-view]'):null;
-   switcherFocus.current=button&&switcherRef.current?.contains(button)?button.dataset.view as WorkbenchView:undefined;
-   relocatingSwitcher.current=Boolean(switcherFocus.current);
-  };
- },[open,switcherHost]);
+ const slot=useRef<HTMLDivElement>(null);
+ const [workspaceWidth,setWorkspaceWidth]=useState(0);
+ useEffect(()=>{
+  if(!open)return;
+  const workspace=slot.current?.closest('.ws-content');if(!workspace)return;
+  const observer=new ResizeObserver(()=>setWorkspaceWidth(workspace.getBoundingClientRect().width));
+  setWorkspaceWidth(workspace.getBoundingClientRect().width);observer.observe(workspace);return()=>observer.disconnect();
+ },[open]);
+ const browserWidth=stored.view==='browser';
+ const maxWidth=browserWidth?Math.max(MIN_WIDTH,workspaceWidth*.7):MAX_WIDTH;
+ const width = browserWidth?Math.min(maxWidth,Math.max(MIN_WIDTH,stored.widths.browser||workspaceWidth*.45)):stored.widths[stored.view];
+ const resizeWidth = (value:number) => update({widths:{...stored.widths,[stored.view]:browserWidth?Math.min(maxWidth,Math.max(MIN_WIDTH,value)):clampWidth(value)}});
  const resize = (event:ReactPointerEvent<HTMLDivElement>) => {
   event.preventDefault();
   const start = event.clientX, target = event.currentTarget, width = target.parentElement!.getBoundingClientRect().width;
   target.setPointerCapture(event.pointerId);
-  const move = (next:PointerEvent) => update({width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width + next.clientX - start))});
+  const move = (next:PointerEvent) => resizeWidth(width + start - next.clientX);
   const end = () => { target.removeEventListener('pointermove', move); target.removeEventListener('pointerup', end); target.removeEventListener('pointercancel', end); };
   target.addEventListener('pointermove', move); target.addEventListener('pointerup', end); target.addEventListener('pointercancel', end);
  };
  const changeCount = git.status?.changes.length ?? 0;
- const proposalCount = useRunProposalCount({projectId:scope.projectId,root:scope.rootPath}, zh);
  const views:{id:WorkbenchView;icon:string;label:string;shortcut:string;badge?:number}[] = [
   {id:'files', icon:'file', label:text('Files', '文件'), shortcut:'Ctrl+Shift+E'},
   {id:'search', icon:'search', label:text('Search', '搜索'), shortcut:'Ctrl+Shift+F'},
   {id:'scm', icon:'branch', label:text('Source Control', '源代码管理'), shortcut:'Ctrl+Shift+G', badge:changeCount || undefined},
-  // The Run view deliberately has no shortcut: Ctrl+Shift+R is Electron's Force Reload in the default menu.
-  {id:'run', icon:'play', label:text('Run', '运行'), shortcut:'', badge:proposalCount || undefined},
   {id:'changes', icon:'spark', label:text('Agent changes', 'Agent 改动'), shortcut:''},
+  ...(browser?[{id:'browser' as const,icon:'globe',label:text('Browser','浏览器'),shortcut:''}]:[]),
+  {id:'details', icon:'info', label:text('Session details', '会话详情面板'), shortcut:''},
  ];
- const current = views.find(view => view.id === stored.view)!;
- const switcher = <nav ref={switcherRef} className="wb-switcher" aria-label={text('Workbench views', '侧栏视图')} onFocusCapture={event=>{switcherFocus.current=(event.target as HTMLElement).closest<HTMLButtonElement>('[data-view]')?.dataset.view as WorkbenchView|undefined;}} onBlurCapture={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null)&&!relocatingSwitcher.current) switcherFocus.current=undefined;}}>
+ const current = stored.view==='browser' ? {label:text('Browser','浏览器')} : stored.view==='run' ? {label:text('Run', '运行')} : stored.view==='details' ? {label:text('Session details', '会话详情')} : views.find(view => view.id === stored.view)!;
+ const switcher = <nav className="wb-switcher" aria-label={text('Workbench views', '侧栏视图')}>
   {views.map(view => <button key={view.id} type="button" className={`wb-switch-btn${open && stored.view === view.id ? ' active' : ''}`}
    data-view={view.id} aria-pressed={open && stored.view === view.id} aria-label={view.label}
    title={`${view.label}${view.shortcut ? ` (${view.shortcut})` : ''}${open && stored.view === view.id ? text(' · click to hide the side bar (Ctrl+B)', ' · 再次点击隐藏侧栏（Ctrl+B）') : ''}`}
    onClick={() => select(view.id)}>
-   <WbIcon name={view.icon}/>{view.badge ? <span className="wb-switch-badge" data-testid={view.id==='run'?'run-proposals-badge':undefined} role={view.id==='run'?'status':undefined} aria-live={view.id==='run'?'polite':undefined} aria-label={view.id==='run'?text(`${view.badge} pending proposal${view.badge===1?'':'s'}`,`${view.badge} 个待处理建议`):undefined}>{view.badge > 99 ? '99+' : view.badge}</span> : null}
+   <WbIcon name={view.icon}/>{view.badge ? <span className="wb-switch-badge">{view.badge > 99 ? '99+' : view.badge}</span> : null}
   </button>)}
  </nav>;
  return <>
-  {!open&&switcherHost&&createPortal(switcher, switcherHost)}
-  {open && <div className="wb-sidebar-slot" style={{width:stored.width}}><div className="wb-sidebar-strip">{switcher}</div><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>
+  {headerHost&&createPortal(switcher, headerHost)}
+  {open && <div ref={slot} className={`wb-sidebar-slot${browserWidth?' wb-sidebar-browser':''}`} style={{width:browserWidth&&!workspaceWidth?'45%':width}}><div className="wb-sidebar-strip" aria-hidden="true"/><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>
    <section className="wb-panel" aria-label={current.label}>
-    <header className="wb-panel-head"><strong>{current.label}</strong><div className="wb-panel-actions" ref={setActionsHost}/>
+    <header className="wb-panel-head"><strong>{current.label}</strong><div className="wb-panel-actions" ref={setActionsHost}>{browserWidth&&browserActions}</div>
      <button type="button" className="icon-btn wb-panel-close" title={text('Close side bar (Ctrl+B)', '关闭侧栏（Ctrl+B）')} aria-label={text('Close side bar', '关闭侧栏')} onClick={() => setOpen(false)}><Icon name="close"/></button></header>
     <div className="wb-panel-body">
+     {stored.view==='browser'&&browser?.(()=>setOpen(false))}
+     {stored.view==='details'&&details}
      {visited.has('files') && <div className="wb-view" hidden={stored.view !== 'files'}><ExplorerView scope={scope} actions={actions} git={git} zh={zh} activePath={activePath} focusKey={stored.view === 'files' ? focusKey : undefined} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/></div>}
      {visited.has('search') && <div className="wb-view" hidden={stored.view !== 'search'}><SearchView scope={scope} actions={actions} zh={zh} focusKey={stored.view === 'search' ? focusKey : undefined}/></div>}
      {visited.has('scm') && <div className="wb-view" hidden={stored.view !== 'scm'}><SourceControlView scope={scope} actions={actions} git={git} zh={zh} visible={open&&stored.view==='scm'} command={open&&stored.view==='scm'&&command?.view==='scm'&&command.action&&command.key!==handledCommand?{view:'scm',key:command.key,action:command.action,scopeKey:command.scopeKey}:undefined} onCommandHandled={setHandledCommand} toolbarHost={stored.view === 'scm' ? actionsHost : undefined}/></div>}
@@ -167,8 +165,8 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
      {visited.has('changes') && <div className="wb-view" hidden={stored.view !== 'changes'}><AgentChangesView sessions={sessions} activeSessionId={activeSessionId} actions={actions} zh={zh} visible={stored.view === 'changes'} toolbarHost={stored.view === 'changes' ? actionsHost : undefined}/></div>}
     </div>
    </section>
-   <div className="wb-resize" role="separator" aria-orientation="vertical" aria-label={text('Resize side bar', '调整侧栏宽度')} aria-valuenow={stored.width} aria-valuemin={MIN_WIDTH} aria-valuemax={MAX_WIDTH} tabIndex={0} onPointerDown={resize}
-    onKeyDown={event => { if(event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const width = event.currentTarget.parentElement!.getBoundingClientRect().width; update({width:Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width + (event.key === 'ArrowLeft' ? -16 : 16)))}); } }}/>
+   <div className="wb-resize" role="separator" aria-orientation="vertical" aria-label={text('Resize side bar', '调整侧栏宽度')} aria-valuenow={width} aria-valuemin={MIN_WIDTH} aria-valuemax={maxWidth} tabIndex={0} onPointerDown={resize}
+    onKeyDown={event => { if(event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const width = event.currentTarget.parentElement!.getBoundingClientRect().width; resizeWidth(width + (event.key === 'ArrowLeft' ? 16 : -16)); } }}/>
   </aside></div>}
  </>;
 }

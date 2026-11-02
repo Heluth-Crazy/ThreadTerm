@@ -1,4 +1,4 @@
-// F11: both routes use the existing workspace browser page strip.
+// F11: group links use the Browser panel; agent previews remain workspace tabs.
 import assert from 'node:assert/strict';
 export async function capturePreviewParity({ page, request, first, back, take, until }) {
   const url = first.outputs?.urls?.[0];
@@ -16,8 +16,9 @@ export async function capturePreviewParity({ page, request, first, back, take, u
   await request('session.present',{sessionId:first.sessionId,placement:'workspace',presentation:'focused',operationId:crypto.randomUUID()});
   await chat.waitFor();
   await take('chat-link-open-in-preview');
-  const tabs=await page.getByRole('tab').allTextContents();
-  assert.ok(tabs.some(text=>/Group page output/.test(text)), 'Chat keeps the same browser page strip');
+   const tabs=await page.getByRole('tab').allTextContents();
+   assert.ok(await page.locator('.wb-web-preview:visible').count(), 'Chat opens the group URL in the Browser panel');
+   assert.ok(!tabs.some(text=>/Group page output/.test(text)), 'Chat link does not add a workspace browser tab');
   await back();
-  return {url,tabs,sharedPageStrip:true};
+   return {url,tabs,sharedBrowserPanel:true};
 }

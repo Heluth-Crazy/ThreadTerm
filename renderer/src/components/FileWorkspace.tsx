@@ -22,11 +22,14 @@ import { notifyFilesChanged } from "../workbench/types";
 import { MergeEditor, type MergeEditorHandle, type MergeSelection } from "./MergeEditor";
 import { CommentForm, PendingComments, useFileComments } from "./FileComments";
 import type { FileCommentsHost } from "../fileCommentsHost";
-import { fileCommentPlace, sameCommentVersion, type CommentVersion } from "../reviewComments";
+import { sameCommentVersion, type CommentVersion } from "../reviewComments";
 import { GitMergeControls } from "./GitMergeControls";
 import { SurfaceDialog } from "./SurfaceDialog";
 import { FilePreview } from "./FilePreview";
 import "./file-workspace.css";
+import "./file-bar.css";
+import { FileBarActions, FileBreadcrumb } from "./FileBarActions";
+import type { ContextMenuItem } from "./ContextMenu";
 import { registerDirtyEditor } from "../dirtyEditors";
 import { ExplorerView } from "./ExplorerView";
 import { SourceControlView } from "./SourceControlView";
@@ -101,13 +104,15 @@ export function ExternalFileBoundary({ path, zh, noticeOpen, onNoticeToggle, onC
   path = displayPath(path);
   const notice = zh ? "ThreadTerm 以只读方式打开此文件。发送它只会让 Agent 按自身权限读取，不会授予写入权限。" : "ThreadTerm opens this file read-only. Sending it lets the agent read it under its own permissions and never grants write access.";
   return <div className="external-file-boundary" data-testid="external-file-boundary">
-    <button type="button" className="ws-chip external-file-boundary-chip" aria-expanded={noticeOpen} title={notice} onClick={onNoticeToggle}>
-      {zh ? "工作区外 · 只读" : "Outside workspace · Read-only"}
+    <button type="button" className="ws-chip external-file-boundary-chip" aria-expanded={noticeOpen} aria-label={zh ? "工作区外 · 只读" : "Outside workspace · Read-only"} title={notice} onClick={onNoticeToggle}>
+      {/* Narrow bars keep "Read-only" whole instead of clipping the longer label mid-word. */}
+      <span className="external-file-chip-full">{zh ? "工作区外 · 只读" : "Outside workspace · Read-only"}</span>
+      <span className="external-file-chip-short" aria-hidden="true">{zh ? "只读" : "Read-only"}</span>
     </button>
     {noticeOpen && <span className="external-file-boundary-notice" role="note">{notice}</span>}
     <span className="path external-file-boundary-path" title={path} aria-label={path}><span className="external-file-path-prefix">{path.slice(0,Math.max(path.lastIndexOf('/'),path.lastIndexOf('\\'))+1)}</span><span className="external-file-path-name">{path.split(/[\\/]/).at(-1)}</span></span>
-    <button type="button" className="icon-btn external-file-boundary-action" title={zh ? "复制路径" : "Copy path"} aria-label={zh ? "复制路径" : "Copy path"} onClick={onCopy}><WbIcon name="copy"/><span>{zh ? "复制路径" : "Copy path"}</span></button>
-    <button type="button" className="icon-btn external-file-boundary-action" title={zh ? "从磁盘重新载入" : "Reload from disk"} aria-label={zh ? "从磁盘重新载入" : "Reload from disk"} onClick={onReload}><WbIcon name="refresh"/><span>{zh ? "从磁盘重新载入" : "Reload from disk"}</span></button>
+    <button type="button" className="icon-btn icon-btn-sm external-file-boundary-action file-bar-optional" title={zh ? "复制路径" : "Copy path"} aria-label={zh ? "复制路径" : "Copy path"} onClick={onCopy}><WbIcon name="copy"/></button>
+    <button type="button" className="icon-btn icon-btn-sm external-file-boundary-action file-bar-optional" title={zh ? "从磁盘重新载入" : "Reload from disk"} aria-label={zh ? "从磁盘重新载入" : "Reload from disk"} onClick={onReload}><WbIcon name="refresh"/></button>
   </div>;
 }
 
@@ -990,10 +995,7 @@ function FileWorkspaceInstance({
       );
     }
     return embeddedPath ? (
-      <span className="embedded-file-breadcrumb" title={embeddedPath}>
-        {embeddedPath.split(/[\\/]/).join(" › ")}
-        {dirty ? " ·" : ""}
-      </span>
+      <FileBreadcrumb path={embeddedPath} />
     ) : null;
   };
   const embeddedClose = () =>
@@ -1016,6 +1018,40 @@ function FileWorkspaceInstance({
     : gitDiffFiles(gitState.status?.changes ?? [], staged);
   // A compare diff is editable on the working side only in the working-tree scope, with a real disk file.
   const compareEditable = compare ? compareDiffEditable(compare, !document?.readonly) : true;
+  const pinLabel = pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)");
+  const canPin = !external && sessionDocuments && !image && !sessionDocuments.loading && !documentPinning && !sessionDocumentIssue;
+  const pinAction = canPin && <button type="button" className="icon-btn icon-btn-sm file-bar-secondary" aria-pressed={Boolean(pinnedDocument)} title={pinLabel} aria-label={pinLabel} onClick={() => void toggleSessionDocument()}><Icon name="bookmark" /></button>;
+  const historyAction = document && !external && onOpenHistory && !image && <button type="button" className="icon-btn icon-btn-sm file-bar-secondary" title={zh ? "文件历史" : "File history"} aria-label={zh ? "文件历史" : "File history"} onClick={() => onOpenHistory({ path: document.path })}><Icon name="clock" /></button>;
+  const sendAction = document && onSendToAgent && (!image || external) && <button type="button" className="icon-btn icon-btn-sm file-bar-optional" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}><Icon name="send" /></button>;
+  const dirtyPill = <span className="file-dirty ws-chip" data-testid="editor-dirty" hidden={!dirty} title={zh ? "未保存" : "Unsaved"}>●<span className="file-dirty-label">{zh ? "未保存" : "Unsaved"}</span></span>;
+  const fileMenuItems: ContextMenuItem[] = document ? [
+    {id:"file-copy-path",label:zh ? "复制路径" : "Copy path",icon:<WbIcon name="copy" />,onSelect:()=>navigator.clipboard.writeText(document.path)},
+    ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="folder" />,onSelect:()=>{if(embedded)dispatchEvent(new CustomEvent("threadterm:workbench",{detail:{view:"files"}}));else setToolsOpen(true);}}] : []),
+    ...(!busy ? [{id:"file-reload",label:copy.reload,icon:<WbIcon name="refresh" />,onSelect:()=>{if(external)void open(document.path,view,true);else setPending({path:document.path,view,reload:true});}}] : []),
+    ...(view === "file" && !external && !image && gitState.status && (!dirty || blameOn) ? [{id:"file-blame",label:zh ? "逐行追溯" : "Blame",icon:<WbIcon name="person" />,onSelect:()=>setBlameOn(value=>!value)}] : []),
+    ...(!external && onOpenHistory && !image ? [{id:"file-history",label:zh ? "文件历史" : "File history",icon:<Icon name="clock" />,onSelect:()=>onOpenHistory({path:document.path})}] : []),
+    ...(canPin ? [{id:"file-plans",label:pinLabel,icon:<Icon name="bookmark" />,onSelect:()=>toggleSessionDocument()}] : []),
+    ...(onSendToAgent && (!image || external) ? [{id:"file-send",label:zh ? "发送给 Agent" : "Send to agent",icon:<Icon name="send" />,onSelect:()=>onSendToAgent({path:document.path})}] : []),
+    ...(view === "diff" && !staged && compareEditable && !document.readonly && diff && !diff.binary ? [
+      {id:"file-revert-line",label:zh ? "还原当前行" : "Revert current line",icon:<WbIcon name="undo" />,onSelect:()=>{mergeEditor.current?.revertLine();}},
+      {id:"file-revert-hunk",label:zh ? "还原当前块" : "Revert current hunk",icon:<WbIcon name="undo" />,onSelect:()=>{mergeEditor.current?.revertHunk();}},
+    ] : []),
+    ...(view === "diff" && navigationPaths.includes(document.path) && !busy && !fileNavigation && !navigationDisabled ? [
+      ...navigationPaths.filter((_,index) => index === navigationPaths.indexOf(document.path) - 1).map(path => ({id:"file-previous",label:zh ? "上一个文件" : "Previous file",onSelect:()=>{if(onNavigateDiff)onNavigateDiff(path,()=>open(path,"diff"));else choose(path,"diff");}})),
+      ...navigationPaths.filter((_,index) => index === navigationPaths.indexOf(document.path) + 1).map(path => ({id:"file-next",label:zh ? "下一个文件" : "Next file",onSelect:()=>{if(onNavigateDiff)onNavigateDiff(path,()=>open(path,"diff"));else choose(path,"diff");}})),
+    ] : []),
+    ...(view === "diff" && hunkCount > 0 ? [
+      {id:"file-previous-hunk",label:zh ? "上一个更改块" : "Previous hunk",onSelect:()=>moveHunk(-1)},
+      {id:"file-next-hunk",label:zh ? "下一个更改块" : "Next hunk",onSelect:()=>moveHunk(1)},
+    ] : []),
+    ...(draftStatus === "conflict" ? [{id:"file-retry",label:copy.retry,onSelect:()=>persistDraft(document,text,base.current)}] : []),
+    ...(!embedded ? [
+      ...(!external ? [{id:"file-tools",label:zh ? "文件与 Git" : "Files & Git",icon:<Icon name="panel" />,onSelect:()=>setToolsOpen(value=>!value)}] : []),
+      {id:"file-close",label:zh ? "关闭当前" : "Close current",onSelect:()=>requestClose("current")},
+      ...(openPaths.length > 1 ? [{id:"file-close-others",label:zh ? "关闭其他" : "Close others",onSelect:()=>requestClose("others")}] : []),
+      {id:"file-close-all",label:zh ? "关闭全部文件" : "Close all files",onSelect:()=>requestClose("all")},
+    ] : []),
+  ] : [];
 
   return (
     <section className={`file-workspace ${toolsOpen ? "tools-open" : ""} ${embedded ? "embedded" : ""}${external ? " external-file-workspace" : ""}`} data-git-workbench={!embedded&&!external||undefined} data-git-workbench-host={!embedded&&!external?gitWorkbenchHost.current:undefined} data-git-repository={!embedded&&!external&&gitState.status?'true':undefined}>
@@ -1071,111 +1107,25 @@ function FileWorkspaceInstance({
         {document ? (
           <>
             {view !== "diff" && (
-              <div className={`tt-editor-tabs file-view-tabs${external ? " external-file-toolbar" : ""}`}>
-                {external ? externalBoundary : embedded ? (
-                  embeddedNavigation() ?? (
-                    <span className="embedded-file-breadcrumb" title={document.path}>
-                      {document.path.split(/[\\/]/).join(" › ")}
-                      {dirty ? " ·" : ""}
-                    </span>
-                  )
-                ) : (
-                  openPaths.map((path) => (
-                    <button
-                      className={`tt-editor-tab ${path === document.path ? "active" : ""}`}
-                      key={path}
-                      onClick={() => choose(path, view)}
-                    >
-                      {path.split(/[\\/]/).at(-1)}
-                      {path === document.path && dirty ? " ·" : ""}
-                    </button>
-                  ))
-                )}
-                <span className="grow" />
-                {view === "file" && !external && !image && gitState.status?.changes.some(change => change.path === document.path && isConflict(change)) && (
-                  <ConflictStageAction key={document.path} scope={scope} path={document.path} revision={document.fingerprint} disabled={busy || dirty || document.readonly} zh={zh} onStaged={() => void refreshGit()} />
-                )}
-                {embedded && /\.(md|mdx|html?)$/i.test(document.path) && (
-                  <button
-                    className="btn btn-sm"
-                    onClick={() => setView(view === "preview" ? "file" : "preview")}
-                  >
-                    {view === "preview"
-                      ? zh
-                        ? "查看源代码"
-                        : "Source code"
-                      : copy.preview}
-                  </button>
-                )}
-                {view === "file" && !external && !image && gitState.status && (
-                  <button
-                    type="button"
-                    className="btn btn-sm editor-toolbar-toggle"
-                    aria-pressed={blameOn}
-                    disabled={dirty && !blameOn}
-                    title={dirty ? (zh ? "保存后可查看逐行追溯" : "Save to show blame") : zh ? "显示每行最后修改的提交" : "Show the last commit for each line"}
-                    onClick={() => setBlameOn((value) => !value)}
-                  >
-                    {zh ? "逐行追溯" : "Blame"}
-                  </button>
-                )}
-                {!external && onOpenHistory && !image && (
-                  <button type="button" className="icon-btn icon-btn-sm" title={zh ? "文件历史" : "File history"} aria-label={zh ? "文件历史" : "File history"} onClick={() => onOpenHistory({ path: document.path })}>
-                    <Icon name="clock" />
-                  </button>
-                )}
-                {onSendToAgent && (!image || external) && (
-                  <button type="button" className="icon-btn icon-btn-sm" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}>
-                    <Icon name="send" />
-                  </button>
-                )}
-                {!external && sessionDocuments && !image && (
-                  <button
-                    type="button"
-                    className="icon-btn icon-btn-sm"
-                    aria-pressed={Boolean(pinnedDocument)}
-                    disabled={sessionDocuments.loading || documentPinning || Boolean(sessionDocumentIssue)}
-                    title={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
-                    aria-label={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
-                    onClick={() => void toggleSessionDocument()}
-                  >
-                    <Icon name="bookmark" />
-                  </button>
-                )}
-                {view === "file" && commentScope && commentsHost && !image && (
-                  <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${displayPath(fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}` : `Comment on ${displayPath(fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
-                )}
-                {embedded && !external && (
-                  <button
-                    className="btn btn-sm"
-                    onClick={() => void saveFile()}
-                    disabled={busy || document.readonly || !dirty}
-                  >
-                    {copy.save}
-                  </button>
-                )}
-                {!embedded && !external && (
-                  <button
-                    className="icon-btn icon-btn-sm file-tools-button"
-                    title={zh ? "文件与 Git" : "Files & Git"}
-                    aria-label={zh ? "文件与 Git" : "Files & Git"}
-                    aria-pressed={toolsOpen}
-                    onClick={() => setToolsOpen((value) => !value)}
-                  >
-                    <Icon name="panel" />
-                  </button>
-                )}
+              <div className={`tt-editor-tabs file-view-tabs file-workspace-bar${external ? " external-file-toolbar" : ""}`}>
+                <div className="file-bar-location">
+                {external ? externalBoundary : previewNavigation ? embeddedNavigation() : <FileBreadcrumb path={document.path} />}
+                {!embedded && !external && openPaths.length > 1 && <Select className="embedded-file-navigation" value={document.path} aria-label={zh ? "切换文件预览" : "Switch file preview"} onChange={event => choose(event.target.value, view)}>{openPaths.map(path => <option key={path} value={path}>{path}</option>)}</Select>}
+                {dirtyPill}
+                </div>
+                {/\.(md|mdx|html?)$/i.test(document.path) && <span className="file-bar-segments" role="group" aria-label={zh ? "文件视图" : "File view"}>
+                  <button type="button" aria-pressed={view === "file"} onClick={() => setView("file")}>{zh ? "源代码" : "Source"}</button>
+                  <button type="button" aria-pressed={view === "preview"} onClick={() => setView("preview")}>{copy.preview}</button>
+                </span>}
+                {view === "file" && !external && !image && gitState.status && (!dirty || blameOn) && <button type="button" className="icon-btn icon-btn-sm file-bar-secondary" aria-label={zh ? "逐行追溯" : "Blame"} title={zh ? "显示每行最后修改的提交" : "Show the last commit for each line"} aria-pressed={blameOn} onClick={() => setBlameOn(value => !value)}><WbIcon name="person" /></button>}
+                {historyAction}
+                {pinAction}
+                {sendAction}
+                {!external && !image && (!conflictedFile || dirty) && <span className="file-bar-save-slot">{dirty && !document.readonly && !busy && <button className="btn btn-sm" aria-label={copy.save} title={`${copy.save} (Ctrl+S)`} onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button>}</span>}
+                {view === "file" && !external && !image && conflictedFile && !busy && !dirty && !document.readonly && !stageReason && <ConflictStageAction key={document.path} scope={scope} path={document.path} revision={document.fingerprint} disabled={false} zh={zh} onStaged={() => void refreshGit()} />}
+                {!embedded && !external && <button className="icon-btn icon-btn-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
+                <FileBarActions items={fileMenuItems} zh={zh} />
                 {embeddedClose()}
-                {draftStatus === "conflict" && (
-                  <button
-                    className="btn btn-sm"
-                    onClick={() =>
-                      void persistDraft(document, text, base.current)
-                    }
-                  >
-                    {copy.retry}
-                  </button>
-                )}
               </div>
             )}
             {view === "file" && commentScope && commentsHost && !image && <>
@@ -1184,129 +1134,25 @@ function FileWorkspaceInstance({
             </>}
             {view === "diff" ? (
                 <section className="tt-diff-shell" data-testid="file-diff-surface">
-                <div className="file-bar">
-                  {embeddedNavigation()}
-                  {!embedded && (
-                    <button
-                      className="icon-btn icon-btn-sm file-tools-button"
-                      title={zh ? "文件与 Git" : "Files & Git"}
-                      aria-label={zh ? "文件与 Git" : "Files & Git"}
-                      aria-pressed={toolsOpen}
-                      onClick={() => setToolsOpen((value) => !value)}
-                    >
-                      <Icon name="panel" />
-                    </button>
-                  )}
-                  {!previewNavigation && <span className="path">{document.path}</span>}
-                  <span className="dim">
-                    {compare
-                      ? `${compare.committedOnly
-                          ? zh ? "仅已提交的更改" : "Committed changes only"
-                          : zh ? "工作区" : "Working tree"} · ${zh ? `对比 ${compare.base}` : `vs ${compare.base}`} · ${compare.committedOnly || document.readonly
-                          ? copy.readOnly
-                          : zh
-                            ? "左侧基线只读，右侧可编辑"
-                            : "Baseline is read-only; current file is editable"}`
-                      : <>
-                    {staged ? copy.staged : copy.unstaged} ·{" "}
-                    {staged || document.readonly
-                      ? copy.readOnly
-                      : zh
-                        ? "左侧基线只读，右侧可编辑"
-                        : "Baseline is read-only; current file is editable"}
-                  </>}
-                  </span>
-                  <span className="grow" />
-                  <DiffFileNavigation paths={navigationPaths} path={document.path} zh={zh} disabled={busy || navigationDisabled || fileNavigation} onNavigate={onNavigateDiff ? path => onNavigateDiff(path, () => open(path, "diff")) : path => choose(path, "diff")}/>
-                  {sessionDocuments && !image && (
-                    <button
-                      type="button"
-                      className="icon-btn icon-btn-sm"
-                      aria-pressed={Boolean(pinnedDocument)}
-                      disabled={sessionDocuments.loading || documentPinning || Boolean(sessionDocumentIssue)}
-                      title={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
-                      aria-label={pinnedDocument ? (zh ? "从计划与文档中移除" : "Remove from Plans & docs") : (zh ? "添加到计划与文档（会话详情）" : "Add to Plans & docs (Session details)")}
-                      onClick={() => void toggleSessionDocument()}
-                    >
-                      <Icon name="bookmark" />
-                    </button>
-                  )}
-                  {diff && !diff.binary && hunkCount > 0 && (
-                    <span className="wb-hunk-nav" role="group" aria-label={zh ? "更改块" : "Hunks"}>
-                      <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
-                      <span className="wb-hunk-count">{hunk + 1}/{hunkCount}</span>
-                      <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
-                      {!compare && <button
-                        type="button"
-                        className="btn btn-sm"
-                        disabled={busy || dirty || (!staged && !!stageReason)}
-                        title={!staged && stageReason ? stageReason : dirty ? (zh ? "请先保存文件" : "Save the file first") : undefined}
-                        onClick={() => void applyHunk()}
-                      >
-                        {staged ? (zh ? "取消暂存此块" : "Unstage hunk") : (zh ? "暂存此块" : "Stage hunk")}
-                      </button>}
-                    </span>
-                  )}
-                  {!compare && <button
-                    className="btn btn-sm"
-                    disabled={busy || dirty || (!staged && !!stageReason)}
-                    title={!staged ? stageReason : undefined}
-                    onClick={() => void changeIndex(staged)}
-                  >
-                    {staged
-                      ? zh
-                        ? "取消暂存"
-                        : "Unstage"
-                      : zh
-                        ? "暂存文件"
-                        : "Stage file"}
-                  </button>}
-                  {compare && !compare.committedOnly && (
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      disabled={busy || !compareEditable || !dirty}
-                      onClick={() => void saveFile()}
-                    >
-                      {zh ? "保存变更" : "Save changes"}
-                    </button>
-                  )}
-                  {!compare && !staged && diff && !diff.binary && (
-                    <>
-                      <button
-                        className="btn btn-sm"
-                        onClick={() => mergeEditor.current?.revertLine()}
-                      >
-                        {zh ? "还原当前行" : "Revert current line"}
-                      </button>
-                      <button
-                        className="btn btn-sm"
-                        onClick={() => mergeEditor.current?.revertHunk()}
-                      >
-                        {zh ? "还原当前块" : "Revert current hunk"}
-                      </button>
-                      <button
-                        className="btn btn-sm"
-                        disabled={busy || document.readonly || !dirty}
-                        onClick={() => void saveFile()}
-                      >
-                        {zh ? "保存变更" : "Save changes"}
-                      </button>
-                      <Select
-                        value={staged ? "staged" : "unstaged"}
-                        onChange={(event) =>
-                          setStaged(event.target.value === "staged")
-                        }
-                        aria-label={zh ? "差异状态" : "Diff state"}
-                      >
-                        <option value="unstaged">{copy.unstaged}</option>
-                        <option value="staged">{copy.staged}</option>
-                      </Select>
-                    </>
-                  )}
-                  {commentScope && commentsHost && diff && !diff.binary && (
-                    <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先在任一侧选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) on either side first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${displayPath(fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}` : `Comment on ${displayPath(fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh))}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
-                  )}
+                <div className="file-bar file-workspace-bar">
+                  <div className="file-bar-location">
+                  {previewNavigation ? embeddedNavigation() : <FileBreadcrumb path={document.path} />}
+                  {dirtyPill}
+                  {!compare && <Select className="file-bar-diff-state" value={staged ? "staged" : "unstaged"} onChange={event => setStaged(event.target.value === "staged")} aria-label={zh ? "差异状态" : "Diff state"} title={staged || document.readonly ? copy.readOnly : zh ? "左侧基线只读，右侧可编辑" : "Baseline is read-only; current file is editable"}>
+                    <option value="unstaged">{copy.unstaged}</option><option value="staged">{copy.staged}</option>
+                  </Select>}
+                  {compare && <span className="ws-chip file-bar-optional file-bar-compare" title={`${compare.committedOnly ? (zh ? "仅已提交的更改" : "Committed changes only") : (zh ? "工作区" : "Working tree")} · ${zh ? `对比 ${compare.base}` : `vs ${compare.base}`} · ${compare.committedOnly || document.readonly ? copy.readOnly : zh ? "左侧基线只读，右侧可编辑" : "Baseline is read-only; current file is editable"}`}>{compare.base}</span>}
+                  </div>
+                  {diff && !diff.binary && hunkCount > 0 && <span className="wb-hunk-nav" role="group" aria-label={zh ? "更改块" : "Hunks"}>
+                    <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
+                    <span className="wb-hunk-count"><span className="file-change-label">{zh ? "更改" : "Change"} </span>{hunk + 1}/{hunkCount}</span>
+                    <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
+                  </span>}
+                  <DiffFileNavigation paths={navigationPaths} path={document.path} zh={zh} disabled={busy || navigationDisabled || fileNavigation} onNavigate={onNavigateDiff ? path => onNavigateDiff(path, () => open(path, "diff")) : path => choose(path, "diff")} />
+                  {pinAction}
+                  {dirty && !staged && compareEditable && !document.readonly && !busy ? <button className="btn btn-sm" aria-label={zh ? "保存变更" : "Save changes"} title="Ctrl+S" onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button> : !compare && !dirty && !busy && (staged || !stageReason) && <button className="btn btn-sm" onClick={() => void changeIndex(staged)}>{staged ? (zh ? "取消暂存" : "Unstage file") : (zh ? "暂存文件" : "Stage file")}</button>}
+                  {!embedded && <button className="icon-btn icon-btn-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
+                  <FileBarActions items={fileMenuItems} zh={zh} />
                   {embeddedClose()}
                 </div>
                 {commentScope && commentsHost && diff && !diff.binary && <>
@@ -1334,6 +1180,10 @@ function FileWorkspaceInstance({
                     onChange={value => { currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
                     onChunks={setHunkCount}
+                    onStageHunk={!compare ? () => void applyHunk() : undefined}
+                    stageHunkLabel={staged ? (zh ? "取消暂存此块" : "Unstage hunk") : (zh ? "暂存此块" : "Stage hunk")}
+                    stageHunkDisabled={busy || dirty || fileNavigation || Boolean(navigationDisabled) || (!staged && Boolean(stageReason))}
+                    selectionActions={{zh,canComment:Boolean(commentScope && commentsHost && !busy && !dirty && !commentDraft),onComment:selection => setCommentDraft(selection),onSend:onSendToAgent ? lines => onSendToAgent({path:document.path,...lines}) : undefined}}
                     onSelection={commentScope ? setCommentSelection : undefined}
                     onContextMenu={(menu) => openEditorContextMenu(menu, "diff")}
                     marks={commentScope ? diffCommentMarks : undefined}
@@ -1360,59 +1210,6 @@ function FileWorkspaceInstance({
               />
             ) : (
               <>
-                {!embedded && <div className="file-bar">
-                  {!external && <span className="path" title={document.path}>
-                    {document.path}
-                  </span>}
-                  <span className="file-dirty" data-testid="editor-dirty" hidden={!dirty}>
-                    {zh ? "未保存" : "Unsaved"}
-                  </span>
-                  <span className="dim">
-                    {copy[draftStatus]}
-                    {document.readonly ? ` · ${copy.readOnly}` : ""}
-                  </span>
-                  <span className="grow" />
-                  {!external && <button
-                    className="btn"
-                    onClick={() => void saveFile()}
-                    disabled={busy || document.readonly || !dirty}
-                  >
-                    {copy.save}
-                  </button>}
-                  {/\.(md|mdx|html?)$/i.test(document.path) && (
-                    <button className="btn" onClick={() => setView("preview")}>
-                      {copy.preview}
-                    </button>
-                  )}
-                  {!embedded && (
-                    <button
-                      className="btn"
-                      onClick={() => requestClose("current")}
-                    >
-                      {zh ? "关闭当前" : "Close current"}
-                    </button>
-                  )}
-                  {!embedded && (
-                    <button
-                      className="btn"
-                      disabled={openPaths.length < 2}
-                      onClick={() => requestClose("others")}
-                    >
-                      {zh ? "关闭其他" : "Close others"}
-                    </button>
-                  )}
-                  {!embedded && (
-                    <button
-                      className="icon-btn"
-                      onClick={() => requestClose("all")}
-                      title={zh ? "关闭全部文件" : "Close all files"}
-                      aria-label={zh ? "关闭全部文件" : "Close all files"}
-                    >
-                      <Icon name="close" />
-                    </button>
-                  )}
-                </div>
-                }
                 {resolvedNotice === document.path && <p className="wb-summary" role="status">{zh ? "此文件中的所有冲突已解决。请暂存以标记为已解决。" : "All conflicts resolved in this file. Stage it to mark it resolved."}</p>}
                 <section ref={sourceEditorHost} className="tt-editor-shell" data-testid="file-editor-surface">
                   <CodeEditor
@@ -1428,6 +1225,7 @@ function FileWorkspaceInstance({
                     blame={blameOn && !dirty ? blame : undefined}
                     onBlameCommit={onOpenHistory ? (commit) => onOpenHistory({ path: document.path, commit }) : undefined}
                     onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines, ...(external ? { selection: selectedExternalText() } : {}) }) : undefined}
+                    selectionActions={{zh,canComment:Boolean(commentScope && commentsHost && !busy && !dirty && !commentDraft),onComment:selection => setCommentDraft({side:"new",...selection}),onSend:onSendToAgent ? lines => onSendToAgent({path:document.path,...lines,...(external ? {selection:selectedExternalText()} : {})}) : undefined}}
                     onSelection={external || commentScope ? (selection) => { if (commentScope) setCommentSelection({ side: "new", ...selection }); } : undefined}
                     onContextMenu={(menu) => openEditorContextMenu(menu, "file")}
                     marks={commentScope ? plainCommentMarks : undefined}

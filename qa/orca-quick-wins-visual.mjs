@@ -259,8 +259,10 @@ try {
   await assertLinkBar(['Open in preview', 'Open in browser', 'Copy link', 'Close link actions']);
   await shot('en-2-link-bar.png');
   await linkBar.getByRole('button', { name: 'Open in preview', exact: true }).click();
-  const preview = page.locator('.wb-web-preview').first();
-  await preview.waitFor();
+   const preview = page.locator('.wb-web-preview').first();
+   await preview.waitFor();
+   assert.equal(await page.locator('.workspace-tab[data-tab-kind="web"]').count(), 0, 'a user terminal preview opens only in the Browser panel');
+   await page.getByRole('button', { name: 'Open as tab', exact: true }).click();
   const title = 'QA page';
   // Browser pages live in the pane's strip, never the upper workspace strip (pane-layout.md).
   const browserTab = page.locator('.browser-page-tabs').getByRole('tab', { name: url, exact: true });
@@ -277,15 +279,15 @@ try {
   await until(async () => await browserTab.innerText() === title && await browserTab.getAttribute('aria-selected') === 'true', 'the browser pane does not show the selected page title');
   await native.screenshot({ path: join(out, 'en-3-native-page.png') }); report.shots.push('en-3-native-page.png');
   await shot('en-3-web-tab.png');
-  check(`terminal link bar offers Open in preview; the page opens as an independent "${title}" tab in an isolated native view`);
+   check(`terminal link bar offers Open in preview in the Browser panel; Open as tab moves the page into an isolated native tab`);
   // The same address again activates the existing tab instead of adding one.
   await tab('Dev server').click();
   await clickUrl();
   await linkBar.getByRole('button', { name: 'Open in preview', exact: true }).click();
-  await nativePage();
-  assert.equal(await browserTab.count(), 1, 'one browser page tab per address');
+   await nativePage();
+   assert.equal(await browserTab.count(), 1, 'opening the same address reopens the Browser panel without adding a layout tab');
   assert.equal(await page.locator('.workspace-tab .workspace-tab-select').getByText(title, { exact: true }).count(), 0, 'browser pages are not duplicated in the upper workspace strip');
-  check('opening the same address again reuses its tab');
+   check('opening the same address again reuses the panel browser');
   const saved = (await request('runtime.snapshot')).workspaces.find(item => JSON.stringify(item.layout).includes('"kind":"web"'));
   assert.ok(saved, 'the layout with a web tab was saved (protocol + runtime accepted it)');
   check('a layout with a web tab passes the desktop and runtime validation (workspace.save)');
@@ -382,11 +384,12 @@ try {
   assert.equal(await menu.locator('.chat-link-menu-url').innerText(), url);
   assert.deepEqual((await menu.locator('.menu-item').allInnerTexts()).map(text => text.trim()), ['Open in preview', 'Open in browser', 'Copy link']);
   await shot('en-8-chat-link-menu.png');
-  await menu.getByRole('menuitem', { name: 'Open in preview', exact: true }).click();
-  await page.locator('.wb-web-preview').first().waitFor();
+   await menu.getByRole('menuitem', { name: 'Open in preview', exact: true }).click();
+   await page.locator('.wb-web-preview').first().waitFor();
+   assert.equal(await browserTab.count(), 1, 'a Chat preview uses the Browser panel without adding a second layout tab');
   await nativePage();
   assert.equal(await page.evaluate(() => location.href), before, 'the app window did not navigate');
-  await until(async () => await browserTab.innerText() === title && await browserTab.getAttribute('aria-selected') === 'true', 'the browser pane does not show the selected page title');
+   check('a link in a Chat message opens the Browser panel; the app never navigates');
   // The bare URL behaves the same; Escape closes the menu without acting.
   await tab('Cart agent').click();
   await chatLink.last().click();
@@ -394,7 +397,7 @@ try {
   await page.keyboard.press('Escape');
   await until(async () => await menu.count() === 0, 'Escape did not close the link menu');
   assert.equal(await page.evaluate(() => location.href), before);
-  check('a link in a Chat message opens a menu (Open in preview / Open in browser / Copy link) at the link; preview opens the web tab; the app never navigates');
+   check('a link in a Chat message opens a menu (Open in preview / Open in browser / Copy link) at the link; preview opens the Browser panel; the app never navigates');
 
   // ---------- zh-CN ----------
   await composer.fill('');

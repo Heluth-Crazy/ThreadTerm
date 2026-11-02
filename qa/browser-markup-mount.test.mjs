@@ -50,7 +50,7 @@ function fixture(extra={}){
  const module={exports:{}};
  const compiled=ts.transpileModule(readFileSync('renderer/src/components/WebPreview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  vm.runInNewContext(compiled,{require,module,exports:module.exports,document:{body},window:{dispatchEvent(){}},Node:class{},KeyboardEvent:class{},Element:class{},ResizeObserver:class{observe(){}disconnect(){}},addEventListener(){},removeEventListener(){},requestAnimationFrame(){}});
- const render=(visible=true)=>{stateIndex=0;refIndex=0;effects.length=0;portals.length=0;const tree=module.exports.WebPreview({tabId:'tab-a',url:'https://example.test/',visible,zh:false,commentsHost:{},...extra});refs[0].current=placeholder;return tree;};
+ const render=(visible=true)=>{stateIndex=0;refIndex=0;effects.length=0;portals.length=0;const tree=module.exports.WebPreview({tabId:'tab-a',url:'https://example.test/',visible,zh:false,commentsHost:{},...extra});find(tree,node=>node.props?.className==='tt-browser-view').props.ref.current=placeholder;return tree;};
  const find=(node,predicate)=>{if(!node)return; if(predicate(node))return node;const children=node.props?.children;for(const child of Array.isArray(children)?children:[children]){const found=find(child,predicate);if(found)return found;}};
  return {render,find,effects,portals,commands,body,ScreenshotMarkup,get browserListener(){return browserListener;},get resolveCapture(){return resolveCapture;},get rejectCapture(){return rejectCapture;}};
 }

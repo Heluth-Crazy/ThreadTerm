@@ -33,8 +33,10 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import type { GitBlame } from "@threadterm/protocol";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { editorHighlight, loadLanguage } from "../workbench/languages";
+import { EditorSelectionActions, type SelectionActionPosition, type SelectionActions } from './EditorSelectionActions';
+import './editor-selection-actions.css';
 
 // Grammars with their own completion (TS/JS, Python, Go, CSS, HTML, SQL…) keep it alone.
 // Other code (Rust, Java, C/C++, JSON, YAML, legacy modes) completes words already in the
@@ -253,6 +255,7 @@ function blameGutter(
 export type EditorSelectionLines = { startLine: number; endLine: number };
 export type CodeSelection = EditorSelectionLines & { text: string };
 export type CodeMark = EditorSelectionLines;
+export type CodeSelectionActions=SelectionActions<CodeSelection>;
 
 const setCommentMarks = StateEffect.define<DecorationSet>();
 const commentMarks = StateField.define<DecorationSet>({
@@ -265,18 +268,6 @@ const commentMarks = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 const commentedLine = Decoration.line({ class: "cm-review-commented" });
-function selectionReport(report: { current?: (selection: CodeSelection) => void }) {
-  return EditorView.updateListener.of((update) => {
-    if (!(update.selectionSet || update.focusChanged || update.docChanged) || !update.view.hasFocus) return;
-    const { state } = update, range = state.selection.main, first = state.doc.lineAt(range.from);
-    let last = state.doc.lineAt(range.to);
-    // A whole-line selection ends at the next line's start, which is not selected.
-    if (range.to > range.from && range.to === last.from && last.number > first.number)
-      last = state.doc.line(last.number - 1);
-    report.current?.({ startLine: first.number, endLine: last.number, text: state.sliceDoc(first.from, last.to) });
-  });
-}
-
 export function CodeEditor({
   path,
   value,
@@ -291,6 +282,7 @@ export function CodeEditor({
   onBlameCommit,
   onSendToAgent,
   onSelection,
+  selectionActions,
   onContextMenu,
   marks,
 }: {
@@ -310,6 +302,8 @@ export function CodeEditor({
   onSendToAgent?: (lines: EditorSelectionLines) => void;
   /** Comment capture and line marks are installed only when selection reporting is enabled at mount. */
   onSelection?: (selection: CodeSelection) => void;
+  /** Actions shown beside a non-empty line selection. */
+  selectionActions?: CodeSelectionActions;
   onContextMenu?: (menu: { x: number; y: number; selection: CodeSelection; hasSelection: boolean; target: HTMLElement; copy: () => Promise<void>; cut: () => Promise<void>; paste: () => Promise<void>; selectAll: () => void }) => void;
   marks?: readonly CodeMark[];
 }) {
@@ -325,6 +319,9 @@ export function CodeEditor({
   send.current = onSendToAgent;
   const selected = useRef(onSelection);
   selected.current = onSelection;
+  const actions = useRef(selectionActions);
+  actions.current = selectionActions;
+  const [selectionAction, setSelectionAction] = useState<{selection:CodeSelection;position:SelectionActionPosition}>();
   const contextMenu = useRef(onContextMenu);
   contextMenu.current = onContextMenu;
   const blameCommit = useRef(onBlameCommit);
@@ -338,9 +335,22 @@ export function CodeEditor({
   const zh = globalThis.document.documentElement.lang === "zh-CN";
   useEffect(() => {
     if (!host.current) return;
+    setSelectionAction(undefined);
     const { language, base, blame: blameSlot } = compartments.current;
     textFormat.current = {separator: dominantLineSeparator(value)};
-    const comments = Boolean(selected.current);
+    const comments = Boolean(selected.current || actions.current);
+    const reportSelection = (editor:EditorView) => {
+      const range=editor.state.selection.main,first=editor.state.doc.lineAt(range.from);
+      let last=editor.state.doc.lineAt(range.to);
+      if(range.to>range.from&&range.to===last.from&&last.number>first.number)last=editor.state.doc.line(last.number-1);
+      const selection={startLine:first.number,endLine:last.number,text:editor.state.sliceDoc(first.from,last.to)};
+      selected.current?.(selection);
+      if(!actions.current||range.from===range.to||!host.current){setSelectionAction(undefined);return;}
+      const coords=editor.coordsAtPos(range.to),bounds=host.current.getBoundingClientRect();
+      if(!coords){setSelectionAction(undefined);return;}
+      const below=coords.bottom-bounds.top,top=below+36<=bounds.height?below:coords.top-bounds.top-36;
+      setSelectionAction({selection,position:{left:Math.max(8,Math.min(coords.left-bounds.left,bounds.width-230)),top:Math.max(4,top)}});
+    };
     let conflictDoc:Text|undefined,hasConflicts=false;
     const enabled=(editor:EditorView)=>{if(conflictDoc!==editor.state.doc){conflictDoc=editor.state.doc;const conflicts=conflictBlocks(conflictDoc.toString());hasConflicts=conflicts.blocks.length>0||conflicts.unparseable;}return canUseGitHunks(editor.state.facet(EditorState.readOnly),Boolean(hunkActions.current?.conflicted),hasConflicts);};
     const hunks=gitHunkPopup(editor=>{const value=editor.state.field(lineChanges);if(editor.state.facet(gitBase)===null)return {base:'',doc:editor.state.doc,chunks:[]};return value.base!==null&&value.base===editor.state.facet(gitBase)&&value.doc===editor.state.doc?{base:value.base,doc:value.doc,chunks:value.chunks}:undefined;},hunkActions,enabled,zh);
@@ -360,7 +370,7 @@ export function CodeEditor({
         indentOnInput(),
         language.of([]),
         editorHighlight,
-        ...(comments ? [commentMarks, selectionReport(selected)] : []),
+        ...(comments ? [commentMarks,EditorView.updateListener.of(update=>{if((update.selectionSet||update.focusChanged||update.docChanged)&&update.view.hasFocus)reportSelection(update.view);})] : []),
         readOnly ? [] : completion,
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(comments || !readOnly),
@@ -525,5 +535,6 @@ export function CodeEditor({
     });
     current.focus();
   }, [reveal?.key, reveal?.path, path]);
-  return <div className="cm-host tt-editor-host" ref={host} />;
+  useEffect(()=>{const element=host.current;if(!element)return;const clear=()=>setSelectionAction(undefined),blur=(event:FocusEvent)=>{if(event.relatedTarget instanceof Node&&element.contains(event.relatedTarget))return;clear();};element.addEventListener('scroll',clear,true);element.addEventListener('focusout',blur);return()=>{element.removeEventListener('scroll',clear,true);element.removeEventListener('focusout',blur);};},[]);
+  return <div className="cm-host tt-editor-host" ref={host}>{selectionAction&&selectionActions&&<EditorSelectionActions selection={selectionAction.selection} position={selectionAction.position} actions={selectionActions}/>}</div>;
 }

@@ -227,7 +227,7 @@ try {
   const savedRun = await until(async () => { const run = await runById(started.runId); return run && active(run) && run.run?.readiness === 'ready' ? run : undefined; }, 'the saved entry runs');
   assert.equal(savedRun.run.commandId, saved.id);
   assert.equal(savedRun.run.startedBy, chat.session.id, 'the run records the chat that started it');
-  await page.locator('.wb-switch-btn[data-view="run"]').click();
+  await page.getByTestId('quick-launch-dropdown').click(); await page.getByTestId('open-run-view').click();
   const view = page.getByTestId('run-view');
   await view.waitFor();
   const savedRow = view.locator(`[data-testid="run-running-row"][data-run-entry="${saved.id}"]`);
@@ -314,7 +314,7 @@ try {
   await until(async () => active(await runById(userStarted.session.id)), 'the user detected run is active');
   await request('session.stop', {sessionId: userStarted.session.id, operationId: randomUUID()});
   await until(async () => !active(await runById(userStarted.session.id)), 'the user detected run stops');
-  if (!await view.isVisible()) await page.locator('.wb-switch-btn[data-view="run"]').click();
+  if (!await view.isVisible()) { await page.getByTestId('quick-launch-dropdown').click(); await page.getByTestId('open-run-view').click(); }
   const recent = view.getByTestId('run-recent');
   await recent.waitFor();
   assert.equal(await recent.getAttribute('open'), null, 'Recent starts collapsed');
@@ -355,8 +355,10 @@ try {
   await proposals.waitFor();
   const newProposalRow = proposals.locator(`[data-testid="run-proposal-row"][data-proposal-id="${newProposal.proposalId}"]`);
   await newProposalRow.waitFor();
-  await page.getByTestId('run-proposals-badge').waitFor();
-  assert.equal(await page.getByTestId('run-proposals-badge').innerText(), '1');
+  const proposalBadge = page.getByTestId('run-proposals-badge');
+  await proposalBadge.waitFor();
+  assert.equal(await proposalBadge.innerText(), '1');
+  assert.ok(await proposalBadge.evaluate(node => Boolean(node.closest('.ql-split[data-testid="quick-launch-split"]'))), 'pending-proposals badge belongs to the header Run split button, not the workbench view group');
   const newProposalText = await newProposalRow.innerText();
   for (const expected of ['node app.mjs', 'PowerShell', 'scripts', 'Task', 'NODE_OPTIONS', '--require=./payload.cjs', 'PROPOSAL_FLAG', 'visible', 'http://localhost:4317/']) assert.ok(newProposalText.includes(expected), `new proposal row visibly discloses ${expected}`);
   await newProposalRow.getByTestId('run-proposal-accept').click();

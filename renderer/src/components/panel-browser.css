@@ -1,0 +1,16 @@
+.wb-side-browser { display:flex; height:100%; min-height:0; }
+.wb-sidebar-slot.wb-sidebar-browser { max-width:70%; }
+.wb-browser-start { padding:24px 18px; overflow:auto; height:100%; }
+.wb-browser-start section + section { margin-top:24px; }
+.wb-browser-start h3 { margin:0 0 8px; font-size:12px; font-weight:600; color:var(--muted); }
+.wb-browser-start p { margin:0; font-size:13px; color:var(--muted); }
+.wb-browser-start-row { display:flex; align-items:center; gap:12px; width:100%; padding:8px 6px; border:0; border-radius:6px; color:var(--text); background:transparent; text-align:left; cursor:pointer; }
+.wb-browser-start-row:hover { background:var(--soft); }
+.wb-browser-start-row:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+.wb-browser-start-row > span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.wb-browser-start-row > small { flex:none; max-width:40%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--muted); }
+.wb-side-browser .wb-web-preview > .file-bar.wb-browser-toolbar { flex-wrap:nowrap; padding-block:0; }
+.wb-side-browser .wb-web-preview .wb-browser-actions { flex-basis:auto; flex-wrap:nowrap; }
+@container browser-preview (width < 330px) {
+ .wb-side-browser .wb-browser-actions { display:none; }
+}

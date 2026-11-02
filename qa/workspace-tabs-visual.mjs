@@ -85,7 +85,7 @@ try{
  assert.equal(await page.evaluate(()=>window.qaRetainedElement.isConnected),true,'closing a sibling must retain the original terminal host');
  report.checks.push('empty-pane focus, picker fill, fullscreen/escape and closing pane remain reachable');
  // Session-owned preview through the side bar Explorer ("Open beside session"), then collapse the side bar again.
- const filesView=page.locator('.wb-switcher').getByRole('button',{name:'Files',exact:true});
+ const filesView=page.locator('.ws-top .wb-switcher').getByRole('button',{name:'Files',exact:true});
  await filesView.click();await page.locator('.wb-tree [data-path="note.ts"]').click({button:'right'});await page.getByRole('menuitem',{name:'Open beside session',exact:true}).click();
  await page.locator('.cm-content[contenteditable=true]').waitFor();await filesView.click();
  assert.equal(await page.evaluate(()=>window.qaRetainedElement.isConnected),true,'opening a file beside the session must retain the terminal host');

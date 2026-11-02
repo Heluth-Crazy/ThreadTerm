@@ -15,7 +15,7 @@ import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs'; // Desktop 1; never takes the user's desktop.
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const gitDir = (() => {
  const found = execFileSync('where', ['git'], { encoding: 'utf8', windowsHide: true }).split(/\r?\n/).filter(Boolean);
  const git = found.find(value => /\\cmd\\git\.exe$/i.test(value)) ?? found[0];
@@ -74,7 +74,7 @@ async function openFile(path) {
  await request('filesystem.read', { projectId: session.projectId, worktreePath: work, path });
  // The real UI flow uses the Explorer row; opening it once also makes its file tab available for the toolbar route.
  // The workbench switcher mounts lazily; wait for it instead of skipping the click.
- const files = page.locator('.wb-switcher').getByRole('button', { name: 'Files', exact: true });
+ const files = page.locator('.ws-top .wb-switcher').getByRole('button', { name: 'Files', exact: true });
  await files.waitFor();
  if (await files.getAttribute('aria-pressed') !== 'true') await files.click();
  const parts = path.split('/');

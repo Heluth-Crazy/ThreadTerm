@@ -59,7 +59,7 @@ try {
 
   const crlf = one.replace(/\n/g, '\r\n');
   await reset(crlf);
-  assert.equal(await page.getByRole('button', { name: 'Save file', exact: true }).isDisabled(), true, 'a freshly opened CRLF file is not dirty');
+  assert.equal(await page.getByRole('button', { name: 'Save file', exact: true }).count(), 0, 'a freshly opened CRLF file hides Save while clean');
   await page.getByRole('button', { name: 'Accept current', exact: true }).click();
   const resolvedCrlf = 'before\r\ncurrent\r\nafter\r\n';
   await page.waitForFunction(expected => window.__editorText() === expected, normalized(resolvedCrlf));
@@ -113,7 +113,7 @@ try {
 
   const mixed = 'one\r\ntwo\r\nthree\nfour\r\n';
   await reset(mixed);
-  assert.equal(await page.getByRole('button', { name: 'Save file', exact: true }).isDisabled(), true, 'a freshly opened mixed-EOL file is not dirty');
+  assert.equal(await page.getByRole('button', { name: 'Save file', exact: true }).count(), 0, 'a freshly opened mixed-EOL file hides Save while clean');
   await page.locator('.cm-content').focus();
   await page.locator('.cm-content').press('Control+End');
   await page.locator('.cm-content').pressSequentially('edited');
@@ -145,24 +145,22 @@ try {
 
   await reset(one);
   const stageButtons = page.locator('#workspace').getByRole('button', { name: 'Mark resolved (stage)', exact: true });
-  await stageButtons.waitFor();
-  assert.equal(await stageButtons.isDisabled(), true, 'saved markers block editor staging even after the buffer becomes clean');
+  assert.equal(await stageButtons.count(), 0, 'saved markers hide unavailable editor staging even after the buffer becomes clean');
   await page.getByRole('button', { name: 'Accept current', exact: true }).click();
-  assert.equal(await stageButtons.isDisabled(), true, 'unsaved resolved buffer does not clear the saved-marker guard');
+  assert.equal(await stageButtons.count(), 0, 'unsaved resolved buffer keeps staging hidden until saved');
   await page.getByRole('button', { name: 'Save file', exact: true }).click();
   await page.getByRole('status').filter({ hasText: 'All conflicts resolved in this file. Stage it to mark it resolved.' }).waitFor();
-  await page.waitForFunction(() => ![...document.querySelectorAll('#workspace button')].some(button => button.textContent === 'Mark resolved (stage)' && button.disabled));
+  await stageButtons.waitFor();
+  assert.equal(await stageButtons.isEnabled(), true, 'saved resolution enables the existing conflict staging action');
 
   await reset(one);
   await page.evaluate(() => window.__showDiff());
   const diffStage = page.locator('#workspace').getByRole('button', { name: 'Stage file', exact: true });
   const hunkStage = page.locator('#workspace').getByRole('button', { name: 'Stage hunk', exact: true });
-  await diffStage.waitFor();
-  await hunkStage.waitFor();
-  await page.waitForFunction(() => [...document.querySelectorAll('#workspace button')].some(button => button.textContent === 'Stage file' && button.disabled));
-  await page.waitForFunction(() => [...document.querySelectorAll('#workspace button')].some(button => button.textContent === 'Stage hunk' && button.disabled));
-  assert.equal(await diffStage.isDisabled(), true, 'diff whole-file staging is guarded by saved markers');
-  assert.equal(await hunkStage.isDisabled(), true, 'diff hunk staging is guarded by saved markers');
+  assert.equal(await diffStage.count(), 0, 'diff whole-file staging is hidden while saved markers block it');
+  await page.locator('#workspace .cm-mergeView').waitFor();
+  assert.equal(await hunkStage.filter({visible:true}).count(), 0, 'saved-marker guard hides all per-hunk gutter staging actions');
+  assert.equal(await page.locator('#workspace .file-workspace-bar').getByRole('button', { name: 'Stage hunk', exact: true }).count(), 0, 'per-hunk actions no longer occupy the bar');
 
   await reset(one);
   const row = page.locator('#scm [data-change-group="conflicts"]');

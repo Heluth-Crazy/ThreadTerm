@@ -35,13 +35,13 @@ try {
   await page.waitForTimeout(500);
   const measure = () => page.evaluate(() => {
     const box = selector => { const element = document.querySelector(selector); if (!element) return null; const rect = element.getBoundingClientRect(); return { left: Math.round(rect.left), width: Math.round(rect.width) }; };
-    return { window: innerWidth, content: box('.ws-content'), sidebar: box('.ws-content > .wb-sidebar'), pane: document.querySelector('.ws-content > .ws-pane')?.clientWidth, panes: document.querySelectorAll('.ws-pane [data-pane-id], .ws-pane .pane').length };
+    return { window: innerWidth, content: box('.ws-content'), panel: box('.ws-content > .wb-sidebar'), pane: document.querySelector('.ws-content > .ws-pane')?.clientWidth, panes: document.querySelectorAll('.ws-pane [data-pane-id], .ws-pane .pane').length };
   });
   report.default = await measure();
   await page.screenshot({ path: join(out, 'session-1440.png') });
 
-  // The side panel starts collapsed; the first switcher icon opens the Files view.
-  await page.locator('.wb-switcher .wb-switch-btn').first().click();
+  // The header group stays in place while its right panel is collapsed; Files opens it.
+  await page.locator('.ws-top .wb-switcher .wb-switch-btn').first().click();
   const row = path => page.locator(`.wb-tree [data-path="${path}"]`);
   await row('src').waitFor();
   report.withFiles = await measure();

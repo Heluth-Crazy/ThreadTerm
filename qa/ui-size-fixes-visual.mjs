@@ -50,9 +50,11 @@ async function settings(tab) {
 }
 async function closeSettings() { await page.getByRole('button', { name: 'Close settings', exact: true }).click(); }
 async function widths() {
-  return page.locator('.runtime-workspace .ws-content:has(> .wb-sidebar)').evaluate(node => {
+  return page.locator('.runtime-workspace .ws-content:has(> .wb-sidebar-slot)').evaluate(node => {
     const width = selector => node.querySelector(selector)?.getBoundingClientRect().width ?? 0;
-    return { content: node.clientWidth, sidebar: width('.wb-sidebar'), pane: width('.ws-pane'), inspector: width('.inspector'), stored: JSON.parse(localStorage.getItem('threadterm.workbench.sidebar')).width, viewport: innerWidth };
+    const stored = JSON.parse(localStorage.getItem('threadterm.workbench.sidebar'));
+    const panel = node.querySelector('.wb-sidebar .wb-panel');
+    return { content: node.clientWidth, panel: width('.wb-sidebar .wb-panel'), pane: width('.ws-pane'), details: width('.wb-sidebar .wb-panel .inspector'), detailsActive: Boolean(panel?.querySelector('.inspector')), filesHidden: Boolean(panel?.querySelector('.wb-view[hidden] .wb-tree')), stored: stored.widths?.[stored.view] ?? stored.width, viewport: innerWidth };
   });
 }
 async function headerGeometry() {
@@ -101,7 +103,7 @@ ipcRenderer.invoke=async(channel,...args)=>{
   await page.locator('.app-shell').waitFor();
   await appearance('light'); await size(1440);
   const project = await rpc('project.add', { path: work, name: 'Sizing fixture project with a deliberately long name to fill the filter chip', operationId: randomUUID() });
-  await page.evaluate(() => localStorage.setItem('threadterm.workbench.sidebar', JSON.stringify({ width: 520, view: 'files' })));
+  await page.evaluate(() => localStorage.setItem('threadterm.workbench.sidebar', JSON.stringify({ widths: { files: 520 }, view: 'files' })));
   await page.reload(); await page.locator('.app-shell').waitFor();
 
   for (const theme of ['light', 'dark']) {
@@ -130,35 +132,36 @@ ipcRenderer.invoke=async(channel,...args)=>{
   const session = await rpc('session.create', { projectId: project.id, cwd: work, title: 'Sizing terminal', provider: 'shell', mode: 'terminal', operationId: randomUUID() });
   await rpc('session.present', { sessionId: session.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
   await page.locator('.runtime-workspace').waitFor();
-  await page.locator('.wb-switcher button[aria-label="Files"]').click();
+  await page.locator('.ws-top .wb-switcher button[aria-label="Files"]').click();
   await page.locator('.wb-sidebar').waitFor();
   for (const theme of ['light', 'dark']) {
     await appearance(theme); await size(960, 640);
     const c = await widths(); report.measurements[`C-${theme}`] = c;
-    check(`C-${theme}-main`, c.pane >= 319.5 && c.sidebar >= 220 && c.stored === 520, c);
+    check(`C-${theme}-main`, c.pane >= 319.5 && c.panel >= 220 && Math.abs(c.stored - 520) <= 1, c);
     await shot(`${theme}-C-960-files.png`);
-    await page.locator('.wb-resize').focus(); await page.keyboard.press('ArrowLeft'); await frames();
+    await page.locator('.wb-resize').focus(); await page.keyboard.press('ArrowRight'); await frames();
     const keyed = await widths();
-    check(`C-${theme}-keyboard-direct`, Math.abs(keyed.sidebar - (c.sidebar - 16)) <= 1, { start: c, keyed });
+    check(`C-${theme}-keyboard-direct`, Math.abs(keyed.panel - (c.panel - 16)) <= 1, { start: c, keyed });
     await shot(`${theme}-C-960-keyboard.png`);
     // Restore the remembered 520px through the real resize handle before the remaining checks.
     const restoreHandle = await page.locator('.wb-resize').boundingBox();
     await page.mouse.move(restoreHandle.x + restoreHandle.width / 2, restoreHandle.y + restoreHandle.height / 2); await page.mouse.down();
-    await page.mouse.move(restoreHandle.x + restoreHandle.width / 2 + 520 - keyed.sidebar, restoreHandle.y + restoreHandle.height / 2); await page.mouse.up(); await frames();
+    await page.mouse.move(restoreHandle.x + restoreHandle.width / 2 - (520 - keyed.panel), restoreHandle.y + restoreHandle.height / 2); await page.mouse.up(); await frames();
     await page.getByRole('button', { name: 'Session details', exact: true }).click(); await frames();
     const inspector = await widths(); report.measurements[`C-${theme}-inspector`] = inspector;
-    check(`C-${theme}-inspector`, inspector.sidebar >= 220 && inspector.pane > 0 && inspector.inspector === 320 && inspector.stored === 520, inspector);
+    check(`C-${theme}-inspector`, inspector.panel >= 220 && inspector.pane > 0 && Math.abs(inspector.panel - 320) <= 1 && inspector.details > 0 && inspector.details <= inspector.panel && inspector.detailsActive && inspector.filesHidden && inspector.stored === 320, inspector);
     await shot(`${theme}-C-960-inspector.png`);
-    await page.getByRole('button', { name: 'Close session details', exact: true }).click();
+    await page.getByRole('button', { name: 'Close side bar', exact: true }).click();
+    await page.locator('.ws-top .wb-switcher button[aria-label="Files"]').click(); await frames();
     await size(1440);
-    const wide = await widths(); check(`C-${theme}-restore`, wide.sidebar === 520 && wide.stored === 520, wide);
+    const wide = await widths(); check(`C-${theme}-restore`, Math.abs(wide.panel - 520) <= 1 && Math.abs(wide.stored - 520) <= 1, wide);
     await shot(`${theme}-C-1440-restored.png`);
   }
   await size(960, 640);
   const start = await widths(), handle = await page.locator('.wb-resize').boundingBox();
   await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2); await page.mouse.down();
-  await page.mouse.move(handle.x + handle.width / 2 - 24, handle.y + handle.height / 2); await page.mouse.up(); await frames();
-  const dragged = await widths(); check('C-drag-direct', Math.abs(dragged.sidebar - (start.sidebar - 24)) < 2 && dragged.stored >= 220 && dragged.stored <= 520, { start, dragged });
+  await page.mouse.move(handle.x + handle.width / 2 + 24, handle.y + handle.height / 2); await page.mouse.up(); await frames();
+  const dragged = await widths(); check('C-drag-direct', Math.abs(dragged.panel - (start.panel - 24)) < 2 && dragged.stored >= 220 && dragged.stored <= 520, { start, dragged });
 
   await page.getByRole('button', { name: 'Close side bar', exact: true }).click();
   await size(1440);

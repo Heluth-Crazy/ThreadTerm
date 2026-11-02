@@ -83,7 +83,9 @@ export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onOpenExtern
   ...externalMatches.map(match => ({kind:'external' as const, file:match.file, positions:match.positions})),
  ], [externalEnabled, externalMatches, matches]);
  useEffect(()=>setActive(value=>Math.min(value,Math.max(0,items.length-1))),[items.length]);
- useEffect(() => setActive(0), [parsed.query]);
+ // A search selects its best file; the "Open file outside workspace…" row stays first but is chosen only on purpose.
+ const firstMatch = externalEnabled && parsed.query && items.length > 1 ? 1 : 0;
+ useEffect(() => setActive(firstMatch), [parsed.query, firstMatch]);
  useEffect(() => { list.current?.querySelector<HTMLElement>('.cmd-row.active')?.scrollIntoView({block:'nearest'}); }, [active]);
  const choose = (path:string) => { onClose(); onOpen(path, mode === 'open' && parsed.line ? {line:parsed.line, column:parsed.column} : undefined); };
  const chooseExternal = (paths:string[], source:OpenSource, position?:FilePosition) => {
