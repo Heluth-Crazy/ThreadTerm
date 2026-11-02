@@ -24,6 +24,7 @@ const SETTINGS_MARKER: &str = "threadterm-v3-settings";
 const SETTINGS_VERSION: i64 = 1;
 const ALLOWED_SETTINGS: &[&str] = &[
     "theme",
+    "terminalIcons",
     "language",
     "shortcuts",
     "notifications",
@@ -39,6 +40,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
 ];
 const RUNTIME_SETTINGS: &[&str] = &[
     "theme",
+    "terminalIcons",
     "language",
     "shortcuts",
     "notifications",
@@ -987,6 +989,69 @@ fn valid_quick_messages(value: &Value) -> bool {
     })
 }
 
+/// Settings → Terminal icons: rules naming a program and its icon, plus the user's images.
+/// Images are only ever drawn as `<img src>` data URLs, never as markup.
+fn valid_terminal_icons(value: &Value) -> bool {
+    const MAX_RULES: usize = 50;
+    const MAX_IMAGES: usize = 30;
+    const MAX_IMAGE_CHARS: usize = 96 * 1024;
+    const IMAGE_TYPES: &[&str] = &["png", "svg+xml", "webp", "jpeg", "gif"];
+    let Some(record) = value.as_object().filter(|record| record.len() == 2) else {
+        return false;
+    };
+    let (Some(rules), Some(images)) = (record.get("rules").and_then(Value::as_array), record.get("images").and_then(Value::as_array)) else {
+        return false;
+    };
+    if rules.len() > MAX_RULES || images.len() > MAX_IMAGES {
+        return false;
+    }
+    let valid_id = |id: &str| (1..=40).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let mut image_ids: Vec<&str> = Vec::new();
+    for image in images {
+        let Some(image) = image.as_object().filter(|image| image.len() == 3) else {
+            return false;
+        };
+        let (Some(id), Some(name), Some(src)) = (
+            image.get("id").and_then(Value::as_str),
+            image.get("name").and_then(Value::as_str),
+            image.get("src").and_then(Value::as_str),
+        ) else {
+            return false;
+        };
+        let typed = src
+            .strip_prefix("data:image/")
+            .and_then(|rest| rest.split_once(";base64,"))
+            .is_some_and(|(kind, data)| IMAGE_TYPES.contains(&kind) && !data.is_empty() && data.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'='));
+        if !valid_id(id) || image_ids.contains(&id) || name.chars().count() > 60 || name.chars().any(char::is_control) || src.len() > MAX_IMAGE_CHARS || !typed {
+            return false;
+        }
+        image_ids.push(id);
+    }
+    let mut rule_ids: Vec<&str> = Vec::new();
+    rules.iter().all(|rule| {
+        let Some(rule) = rule.as_object().filter(|rule| rule.len() == 3) else {
+            return false;
+        };
+        let (Some(id), Some(pattern), Some(icon)) = (
+            rule.get("id").and_then(Value::as_str),
+            rule.get("match").and_then(Value::as_str),
+            rule.get("icon").and_then(Value::as_str),
+        ) else {
+            return false;
+        };
+        let icon_known = crate::terminal_agents::BUILT_IN_ICONS.contains(&icon)
+            || icon.strip_prefix("image:").is_some_and(|image| image_ids.contains(&image));
+        let ok = valid_id(id)
+            && !rule_ids.contains(&id)
+            && !pattern.trim().is_empty()
+            && pattern.chars().count() <= 64
+            && !pattern.chars().any(char::is_control)
+            && icon_known;
+        rule_ids.push(id);
+        ok
+    })
+}
+
 fn valid_setting(key: &str, value: &Value) -> Result<()> {
     match key {
         "theme" if matches!(value.as_str(), Some("light" | "dark" | "system")) => Ok(()),
@@ -1045,6 +1110,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
             Ok(())
         }
         "quickMessages" if valid_quick_messages(value) => Ok(()),
+        "terminalIcons" if valid_terminal_icons(value) => Ok(()),
         "providerNetwork"
             if value
                 .as_object()
@@ -2136,5 +2202,25 @@ mod tests {
         assert!(relocation_blocks(&config, "plugin.setEnabled").unwrap());
         assert!(relocation_blocks(&config, "plugin.reload").unwrap());
         release_relocation(&config).unwrap();
+    }
+
+    #[test]
+    fn terminal_icon_rules_are_bounded_and_only_reference_known_icons() {
+        let image = json!({"id":"copilot","name":"Copilot","src":"data:image/png;base64,iVBORw0KGgo="});
+        let rule = |icon: &str| json!({"id":"r1","match":"copilot","icon":icon});
+        let ok = |rules: Value, images: Value| valid_runtime_patch(&json!({"terminalIcons":{"rules":rules,"images":images}})).is_ok();
+        assert!(ok(json!([rule("image:copilot")]), json!([image.clone()])), "a rule may use the user's image");
+        assert!(ok(json!([rule("claude")]), json!([])), "or a built-in icon");
+        assert!(ok(json!([]), json!([])));
+        assert!(!ok(json!([rule("image:missing")]), json!([image.clone()])), "an icon must exist");
+        assert!(!ok(json!([rule("not-a-brand")]), json!([])));
+        assert!(!ok(json!([{"id":"r1","match":"   ","icon":"codex"}]), json!([])), "a pattern must not be blank");
+        assert!(!ok(json!([rule("codex"), rule("codex")]), json!([])), "rule ids are unique");
+        assert!(!ok(json!([]), json!([{"id":"x","name":"X","src":"<svg onload=alert(1)>"}])), "only data:image URLs");
+        assert!(!ok(json!([]), json!([{"id":"x","name":"X","src":"data:text/html;base64,PGI+"}])));
+        let huge = format!("data:image/png;base64,{}", "A".repeat(100 * 1024));
+        assert!(!ok(json!([]), json!([{"id":"x","name":"X","src":huge}])), "an image is at most about 64 KB");
+        assert!(!valid_runtime_patch(&json!({"terminalIcons":{"rules":[]}})).is_ok(), "both lists are required");
+        assert!(ALLOWED_SETTINGS.contains(&"terminalIcons"), "icons travel with exported settings");
     }
 }

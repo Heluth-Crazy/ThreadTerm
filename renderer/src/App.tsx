@@ -393,7 +393,7 @@ export function App() {
   }, [data?.sessions, navigate, recentIds, routeSessionId]);
   return (
     <I18nProvider locale={locale}>
-      <AgentIconsProvider providers={data?.providers ?? []}>
+      <AgentIconsProvider providers={data?.providers ?? []} images={data?.settings.terminalIcons?.images}>
       <AppSettingsProvider settings={data?.settings}>
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}`}>
         {themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}

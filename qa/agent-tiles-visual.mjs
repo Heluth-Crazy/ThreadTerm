@@ -18,6 +18,7 @@ const entry = String.raw`
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgentTile, SessionIcon, AgentIcon, AgentIconsProvider } from './renderer/src/components/PrototypeIcon';
+import { SettingsTerminalIcons } from './renderer/src/components/SettingsTerminalIcons';
 import './renderer/src/styles.css';
 
 const now = '2026-11-01T12:00:00Z';
@@ -32,6 +33,12 @@ const rows = [
   session('r1', 'custom', 'npm run dev'),
 ];
 const sizes = [14, 16, 20, 28, 64];
+// Settings → Terminal icons: a rule with the user's own image, and one using a built-in mark.
+const iconImages = [{ id: 'copilot', name: 'Copilot', src: '__COPILOT_ICON__' }];
+const iconSettings = { revision: 1, terminalIcons: { rules: [
+  { id: 'copilot', match: 'copilot', icon: 'image:copilot' },
+  { id: 'cursor-agent', match: 'cursor-agent', icon: 'codex' },
+], images: iconImages } };
 const brands = ['claude', 'codex', 'gemini', 'kimi', 'grok', 'opencode', 'pi', 'shell'];
 
 function Gallery({ theme }) {
@@ -91,6 +98,9 @@ function Gallery({ theme }) {
             <span style={{ color: 'var(--muted)', fontSize: 12 }}>{rows[1].provider} · D:/project/ThreadTerm</span>
           </div>
         </section>
+        <section data-testid="settings-icons" style={{ gridColumn: '1 / -1', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
+          <div style={{ maxWidth: 560 }}><SettingsTerminalIcons settings={iconSettings} zh={false} update={async () => {}} /></div>
+        </section>
         <section style={{ gridColumn: '1 / -1', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
           <h3 style={{ margin: '0 0 10px', fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted)' }}>Inline mentions stay flat</h3>
           <p data-testid="inline-flat">Delegated by <a href="#"><AgentIcon provider="claude" size={16} /> Fix delegate outcome</a> · handed to <a href="#"><AgentIcon provider="codex" size={16} /> Codex</a></p>
@@ -102,13 +112,15 @@ function Gallery({ theme }) {
 
 window.threadterm = { onEvent: () => () => {}, request: async () => { throw Error('unexpected'); } };
 const root = createRoot(document.getElementById('root'));
-window.qaRender = (theme) => root.render(<AgentIconsProvider providers={[]}><Gallery theme={theme} /></AgentIconsProvider>);
+window.qaRender = (theme) => root.render(<AgentIconsProvider providers={[]} images={iconImages}><Gallery theme={theme} /></AgentIconsProvider>);
 window.qaRender('light');
 `;
 
+const copilotIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#6e40c9"/><circle cx="9" cy="12" r="2.2" fill="#fff"/><circle cx="15" cy="12" r="2.2" fill="#fff"/></svg>';
+const galleryEntry = entry.replace('__COPILOT_ICON__', `data:image/svg+xml;base64,${Buffer.from(copilotIcon).toString('base64')}`);
 await mkdir(out, { recursive: true });
 await build({
-  stdin: { contents: entry, resolveDir: root, loader: 'tsx' },
+  stdin: { contents: galleryEntry, resolveDir: root, loader: 'tsx' },
   bundle: true,
   outfile: join(scratch, 'qa.js'),
   jsx: 'automatic',
@@ -161,7 +173,12 @@ try {
     assert.equal(inlineTiles, 0, `${theme}: inline mentions must stay flat`);
     const flat = await page.locator('[data-testid="inline-flat"] .brand-ico').count();
     assert.ok(flat >= 2, `${theme}: expected flat brand marks inline`);
-    report.checks.push(`${theme}: sidebar/tabs/header/size ladder rendered; shell switch and flat inline ok`);
+    // Settings → Terminal icons: two saved rules plus the new-rule line; the user's image is an <img>.
+    assert.equal(await page.locator('[data-testid="terminal-icon-row"]').count(), 2, `${theme}: terminal icon rules missing`);
+    assert.equal(await page.locator('[data-testid="terminal-icon-row"] [data-agent-tile="image"] img').count(), 1, `${theme}: custom icon not drawn as an image`);
+    await page.locator('[data-testid="settings-icons"]').screenshot({ path: join(out, `${theme}-settings.png`), animations: 'disabled' });
+    report.screenshots.push(join(out, `${theme}-settings.png`));
+    report.checks.push(`${theme}: sidebar/tabs/header/size ladder rendered; shell switch and flat inline ok; terminal icon settings ok`);
   }
   report.passed = true;
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));

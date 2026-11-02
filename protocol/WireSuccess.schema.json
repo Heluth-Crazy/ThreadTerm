@@ -3607,12 +3607,79 @@
           "items": {
             "$ref": "#/definitions/QuickMessage"
           }
+        },
+        "terminalIcons": {
+          "$ref": "#/definitions/TerminalIconSettings"
         }
       },
       "required": [
         "revision"
       ],
       "additionalProperties": {}
+    },
+    "TerminalIconSettings": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TerminalIconRule"
+          }
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TerminalIconImage"
+          }
+        }
+      },
+      "required": [
+        "rules",
+        "images"
+      ],
+      "additionalProperties": false
+    },
+    "TerminalIconRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "match": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "match",
+        "icon"
+      ],
+      "additionalProperties": false,
+      "description": "Settings → Terminal icons: a program name or path fragment (`copilot`, `@github/copilot`) and the icon a terminal running it shows."
+    },
+    "TerminalIconImage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "src": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "src"
+      ],
+      "additionalProperties": false,
+      "description": "A user's icon: only ever drawn as an <img> data URL (png, svg+xml, webp, jpeg or gif), at most about 64 KB."
     },
     "RequestResult<\"usage.query\">": {
       "$ref": "#/definitions/UsageResult"

@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode, type SVGProps } from 'react';
-import type { ProviderCapability, Session } from '@threadterm/protocol';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SVGProps } from 'react';
+import type { ProviderCapability, Session, TerminalIconImage } from '@threadterm/protocol';
 // Static SVG constants copied verbatim from the approved immutable reference.
 // Never pass user text into these markup maps.
 const icons: Record<string,string> = {
@@ -64,12 +64,23 @@ export function Icon({name,className,...props}:{name:string;className?:string}&S
 /** Raw SVG body of an agent's brand mark for non-React surfaces (the launch screen); static constants only. */
 export function agentIconMarkup(provider:string):string|undefined{return Object.hasOwn(brands,provider)?brands[provider]:undefined;}
 const AgentIconsContext = createContext<readonly ProviderCapability[]>([]);
-export function AgentIconsProvider({providers,children}:{providers:readonly ProviderCapability[];children:ReactNode}){
-  return <AgentIconsContext.Provider value={providers}>{children}</AgentIconsContext.Provider>;
+const CustomIconsContext = createContext<ReadonlyMap<string,string>>(new Map());
+const NO_IMAGES: readonly TerminalIconImage[] = [];
+export function AgentIconsProvider({providers,images=NO_IMAGES,children}:{providers:readonly ProviderCapability[];images?:readonly TerminalIconImage[];children:ReactNode}){
+  const custom=useMemo(()=>new Map(images.map(image=>[image.id,image.src] as const)),[images]);
+  return <AgentIconsContext.Provider value={providers}><CustomIconsContext.Provider value={custom}>{children}</CustomIconsContext.Provider></AgentIconsContext.Provider>;
 }
 export function useAgentCapabilities(){return useContext(AgentIconsContext);}
+/** Icons Settings → Terminal icons can pick without an upload, in picker order. */
+export const BUILT_IN_ICON_IDS=['claude','codex','gemini','kimi','grok','opencode','pi','shell'] as const;
+/** The user's image behind an `image:<id>` icon; only data:image URLs, only ever drawn as <img>. */
+function useCustomIcon(provider:string){
+  const images=useContext(CustomIconsContext); const src=provider.startsWith('image:')?images.get(provider.slice(6)):undefined;
+  return src?.startsWith('data:image/')?src:undefined;
+}
 export function AgentIcon({provider,size}:{provider:string;size?:number}){
-  const capabilities=useAgentCapabilities(); const icon=capabilities.find(capability=>capability.id===provider)?.icon;
+  const capabilities=useAgentCapabilities(); const icon=capabilities.find(capability=>capability.id===provider)?.icon; const custom=useCustomIcon(provider);
+  if(custom)return <img className="brand-ico" src={custom} alt="" data-agent-icon="image" style={size === undefined ? undefined : {width:size,height:size}}/>;
   const name=provider.toLowerCase().replace(' code',''); const body=Object.hasOwn(brands,name)?brands[name]:undefined;
   // Plugin icons arrive as data URLs from the runtime; anything else (a remote URL) is never fetched.
   if(!body&&icon?.startsWith('data:image/'))return <img className="brand-ico" src={icon} alt="" data-agent-icon={provider} style={size === undefined ? undefined : {width:size,height:size}}/>;
@@ -108,7 +119,8 @@ const BRAND_TILES = new Set(['claude', 'codex', 'gemini', 'kimi', 'grok', 'openc
 export function AgentTile({ provider, size = 16, animate = false }: { provider: string; size?: number; animate?: boolean }) {
   const capabilities = useAgentCapabilities();
   const icon = capabilities.find(capability => capability.id === provider)?.icon;
-  const name = provider.toLowerCase().replace(' code', '');
+  const custom = useCustomIcon(provider);
+  const name = custom ? 'image' : provider.toLowerCase().replace(' code', '');
   const brand = BRAND_TILES.has(name);
   const shell = !brand;
   const style: CSSProperties = {
@@ -125,7 +137,9 @@ export function AgentTile({ provider, size = 16, animate = false }: { provider: 
   ].filter(Boolean).join(' ');
 
   let body: ReactNode;
-  if (shell && icon?.startsWith('data:image/')) {
+  if (custom) {
+    body = <img src={custom} alt="" />;
+  } else if (shell && icon?.startsWith('data:image/')) {
     body = <img src={icon} alt="" />;
   } else if (name === 'gemini') {
     body = <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" dangerouslySetInnerHTML={brandHtml.gemini} />;

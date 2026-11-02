@@ -9,7 +9,7 @@ use crate::pty::PtyManager;
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::thread;
@@ -118,12 +118,65 @@ pub(crate) fn match_agent(image: &str, cmdline: Option<&str>) -> Option<&'static
     None
 }
 
-/// Among `(creation_time, provider)` hits, the oldest wins: the agent the user started,
+/// Among `(creation_time, icon)` hits, the oldest wins: the agent the user started,
 /// not one it runs as a tool (Claude calling `codex exec` stays Claude).
-pub(crate) fn pick_outermost(hits: &[(u64, &'static str)]) -> Option<&'static str> {
+pub(crate) fn pick_outermost(hits: &[(u64, String)]) -> Option<String> {
     hits.iter()
         .min_by_key(|(created, _)| *created)
-        .map(|(_, id)| *id)
+        .map(|(_, id)| id.clone())
+}
+
+/// Icons the renderer draws itself; anything else is a user image (`image:<id>`).
+pub(crate) const BUILT_IN_ICONS: &[&str] = &["claude", "codex", "gemini", "kimi", "grok", "opencode", "pi", "shell"];
+
+/// One rule from Settings → Terminal icons: a program name or path fragment, and its icon.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct UserRule {
+    pattern: String,
+    icon: String,
+}
+
+/// The user's rules in order. Settings validation keeps them well-formed; a blank one is skipped.
+pub(crate) fn user_rules(settings: &Value) -> Vec<UserRule> {
+    settings
+        .pointer("/terminalIcons/rules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|rule| {
+            let pattern = normalize(rule.get("match")?.as_str()?.trim());
+            let icon = rule.get("icon")?.as_str()?.to_owned();
+            (!pattern.is_empty()).then_some(UserRule { pattern, icon })
+        })
+        .collect()
+}
+
+/// A name matches the executable (with or without `.exe`) or one folder, package or file
+/// name of a script host's command line (`copilot` in `@github/copilot/index.js`); a pattern
+/// with `/` matches anywhere in the path or command line. Inputs are already normalized.
+fn rule_matches(pattern: &str, image: &str, cmdline: Option<&str>) -> bool {
+    if pattern.contains('/') {
+        return image.contains(pattern) || cmdline.is_some_and(|line| line.contains(pattern));
+    }
+    let base = basename(image);
+    if base == pattern || base.strip_suffix(".exe") == Some(pattern) {
+        return true;
+    }
+    let named = |token: &str| {
+        token == pattern
+            || [".js", ".mjs", ".cjs", ".py", ".exe", ".cmd"].iter().any(|ext| token.strip_suffix(ext) == Some(pattern))
+    };
+    cmdline.is_some_and(|line| line.split(|c: char| matches!(c, '/' | ' ' | '"' | '\'' | '=' | '\t')).any(named))
+}
+
+/// The icon for one process: the user's rules first, then the built-in signatures.
+pub(crate) fn match_process(rules: &[UserRule], image: &str, cmdline: Option<&str>) -> Option<String> {
+    let (image_n, cmdline_n) = (normalize(image), cmdline.map(normalize));
+    rules
+        .iter()
+        .find(|rule| rule_matches(&rule.pattern, &image_n, cmdline_n.as_deref()))
+        .map(|rule| rule.icon.clone())
+        .or_else(|| match_agent(image, cmdline).map(str::to_owned))
 }
 
 fn needs_cmdline(image: &str) -> bool {
@@ -202,23 +255,32 @@ pub(crate) fn initialize_connection(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-/// Detect the agent for one session from the host's process tree.
-pub(crate) fn detect_session(host: &impl WatchHost, session_id: &str, cache: &mut HashMap<(u32, u64), Option<&'static str>>) -> Option<&'static str> {
+/// What the watcher remembers between polls: each process's icon, keyed by (pid, creation)
+/// so a recycled pid is never misread, and the user rules those answers were made with.
+#[derive(Default)]
+pub(crate) struct Detection {
+    cache: HashMap<(u32, u64), Option<String>>,
+    rules: Vec<UserRule>,
+}
+
+/// Detect the icon for one session from the host's process tree.
+pub(crate) fn detect_session(host: &impl WatchHost, session_id: &str, state: &mut Detection) -> Option<String> {
     let mut hits = Vec::new();
     for pid in host.process_ids(session_id) {
         let Some(info) = host.inspect(pid) else {
             continue;
         };
         let key = (pid, info.created);
-        let agent = if let Some(cached) = cache.get(&key) {
-            *cached
-        } else {
-            // `inspect` already reads the command line for script hosts only.
-            let matched = match_agent(&info.image, info.cmdline.as_deref());
-            cache.insert(key, matched);
-            matched
+        let icon = match state.cache.get(&key) {
+            Some(cached) => cached.clone(),
+            None => {
+                // `inspect` already reads the command line for script hosts only.
+                let matched = match_process(&state.rules, &info.image, info.cmdline.as_deref());
+                state.cache.insert(key, matched.clone());
+                matched
+            }
         };
-        if let Some(id) = agent {
+        if let Some(id) = icon {
             hits.push((info.created, id));
         }
     }
@@ -226,7 +288,13 @@ pub(crate) fn detect_session(host: &impl WatchHost, session_id: &str, cache: &mu
 }
 
 /// One poll: reconcile every eligible session and clear rows that no longer apply.
-pub(crate) fn poll_once(db: &Database, host: &impl WatchHost, cache: &mut HashMap<(u32, u64), Option<&'static str>>) {
+pub(crate) fn poll_once(db: &Database, host: &impl WatchHost, state: &mut Detection) {
+    // Edited rules re-match every process on this poll.
+    let rules = db.settings_value().map(|settings| user_rules(&settings)).unwrap_or_default();
+    if rules != state.rules {
+        state.cache.clear();
+        state.rules = rules;
+    }
     let eligible: HashSet<String> = host.eligible_sessions().into_iter().collect();
     let stored: HashMap<String, String> = db
         .transaction(|tx| {
@@ -244,9 +312,9 @@ pub(crate) fn poll_once(db: &Database, host: &impl WatchHost, cache: &mut HashMa
     }
     // Compare with the rows just read so an unchanged terminal costs no transaction.
     for session_id in &eligible {
-        let agent = detect_session(host, session_id, cache);
-        if stored.get(session_id).map(String::as_str) != agent {
-            let _ = set_terminal_agent(db, session_id, agent);
+        let icon = detect_session(host, session_id, state);
+        if stored.get(session_id) != icon.as_ref() {
+            let _ = set_terminal_agent(db, session_id, icon.as_deref());
         }
     }
     // Drop cache entries for pids that no longer appear, so the map cannot grow without bound.
@@ -254,14 +322,14 @@ pub(crate) fn poll_once(db: &Database, host: &impl WatchHost, cache: &mut HashMa
         .iter()
         .flat_map(|id| host.process_ids(id))
         .collect();
-    cache.retain(|(pid, _), _| live.contains(pid));
+    state.cache.retain(|(pid, _), _| live.contains(pid));
 }
 
 /// Shared watcher loop. Sleeps outside every database and PTY lock.
 pub(crate) fn watch(db: &Database, host: &impl WatchHost) {
-    let mut cache = HashMap::new();
+    let mut state = Detection::default();
     loop {
-        poll_once(db, host, &mut cache);
+        poll_once(db, host, &mut state);
         host.sleep(POLL);
     }
 }

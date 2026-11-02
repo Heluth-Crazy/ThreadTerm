@@ -56,3 +56,13 @@ test("AgentTile maps every built-in provider and falls back to a neutral shell t
   assert.match(renderTile("echo", [capability("echo")]), /<img /);
   assert.match(renderTile("unknown-plugin"), /agent-tile-shell/);
 });
+
+test("a terminal icon rule's image renders as an <img>, and a missing one falls back to the terminal tile", () => {
+  const images = [{ id: "copilot", name: "Copilot", src: "data:image/png;base64,iVBORw0KGgo=" }];
+  const render = (element: ReturnType<typeof createElement>) => renderToStaticMarkup(createElement(AgentIconsProvider, { providers: [], images, children: element }));
+  const tile = render(createElement(AgentTile, { provider: "image:copilot", size: 16 }));
+  assert.match(tile, /data-agent-tile="image"/);
+  assert.match(tile, /<img src="data:image\/png;base64,iVBORw0KGgo="/);
+  assert.match(render(createElement(AgentIcon, { provider: "image:copilot" })), /<img class="brand-ico" src="data:image\/png/);
+  assert.match(render(createElement(AgentTile, { provider: "image:gone", size: 16 })), /agent-tile-shell/);
+});
