@@ -110,6 +110,7 @@ impl ClaudeAdapter {
     }
 
     fn worker_spec(&self) -> Result<CommandSpec, ProviderError> {
+        let _decision = crate::environment::provider_decision();
         let script = claude_worker_path().ok_or_else(|| {
             ProviderError::unavailable(
                 "claude",

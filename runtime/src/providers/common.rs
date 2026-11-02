@@ -20,6 +20,10 @@ use std::{
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(all(test, windows))]
+#[path = "provider_environment_tests.rs"]
+mod provider_environment_tests;
+
 /// Preserve inbound ACP frame order until a newly spawned reader has a responder.
 pub(super) fn dispatch_acp_message(
     startup: &Mutex<Option<Vec<Value>>>,
@@ -131,10 +135,12 @@ pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
     pub display: String,
+    environment: Arc<crate::environment::ProviderEnvironment>,
 }
 
 impl CommandSpec {
     pub fn provider(command: &str, args: &[&str]) -> Result<Self, ProviderError> {
+        let _decision = crate::environment::provider_decision();
         let path = find_executable(command).ok_or_else(|| {
             ProviderError::unavailable(
                 command,
@@ -159,6 +165,7 @@ impl CommandSpec {
             program,
             args,
             display,
+            environment: crate::environment::provider_environment(),
         })
     }
 
@@ -174,11 +181,13 @@ impl CommandSpec {
             // corrupt the inner quotes before cmd.exe parses them.
             command.raw_arg(&invocation.raw_payload);
             hide_background_window(&mut command);
+            crate::environment::apply_vars_to_service(&mut command, &self.environment.vars);
             return Ok(command);
         }
         let mut command = Command::new(&self.program);
         command.args(&self.args);
         hide_background_window(&mut command);
+        crate::environment::apply_vars_to_service(&mut command, &self.environment.vars);
         Ok(command)
     }
 }
@@ -284,16 +293,31 @@ fn quote_cmd_token(value: &str) -> Result<String, ProviderError> {
 }
 
 pub fn find_executable(command: &str) -> Option<PathBuf> {
+    let environment = crate::environment::provider_environment();
+    #[cfg(debug_assertions)]
+    if super::builtin_cli_name(command).is_some() || command == "gemini" {
+        if let Some(directory) = env::var_os("THREADTERM_QA_PROVIDER_BIN") {
+            // Explicit debug-only dependency injection keeps QA away from installed CLIs.
+            let directory = PathBuf::from(directory);
+            if !directory.is_absolute() { return None; }
+            return find_executable_in(command, &environment.vars, &[directory]);
+        }
+    }
+    find_executable_in(command, &environment.vars, &environment.search_paths)
+}
+
+fn find_executable_in(command: &str, vars: &crate::environment::Vars, directories: &[PathBuf]) -> Option<PathBuf> {
     let direct = PathBuf::from(command);
     if direct.components().count() > 1 && direct.is_file() {
-        return Some(direct);
+        return std::path::absolute(direct).ok();
     }
-    let path = env::var_os("PATH")?;
     #[cfg(windows)]
-    let extensions = executable_extensions(env::var("PATHEXT").ok().as_deref());
+    let extensions = executable_extensions(crate::environment::value(vars, "PATHEXT").and_then(OsStr::to_str));
     #[cfg(not(windows))]
     let extensions = vec![String::new()];
-    for directory in env::split_paths(&path) {
+    #[cfg(not(windows))]
+    let _ = vars;
+    for directory in directories {
         for extension in &extensions {
             let name = if extension.is_empty() {
                 command.to_owned()
@@ -302,7 +326,7 @@ pub fn find_executable(command: &str) -> Option<PathBuf> {
             };
             let candidate = directory.join(name);
             if candidate.is_file() {
-                return Some(prefer_native_opencode(candidate));
+                return std::path::absolute(prefer_native_opencode(candidate)).ok();
             }
         }
     }
@@ -396,6 +420,8 @@ pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, P
                     .to_owned();
                 return if status.success() {
                     Ok(if stdout.is_empty() { stderr } else { stdout })
+                } else if !Path::new(&spec.program).is_file() {
+                    Err(missing_executable(&spec.program))
                 } else {
                     Err(ProviderError::new(
                         "provider_probe_failed",
@@ -674,12 +700,20 @@ pub fn spawn_managed_service(
     spawn_managed_service_with_environment(spec, cwd, envs, None)
 }
 
+fn missing_executable(program: &str) -> ProviderError {
+    let provider = Path::new(program).file_stem().and_then(OsStr::to_str).unwrap_or(program);
+    ProviderError::unavailable(provider, format!("{program} executable was not found on PATH"))
+}
+
 pub fn spawn_managed_service_with_environment(
     spec: &CommandSpec,
     cwd: Option<&str>,
     envs: &[(&str, &str)],
     environment: Option<&crate::environment::Vars>,
 ) -> Result<(Child, SessionJob), ProviderError> {
+    if !Path::new(&spec.program).is_file() {
+        return Err(missing_executable(&spec.program));
+    }
     let owned_cwd = cwd
         .map(ToOwned::to_owned)
         .or_else(|| {
@@ -722,17 +756,15 @@ pub fn spawn_managed_service_with_environment(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // The user's current Windows environment rather than the long-lived runtime's, as for a
-    // terminal (environment.rs); the provider's own variables below still win.
-    if let Some(environment) = environment {
-        crate::environment::apply_vars_to_service(&mut command, environment);
-    } else {
-        crate::environment::apply_to_service(&mut command);
-    }
+    // Reuse the exact discovery snapshot; bootstrap and provider variables still win.
+    crate::environment::apply_vars_to_service(&mut command, environment.unwrap_or(&spec.environment.vars));
     for (name, value) in envs {
         command.env(name, value);
     }
     let mut child = command.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound || !Path::new(&spec.program).is_file() {
+            return missing_executable(&spec.program);
+        }
         ProviderError::new(
             "provider_launch_failed",
             format!("failed to start {}: {error}", spec.display),

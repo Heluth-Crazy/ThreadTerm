@@ -109,6 +109,7 @@ pub struct AgentDescriptor {
 
 impl AgentDescriptor {
     pub fn command_spec(&self, extra: &[String]) -> Result<CommandSpec, ProviderError> {
+        let _decision = crate::environment::provider_decision();
         let args = self
             .args
             .iter()

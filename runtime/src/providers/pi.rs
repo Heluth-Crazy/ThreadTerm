@@ -327,6 +327,7 @@ impl PiAdapter {
         roundtable_read_only_requested: bool,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let shared = Arc::new(PiShared::default());
+        let _decision = crate::environment::provider_decision();
         // Capture once: trust inspection and the child process must observe
         // one environment, including a just-installed PI_CODING_AGENT_DIR.
         let launch_environment =
@@ -2489,9 +2490,8 @@ fn pi_agent_dir() -> Option<PathBuf> {
 /// Read the environment that the managed Pi child receives, not only the
 /// long-lived runtime's startup environment.
 fn pi_launch_env(name: &str) -> Option<std::ffi::OsString> {
-    let environment =
-        crate::environment::for_terminal().unwrap_or_else(|| std::env::vars_os().collect());
-    pi_environment_value(&environment, name)
+    let environment = crate::environment::provider_environment();
+    pi_environment_value(&environment.vars, name)
 }
 
 fn pi_environment_value(

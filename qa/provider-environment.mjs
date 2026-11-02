@@ -11,8 +11,9 @@
 // Windows defines in its Environment keys:
 //   USERPROFILE/APPDATA in scratch, TT_ENV_PROBE and HTTPS_PROXY set only by the launcher → kept;
 //   TEMP/TMP and JAVA_HOME pointing into scratch → Windows' current values;
-//   Path = fake bin + node + System32 → Windows' current Path (the fake bin is found by the runtime,
-//   which still resolves provider executables against its own PATH).
+//   Path = fake bin + node + System32 → Windows' current Path. Production discovery searches the
+//   current snapshot first, then launcher-only directories. The explicit debug-only provider-bin
+//   injection below prevents a real installed CLI from taking priority over these fake providers.
 //
 // usage: node qa/provider-environment.mjs [--keep]   (needs runtime/target-qa/debug/threadterm-v3-runtime.exe)
 import assert from 'node:assert/strict';
@@ -80,6 +81,7 @@ const launcher = {
   THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user'), THREADTERM_V3_PIPE: pipe, THREADTERM_V3_CONPTY: 'system',
   THREADTERM_CLAUDE_NODE: process.execPath, THREADTERM_CLAUDE_SDK_HOST: join(scratch, 'fake-claude-host.mjs'), THREADTERM_CLAUDE_PATH: join(bin, 'claude.exe'),
   TT_QA_NODE: process.execPath, TT_QA_SCRIPT: join(bin, 'fake-provider.mjs'), TT_QA_EVENTS: events,
+  THREADTERM_QA_PROVIDER_BIN: bin,
 };
 const runtimeEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !dropped.test(name))), ...launcher };
 const daemon = spawn(exe, [], { env: runtimeEnv, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
@@ -107,7 +109,14 @@ try {
     catch { peer?.close(); peer = undefined; if (daemon.exitCode !== null) throw Error(`runtime exited: ${diagnostic}`); await delay(100); }
   }
   assert.ok(peer, 'runtime started');
-  const capabilities = await peer.request('provider.list', {}, 120_000);
+  const listStarted = performance.now();
+  let capabilities = [];
+  while (!capabilities.length && performance.now() - listStarted < 120_000) {
+    capabilities = await peer.request('provider.list', {}, 120_000);
+    if (!capabilities.length) await delay(25);
+  }
+  assert.ok(capabilities.length, 'provider discovery completed');
+  console.log(`provider.list pass: ${(performance.now() - listStarted).toFixed(1)} ms`);
   const rows = (await readFile(events, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
 
   const file = join(scratch, 'terminal-env.txt');
