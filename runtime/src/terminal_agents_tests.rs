@@ -72,7 +72,8 @@ fn signature_table_matches_and_rejects_ordinary_programs() {
 
 #[test]
 fn the_outermost_agent_wins_over_one_it_runs_as_a_tool() {
-    assert_eq!(pick_outermost(&[(10, "claude"), (20, "codex"), (15, "kimi")]), Some("claude"));
+    let hits = [(10, "claude".to_owned()), (20, "codex".to_owned()), (15, "kimi".to_owned())];
+    assert_eq!(pick_outermost(&hits).as_deref(), Some("claude"));
     assert_eq!(pick_outermost(&[]), None);
 }
 
@@ -149,7 +150,7 @@ fn watcher_writes_once_per_change_and_clears_on_exit() {
         )]),
         HashMap::from([(id.clone(), vec![])]),
     ];
-    let mut cache = HashMap::new();
+    let mut cache = Detection::default();
     poll_once(&db, &host, &mut cache);
     assert_eq!(stored(&db, &id), None);
 
@@ -267,7 +268,7 @@ fn windows_pty_detects_and_clears_a_renamed_claude() {
         db: Arc::clone(&db),
         pty: pty.clone(),
     };
-    let mut cache = HashMap::new();
+    let mut cache = Detection::default();
     let deadline = Instant::now() + StdDuration::from_secs(20);
     let mut seen = false;
     while Instant::now() < deadline {
@@ -304,4 +305,73 @@ fn windows_pty_detects_and_clears_a_renamed_claude() {
     }
     assert!(cleared, "terminalAgent did not clear after claude.exe exited");
     let _ = pty.stop(&db, &session.id, true);
+}
+
+fn rules_from(rows: serde_json::Value) -> Vec<UserRule> {
+    user_rules(&serde_json::json!({"terminalIcons":{"rules":rows,"images":[]}}))
+}
+
+#[test]
+fn user_rules_match_an_executable_a_package_folder_or_a_path_fragment() {
+    let rules = rules_from(serde_json::json!([
+        {"id":"a","match":"copilot","icon":"image:copilot"},
+        {"id":"b","match":"cursor-agent","icon":"image:cursor"},
+        {"id":"c","match":"@acme/agent","icon":"codex"},
+        {"id":"d","match":"aider","icon":"image:aider"}
+    ]));
+    // A package folder in a Node command line.
+    assert_eq!(
+        match_process(&rules, r"C:\nodejs\node.exe", Some(r#"node "C:\npm\node_modules\@github\copilot\index.js""#)).as_deref(),
+        Some("image:copilot")
+    );
+    // An executable, with or without .exe; a Python module.
+    assert_eq!(match_process(&rules, r"C:\Users\x\.local\bin\aider.exe", None).as_deref(), Some("image:aider"));
+    assert_eq!(match_process(&rules, r"C:\Python\python.exe", Some("python -m aider --model x")).as_deref(), Some("image:aider"));
+    // A folder of the host's own path (Cursor ships its node.exe under cursor-agent).
+    assert_eq!(
+        match_process(&rules, r"C:\cursor-agent\versions\1\node.exe", Some(r"C:\cursor-agent\versions\1\node.exe index.js")).as_deref(),
+        Some("image:cursor")
+    );
+    // A path fragment matches anywhere, with either slash.
+    assert_eq!(match_process(&rules, r"C:\node.exe", Some(r"node C:\npm\node_modules\@acme\agent\cli.js")).as_deref(), Some("codex"));
+    // A name never matches part of a word, and built-ins still apply when no rule does.
+    assert_eq!(match_process(&rules, r"C:\node.exe", Some("node copiloting.js")), None);
+    assert_eq!(match_process(&rules, r"C:\npm\claude.exe", None).as_deref(), Some("claude"));
+}
+
+#[test]
+fn a_user_rule_overrides_a_built_in_and_the_first_rule_wins() {
+    let rules = rules_from(serde_json::json!([
+        {"id":"a","match":"claude","icon":"image:mine"},
+        {"id":"b","match":"claude.exe","icon":"codex"}
+    ]));
+    assert_eq!(match_process(&rules, r"C:\npm\claude.exe", None).as_deref(), Some("image:mine"));
+    assert!(rules_from(serde_json::json!([{"id":"a","match":"  ","icon":"codex"}])).is_empty(), "a blank pattern is skipped");
+}
+
+#[test]
+fn edited_rules_rematch_running_processes_on_the_next_poll() {
+    let (_dir, db) = open_db();
+    let session = shell_session(&db, "rules");
+    let mut trees = HashMap::new();
+    trees.insert(
+        session.clone(),
+        vec![ProcessInfo {
+            image: r"C:\nodejs\node.exe".into(),
+            created: 5,
+            cmdline: Some(r"node C:\npm\node_modules\@github\copilot\index.js".into()),
+        }],
+    );
+    let host = FakeHost::new(vec![session.clone()], trees);
+    let mut state = Detection::default();
+    poll_once(&db, &host, &mut state);
+    assert_eq!(stored(&db, &session), None, "without a rule an unknown agent keeps the terminal icon");
+    let rules = serde_json::json!({"terminalIcons":{
+        "rules":[{"id":"a","match":"copilot","icon":"image:copilot"}],
+        "images":[{"id":"copilot","name":"Copilot","src":"data:image/png;base64,iVBORw0KGgo="}]
+    }});
+
+    db.update_settings(&rules, 0, "rules-on").unwrap();
+    poll_once(&db, &host, &mut state);
+    assert_eq!(stored(&db, &session).as_deref(), Some("image:copilot"));
 }

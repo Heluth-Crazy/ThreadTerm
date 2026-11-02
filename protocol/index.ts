@@ -44,7 +44,7 @@ export interface SessionForkOrigin { sessionId:string; itemId?:string; title?:st
 export interface SessionGroup { /** Owning group id. */ id:string; /** This session's unique `@handle` within its group. */ handle:string }
 /** Present when this Chat session is a Chat Code Review finder or verifier. S2 hides these from the sidebar and opens them by id. */
 export interface SessionCodeReview { reviewId:string; parentSessionId:string; role:'finder'|'verifier'; lens?:string }
-export interface Session { id:string; projectId?:string; worktreePath?:string; title:string; provider:ProviderId; mode:SessionMode; status:SessionStatus; createdAt:string; updatedAt:string; nativeId?:string; exitCode?:number; cols?:number; rows?:number; followed?:boolean; readOnly?:boolean; activity?:SessionActivity; delegation?:SessionDelegation; /** Group grouping metadata for member Chat sessions. */ group?:SessionGroup; archived?:boolean; pinned?:boolean; bookmarked?:boolean; intent?:'review'|'fix'|'research'|'test'|'docs'; sortOrder?:number; organizationRevision?:number; /** Present when this terminal is a Quick Launch run. */ run?:SessionRun; forkedFrom?:SessionForkOrigin; /** Present on Chat Code Review finder/verifier sessions. */ codeReview?:SessionCodeReview; /** Provider id of the agent CLI currently running inside a shell/custom terminal; absent otherwise. */ terminalAgent?:string }
+export interface Session { id:string; projectId?:string; worktreePath?:string; title:string; provider:ProviderId; mode:SessionMode; status:SessionStatus; createdAt:string; updatedAt:string; nativeId?:string; exitCode?:number; cols?:number; rows?:number; followed?:boolean; readOnly?:boolean; activity?:SessionActivity; delegation?:SessionDelegation; /** Group grouping metadata for member Chat sessions. */ group?:SessionGroup; archived?:boolean; pinned?:boolean; bookmarked?:boolean; intent?:'review'|'fix'|'research'|'test'|'docs'; sortOrder?:number; organizationRevision?:number; /** Present when this terminal is a Quick Launch run. */ run?:SessionRun; forkedFrom?:SessionForkOrigin; /** Present on Chat Code Review finder/verifier sessions. */ codeReview?:SessionCodeReview; /** What a shell/custom terminal is running now: a built-in mark id (claude, codex, …) or `image:<id>` from Settings → Terminal icons; absent otherwise. */ terminalAgent?:string }
 /** Quick Launch: per-project saved commands, each run as an ordinary managed terminal session in a chosen worktree.
  * One active run per command and worktree root (the runtime admits atomically and returns the existing run). */
 export type QuickLaunchShell = 'cmd'|'powershell'|'pwsh';
@@ -206,7 +206,12 @@ export interface PageTargetRef { selector?:string; rect?:PageRect }
 export interface PluginList { /** Where user plugins are installed (one folder per plugin, each with threadterm-plugin.json). */ directory:string; plugins:PluginInfo[] }
 /** A saved composer snippet inserted at the caret from the `+` menu or the composer's right-click menu. */
 export interface QuickMessage { id:string; title:string; text:string }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; [key:string]:unknown }
+/** Settings → Terminal icons: a program name or path fragment (`copilot`, `@github/copilot`) and the icon a terminal running it shows. */
+export interface TerminalIconRule { id:string; match:string; /** A built-in mark id, or `image:<id>` of one of the user's images. */ icon:string }
+/** A user's icon: only ever drawn as an <img> data URL (png, svg+xml, webp, jpeg or gif), at most about 64 KB. */
+export interface TerminalIconImage { id:string; name:string; src:string }
+export interface TerminalIconSettings { rules:TerminalIconRule[]; images:TerminalIconImage[] }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; [key:string]:unknown }
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export type ExternalFileSource = 'dialog'|'drop'|'link'|'recent';
