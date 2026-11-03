@@ -3862,6 +3862,14 @@ fn emit_codex_child_notification(
             };
             ("chat.subagent.item", data)
         }
+        "error" if params.get("willRetry").and_then(Value::as_bool) == Some(true) => (
+            "chat.subagent.item",
+            json!({"item":{
+                "id":format!("{thread_id}:reconnect:{}", params.get("turnId").and_then(Value::as_str).unwrap_or("unknown")),
+                "role":"assistant","parts":[{"type":"thinking","text":params.pointer("/error/message")
+                    .and_then(Value::as_str).unwrap_or("Reconnecting…")}]
+            }}),
+        ),
         "error" => (
             "chat.subagent.item",
             json!({"item":{
@@ -5258,6 +5266,36 @@ mod tests {
         fn drain(&mut self) -> Vec<super::super::ProviderEvent> {
             std::iter::from_fn(|| self.received.try_recv().ok()).collect()
         }
+    }
+
+    #[test]
+    fn recoverable_child_errors_are_informational_and_do_not_fail_the_parent() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        replay.drain();
+        for attempt in 1..=2 {
+            replay.emit("error", json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn",
+                "willRetry":true,"error":{"message":format!("Reconnecting... {attempt}/5")}}));
+            let events = replay.drain();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].kind, "chat.subagent.item");
+            assert_eq!(events[0].data["key"], SUBAGENT_CHILD);
+            assert_eq!(events[0].data["item"]["id"], format!("{SUBAGENT_CHILD}:reconnect:child-turn"));
+            assert_eq!(events[0].data["item"]["parts"][0]["type"], "thinking");
+            assert_eq!(events[0].data["item"]["parts"][0]["text"], format!("Reconnecting... {attempt}/5"));
+            assert_eq!(events[0].worker_token.as_deref(), Some("subagent-worker"));
+            replay.stop_target();
+        }
+        replay.emit("turn/completed", json!({"threadId":SUBAGENT_CHILD,
+            "turn":{"id":"child-turn","status":"completed"}}));
+        assert_eq!(replay.drain()[0].data["info"]["status"], "completed");
+        replay.stop_target();
+        replay.emit("error", json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn",
+            "willRetry":false,"error":{"message":"child failed"}}));
+        let error = replay.drain();
+        assert_eq!(error[0].data["item"]["parts"][0]["type"], "error");
+        assert_eq!(error[0].data["item"]["parts"][0]["text"], "child failed");
+        replay.stop_target();
     }
 
     #[test]
