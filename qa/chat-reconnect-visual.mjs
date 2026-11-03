@@ -119,6 +119,7 @@ try {
   page.setDefaultTimeout(30_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
   await page.locator('.app-shell').waitFor({ timeout: 45_000 });
+  await page.locator('#boot-splash').waitFor({ state: 'hidden', timeout: 45_000 });
   const initial = await rpc('runtime.snapshot');
   await rpc('settings.update', { patch: { language: 'en', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: initial.settings.revision, operationId: randomUUID() });
   const project = await rpc('project.add', { path: workspace, name: 'Reconnect QA', operationId: randomUUID() });
@@ -132,6 +133,28 @@ try {
   await until(async () => (await rpc('chat.read', { sessionId: session.id })).some(item => item.parts.some(part => part.text === 'BEFORE-CONTROL-DROP')), 'pre-gap text');
   await chat().locator('.chat-approval-card').waitFor();
   await until(async () => (await page.locator(`.project-catalog .sess-row-wrap[data-session-id="${session.id}"]`).getAttribute('data-activity')) === 'awaiting_approval', 'sidebar waiting state before gap');
+  // Native provider retry is distinct from losing the desktop control pipe.
+  // Stage each notice so both attempts must pass through the real projection.
+  let retryId;
+  for (const attempt of [1, 2]) {
+    await writeFile(join(control, `retry-${attempt}`), 'retry\n');
+    const message = `Reconnecting... ${attempt}/5`;
+    await until(async () => (await rpc('chat.snapshot', { sessionId: session.id })).items.some(item => item.id.includes(':reconnect:') && item.parts.some(part => part.text === message)), `native retry ${attempt} persisted`);
+    const snapshot = await rpc('chat.snapshot', { sessionId: session.id });
+    const retries = snapshot.items.filter(item => item.id.includes(':reconnect:'));
+    assert.equal(retries.length, 1, 'native retries replace one stable item');
+    if (retryId) assert.equal(retries[0].id, retryId, 'retry identity survives another attempt');
+    retryId = retries[0].id;
+    assert.ok(retries[0].parts.some(part => part.type === 'thinking' && part.text === message), 'latest retry remains informational');
+    assert.ok(snapshot.items.some(item => item.turnId === retries[0].turnId && item.parts.some(part => part.type === 'approval' && part.status === 'pending')), 'same-turn approval survives retry');
+    const state = await rpc('runtime.snapshot');
+    assert.equal(state.sessions.find(row => row.id === session.id)?.activity?.state, 'awaiting_approval', 'retry does not end the active approval turn');
+    assert.equal(state.inbox.filter(item => item.sessionId === session.id && item.kind === 'error').length, 0, 'retry creates no failure inbox entry');
+    await until(async () => (await renderedItems()).some(item => item.id === retryId && item.parts.some(part => part.text === message)), `native retry ${attempt} rendered`);
+    assert.equal((await renderedItems()).filter(item => item.id.includes(':reconnect:')).length, 1, 'mounted renderer has one retry item');
+    assert.ok(await chat().locator('.chat-approval-card button:not([disabled])').count() > 0, 'approval remains actionable during retry');
+  }
+  await shot('00-native-retry.png', 1440);
   const dropped = await page.evaluate(async () => {
     if (!window.threadtermQa) throw new Error('QA control-drop bridge unavailable');
     await window.threadtermQa.dropControl(); return true;
@@ -185,6 +208,7 @@ try {
 
   report.checks = [
     'Desktop 1 inactive real-app launch; native notifications disabled',
+    'two native willRetry notices replace one rendered status and retain same-turn actionable approval without failure inbox',
     'control pipe cut only through the non-packaged QA gate',
     'pre-gap approval was visible, then gap text/tool/resolution/model update converged through chat.snapshot',
     'mounted ChatView item state has no duplicate ids or actionable stale approval buttons',
