@@ -3,8 +3,8 @@
 //   import { electron } from './lib/desktop1.mjs';   // instead of: import { _electron as electron } from '@playwright/test'
 import { _electron } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '../..');
 const hook = join(import.meta.dirname, 'desktop1-hook.cjs');
@@ -13,6 +13,7 @@ const helper = join(root, 'runtime', 'target-qa', 'vdesk.exe');
 function vdesk() {
   if (process.platform !== 'win32') return undefined;
   if (!existsSync(helper)) {
+    mkdirSync(dirname(helper), { recursive: true });
     const csc = join(process.env.SystemRoot || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
     execFileSync(csc, ['-nologo', `-out:${helper}`, join(import.meta.dirname, 'vdesk.cs')], { stdio: 'pipe' });
   }
