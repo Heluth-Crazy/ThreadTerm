@@ -19,7 +19,7 @@ export function windowsPtyFor(os: IWindowsPty | undefined, host: ConptyHost | un
   return os;
 }
 
-export interface TerminalHostInfo { conptyHost: ConptyHost; bundledAvailable: boolean }
+export interface TerminalHostInfo { conptyHost: ConptyHost; bundledAvailable: boolean; pwshAvailable?: boolean }
 
 let known: Promise<TerminalHostInfo | undefined> | undefined;
 

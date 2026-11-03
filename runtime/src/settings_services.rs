@@ -65,6 +65,8 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "chatTools",
     // Machine-specific (not exported): the console host for Windows terminals (conpty.rs); read at runtime start.
     "conptyHost",
+    // Machine-specific: a new Shell terminal resolves this once and stores the executable in its launch config.
+    "defaultShell",
 ];
 struct RelocationReservation {
     operation_id: String,
@@ -1129,6 +1131,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         "modelPrices" if valid_model_prices(value) => Ok(()),
         "electronCacheCleanup" if valid_cache_cleanup(value) => Ok(()),
         "conptyHost" if matches!(value.as_str(), Some("system" | "bundled")) => Ok(()),
+        "defaultShell" if matches!(value.as_str(), Some("cmd" | "powershell" | "pwsh")) => Ok(()),
         "floatMode" if matches!(value.as_str(), Some("manual" | "tile" | "cycle")) => Ok(()),
         "supervision"
             if value.as_object().is_some_and(|supervision| {
@@ -1558,6 +1561,11 @@ mod tests {
         assert!(valid_runtime_patch(&json!({"conptyHost":"system"})).is_ok());
         assert!(valid_runtime_patch(&json!({"conptyHost":"winpty"})).is_err());
         assert!(valid_runtime_patch(&json!({"conptyHost":true})).is_err());
+        assert!(valid_runtime_patch(&json!({"defaultShell":"cmd"})).is_ok());
+        assert!(valid_runtime_patch(&json!({"defaultShell":"powershell"})).is_ok());
+        assert!(valid_runtime_patch(&json!({"defaultShell":"pwsh"})).is_ok());
+        assert!(valid_runtime_patch(&json!({"defaultShell":"bash"})).is_err());
+        assert!(valid_runtime_patch(&json!({"defaultShell":true})).is_err());
         assert!(valid_runtime_patch(
             &json!({"supervision":{"enabled":true,"rangeMinutes":5,"threshold":1}})
         )

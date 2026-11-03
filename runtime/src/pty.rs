@@ -81,6 +81,7 @@ impl PtyManager {
         #[cfg(windows)]
         if let Some(program) = executable {
             crate::providers::common::windows_script_invocation(program, args)?;
+            validate_powershell_args(program, args)?;
         }
         let pty_system = portable_pty::native_pty_system();
         // A resumed process must start in the geometry of the retained screen,
@@ -459,11 +460,76 @@ fn default_shell() -> &'static str {
     }
 }
 
+#[cfg(windows)]
+fn validate_powershell_args(program: &str, args: &[String]) -> Result<()> {
+    let is_powershell = std::path::Path::new(program)
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("powershell.exe") || name.eq_ignore_ascii_case("pwsh.exe"));
+    if is_powershell && args.iter().any(|arg| arg.contains('\0')) {
+        return Err(anyhow!("PowerShell arguments cannot contain NUL. PowerShell 参数不能包含空字符。"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::CreateSession;
     use std::time::{Duration, Instant};
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_command_arguments_survive_the_bootstrap_pty() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "pty-powershell-args",
+            })
+            .unwrap();
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        let args = vec![
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-Command".to_owned(),
+            r#"Write-Output ("PS-ARGS:" + $env:OS + "\\")"#.to_owned(),
+        ];
+        manager
+            .launch(
+                Arc::clone(&db),
+                &session.id,
+                dir.path().to_str().unwrap(),
+                Some("powershell.exe"),
+                &args,
+            )
+            .unwrap();
+        let mut output = Vec::new();
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(50));
+            for (_, bytes) in db.output_from(&session.id, 0, 64 * 1024).unwrap() {
+                output.extend(bytes);
+            }
+            if String::from_utf8_lossy(&output).contains("PS-ARGS:Windows_NT\\\\") {
+                manager.stop(&db, &session.id, true).ok();
+                return;
+            }
+            output.clear();
+        }
+        panic!("PowerShell -Command arguments did not survive the PTY bootstrap");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_launch_rejects_nul_arguments() {
+        let error = validate_powershell_args("powershell.exe", &["-Command".into(), "Write-Output\0unsafe".into()]).unwrap_err();
+        assert!(error.to_string().contains("NUL"));
+    }
 
     #[cfg(windows)]
     #[test]

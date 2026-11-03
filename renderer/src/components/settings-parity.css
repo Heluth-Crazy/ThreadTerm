@@ -1,4 +1,7 @@
 /* Additions not present in the immutable settings stylesheet stay inside their feature roots. */
+.settings-drawer .default-shell-setting { grid-template-columns: auto minmax(0, 190px); justify-content: space-between; }
+.settings-drawer .default-shell-setting > span:first-child { white-space: nowrap; }
+.settings-drawer .default-shell-setting .tt-select { min-width: 0; width: 100%; }
 .settings-drawer .settings-path-row { display: flex; align-items: center; gap: 8px; }
 .settings-drawer .settings-path-row input { min-width: 0; flex: 1; }
 .settings-drawer .settings-import-diff { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: center; }
