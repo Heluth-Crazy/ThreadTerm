@@ -4,14 +4,14 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { groupCodexTranscript } from './codexTranscript';
-import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, toolActivityPreview, toolActivityWaitingLabel, toolEntriesForItems, toolFailureSummary, toolOutputPreview, toolStatus, withoutToolParts } from './toolActivity';
+import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, shouldShowWorkingIndicator, toolActivityPreview, toolActivityWaitingLabel, toolEntriesForItems, toolFailureSummary, toolOutputPreview, toolStatus, withoutToolParts } from './toolActivity';
 
 const en = (english: string, _zh: string) => english;
 const zh = (_english: string, chinese: string) => chinese;
 const row = (id: string, parts: ChatPart[], turnId = 'turn'): ChatItem => ({ id, role: 'assistant', parts, turnId, createdAt: 'now' });
 const tool = (id: string, name: string, status = 'completed', data: unknown = {}): ChatPart => ({ type: 'tool', toolId: id, toolName: name, status, data });
 
-test('alternating commands and browser MCP keep one ordered group across AI text and approval', () => {
+test('settled alternating commands and browser MCP keep one ordered group across AI text and approval', () => {
   const parts = [tool('c1', 'commandExecution'), tool('b1', 'mcpToolCall', 'completed', { server: 'playwright', tool: 'browser_navigate' }),
     tool('c2', 'Bash'), tool('b2', 'mcp__playwright__browser_snapshot')];
   const items = [row('one', [parts[0]!]), row('ai', [{ type: 'text', text: 'Inspecting the page.' }]), row('two', [parts[1]!]),
@@ -22,6 +22,44 @@ test('alternating commands and browser MCP keep one ordered group across AI text
   assert.deepEqual(result.filter(entry => entry.type === 'item').map(entry => entry.item.id), ['ai', 'approval']);
   assert.deepEqual(groups[0]!.tools.map(entry => describeTool(entry.part, en).kind), ['command', 'browser', 'command', 'browser']);
   assert.equal(JSON.stringify(items), before);
+});
+
+test('live activity splits across assistant text, including mixed parts, without moving earlier tools', () => {
+  const items = [row('one', [tool('first', 'Read', 'running')]),
+    row('mixed', [{ type: 'text', text: 'Checking the next file.' }, tool('next', 'Read', 'running')])];
+  const before = JSON.stringify(items), live = groupToolActivity(items, true);
+  assert.deepEqual(live.map(entry => entry.type), ['tools', 'item', 'tools']);
+  assert.deepEqual(live.filter(entry => entry.type === 'tools').map(entry => entry.tools.map(tool => tool.part.toolId)), [['first'], ['next']]);
+  assert.equal(live[0]!.id, groupToolActivity(items.slice(0, 1), true)[0]!.id);
+  assert.equal(new Set(live.map(entry => entry.id)).size, live.length);
+  assert.deepEqual(groupToolActivity(items).map(entry => entry.type), ['tools', 'item']);
+  assert.equal(JSON.stringify(items), before);
+});
+
+test('live subagent parts form chronology boundaries within the same item', () => {
+  const live = groupToolActivity([row('mixed', [tool('first', 'Read'), { type: 'subagent', status: 'running' }, tool('next', 'Read')])], true);
+  assert.deepEqual(live.map(entry => entry.type), ['tools', 'item', 'tools']);
+});
+
+test('hidden streaming metadata does not split live tools or replace their activity indicator', () => {
+  const items = [row('one', [tool('first', 'Read', 'running')]), row('empty', []),
+    row('metadata', [{ type: 'usage' }, { type: 'text', text: '' }]), row('two', [tool('next', 'Read', 'running')])];
+  const live = groupToolActivity(items, true);
+  assert.deepEqual(live.map(entry => entry.type), ['tools']);
+  assert.equal(shouldShowWorkingIndicator(true, groupToolActivity(items.slice(0, 3), true), false, false), false);
+});
+
+test('working indicator only fills an active turn tail without another visible indicator', () => {
+  const text = groupToolActivity([row('text', [{ type: 'text', text: 'Still checking.' }])], true);
+  const running = groupToolActivity([row('tool', [tool('tool', 'Read', 'running')])], true);
+  const completed = groupToolActivity([row('tool', [tool('tool', 'Read')])], true);
+  assert.equal(shouldShowWorkingIndicator(true, text, false, false), true);
+  assert.equal(shouldShowWorkingIndicator(true, completed, false, false), true);
+  assert.equal(shouldShowWorkingIndicator(true, running, false, false), false);
+  assert.equal(shouldShowWorkingIndicator(true, [...running, ...text], false, false), true);
+  assert.equal(shouldShowWorkingIndicator(true, text, true, false), false);
+  assert.equal(shouldShowWorkingIndicator(true, text, false, true), false);
+  for (const entries of [text, running, completed, []]) assert.equal(shouldShowWorkingIndicator(false, entries, false, false), false);
 });
 
 test('completed turns retain approval, intervening text, and final answer order', () => {

@@ -23,7 +23,8 @@ import { usageCardsForItems } from '../usageCard';
 import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
 import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
 import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
-import { completedTurnPresentation, groupToolActivity, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
+import { completedTurnPresentation, groupToolActivity, shouldShowWorkingIndicator, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
+import { ChatWorkingIndicator } from './ChatWorkingIndicator';
 import { ToolActivity } from './ToolActivity';
 import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
@@ -1451,6 +1452,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const liveSpeed = liveTurnSpeed(liveTurn, liveTurnUsage);
   const turnGroups = useMemo(() => groupCodexTranscript(items, session.provider === "codex"), [items, session.provider]);
   const speedGroupIndex = liveSpeed ? liveSpeedGroupIndex(turnGroups, liveTurnUsage?.turnId) : -1;
+  const workingGroupIndex = liveSpeedGroupIndex(turnGroups, liveTurn);
   const legacyHistoryReload = repair?.reason === 'history_metadata_missing' || (connectionHeld && repairDiscovery?.recovery === 'legacy');
   const repairOffered = Boolean(repair?.offered && !liveTurn);
   const repairDisabled = !repairOffered || !repairWritable || repairBusy;
@@ -1794,24 +1796,25 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
-    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`) => <ToolActivity key={id} entries={entries} onInspect={viewport.pauseForNavigation} active={active} awaitingApproval={awaitingApproval} awaitingQuestion={awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
+    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`, running = active) => <ToolActivity key={id} entries={entries} onInspect={viewport.pauseForNavigation} active={running} awaitingApproval={running && awaitingApproval} awaitingQuestion={running && awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
     if (!group.settled) {
-      // Subagents are chronology boundaries, while intervening parent text keeps
-      // the existing single-drawer policy. Preserve the first drawer's turn key.
-      const segments: ChatItem[][] = [[]];
-      for (const item of group.response) {
-        segments[segments.length - 1]!.push(item);
-        if (item.parts.some(isSubagentPart)) segments.push([]);
-      }
+      // Keep earlier activity in place and preserve the first drawer's turn key.
+      const entries = groupToolActivity(group.response, true);
+      const lastDrawerIndex = entries.findLastIndex(entry => entry.type === 'tools');
       let drawerIndex = 0;
-      const visible = segments.flatMap(rows => groupToolActivity(rows)).map(entry => entry.type === 'tools'
-        ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`)
+      const visible = entries.map((entry, index) => entry.type === 'tools'
+        ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`, active && index === lastDrawerIndex)
         : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item)}</Fragment>);
       if (group.turnStatus && !group.items.some(item => item.parts.some(shouldRenderPart))) {
         visible.push(<p className="chat-duration" key={`${group.id}-status`}>{group.turnStatus === 'inProgress'
           ? copy('Saved turn: in progress', '保存的回合：进行中') : copy('Saved turn: status unknown', '保存的回合：状态未知')}</p>);
       }
       if (liveSpeed && groupIndex === speedGroupIndex) visible.push(<p className="chat-turn-speed-live" key={`${group.id}-turn-speed`} data-testid="turn-speed-live" data-estimated={String(liveSpeed.estimated)} data-tokens-per-second={String(liveSpeed.tokensPerSecond)} title={turnSpeedTooltip(liveSpeed, zh)}>{turnSpeedText(liveSpeed)}</p>);
+      const pendingInteraction = group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
+      if (shouldShowWorkingIndicator(active && groupIndex === workingGroupIndex, entries, pendingInteraction, Boolean(firstResponseWait))) {
+        const startedAt = items.find(item => item.turnId === liveTurn && item.role === 'user')?.createdAt;
+        visible.push(<ChatWorkingIndicator key={`${group.id}-working`} startedAt={startedAt} zh={zh} />);
+      }
       return visible;
     }
     const tools = toolEntriesForItems(group.items);

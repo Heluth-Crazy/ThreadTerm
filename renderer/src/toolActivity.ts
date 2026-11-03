@@ -3,6 +3,7 @@ import { browserToolActivityFromPart, browserToolIdentity, hasRedactedBrowserRes
 import { delegationTool } from './delegation';
 import { isSubagentPart, subagentItemsOf } from './subagentActivity';
 import { toolInputs, toolStatus, toolView } from './toolView';
+import { shouldRenderPart } from './chatPresentation';
 
 export { toolStatus } from './toolView';
 export type { ToolStatus } from './toolView';
@@ -95,8 +96,8 @@ export function completedTurnPresentation(activityItems: readonly ChatItem[], re
   return { activity, subagents: subagentItemsOf(activityItems), response: orderCompletedTurnItems(withoutToolParts(responseItems)) };
 }
 
-/** One chronological tool list; classification never changes grouping/order. */
-export function groupToolActivity(items: readonly ChatItem[]): ToolPresentation[] {
+/** Live turns split at visible content; settled and nested lists keep their single drawer. */
+export function groupToolActivity(items: readonly ChatItem[], live = false): ToolPresentation[] {
   const result: ToolPresentation[] = [];
   let group: Extract<ToolPresentation, { type: 'tools' }> | undefined;
   let scope: string | undefined;
@@ -113,10 +114,11 @@ export function groupToolActivity(items: readonly ChatItem[]): ToolPresentation[
     let parts: ChatPart[] = [];
     let start = 0;
     const flush = () => {
-      if (parts.length) {
+      if (parts.length && (!live || parts.some(shouldRenderPart))) {
         result.push({ type: 'item', id: `${item.id}:parts:${start}`, item: { ...item, parts } });
-        parts = [];
+        if (live && parts.some(shouldRenderPart)) { group = undefined; segment += 1; }
       }
+      parts = [];
     };
     item.parts.forEach((part, index) => {
       if (part.type === 'plan') return;
@@ -136,10 +138,16 @@ export function groupToolActivity(items: readonly ChatItem[]): ToolPresentation[
       group.tools.push(entry);
     });
     flush();
-    if (!item.parts.length) result.push({ type: 'item', id: item.id, item });
+    if (!live && !item.parts.length) result.push({ type: 'item', id: item.id, item });
     if (boundary) scope = undefined;
   }
   return result;
+}
+
+export function shouldShowWorkingIndicator(active: boolean, entries: readonly ToolPresentation[], pendingInteraction: boolean, firstResponseWait: boolean): boolean {
+  if (!active || pendingInteraction || firstResponseWait) return false;
+  const last = entries.at(-1);
+  return last?.type !== 'tools' || activeToolEntries(last.tools, true).length === 0;
 }
 
 function inputs(data: Record<string, unknown>): Record<string, unknown>[] {
