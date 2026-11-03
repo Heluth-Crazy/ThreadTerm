@@ -1600,3 +1600,19 @@ fn newline_hostile_names_are_rejected_for_every_new_field() {
     );
     assert!(detect_env(root.path(), no_tools()).entries.is_empty());
 }
+
+#[cfg(windows)]
+#[test]
+fn procfile_cmd_builtins_do_not_require_path_executables() {
+    let root = tempfile::tempdir().unwrap();
+    write(root.path(), "Procfile", "echo: EcHo OK>result.txt\ncd: cd .\nset: set NAME=value\nexternal: echo.exe OK\nmissing: tt-qa-definitely-missing-tool\n");
+    let detection = detect_env(root.path(), no_tools());
+    for name in ["echo", "cd", "set"] {
+        let entry = find(&detection, &format!("procfile:Procfile:{name}"));
+        assert_eq!(entry.shell, "cmd");
+        assert_eq!(entry.missing_tool, None, "{name} is internal to cmd");
+    }
+    assert_eq!(find(&detection, "procfile:Procfile:external").missing_tool.as_deref(), Some("echo.exe"));
+    assert_eq!(find(&detection, "procfile:Procfile:missing").missing_tool.as_deref(), Some("tt-qa-definitely-missing-tool"));
+    assert!(!root.path().join("result.txt").exists(), "detection must never execute a builtin");
+}
