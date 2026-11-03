@@ -79,7 +79,13 @@ window.threadterm = {onPageContextMenu:()=>()=>{},
     return () => { window.qaMetrics.subscribe[sessionId + ':unsubscribed'] = (window.qaMetrics.subscribe[sessionId + ':unsubscribed'] ?? 0) + 1; };
   },
   request: async (method, params) => {
-    if (method === 'terminal.read') return { nextCursor: encoder.encode(boot(params.sessionId)).byteLength };
+    if (method === 'terminal.read') {
+      const bytes = encoder.encode(boot(params.sessionId));
+      const fromCursor = params.tail ? Math.max(0, bytes.length - params.limit) : (params.cursor ?? 0);
+      const nextCursor = Math.min(bytes.length, fromCursor + params.limit);
+      const data = btoa(String.fromCharCode(...bytes.slice(fromCursor, nextCursor)));
+      return { fromCursor, nextCursor, data };
+    }
     if (method === 'terminal.resize') {
       const fail = window.qaFailResizes > 0;
       window.qaMetrics.requests.push({ method, sessionId: params.sessionId, cols: params.cols, rows: params.rows, leaseEpoch: params.leaseEpoch, failed: fail });
@@ -194,6 +200,7 @@ const dragDivider = async (page_, fraction) => {
     const box = await divider.boundingBox();
     const parent = await page_.locator('[data-split-id="root"]').boundingBox();
     const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const hit = await page_.evaluate(({x,y}) => { const el = document.elementFromPoint(x,y); return {tag:el?.tagName,cls:el?.className}; }, start);
     const ratioBefore = await page_.evaluate(() => window.qaLayout.ratio);
     await page_.mouse.move(start.x, start.y);
     await page_.mouse.down();
@@ -202,7 +209,7 @@ const dragDivider = async (page_, fraction) => {
     await page_.mouse.up();
     await page_.waitForTimeout(120);
     const ratioAfter = await page_.evaluate(() => window.qaLayout.ratio);
-    (report.geometry.drags = report.geometry.drags ?? []).push({ fraction, start, ratioBefore, ratioAfter });
+    (report.geometry.drags = report.geometry.drags ?? []).push({ fraction, start, hit, ratioBefore, ratioAfter });
     const missed = Math.abs(ratioAfter - ratioBefore) < 0.01 && Math.abs(ratioAfter - fraction) > 0.05;
     if (!missed) return;
   }
@@ -319,7 +326,11 @@ try {
   const leftCallsBeforeFailure = (await resizeCalls('qa-resize-left')).length;
   await page.evaluate(() => { window.qaFailResizes = 100; });
   await dragDivider(page, 0.68);
-  await page.waitForTimeout(700);
+  await page.waitForFunction(() => {
+    const terminal = window.qaTerminals.find(candidate => candidate.element?.closest('[data-pane-id]')?.dataset.paneId === 'left');
+    return terminal && window.qaMetrics.requests.filter(call => call.method === 'terminal.resize' && call.failed
+      && call.sessionId === 'qa-resize-left' && call.cols === terminal.cols && call.rows === terminal.rows).length >= 2;
+  }, null, { timeout: 5_000, polling: 100 });
   const failState = await terminalState('left');
   assert.notEqual(failState.cols, preFail.left.cols, 'local xterm must still track the pane size while resize RPCs fail');
   const failedAtFinal = (await resizeCalls('qa-resize-left', 'failed')).filter(call => call.cols === failState.cols && call.rows === failState.rows);
