@@ -2121,13 +2121,17 @@ impl RuntimeService {
                     let chat_tools = crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?;
                     let target = crate::code_review::approval_owner(&self.db, &p.session_id, &p.turn_id, &p.approval_id)?
                         .unwrap_or_else(|| p.session_id.clone());
-                    answer_chat_request(&self.db, &self.providers, &chat_tools, AnswerChatRequest {
+                    let result = answer_chat_request(&self.db, &self.providers, &chat_tools, AnswerChatRequest {
                         session_id: &target,
                         turn_id: &p.turn_id,
                         approval_id: &p.approval_id,
                         response: &p.response,
                         operation_id: &p.operation_id,
-                    })
+                    })?;
+                    if let Err(error) = self.chat_queues.plan_resolved(&self.db, &self.providers, &target, &p.approval_id) {
+                        eprintln!("prompt queue plan resolution failed for {target}: {error}");
+                    }
+                    Ok(result)
                 }
                 "chat.projectTrust.set" => self.set_pi_project_trust(principal, &request.params),
                 "chat.options" => {

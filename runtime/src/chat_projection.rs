@@ -477,7 +477,14 @@ fn record_tx(
     // Reply notices are already-read and excluded from snapshot Inbox rows.
     if !quiet && !crate::code_review::is_reviewer_tx(tx,session_id)? {notify_reply(tx,session_id,turn,data,&now)?;}
    }
-   "chat.error"=>{item.turn_status=Some(crate::domain::NativeTurnStatus::Failed);item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet && !crate::code_review::is_reviewer_tx(tx,session_id)? {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}}
+   "chat.error"=>{
+    expire_pending_parts_for_turn(tx,session_id,turn,&now)?;
+    complete_streaming_items(tx,session_id,&now)?;
+    for part in &mut item.parts {
+     if part.get("status").and_then(Value::as_str)==Some("streaming") {part["status"]=json!("complete");}
+    }
+    item.turn_status=Some(crate::domain::NativeTurnStatus::Failed);item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet && !crate::code_review::is_reviewer_tx(tx,session_id)? {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}
+   }
    "chat.ui"=>{
     let mut payload=normalize_chat_ui(data.clone());
     payload["sessionId"]=json!(session_id);
@@ -1420,6 +1427,27 @@ pub(crate) fn resolve_browser_eval_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_error_settles_reconnect_notice_and_preserves_native_message() {
+        let db = db();
+        record(&db, "s", Some("turn"), "message.user", &json!({"text":"work"})).unwrap();
+        for attempt in [1, 2] {
+            record(&db, "s", Some("turn"), "chat.item", &json!({
+                "item":{"id":"reconnect:turn"},
+                "part":{"type":"thinking","text":format!("Reconnecting... {attempt}/5"),"status":"streaming"}
+            })).unwrap();
+        }
+        let items = db.chat_items("s").unwrap();
+        let notices: Vec<_> = items.iter().filter(|item| item.id.ends_with(":reconnect:turn")).collect();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].parts[0]["text"], "Reconnecting... 2/5");
+        record(&db, "s", Some("turn"), "chat.error", &json!({"message":"Native connection failed"})).unwrap();
+        let items = db.chat_items("s").unwrap();
+        let notice = items.iter().find(|item| item.id.ends_with(":reconnect:turn")).unwrap();
+        assert_eq!(notice.parts[0]["status"], "complete");
+        assert!(items.iter().flat_map(|item| &item.parts).any(|part| part["type"] == "error" && part["text"] == "Native connection failed"));
+    }
 
     #[test]
     fn completion_status_rejects_cancelled_failed_and_unknown_turns() {

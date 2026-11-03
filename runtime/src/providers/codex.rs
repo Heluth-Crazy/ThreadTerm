@@ -4442,6 +4442,20 @@ fn emit_codex_message(
             );
         }
     }
+    // Recoverable transport notices belong to the current turn, not its
+    // terminal failure path. A stable item replaces prior retry attempts.
+    if method == "error" && raw.get("id").is_none()
+        && params.get("willRetry").and_then(Value::as_bool) == Some(true)
+    {
+        let message = params.pointer("/error/message").and_then(Value::as_str)
+            .unwrap_or("Reconnecting…");
+        emit_scoped(events, "codex", session_id, native_id.as_deref(), turn_id.as_deref(),
+            "chat.item", json!({
+                "item":{"id":format!("reconnect:{}", turn_id.as_deref().unwrap_or("unknown"))},
+                "part":{"type":"thinking","text":message,"status":"streaming","data":{"raw":raw}}
+            }), Some(worker_token));
+        return;
+    }
     // Install and publish a synthetic plan gate before turn completion is
     // visible. The queue schedules from `chat.turn.completed`; publishing the
     // pending card first keeps queued prompts pending for review instead of
@@ -4504,6 +4518,8 @@ fn emit_codex_message(
             "part":{"type":"thinking","text":params.pointer("/summary/text").or_else(||params.get("text")).and_then(Value::as_str).unwrap_or("\n"),"status":"streaming"},
             "raw":raw
         }),
+        "error" => json!({"message":params.pointer("/error/message").or_else(||params.get("message"))
+            .and_then(Value::as_str).unwrap_or("Provider request failed"),"raw":raw}),
         _ => json!({"raw":raw}),
     };
     if let Some(elapsed_ms) = elapsed_ms {
@@ -5242,6 +5258,146 @@ mod tests {
         fn drain(&mut self) -> Vec<super::super::ProviderEvent> {
             std::iter::from_fn(|| self.received.try_recv().ok()).collect()
         }
+    }
+
+    #[test]
+    fn recoverable_root_error_keeps_the_active_turn_for_retry_and_completion() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.drain();
+
+        replay.emit(
+            "error",
+            json!({
+                "turnId": "parent-turn",
+                "willRetry": true,
+                "error": {"message": "Reconnecting... 1/5"}
+            }),
+        );
+
+        let retry = replay.drain();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].kind, "chat.item");
+        assert_eq!(retry[0].data["item"]["id"], "reconnect:public-turn");
+        assert_eq!(retry[0].data["part"]["type"], "thinking");
+        assert_eq!(retry[0].data["part"]["text"], "Reconnecting... 1/5");
+        assert_eq!(
+            retry[0].data.pointer("/part/data/raw/params/error/message"),
+            Some(&json!("Reconnecting... 1/5"))
+        );
+        assert_eq!(retry[0].worker_token.as_deref(), Some("subagent-worker"));
+        assert!(
+            replay.active.0.lock().unwrap().is_some(),
+            "a recoverable native error must retain the active root turn"
+        );
+
+        replay.emit(
+            "error",
+            json!({
+                "threadId": SUBAGENT_PARENT,
+                "turnId": "parent-turn",
+                "willRetry": true,
+                "error": {"message": "Reconnecting... 2/5"}
+            }),
+        );
+        let repeated_retry = replay.drain();
+        assert_eq!(repeated_retry.len(), 1);
+        assert_eq!(repeated_retry[0].kind, "chat.item");
+        assert_eq!(repeated_retry[0].data["item"]["id"], "reconnect:public-turn");
+        assert_eq!(repeated_retry[0].data["part"]["text"], "Reconnecting... 2/5");
+        assert_eq!(repeated_retry[0].worker_token.as_deref(), Some("subagent-worker"));
+        assert!(replay.active.0.lock().unwrap().is_some());
+
+        replay.emit(
+            "item/agentMessage/delta",
+            json!({
+                "threadId": SUBAGENT_PARENT,
+                "turnId": "parent-turn",
+                "itemId": "assistant-after-retry",
+                "delta": "still streaming"
+            }),
+        );
+        replay.emit(
+            "turn/completed",
+            json!({
+                "threadId": SUBAGENT_PARENT,
+                "turn": {"id": "parent-turn", "status": "completed"}
+            }),
+        );
+
+        let completion = replay.drain();
+        assert!(completion.iter().any(|event| event.kind == "chat.delta"));
+        assert!(completion.iter().any(|event| event.kind == "chat.turn.completed"));
+        assert!(completion.iter().all(|event| event.worker_token.as_deref() == Some("subagent-worker")));
+        assert!(replay.active.0.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn recoverable_root_error_preserves_pending_approval() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.drain();
+        let approval_id = encode_approval_id(&json!("retry-approval"));
+        replay.raw(json!({"id":"retry-approval","method":"item/commandExecution/requestApproval","params":{
+            "threadId":SUBAGENT_PARENT,"turnId":"parent-turn","itemId":"command","command":"echo qa"
+        }}));
+        assert!(replay.approvals.lock().unwrap().contains_key(&approval_id));
+        assert_eq!(replay.drain().len(), 1, "the approval is projected before retry");
+
+        replay.emit(
+            "error",
+            json!({
+                "threadId": SUBAGENT_PARENT,
+                "turnId": "parent-turn",
+                "willRetry": true,
+                "error": {"message": "Reconnecting... 1/5"}
+            }),
+        );
+
+        let retry = replay.drain();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].kind, "chat.item");
+        assert!(
+            replay.approvals.lock().unwrap().contains_key(&approval_id),
+            "a recoverable native error must not drain pending approvals"
+        );
+        assert!(replay.active.0.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn nonrecoverable_root_error_retains_native_message_and_clears_the_active_turn() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.drain();
+
+        replay.emit(
+            "error",
+            json!({
+                "turnId": "parent-turn",
+                "willRetry": true,
+                "error": {"message": "Reconnecting... 1/5"}
+            }),
+        );
+        assert_eq!(replay.drain()[0].kind, "chat.item");
+        assert!(replay.active.0.lock().unwrap().is_some());
+
+        replay.emit(
+            "error",
+            json!({
+                "threadId": SUBAGENT_PARENT,
+                "turnId": "parent-turn",
+                "willRetry": false,
+                "error": {"message": "native request failed"}
+            }),
+        );
+
+        let error = replay.drain();
+        assert_eq!(error.len(), 1);
+        assert_eq!(error[0].kind, "chat.error");
+        assert_eq!(error[0].data["message"], "native request failed");
+        assert_eq!(
+            error[0].data.pointer("/raw/params/error/message"),
+            Some(&json!("native request failed"))
+        );
+        assert_eq!(error[0].worker_token.as_deref(), Some("subagent-worker"));
+        assert!(replay.active.0.lock().unwrap().is_none());
     }
 
     #[test]

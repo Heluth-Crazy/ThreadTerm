@@ -132,6 +132,9 @@ fn read_tx(tx: &Transaction<'_>, id: &str) -> Result<Value> {
     if let Some(reason) = reason {
         result["pauseReason"] = json!(reason);
     }
+    if let Some(reason) = blocked_tx(tx, id)? {
+        result["blocked"] = json!(reason);
+    }
     Ok(result)
 }
 
@@ -294,10 +297,15 @@ pub(crate) fn mutate(db: &Database, method: &str, value: &Value) -> Result<Value
 
 /// Activity fencing also protects against an old completion arriving after the next send.
 fn idle_tx(tx: &Transaction<'_>, id: &str) -> Result<bool> {
-    let status: String =
-        tx.query_row("SELECT status FROM sessions WHERE id=?", [id], |r| r.get(0))?;
-    if status != "idle" {
-        return Ok(false);
+    Ok(blocked_tx(tx, id)?.is_none())
+}
+
+fn blocked_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<&'static str>> {
+    let (status, read_only): (String, bool) = tx.query_row(
+        "SELECT status,read_only FROM sessions WHERE id=?", [id], |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if read_only || matches!(status.as_str(), "exited" | "interrupted") {
+        return Ok(Some("unavailable"));
     }
     let activity: Option<String> = tx
         .query_row(
@@ -306,33 +314,37 @@ fn idle_tx(tx: &Transaction<'_>, id: &str) -> Result<bool> {
             |r| r.get(0),
         )
         .optional()?;
-    if activity.is_some_and(|s| {
-        matches!(
-            s.as_str(),
-            "running" | "awaiting_approval" | "awaiting_parent" | "unknown"
-        )
-    }) {
-        return Ok(false);
-    }
     let rows = tx
         .prepare("SELECT data FROM chat_items WHERE session_id=?")?
         .query_map([id], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut pending = None;
     for row in rows {
         let item: ChatItem = serde_json::from_str(&row)?;
-        if item.parts.iter().any(|part| {
-            matches!(
+        for part in &item.parts {
+            if matches!(
                 part.get("type").and_then(Value::as_str),
                 Some("approval" | "question")
             ) && matches!(
                 part.get("status").and_then(Value::as_str),
                 Some("pending" | "submitting")
-            )
-        }) {
-            return Ok(false);
+            ) {
+                if part.pointer("/data/interaction").and_then(Value::as_str) == Some("plan") {
+                    return Ok(Some("plan"));
+                }
+                pending = Some("approval");
+            }
         }
     }
-    Ok(true)
+    if pending.is_some() { return Ok(pending); }
+    if activity.as_deref().is_some_and(|s| matches!(s, "awaiting_approval" | "awaiting_parent")) {
+        return Ok(Some("approval"));
+    }
+    if !matches!(status.as_str(), "idle" | "error")
+        || activity.as_deref().is_some_and(|s| matches!(s, "running" | "unknown")) {
+        return Ok(Some("working"));
+    }
+    Ok(None)
 }
 
 pub(crate) fn idle(db:&Database,id:&str)->Result<bool>{db.transaction(|tx|idle_tx(tx,id))}
@@ -485,7 +497,43 @@ impl ChatQueues {
             }
         } else if event.kind == "chat.turn.completed" {
             self.schedule(db, providers, &event.session_id);
+        } else if event.kind == "chat.approval.resolved" {
+            if let Some(approval) = event.data.get("approvalId").and_then(Value::as_str) {
+                if let Err(error) = self.plan_resolved(db, providers, &event.session_id, approval) {
+                    eprintln!("prompt queue plan resolution failed: {error}");
+                }
+            }
         }
+    }
+
+    /// Local answers can commit their plan receipt before any provider event.
+    pub(crate) fn plan_resolved(
+        self: &Arc<Self>,
+        db: &Arc<Database>,
+        providers: &Arc<Providers>,
+        id: &str,
+        approval: &str,
+    ) -> Result<()> {
+        let ready = db.transaction(|tx| {
+            if read_pause_tx(tx, id)?.0 || !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_queue_items WHERE session_id=?)", [id], |r| r.get::<_, bool>(0),
+            )? { return Ok(false); }
+            let card: Option<String> = tx.query_row(
+                "SELECT data FROM chat_items WHERE session_id=? AND id=?",
+                params![id, format!("{id}:approval:{approval}")], |r| r.get(0),
+            ).optional()?;
+            let Some(card) = card else { return Ok(false); };
+            let item: ChatItem = serde_json::from_str(&card)?;
+            if !item.parts.iter().any(|part| {
+                part.get("approvalId").and_then(Value::as_str) == Some(approval)
+                    && part.pointer("/data/runtimeOwned").and_then(Value::as_bool) == Some(true)
+                    && part.pointer("/data/interaction").and_then(Value::as_str) == Some("plan")
+                    && matches!(part.get("status").and_then(Value::as_str), Some("answered" | "dismissed" | "resolved" | "expired"))
+            }) { return Ok(false); }
+            idle_tx(tx, id)
+        })?;
+        if ready { self.schedule(db, providers, id); }
+        Ok(())
     }
 
     pub(crate) fn try_dispatch(

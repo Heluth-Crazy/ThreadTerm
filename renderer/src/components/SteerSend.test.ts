@@ -45,14 +45,14 @@ const queue = (state: ChatQueueState['items'][number]['state'] = 'queued'): Chat
 
 test('Insert now and Send now are mutually exclusive', () => {
   const inserted = renderToStaticMarkup(createElement(ChatQueue, {
-    sessionId: 's', queue: queue(), leaseEpoch: 1, writable: true, idle: false, canInsert: true,
+    sessionId: 's', queue: { ...queue(), blocked: 'working' }, leaseEpoch: 1, writable: true, idle: false, canInsert: true,
     onInsertNow: async () => {}, ingressFailed: false, onChange: () => {}, onIssue: () => {}, zh: false,
   }));
   assert.match(inserted, /data-testid="queue-insert-now"/);
   assert.match(inserted, />Insert now</);
   assert.equal(inserted.includes('Send now'), false);
   const zh = renderToStaticMarkup(createElement(ChatQueue, {
-    sessionId: 's', queue: queue(), leaseEpoch: 1, writable: true, idle: false, canInsert: true,
+    sessionId: 's', queue: { ...queue(), blocked: 'working' }, leaseEpoch: 1, writable: true, idle: false, canInsert: true,
     onInsertNow: async () => {}, ingressFailed: false, onChange: () => {}, onIssue: () => {}, zh: true,
   }));
   assert.match(zh, />立即插入</);
@@ -63,4 +63,30 @@ test('Insert now and Send now are mutually exclusive', () => {
   assert.match(idle, />Send now</);
   assert.equal(idle.includes('Insert now'), false);
   assert.equal(idle.includes('queue-insert-now'), false);
+});
+
+test('Resume permits a pending card while Send now remains unavailable', () => {
+  const plan = renderToStaticMarkup(createElement(ChatQueue, {
+    sessionId: 's', queue: { ...queue(), paused: true, blocked: 'plan' }, leaseEpoch: 1, writable: true, idle: false,
+    ingressFailed: false, onChange: () => {}, onIssue: () => {}, zh: false,
+  }));
+  assert.match(plan, /Waiting for your plan review/);
+  assert.match(plan, />Resume queue</);
+  assert.doesNotMatch(plan, /disabled=""[^>]*>Resume queue/);
+  assert.equal(plan.includes('Send now'), false);
+  const unavailable = renderToStaticMarkup(createElement(ChatQueue, {
+    sessionId: 's', queue: { ...queue(), paused: true, blocked: 'unavailable' }, leaseEpoch: 1, writable: true, idle: false,
+    ingressFailed: false, onChange: () => {}, onIssue: () => {}, zh: false,
+  }));
+  assert.match(unavailable, /disabled=""[^>]*>Resume queue/);
+  const workingLive = renderToStaticMarkup(createElement(ChatQueue, {
+    sessionId: 's', queue: { ...queue(), blocked: 'working' }, leaseEpoch: 1, writable: true, idle: false,
+    ingressFailed: false, onChange: () => {}, onIssue: () => {}, zh: false,
+  }));
+  assert.equal(workingLive.includes('Agent is still working'), false);
+  const workingIdle = renderToStaticMarkup(createElement(ChatQueue, {
+    sessionId: 's', queue: { ...queue(), blocked: 'working' }, leaseEpoch: 1, writable: true, idle: true,
+    ingressFailed: false, onChange: () => {}, onIssue: () => {}, zh: false,
+  }));
+  assert.match(workingIdle, /Agent is still working/);
 });

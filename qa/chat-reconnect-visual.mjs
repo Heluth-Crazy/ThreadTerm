@@ -39,6 +39,7 @@ Object.assign(env, {
   THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
   THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-chat-reconnect-${randomUUID()}`,
   THREADTERM_V3_RUNTIME: runtime,
+  THREADTERM_QA_PROVIDER_BIN: bin,
   THREADTERM_V3_RELOCATION_QA: '1',
   CODEX_HOME: join(scratch, 'codex-home'),
   TT_QA_NODE: process.execPath,
@@ -117,6 +118,7 @@ try {
   page = await app.firstWindow({ timeout: 30_000 });
   page.setDefaultTimeout(30_000);
   await page.waitForFunction(() => Boolean(window.threadterm));
+  await page.locator('.app-shell').waitFor({ timeout: 45_000 });
   const initial = await rpc('runtime.snapshot');
   await rpc('settings.update', { patch: { language: 'en', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: initial.settings.revision, operationId: randomUUID() });
   const project = await rpc('project.add', { path: workspace, name: 'Reconnect QA', operationId: randomUUID() });

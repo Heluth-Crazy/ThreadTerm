@@ -19,6 +19,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::{Duration, Instant},
 };
 
 struct SendGate {
@@ -830,4 +831,398 @@ fn restart_converts_a_sending_item_to_failed_and_preserves_uncertainty() {
         .as_str()
         .unwrap()
         .contains("May have been sent"));
+}
+
+#[test]
+fn canonical_queue_turn_binding_settles_activity_and_late_completion_cannot_release_the_next_turn() {
+    let fixture = Fixture::new(false);
+    fixture.add("first", "canonical-first");
+    fixture.add("second", "canonical-second");
+    fixture.add("third", "canonical-third");
+    let first_id = fixture.items()[0]["id"].as_str().unwrap().to_owned();
+
+    fixture
+        .queues
+        .try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id)
+        .unwrap();
+    let first_turn = format!("turn-queue:{first_id}");
+    let activity = fixture.db.session_by_id(&fixture.session_id).unwrap().unwrap().activity.unwrap();
+    assert_eq!(activity.state, "running");
+    assert_eq!(activity.turn_id.as_deref(), Some(first_turn.as_str()));
+
+    fixture
+        .db
+        .record_provider_event(&fixture.session_id, Some(&first_turn), "chat.turn.completed", &json!({}))
+        .unwrap();
+    let second_id = fixture.items()[0]["id"].as_str().unwrap().to_owned();
+    fixture
+        .queues
+        .try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id)
+        .unwrap();
+    let second_turn = format!("turn-queue:{second_id}");
+    let activity = fixture.db.session_by_id(&fixture.session_id).unwrap().unwrap().activity.unwrap();
+    assert_eq!(activity.state, "running");
+    assert_eq!(activity.turn_id.as_deref(), Some(second_turn.as_str()));
+
+    fixture
+        .db
+        .record_provider_event(&fixture.session_id, Some(&first_turn), "chat.turn.completed", &json!({}))
+        .unwrap();
+    fixture
+        .queues
+        .try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id)
+        .unwrap();
+    assert_eq!(fixture.sent.lock().unwrap().len(), 2);
+    let activity = fixture.db.session_by_id(&fixture.session_id).unwrap().unwrap().activity.unwrap();
+    assert_eq!(activity.state, "running");
+    assert_eq!(activity.turn_id.as_deref(), Some(second_turn.as_str()));
+}
+
+#[test]
+fn terminal_error_expires_a_pending_native_question_before_resume() {
+    let fixture = Fixture::new(false);
+    fixture.add("send after expired question", "add-question");
+    fixture
+        .db
+        .record_provider_event(&fixture.session_id, Some("question-turn"), "message.user", &json!({"text":"question"}))
+        .unwrap();
+    fixture
+        .db
+        .record_provider_event(
+            &fixture.session_id,
+            Some("question-turn"),
+            "chat.approval",
+            &json!({
+                "approvalId":"native-question",
+                "part":{"type":"approval","approvalId":"native-question","data":{
+                    "interaction":"question","answerable":true,
+                    "form":{"kind":"questions","questions":[]}
+                }}
+            }),
+        )
+        .unwrap();
+    fixture
+        .db
+        .record_provider_event(
+            &fixture.session_id,
+            Some("question-turn"),
+            "chat.error",
+            &json!({"message":"terminal failure"}),
+        )
+        .unwrap();
+
+    let card = fixture.db.chat_items(&fixture.session_id).unwrap().into_iter().flat_map(|item| item.parts)
+        .find(|part| part["approvalId"] == "native-question").unwrap();
+    assert_eq!(card["status"], "expired");
+    let event = ProviderEvent {
+        provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+        turn_id: Some("question-turn".into()), kind: "chat.error".into(),
+        data: json!({"message":"terminal failure"}), worker_token: None,
+    };
+    fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+    mutate(&fixture.db, "chat.queue.resume", &json!({
+        "sessionId":fixture.session_id,"operationId":"resume-after-question-error",
+    })).unwrap();
+    fixture
+        .queues
+        .try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id)
+        .unwrap();
+    assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn terminal_completion_expires_a_pending_native_question_card() {
+    let fixture = Fixture::new(false);
+    fixture.add("send after completed question", "add-completed-question");
+    fixture.db.record_provider_event(&fixture.session_id, Some("question-turn"), "message.user", &json!({"text":"question"})).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("question-turn"), "chat.approval", &json!({
+        "approvalId":"completed-question",
+        "part":{"type":"approval","approvalId":"completed-question","data":{"interaction":"question"}}
+    })).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("question-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+
+    let card = fixture.db.chat_items(&fixture.session_id).unwrap().into_iter().flat_map(|item| item.parts)
+        .find(|part| part["approvalId"] == "completed-question").unwrap();
+    assert_eq!(card["status"], "expired");
+    fixture.queues.try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id).unwrap();
+    assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn terminal_error_allows_explicit_send_now_to_dispatch_the_queue() {
+    for method in ["chat.queue.resume", "chat.queue.send"] {
+        let fixture = Fixture::new(false);
+        let queued = fixture.add("send after failure", &format!("add-error-{method}"));
+        let item_id = queued["items"][0]["id"].as_str().unwrap().to_owned();
+        fixture.db.record_provider_event(&fixture.session_id, Some("failed-turn"), "message.user", &json!({"text":"work"})).unwrap();
+        let event = ProviderEvent {
+            provider: "queue-fixture".into(),
+            session_id: fixture.session_id.clone(),
+            native_id: None,
+            turn_id: Some("failed-turn".into()),
+            kind: "chat.error".into(),
+            data: json!({"message":"terminal failure"}),
+            worker_token: None,
+        };
+        fixture
+            .db
+            .record_provider_event(&fixture.session_id, event.turn_id.as_deref(), &event.kind, &event.data)
+            .unwrap();
+        fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+        assert_eq!(read(&fixture.db, &fixture.session_id).unwrap()["pauseReason"], "failed");
+
+        let mut params = json!({
+            "sessionId":fixture.session_id,"operationId":format!("{method}-after-error"),
+        });
+        if method == "chat.queue.send" { params["itemId"] = json!(item_id); }
+        mutate(&fixture.db, method, &params).unwrap();
+        fixture
+            .queues
+            .try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id)
+            .unwrap();
+        assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn retry_notice_delta_and_completion_auto_dispatch_a_queued_prompt() {
+    let fixture = Fixture::new(false);
+    fixture.add("send after retry", "add-retry");
+    fixture
+        .db
+        .record_provider_event(&fixture.session_id, Some("retry-turn"), "message.user", &json!({"text":"work"}))
+        .unwrap();
+    for attempt in [1, 2] {
+        fixture.db.record_provider_event(&fixture.session_id, Some("retry-turn"), "chat.item", &json!({
+            "item":{"id":"reconnect:retry-turn"},
+            "part":{"type":"thinking","text":format!("Reconnecting... {attempt}/5"),"status":"streaming"},
+        })).unwrap();
+    }
+    fixture.db.record_provider_event(&fixture.session_id, Some("retry-turn"), "chat.delta", &json!({"text":"back"})).unwrap();
+    let completed = ProviderEvent {
+        provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+        turn_id: Some("retry-turn".into()), kind: "chat.turn.completed".into(),
+        data: json!({"status":"completed"}), worker_token: None,
+    };
+    fixture.db.record_provider_event(&fixture.session_id, completed.turn_id.as_deref(), &completed.kind, &completed.data).unwrap();
+    fixture.queues.provider_event(&fixture.db, &fixture.providers, &completed);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while fixture.sent.lock().unwrap().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn interrupted_completion_then_resume_dispatches_the_queue() {
+    let fixture = Fixture::new(false);
+    fixture.add("send after Stop", "add-stop");
+    fixture.queues.pause_dispatch_capturing(&fixture.db, &fixture.session_id, "stopped").unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("stopped-turn"), "message.user", &json!({"text":"work"})).unwrap();
+    let event = ProviderEvent {
+        provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+        turn_id: Some("stopped-turn".into()), kind: "chat.turn.completed".into(),
+        data: json!({"status":"interrupted"}), worker_token: None,
+    };
+    fixture.db.record_provider_event(&fixture.session_id, event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+    fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+    assert_eq!(read(&fixture.db, &fixture.session_id).unwrap()["pauseReason"], "stopped");
+
+    mutate(&fixture.db, "chat.queue.resume", &json!({
+        "sessionId":fixture.session_id,"operationId":"resume-after-stop",
+    })).unwrap();
+    fixture.queues.try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id).unwrap();
+    assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn pending_plan_card_blocks_queue_until_return_to_idle_resolution() {
+    let fixture = Fixture::new(false);
+    fixture.add("implement after plan", "add-plan");
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "message.user", &json!({"text":"plan"})).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.approval", &json!({
+        "approvalId":"plan:plan-turn","part":{"type":"approval","approvalId":"plan:plan-turn","status":"pending","data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan"}}
+    })).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    let queue = read(&fixture.db, &fixture.session_id).unwrap();
+    assert_eq!(queue["blocked"], "plan");
+    fixture.queues.try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id).unwrap();
+    assert!(fixture.sent.lock().unwrap().is_empty());
+
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.approval.resolved", &json!({
+        "approvalId":"plan:plan-turn","status":"answered","returnToIdle":true,
+    })).unwrap();
+    fixture.queues.try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id).unwrap();
+    assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn resume_unpauses_a_pending_plan_without_dispatching_it() {
+    let fixture = Fixture::new(false);
+    fixture.add("wait for plan review", "add-plan-resume");
+    pause(&fixture.db, &fixture.session_id, "stopped").unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "message.user", &json!({"text":"plan"})).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.approval", &json!({
+        "approvalId":"plan:plan-turn","part":{"type":"approval","approvalId":"plan:plan-turn","data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan"}}
+    })).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+
+    mutate(&fixture.db, "chat.queue.resume", &json!({
+        "sessionId":fixture.session_id,"operationId":"resume-while-plan-pending",
+    })).unwrap();
+    let queue = read(&fixture.db, &fixture.session_id).unwrap();
+    assert_eq!(queue["blocked"], "plan");
+    assert_eq!(queue["paused"], false);
+    assert!(queue["pauseReason"].is_null());
+    fixture.queues.try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id).unwrap();
+    assert!(fixture.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn resume_during_a_turn_unpauses_but_waits_for_its_completion() {
+    let fixture = Fixture::new(false);
+    fixture.add("send after this turn", "add-resume-running");
+    pause(&fixture.db, &fixture.session_id, "stopped").unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("running-turn"), "message.user", &json!({"text":"work"})).unwrap();
+
+    mutate(&fixture.db, "chat.queue.resume", &json!({
+        "sessionId":fixture.session_id,"operationId":"resume-running",
+    })).unwrap();
+    assert_eq!(read(&fixture.db, &fixture.session_id).unwrap()["paused"], false);
+    fixture.queues.try_dispatch(&fixture.db, &fixture.providers, &fixture.session_id).unwrap();
+    assert!(fixture.sent.lock().unwrap().is_empty());
+
+    let event = ProviderEvent {
+        provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+        turn_id: Some("running-turn".into()), kind: "chat.turn.completed".into(),
+        data: json!({"status":"completed"}), worker_token: None,
+    };
+    fixture.db.record_provider_event(&fixture.session_id, event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+    fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while fixture.sent.lock().unwrap().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn resolved_runtime_plan_schedules_an_unpaused_queue_without_a_new_turn() {
+    for status in ["answered", "dismissed"] {
+        let fixture = Fixture::new(false);
+        fixture.add("implement after plan", "add-resolved-plan");
+        fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "message.user", &json!({"text":"plan"})).unwrap();
+        fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.approval", &json!({
+            "approvalId":"plan:plan-turn","part":{"type":"approval","approvalId":"plan:plan-turn","status":"pending","data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan"}}
+        })).unwrap();
+        fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+        mutate(&fixture.db, "chat.queue.resume", &json!({
+            "sessionId":fixture.session_id,"operationId":"resume-before-plan-answer",
+        })).unwrap();
+
+        let event = ProviderEvent {
+            provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+            turn_id: Some("plan-turn".into()), kind: "chat.approval.resolved".into(),
+            data: json!({"approvalId":"plan:plan-turn","status":status,"returnToIdle":true}), worker_token: None,
+        };
+        fixture.db.record_provider_event(&fixture.session_id, event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+        fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fixture.sent.lock().unwrap().is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fixture.sent.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn resolved_runtime_plan_keeps_a_paused_queue_paused() {
+    let fixture = Fixture::new(false);
+    fixture.add("do not send while paused", "add-paused-plan");
+    pause(&fixture.db, &fixture.session_id, "stopped").unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "message.user", &json!({"text":"plan"})).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.approval", &json!({
+        "approvalId":"plan:plan-turn","part":{"type":"approval","approvalId":"plan:plan-turn","status":"pending","data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan"}}
+    })).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("plan-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    let event = ProviderEvent {
+        provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+        turn_id: Some("plan-turn".into()), kind: "chat.approval.resolved".into(),
+        data: json!({"approvalId":"plan:plan-turn","status":"dismissed","returnToIdle":true}), worker_token: None,
+    };
+    fixture.db.record_provider_event(&fixture.session_id, event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+    fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(read(&fixture.db, &fixture.session_id).unwrap()["paused"], true);
+    assert!(fixture.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn resolving_one_plan_does_not_dispatch_while_another_plan_is_pending() {
+    let fixture = Fixture::new(false);
+    fixture.add("wait for every plan", "add-two-plans");
+    fixture.db.record_provider_event(&fixture.session_id, Some("first-turn"), "message.user", &json!({"text":"first plan"})).unwrap();
+    for (turn, approval) in [("first-turn", "plan:first-turn"), ("second-turn", "plan:second-turn")] {
+        fixture.db.record_provider_event(&fixture.session_id, Some(turn), "chat.approval", &json!({
+            "approvalId":approval,"part":{"type":"approval","approvalId":approval,"status":"pending","data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan"}}
+        })).unwrap();
+    }
+    fixture.db.record_provider_event(&fixture.session_id, Some("first-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    mutate(&fixture.db, "chat.queue.resume", &json!({
+        "sessionId":fixture.session_id,"operationId":"resume-two-plans",
+    })).unwrap();
+    let event = ProviderEvent {
+        provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+        turn_id: Some("first-turn".into()), kind: "chat.approval.resolved".into(),
+        data: json!({"approvalId":"plan:first-turn","status":"answered","returnToIdle":true}), worker_token: None,
+    };
+    fixture.db.record_provider_event(&fixture.session_id, event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+    fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(read(&fixture.db, &fixture.session_id).unwrap()["blocked"], "plan");
+    assert!(fixture.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn resolving_a_native_approval_does_not_schedule_plan_dispatch() {
+    let fixture = Fixture::new(false);
+    fixture.add("wait for native approval", "add-native-approval");
+    fixture.db.record_provider_event(&fixture.session_id, Some("approval-turn"), "message.user", &json!({"text":"work"})).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("approval-turn"), "chat.approval", &json!({
+        "approvalId":"native-approval","part":{"type":"approval","approvalId":"native-approval","status":"pending","data":{"interaction":"question","runtimeOwned":false}}
+    })).unwrap();
+    fixture.db.record_provider_event(&fixture.session_id, Some("approval-turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    let event = ProviderEvent {
+        provider: "queue-fixture".into(), session_id: fixture.session_id.clone(), native_id: None,
+        turn_id: Some("approval-turn".into()), kind: "chat.approval.resolved".into(),
+        data: json!({"approvalId":"native-approval","status":"answered","returnToIdle":true}), worker_token: None,
+    };
+    fixture.db.record_provider_event(&fixture.session_id, event.turn_id.as_deref(), &event.kind, &event.data).unwrap();
+    fixture.queues.provider_event(&fixture.db, &fixture.providers, &event);
+    thread::sleep(Duration::from_millis(50));
+    assert!(fixture.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn pending_cards_publish_scoped_lifecycle_events_for_queue_refresh() {
+    for runtime_owned in [false, true] {
+        let fixture = Fixture::new(false);
+        fixture.add("wait for review", "pending-card-queue");
+        fixture.db.record_provider_event(&fixture.session_id, Some("turn"), "message.user", &json!({"text":"work"})).unwrap();
+        fixture.db.record_provider_event(&fixture.session_id, Some("turn"), "chat.approval", &json!({
+            "approvalId":"card","part":{"data":{
+                "interaction":if runtime_owned {"plan"} else {"question"},
+                "runtimeOwned":runtime_owned,"waitingForPrompt":runtime_owned,"plan":"# Plan",
+            }},
+        })).unwrap();
+        let events = fixture.db.transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT COUNT(*) FROM outbox WHERE json_extract(data,'$.sessionId')=? AND (event='session.activity' OR (event='state.changed' AND json_extract(data,'$.kind')='chat.approval'))",
+                [&fixture.session_id], |row| row.get::<_, i64>(0),
+            )?)
+        }).unwrap();
+        assert!(events >= 2, "pending card must publish activity and state without relying on chat.item");
+        assert_eq!(read(&fixture.db, &fixture.session_id).unwrap()["blocked"], if runtime_owned {"plan"} else {"approval"});
+    }
 }

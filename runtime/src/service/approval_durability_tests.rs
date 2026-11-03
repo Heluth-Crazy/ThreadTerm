@@ -2,8 +2,8 @@ use super::*;
 use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
 use std::sync::atomic::AtomicUsize;
 
-struct Adapter { calls: Arc<AtomicUsize>, partial: bool }
-struct Chat { calls: Arc<AtomicUsize>, partial: bool }
+struct Adapter { calls: Arc<AtomicUsize>, sends: Arc<AtomicUsize>, partial: bool }
+struct Chat { calls: Arc<AtomicUsize>, sends: Arc<AtomicUsize>, partial: bool }
 impl ProviderAdapter for Adapter {
     fn id(&self) -> &str { "plan-fixture" }
     fn capability(&self) -> ProviderCapability {
@@ -12,11 +12,11 @@ impl ProviderAdapter for Adapter {
     fn terminal_command(&self, _:Option<&str>, _:Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "no terminal")) }
     fn history_list(&self, _:Option<&str>, _:u32, _:Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }
     fn history_read(&self, _:&str) -> Result<Value, ProviderError> { Ok(json!([])) }
-    fn open_chat(&self, _:&str, _:&str, _:Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> { Ok(Box::new(Chat { calls:self.calls.clone(), partial:self.partial })) }
+    fn open_chat(&self, _:&str, _:&str, _:Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> { Ok(Box::new(Chat { calls:self.calls.clone(), sends:self.sends.clone(), partial:self.partial })) }
 }
 impl ChatSession for Chat {
     fn native_id(&self) -> Option<String> { Some("native-plan".into()) }
-    fn send(&mut self, _:&str, _:&str) -> Result<Value, ProviderError> { Ok(json!({"turnId":"next"})) }
+    fn send(&mut self, _:&str, _:&str) -> Result<Value, ProviderError> { self.sends.fetch_add(1, Ordering::SeqCst); Ok(json!({"turnId":"next"})) }
     fn cancel(&mut self, _:&str) -> Result<(), ProviderError> { Ok(()) }
     fn approve(&mut self, _:&str, _:&str, _:&str, _:&str) -> Result<(), ProviderError> { Ok(()) }
     fn stop(&mut self) -> Result<(), ProviderError> { Ok(()) }
@@ -30,18 +30,19 @@ impl ChatSession for Chat {
     }
 }
 
-struct Fixture { root:tempfile::TempDir, db:Database, providers:Providers, session:String, calls:Arc<AtomicUsize> }
+struct Fixture { root:tempfile::TempDir, db:Arc<Database>, providers:Arc<Providers>, session:String, calls:Arc<AtomicUsize>, sends:Arc<AtomicUsize> }
 impl Fixture {
     fn new(partial:bool) -> Self {
         let root=tempfile::tempdir().unwrap();
-        let db=Database::open(&root.path().join("runtime.sqlite")).unwrap();
+        let db=Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
         let session=db.create_session(CreateSession { project_id:None, title:None, provider:"plan-fixture", mode:"chat", native_id:None, operation_id:"create" }).unwrap().id;
         let calls=Arc::new(AtomicUsize::new(0));
-        let providers=Providers::for_test(vec![Arc::new(Adapter { calls:calls.clone(), partial })]);
+        let sends=Arc::new(AtomicUsize::new(0));
+        let providers=Arc::new(Providers::for_test(vec![Arc::new(Adapter { calls:calls.clone(), sends:sends.clone(), partial })]));
         providers.chat_open(&session,"plan-fixture",root.path().to_str().unwrap(),None).unwrap();
         db.record_provider_event(&session,Some("turn"),"message.user",&json!({"text":"Plan"})).unwrap();
         db.record_provider_event(&session,Some("turn"),"chat.approval",&json!({"approvalId":"plan","part":{"data":{"interaction":"plan","plan":"# Plan"}}})).unwrap();
-        Self { root, db, providers, session, calls }
+        Self { root, db, providers, session, calls, sends }
     }
     fn answer(&self) -> Result<Value> {
         // Plan answers never reach the app-hosted tool registry; any registry instance satisfies the signature.
@@ -95,4 +96,52 @@ fn partial_native_plan_receipt_is_durable_nonactionable_and_explains_recovery() 
     assert!(card["data"]["message"].as_str().unwrap().contains("mode switch failed"));
     fixture.answer().unwrap();
     assert_eq!(fixture.calls.load(Ordering::SeqCst),1);
+}
+
+#[test]
+fn rpc_plan_abandon_schedules_the_queue_without_a_provider_event() {
+    let fixture = Fixture::new(false);
+    let mut service = RuntimeService::new(
+        RuntimeConfig {
+            data_dir: fixture.root.path().to_owned(),
+            database_path: fixture.root.path().join("runtime.sqlite"),
+            credential_path: fixture.root.path().join("credential"),
+            pipe_base: r"\\.\pipe\threadterm-v3-plan-queue-test".into(),
+        },
+        Arc::clone(&fixture.db),
+    );
+    service.providers = Arc::clone(&fixture.providers);
+    fixture.db.record_provider_event(&fixture.session, Some("turn"), "chat.approval", &json!({
+        "approvalId":"plan","part":{"data":{"interaction":"plan","runtimeOwned":true,"plan":"# Plan"}},
+    })).unwrap();
+    fixture.db.record_provider_event(&fixture.session, Some("turn"), "chat.turn.completed", &json!({"status":"completed"})).unwrap();
+    crate::chat_queue::mutate(&fixture.db, "chat.queue.add", &json!({
+        "sessionId":fixture.session,"text":"send after abandon","images":[],"operationId":"queue-after-plan",
+    })).unwrap();
+    let epoch = service.dispatch("desktop", RpcRequest {
+        v: 1, id: "claim".into(), method: "session.claim".into(),
+        params: json!({"sessionId":fixture.session}),
+    }).unwrap()["leaseEpoch"].as_i64().unwrap();
+
+    crate::chat_queue::pause(&fixture.db, &fixture.session, "stopped").unwrap();
+    crate::chat_queue::mutate(&fixture.db, "chat.queue.resume", &json!({
+        "sessionId":fixture.session,"operationId":"resume-before-abandon",
+    })).unwrap();
+    assert_eq!(crate::chat_queue::read(&fixture.db, &fixture.session).unwrap()["blocked"], "plan");
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 0);
+
+    service.dispatch("desktop", RpcRequest {
+        v: 1, id: "answer".into(), method: "chat.answer".into(),
+        params: json!({
+            "sessionId":fixture.session,"turnId":"turn","approvalId":"plan",
+            "response":{"action":"abandon"},"operationId":"answer","leaseEpoch":epoch,
+        }),
+    }).unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while fixture.sends.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.sends.load(Ordering::SeqCst), 1);
 }

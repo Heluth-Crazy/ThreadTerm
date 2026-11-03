@@ -1,6 +1,5 @@
 // Real-app prompt-queue QA.  It uses only the local Queue Echo ACP fixture;
-// PATH deliberately contains no installed agent CLI.  Do not run this from CI
-// until runtime/target-qa has been built by the owner of that binary.
+// PATH deliberately contains no installed agent CLI. Use a locally built runtime.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync } from 'node:fs';
@@ -13,7 +12,7 @@ import { build as viteBuild } from 'vite';
 import { electron } from './lib/desktop1.mjs'; // Desktop 1, never steals focus.
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const runtime = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
+const runtime = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
 const fixture = join(root, 'qa/fixtures/prompt-queue-echo-acp');
 const out = join(root, 'qa/results/prompt-queue');
 const scratch = await mkdtemp(join(tmpdir(), 'tt-prompt-queue-'));
@@ -73,11 +72,12 @@ async function waitForQueue(sessionId, count) {
 }
 
 try {
-  assert.ok(existsSync(runtime), `missing ${runtime}; Claude must build runtime/target-qa before running this QA`);
+  assert.ok(existsSync(runtime), `missing QA runtime: ${runtime}`);
   assert.ok(existsSync(join(fixture, 'threadterm-plugin.json')), 'missing Prompt Queue Echo fixture');
   await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
   await buildApp();
+  await mkdir(join(scratch, 'bin'), { recursive: true });
   const plugins = join(scratch, 'plugins');
   cpSync(fixture, join(plugins, 'prompt-queue-echo-acp'), { recursive: true });
 
@@ -92,6 +92,7 @@ try {
     THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
     THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-prompt-queue-${randomUUID()}`,
     THREADTERM_V3_RUNTIME: runtime,
+    THREADTERM_QA_PROVIDER_BIN: join(scratch, 'bin'),
     THREADTERM_V3_PLUGIN_DIRS: plugins,
     THREADTERM_ECHO_STORE_DIR: join(scratch, 'echo-store'),
   });
