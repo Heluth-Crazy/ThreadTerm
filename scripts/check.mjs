@@ -302,7 +302,7 @@ const QA = [
   'icon-generator', 'icon-stability', 'inbox-visibility', 'mcp-smoke', 'native-browser', 'oc1-visual-fixtures', 'oc2-opencode-fixture',
   'oc2-opencode-harness', 'oc2-opencode-options-regression', 'oc2-opencode-visual-fixture', 'opencode-reconnect-ordering',
   'opencode-retry', 'palette-sessions', 'pane-geometry', 'review-comments', 'selected-commit-selection',
-  'send-latency-breakdown', 'session-activity', 'session-ordering', 'session-state', 'terminal-file-links', 'token-speed',
+  'send-latency-breakdown', 'session-activity', 'session-ordering', 'session-state', 'terminal-file-links', 'terminal-text', 'token-speed',
   'usage-card', 'workbench-graph', 'workbench-helpers', 'workspace-layout', 'workspace-tabs',
 ];
 run('qa unit tests', root, process.execPath, ['--test', '--test-timeout=180000', ...QA.map(name => join('qa', `${name}.test.mjs`))], 900000);
