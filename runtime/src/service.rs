@@ -1607,7 +1607,7 @@ impl RuntimeService {
                     json!({"version":RUNTIME_VERSION,"epoch":self.db.epoch()?,"contract":crate::PROTOCOL_CONTRACT}),
                 ),
                 // The console host actually in use (conpty.rs), so xterm's Windows heuristics match it.
-                "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str(), "bundledAvailable": crate::conpty::bundled_available()})),
+                "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str(), "bundledAvailable": crate::conpty::bundled_available(), "pwshAvailable": crate::providers::common::find_executable("pwsh.exe").is_some()})),
                 "runtime.snapshot" => {
                     let mut snapshot = self.db.snapshot()?;
                     // A failed provider probe does not make the runtime/catalog
@@ -2537,14 +2537,15 @@ impl RuntimeService {
             }
             return Err(error);
         }
+        let launch = resolve_shell_launch(p, &self.db.settings_value()?);
         let spec = crate::session_configs::LaunchSpec {
-            provider: p.provider.clone(),
-            mode: p.mode.clone(),
+            provider: launch.provider.clone(),
+            mode: launch.mode.clone(),
             cwd: cwd.to_owned(),
-            project_id: p.project_id.clone(),
-            title: p.title.clone(),
-            executable: p.executable.clone(),
-            args: p.args.clone(),
+            project_id: launch.project_id.clone(),
+            title: launch.title.clone(),
+            executable: launch.executable.clone(),
+            args: launch.args.clone(),
         };
         if let Err(error) =
             crate::session_configs::save_new(&self.db, &session.id, &spec, source_session_id)
@@ -2581,7 +2582,7 @@ impl RuntimeService {
                     .ok_or_else(|| anyhow::anyhow!("session disappeared"))?,
             )?);
         }
-        let result = self.launch_session(&session.id, p, cwd);
+        let result = self.launch_session(&session.id, &launch, cwd);
         if result.is_err() {
             self.db.set_session_status(&session.id, "error", None)?;
         }
@@ -3140,13 +3141,16 @@ impl RuntimeService {
         }
         let config = crate::session_configs::read(&self.db, &p.session_id)?
             .ok_or_else(|| anyhow::anyhow!("launch_config_missing"))?;
+        // Launch configs written before defaultShell stored no executable. They were cmd.exe at
+        // creation, so preserve that historical choice instead of applying today's setting.
+        let executable = rerun_executable(&config.launch);
         let create = SessionCreate {
             project_id: config.launch.project_id,
             cwd: Some(config.launch.cwd),
             title: config.launch.title,
             provider: config.launch.provider,
             mode: config.launch.mode,
-            executable: config.launch.executable,
+            executable,
             args: config.launch.args,
             native_id: None,
             operation_id: format!("{}:create", p.operation_id),
@@ -3345,6 +3349,112 @@ struct SessionCreate {
     operation_id: String,
     #[serde(default)]
     defer_launch: bool,
+}
+
+const PWSH_FALLBACK_NOTE: &str = "PowerShell 7 was not found; using Windows PowerShell. 未找到 PowerShell 7，已使用 Windows PowerShell。";
+
+/// A Shell terminal stores its selected executable before launch, so restart and rerun do not
+/// silently change with a later settings edit. Other providers and explicit non-pwsh launches
+/// retain their requested command exactly.
+fn resolve_shell_launch(request: &SessionCreate, settings: &Value) -> SessionCreate {
+    if !cfg!(windows) || request.provider != "shell" || request.mode != "terminal" {
+        return request.clone();
+    }
+    let requested = request.executable.as_deref().filter(|program| !program.trim().is_empty());
+    if requested.is_some_and(|program| !program.eq_ignore_ascii_case("pwsh.exe")) {
+        return request.clone();
+    }
+    resolve_shell_launch_with_pwsh(
+        request,
+        settings,
+        crate::providers::common::find_executable("pwsh.exe"),
+    )
+}
+
+fn resolve_shell_launch_with_pwsh(
+    request: &SessionCreate,
+    settings: &Value,
+    pwsh: Option<std::path::PathBuf>,
+) -> SessionCreate {
+    if !cfg!(windows) || request.provider != "shell" || request.mode != "terminal" {
+        return request.clone();
+    }
+    let requested = request.executable.as_deref().filter(|program| !program.trim().is_empty());
+    // Only the renderer's bare PowerShell 7 request is eligible for fallback. A stored
+    // absolute executable belongs to an existing session and must remain its exact launch.
+    let wants_pwsh = requested.is_some_and(|program| program.eq_ignore_ascii_case("pwsh.exe"));
+    let choice = settings.get("defaultShell").and_then(Value::as_str).unwrap_or("cmd");
+    let use_default = requested.is_none();
+    if !use_default && !wants_pwsh {
+        return request.clone();
+    }
+
+    let mut launch = request.clone();
+    if use_default && choice == "powershell" {
+        launch.executable = Some("powershell.exe".into());
+        launch.args.insert(0, "-NoLogo".into());
+        return launch;
+    }
+    if use_default && choice == "cmd" {
+        launch.executable = Some("cmd.exe".into());
+        return launch;
+    }
+    if use_default && choice != "pwsh" {
+        launch.executable = Some("cmd.exe".into());
+        return launch;
+    }
+    if let Some(pwsh) = pwsh {
+        launch.executable = Some(pwsh.to_string_lossy().into_owned());
+        if use_default {
+            launch.args.insert(0, "-NoLogo".into());
+        }
+        return launch;
+    }
+
+    launch.executable = Some("powershell.exe".into());
+    launch.args = powershell_fallback_args(&request.args);
+    launch
+}
+
+/// Windows PowerShell ships with Windows and reads the same command text as PowerShell 7, so a
+/// missing pwsh falls back to it rather than running PowerShell commands in cmd.exe. The note is
+/// printed first; the user's `-Command` text stays one argv item, so no second quoting layer.
+fn powershell_fallback_args(args: &[String]) -> Vec<String> {
+    let note = format!("Write-Host '{PWSH_FALLBACK_NOTE}'");
+    let mut fallback = Vec::with_capacity(args.len() + 4);
+    if !args.iter().any(|arg| arg.eq_ignore_ascii_case("-NoLogo")) {
+        fallback.push("-NoLogo".to_owned());
+    }
+    let mut command_seen = false;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        fallback.push(arg.clone());
+        if arg.eq_ignore_ascii_case("-Command") {
+            if let Some(command) = rest.next() {
+                fallback.push(format!("{note}; {command}"));
+                command_seen = true;
+            }
+        }
+    }
+    if !command_seen {
+        if !fallback.iter().any(|arg| arg.eq_ignore_ascii_case("-NoExit")) {
+            fallback.push("-NoExit".into());
+        }
+        fallback.extend(["-Command".to_owned(), note]);
+    }
+    fallback
+}
+
+fn rerun_executable(launch: &crate::session_configs::LaunchSpec) -> Option<String> {
+    if cfg!(windows)
+        && launch.executable.as_deref().is_none_or(|program| program.trim().is_empty())
+        && launch.provider == "shell"
+        && launch.mode == "terminal"
+    {
+        Some("cmd.exe".into())
+    } else {
+        launch.executable.clone()
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3743,6 +3853,60 @@ mod plugin_tests;
 mod tests {
     use super::*;
     use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
+
+    fn shell_launch(executable: Option<&str>, args: &[&str]) -> SessionCreate {
+        SessionCreate {
+            project_id: None,
+            cwd: None,
+            title: None,
+            provider: "shell".into(),
+            mode: "terminal".into(),
+            executable: executable.map(str::to_owned),
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+            native_id: None,
+            operation_id: "default-shell".into(),
+            defer_launch: false,
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_default_is_resolved_once_and_pwsh_falls_back_to_windows_powershell() {
+        let cmd = resolve_shell_launch_with_pwsh(&shell_launch(Some(""), &[]), &json!({"defaultShell":"cmd"}), None);
+        assert_eq!(cmd.executable.as_deref(), Some("cmd.exe"));
+
+        let powershell = resolve_shell_launch_with_pwsh(&shell_launch(None, &[]), &json!({"defaultShell":"powershell"}), None);
+        assert_eq!(powershell.executable.as_deref(), Some("powershell.exe"));
+        assert_eq!(powershell.args, ["-NoLogo"]);
+
+        let found = resolve_shell_launch_with_pwsh(&shell_launch(None, &[]), &json!({"defaultShell":"pwsh"}), Some("C:/tools/pwsh.exe".into()));
+        assert_eq!(found.executable.as_deref(), Some("C:/tools/pwsh.exe"));
+        assert_eq!(found.args, ["-NoLogo"]);
+
+        let retained = resolve_shell_launch_with_pwsh(&shell_launch(Some("C:/tools/pwsh.exe"), &["-NoLogo"]), &json!({}), None);
+        assert_eq!(retained.executable.as_deref(), Some("C:/tools/pwsh.exe"));
+        assert_eq!(retained.args, ["-NoLogo"]);
+
+        let fallback = resolve_shell_launch_with_pwsh(&shell_launch(Some("pwsh.exe"), &["-NoLogo", "-NoExit", "-Command", "Write-Output \"$env:USERPROFILE\\\""]), &json!({}), None);
+        assert_eq!(fallback.executable.as_deref(), Some("powershell.exe"));
+        assert_eq!(fallback.args[..3], ["-NoLogo", "-NoExit", "-Command"]);
+        assert_eq!(fallback.args.len(), 4);
+        assert!(fallback.args[3].contains(PWSH_FALLBACK_NOTE));
+        assert!(fallback.args[3].ends_with("; Write-Output \"$env:USERPROFILE\\\""));
+
+        let interactive = resolve_shell_launch_with_pwsh(&shell_launch(None, &[]), &json!({"defaultShell":"pwsh"}), None);
+        assert_eq!(interactive.executable.as_deref(), Some("powershell.exe"));
+        assert_eq!(interactive.args[..3], ["-NoLogo", "-NoExit", "-Command"]);
+        assert!(interactive.args[3].contains(PWSH_FALLBACK_NOTE));
+
+        let legacy = crate::session_configs::LaunchSpec {
+            provider: "shell".into(), mode: "terminal".into(), cwd: "C:/".into(), project_id: None,
+            title: None, executable: None, args: vec![],
+        };
+        assert_eq!(rerun_executable(&legacy).as_deref(), Some("cmd.exe"));
+        let empty_legacy = crate::session_configs::LaunchSpec { executable: Some(" ".into()), ..legacy };
+        assert_eq!(rerun_executable(&empty_legacy).as_deref(), Some("cmd.exe"));
+    }
 
     const OC_MODEL_A: &str = "{\"providerID\":\"provider/one\",\"modelID\":\"model/a\"}";
     const OC_MODEL_B: &str = "{\"providerID\":\"provider/one\",\"modelID\":\"model/b\"}";
