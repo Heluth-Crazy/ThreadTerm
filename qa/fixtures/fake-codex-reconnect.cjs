@@ -67,6 +67,13 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     // This approval is visible before the desktop pipe is cut. The staged release
     // resolves it, changes the model and completes the turn while reconnect is paused.
     send({ id: 'qa-reconnect-approval', method: 'item/commandExecution/requestApproval', params: { threadId: nativeId, turnId: nativeTurn, command: 'echo GAP-APPROVAL' } });
+    let retry = 1;
+    const waitForRetry = () => {
+      if (!existsSync(`${control}\\retry-${retry}`)) return setTimeout(waitForRetry, 25);
+      event('error', { threadId: nativeId, turnId: nativeTurn, willRetry: true, error: { message: `Reconnecting... ${retry}/5` } });
+      if (++retry <= 2) setTimeout(waitForRetry, 25);
+    };
+    waitForRetry();
     const release = `${control}\\release`;
     const waitForRelease = () => { if (existsSync(release)) gap(nativeTurn); else setTimeout(waitForRelease, 25); };
     waitForRelease();
