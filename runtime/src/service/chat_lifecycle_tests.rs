@@ -508,6 +508,61 @@ impl Fixture {
 }
 
 #[test]
+fn completion_before_canonical_turn_binding_settles_activity() {
+    let fixture = Fixture::for_delegation_with_blocked_send();
+    let session_id = fixture.create("completion-bind-race")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let lease_epoch = fixture.claim(&session_id);
+    fixture
+        .service
+        .dispatch(
+            "desktop",
+            Fixture::connect_request(&session_id, lease_epoch, "completion-bind-connect"),
+        )
+        .unwrap();
+
+    let db = Arc::clone(&fixture.db);
+    let providers = Arc::clone(&fixture.service.providers);
+    let send_session = session_id.clone();
+    let send = std::thread::spawn(move || {
+        send_chat_message(&db, &providers, &send_session, "finish immediately", &[], "client-turn")
+            .unwrap()
+    });
+    fixture
+        .send_started
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+
+    // The provider reader may project a terminal native event while `send`
+    // still holds the worker lock, before the service binds its returned turn.
+    fixture
+        .db
+        .record_provider_event(
+            &session_id,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({}),
+        )
+        .unwrap();
+    fixture.send_release.as_ref().unwrap().send(()).unwrap();
+    assert_eq!(send.join().unwrap()["turnId"], "fixture-turn");
+
+    let activity = fixture
+        .db
+        .session_by_id(&session_id)
+        .unwrap()
+        .unwrap()
+        .activity
+        .unwrap();
+    assert_eq!(activity.state, "awaiting_input");
+    assert_eq!(activity.turn_id.as_deref(), Some("fixture-turn"));
+}
+
+#[test]
 fn terminal_resume_preflight_failure_preserves_identity_status_output_and_operation() {
     let fixture = Fixture::new(false, None);
     let session = fixture

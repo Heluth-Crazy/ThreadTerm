@@ -160,7 +160,7 @@ export interface WorktreeSetupRun { id:string; projectId:string; root:string; co
 export interface ChatQueueItem { id:string; text:string; images:string[]; revision:number; createdAt:string; updatedAt:string;
  /** `sending`: handed to the provider. `failed`: not sent, or its outcome is unknown — the queue paused; never resent automatically. */
  state:'queued'|'sending'|'failed'; error?:string }
-export interface ChatQueue { sessionId:string; paused:boolean; pauseReason?:'user'|'stopped'|'failed'|'restarted'|'disconnected'; items:ChatQueueItem[] }
+export interface ChatQueue { sessionId:string; paused:boolean; pauseReason?:'user'|'stopped'|'failed'|'restarted'|'disconnected'; blocked?:'plan'|'approval'|'working'|'unavailable'; items:ChatQueueItem[] }
 /** User feedback is delivered once when the running agent checks its app-hosted tool. */
 export interface ChatFeedbackNote { id:string; sessionId:string; turnId:string; text:string; status:'waiting'|'received'; createdAt:string }
 export interface SessionConfig { sessionId:string; revision:number; provider:ProviderId; mode:SessionMode; cwd:string; projectId?:string; title?:string; executable?:string; args:string[]; sourceSessionId?:string }

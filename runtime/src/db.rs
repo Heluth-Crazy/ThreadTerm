@@ -703,10 +703,26 @@ impl Database {
             if activity.state != "running" || activity.turn_id.as_deref() != Some(operation_id) {
                 return Ok(None);
             }
-            let next = SessionActivity::new("running", activity.revision + 1, Some(turn_id), None);
+            // A fast provider may complete before send returns its canonical id.
+            // Only this send's explicit binding can reconcile that mismatch;
+            // an unrelated old completion must leave the newer activity fenced.
+            let terminal: Option<String> = tx.query_row(
+                "SELECT json_extract(data,'$.turnStatus') FROM chat_items WHERE session_id=? AND turn_id=? AND created_at >= (SELECT created_at FROM chat_items WHERE id=?) AND json_extract(data,'$.turnStatus') IN ('completed','failed','interrupted','unknown') ORDER BY created_at DESC LIMIT 1",
+                params![session_id, turn_id, format!("{session_id}:user:{operation_id}")],
+                |row| row.get(0),
+            ).optional()?;
+            let (state, reason) = if !has_pending_attention_approval_tx(tx, session_id)? {
+                match terminal.as_deref() {
+                    Some("completed") => ("awaiting_input", None),
+                    Some("failed") => ("idle", Some("error")),
+                    Some(_) => ("idle", Some("terminal")),
+                    None => ("running", None),
+                }
+            } else { ("running", None) };
+            let next = SessionActivity::new(state, activity.revision + 1, Some(turn_id), reason);
             tx.execute(
-                "UPDATE session_activity SET state=?,revision=?,turn_id=?,reason=NULL WHERE session_id=? AND revision=? AND state='running' AND turn_id=?",
-                params![&next.state, next.revision, &next.turn_id, session_id, activity.revision, operation_id],
+                "UPDATE session_activity SET state=?,revision=?,turn_id=?,reason=? WHERE session_id=? AND revision=? AND state='running' AND turn_id=?",
+                params![&next.state, next.revision, &next.turn_id, &next.reason, session_id, activity.revision, operation_id],
             )?;
             emit(tx, "session.activity", json!({"sessionId":session_id,"activity":next}))?;
             emit(tx, "state.changed", json!({"sessionId":session_id,"kind":"session.activity"}))?;

@@ -5332,6 +5332,37 @@ mod tests {
     }
 
     #[test]
+    fn recoverable_root_error_preserves_pending_approval() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.drain();
+        let approval_id = encode_approval_id(&json!("retry-approval"));
+        replay.raw(json!({"id":"retry-approval","method":"item/commandExecution/requestApproval","params":{
+            "threadId":SUBAGENT_PARENT,"turnId":"parent-turn","itemId":"command","command":"echo qa"
+        }}));
+        assert!(replay.approvals.lock().unwrap().contains_key(&approval_id));
+        assert_eq!(replay.drain().len(), 1, "the approval is projected before retry");
+
+        replay.emit(
+            "error",
+            json!({
+                "threadId": SUBAGENT_PARENT,
+                "turnId": "parent-turn",
+                "willRetry": true,
+                "error": {"message": "Reconnecting... 1/5"}
+            }),
+        );
+
+        let retry = replay.drain();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].kind, "chat.item");
+        assert!(
+            replay.approvals.lock().unwrap().contains_key(&approval_id),
+            "a recoverable native error must not drain pending approvals"
+        );
+        assert!(replay.active.0.lock().unwrap().is_some());
+    }
+
+    #[test]
     fn nonrecoverable_root_error_retains_native_message_and_clears_the_active_turn() {
         let mut replay = CodexSubagentReplay::new();
         replay.drain();

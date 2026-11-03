@@ -5088,6 +5088,15 @@
             "disconnected"
           ]
         },
+        "blocked": {
+          "type": "string",
+          "enum": [
+            "plan",
+            "approval",
+            "working",
+            "unavailable"
+          ]
+        },
         "items": {
           "type": "array",
           "items": {
