@@ -64,3 +64,13 @@ export function testNotificationCopy(locale: NotificationLocale = "en"): { title
     ? { title: "ThreadTerm 通知已开启", body: "会话需要你处理或完成时，ThreadTerm 会这样提醒你。点击通知即可打开会话。" }
     : { title: "ThreadTerm notifications are on", body: "This is how ThreadTerm tells you a session needs you or has finished. Click a notification to open its session." };
 }
+
+/** Keep the machine visible in the OS surface, including when several hosts reuse a session title. */
+export function machineNotificationCopy(machineName: string, copy: { title: string; body: string }): { title: string; body: string } {
+  return { ...copy, title: `${machineName} · ${copy.title}` };
+}
+
+/** Foreground suppresses a session toast only when that computer is actually being viewed. */
+export function machineNotificationFocused(sourceMachineId: string | undefined, viewedMachineId: string | undefined, visibleFocus: boolean): boolean {
+  return visibleFocus && (sourceMachineId === undefined || sourceMachineId === viewedMachineId);
+}

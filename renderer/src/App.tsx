@@ -133,7 +133,7 @@ function MachineApp() {
   const [error, setError] = useState<unknown>();
   const [runtimeState, setRuntimeState] = useState<RuntimeStatusState>("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools">();
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools" | "computers">();
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string;draft?:string;mode?:"chat"|"terminal"}>();
   const [groupCreate,setGroupCreate]=useState(false);
@@ -362,6 +362,7 @@ function MachineApp() {
   );
   useEffect(
     () => onDesktopNavigate((target) => {
+      if (target.action === "computers") {setSettingsInitialTab("computers");setSettingsOpen(true);return;}
       if (target.action === "command-palette") {setPaletteOpen(true);return;}
       if (target.sessionId) {setSettingsOpen(false);void navigate({ kind: "session", id: target.sessionId });}
       else if (target.workspaceId) {setSettingsOpen(false);void navigate({ kind: "workspace", id: target.workspaceId });}
@@ -436,7 +437,7 @@ function MachineApp() {
             <button className="icon-btn" aria-label={t("commandPalette")} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
             <button aria-label={t("inbox")} className="icon-btn" aria-expanded={shellMenu?.kind==="notifications"} onClick={event => setShellMenu(shellMenu?.kind==="notifications"?undefined:{kind:"notifications",anchor:event.currentTarget})}><Icon name="bell" />{inboxUnread > 0 && <i className="bell-badge">{inboxUnread}</i>}</button>
           </div>
-          <div className="side-scroll"><MachineRows zh={locale === 'zh-CN'} /><nav className="side-nav" aria-label={t("primaryNavigation")}>
+          <div className="side-scroll"><nav className="side-nav" aria-label={t("primaryNavigation")}>
             <button className="nav-item new" onClick={() => setCreatorOpen(true)}><Icon name="plus" />{locale==="zh-CN"?"新建终端":"New terminal"}</button>
             <button
               className={route.kind === "inbox" ? "nav-item active" : "nav-item"}
@@ -451,6 +452,7 @@ function MachineApp() {
               <Icon name="terminal" />{locale==="zh-CN"?"所有终端":"All terminals"}
             </button>
           </nav>
+          <MachineRows zh={locale === 'zh-CN'} onAddComputer={() => { if (remoteMachine) void machineBridge()?.machineSettings(); else { setSettingsInitialTab('computers'); setSettingsOpen(true); } }}>
           <ProjectCatalog
             sessions={rawData?.sessions}
             visibility={catalogVisibility}
@@ -466,6 +468,7 @@ function MachineApp() {
             onAddProject={() => setProjectCreatorOpen(true)}
             onNewSession={(projectId,path) => {const selected=data?.projects.find(item=>item.id===projectId);if(selected)setCreatorDefaults({projectId:selected.id,path:path??selected.path});setCreatorOpen(true);}}
           />
+          </MachineRows>
           </div>
           <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar runtime-avatar"><WbIcon name="person" /><RuntimeAvatarBadge state={visibleRuntimeProblem} locale={locale} /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button></div>
         </aside>

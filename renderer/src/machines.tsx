@@ -1,14 +1,25 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { MachineBridge, MachineSnapshot } from './machineTypes';
+import type { MachineBridge, MachineSnapshot, MachineTreeFeed } from './machineTypes';
 import type { PairedDevice } from '@threadterm/protocol';
 
 export function machineBridge(): MachineBridge | undefined {
   const bridge = window.threadterm as typeof window.threadterm & Partial<MachineBridge>;
   return typeof bridge.machineList === 'function' ? bridge as typeof window.threadterm & MachineBridge : undefined;
 }
+const MachineTreeContext = createContext<MachineTreeFeed>({ machines: [], expanded: {} });
+export const useMachineTree = () => useContext(MachineTreeContext);
 const MachineContext = createContext<MachineSnapshot>({ enabled: false, currentId: 'local', machines: [] });
 export function MachineProvider({ children }: { children: ReactNode }) {
   const bridge = machineBridge();
+  const [tree, setTree] = useState<MachineTreeFeed>({ machines: [], expanded: {} });
+  useEffect(() => {
+    if (!bridge?.machineTree || !bridge.onMachineTree) return;
+    let alive = true, revision = 0;
+    const unsubscribe = bridge.onMachineTree(value => { revision++; if (alive) setTree(value); });
+    const initialRevision = revision;
+    void bridge.machineTree().then(value => { if (alive && revision === initialRevision) setTree(value); }).catch(() => {});
+    return () => { alive = false; unsubscribe(); };
+  }, [bridge]);
   const [snapshot, setSnapshot] = useState<MachineSnapshot>({ enabled: false, currentId: bridge?.machineId ?? 'local', machines: [] });
   useEffect(() => {
     if (!bridge) return;
@@ -20,7 +31,7 @@ export function MachineProvider({ children }: { children: ReactNode }) {
     refresh(); const unsubscribe = bridge.onMachinesChanged(refresh);
     return () => { alive = false; unsubscribe(); };
   }, [bridge]);
-  return <MachineContext.Provider value={snapshot}>{children}</MachineContext.Provider>;
+  return <MachineContext.Provider value={snapshot}><MachineTreeContext.Provider value={tree}>{children}</MachineTreeContext.Provider></MachineContext.Provider>;
 }
 export const useMachines = () => useContext(MachineContext);
 export function isHostSettingsPage(tab: string): boolean { return ['data', 'mobile', 'computers'].includes(tab); }

@@ -539,6 +539,24 @@ fn lane_worker(
     LaneSender { sender, active, traced }
 }
 
+fn parse_event_filter(params: &Value) -> std::result::Result<(), crate::domain::RpcError> {
+    if params.as_object().is_some_and(|p| p.len() == 1 && p.get("preset") == Some(&json!("tree"))) { return Ok(()); }
+    Err(crate::domain::RpcError { code:"invalid_request".into(), message:"Unknown event filter preset".into(), details:None })
+}
+
+fn tree_event(event: &str, data: &Value) -> bool {
+    match event {
+        "session.status" | "session.activity" | "inbox.created" | "inbox.resolved" | "presentation.requested" | "runtime.degraded" => true,
+        "state.changed" => matches!(data.get("kind").and_then(Value::as_str),
+            None | Some("project" | "project.catalog" | "catalog.visibility" | "session" | "session.title"
+            | "session.activity" | "session.organization" | "session.launch" | "session.native_bound"
+            | "session.native_replaced" | "session.resume" | "history.import" | "history.import.restore"
+            | "chat.fork" | "chat.turn.started" | "chat.turn.completed" | "chat.approval"
+            | "chat.approval.resolved" | "chat.error" | "inbox" | "git" | "settings")),
+        _ => false,
+    }
+}
+
 #[cfg(windows)]
 pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     pipe: T,
@@ -552,6 +570,7 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     let mut turn_speeds = service.subscribe_turn_speed();
     let mut turn_speeds_open = true;
     let mut sent_seq = service.db.snapshot()?.revision;
+    let mut tree_filter = false;
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
     let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
@@ -565,6 +584,19 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
         tokio::select! {
             frame = decoder.read(&mut reader) => {
                 let request: RpcRequest = serde_json::from_slice(&frame?)?;
+                if request.method == "runtime.events.filter" {
+                    let result = crate::peer::guard(&service, &principal, &request.method)
+                        .and_then(|()| parse_event_filter(&request.params));
+                    let response = match result {
+                        Ok(()) => {
+                            tree_filter = true;
+                            json!({"v":PROTOCOL_VERSION,"id":request.id,"result":{"preset":"tree","tree":service.db.tree_projection("state.changed", &json!({}))?}})
+                        }
+                        Err(error) => json!({"v":PROTOCOL_VERSION,"id":request.id,"error":error}),
+                    };
+                    write_json(&mut writer, &response).await?;
+                    continue;
+                }
                 match request_lane(&request.method) {
                     Lane::Ordered => {
                         sequenced_in_flight += 1;
@@ -604,7 +636,7 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                 delivery?;
                 if reply.served_snapshot { service.db.start_retention(); }
             }
-            received = turn_speeds.recv(), if turn_speeds_open && sequenced_in_flight == 0 => {
+            received = turn_speeds.recv(), if !tree_filter && turn_speeds_open && sequenced_in_flight == 0 => {
                 let epoch = service.db.epoch()?;
                 if received.is_ok() { guard_stream(&service, &principal, "runtime.event")?; }
                 turn_speeds_open = forward_turn_speed(&mut writer, &epoch, received).await?;
@@ -613,7 +645,13 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
         }
         if sequenced_in_flight == 0 {
             let epoch = service.db.epoch()?;
-            for (seq, event, data) in service.db.events_after(sent_seq)? {
+            let previous_seq = sent_seq;
+            for (seq, event, mut data) in service.db.events_after(sent_seq)? {
+                sent_seq = seq;
+                if tree_filter && !tree_event(&event, &data) { continue; }
+                if tree_filter && event != "runtime.degraded" {
+                    data["tree"] = service.db.tree_projection(&event, &data)?;
+                }
                 let frame = json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data});
                 // Durable state that cannot fit a frame stays in the database; the
                 // connection reports a projection gap instead of dying, and the view
@@ -629,7 +667,9 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                 } else {
                     write_binary(&mut writer, &bytes).await?;
                 }
-                sent_seq = seq;
+            }
+            if tree_filter && sent_seq != previous_seq {
+                write_json(&mut writer, &json!({"v":PROTOCOL_VERSION,"event":"runtime.cursor","epoch":epoch,"seq":sent_seq,"data":{}})).await?;
             }
         }
         if service.shutdown_requested() {
@@ -1013,6 +1053,78 @@ mod decoder_tests {
         let durable = json!({"v":PROTOCOL_VERSION,"event":"chat.item","epoch":"epoch","seq":42,"data":{"sessionId":"s"}});
         write_json(&mut writer, &durable).await.unwrap();
         assert_eq!(read_json(&mut reader).await.unwrap(), durable);
+    }
+
+    #[test]
+    fn tree_filter_accepts_only_the_named_preset() {
+        assert!(parse_event_filter(&json!({"preset":"tree"})).is_ok());
+        for params in [json!({"preset":"other"}), json!({"preset":"tree","events":["chat.item"]}), json!({"events":[]})] {
+            assert!(parse_event_filter(&params).is_err());
+        }
+        assert!(!tree_event("chat.item", &json!({})));
+        assert!(!tree_event("chat.turnSpeed", &json!({})));
+        assert!(!tree_event("state.changed", &json!({"kind":"chat.delta"})));
+        assert!(tree_event("state.changed", &json!({"kind":"chat.approval.resolved"})));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn tree_filter_delivers_status_and_inbox_but_no_chat_stream_and_default_is_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let config = crate::config::RuntimeConfig {
+            data_dir:root.path().into(), database_path:root.path().join("runtime.sqlite"),
+            credential_path:root.path().join("credential"), pipe_base:"tree-filter-test".into(),
+        };
+        let db = Arc::new(crate::db::Database::open(&config.database_path).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::project_catalog::initialize(&db).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        crate::retry_scheduler::initialize(&db).unwrap();
+        let service = Arc::new(RuntimeService::with_test_providers(config, Arc::clone(&db), vec![]));
+        let (server, mut filtered) = tokio::io::duplex(1024 * 1024);
+        let a = tokio::spawn(serve_control(server, Arc::clone(&service), "filtered".into()));
+        write_json(&mut filtered, &json!({"v":1,"id":"unknown","method":"runtime.events.filter","params":{"preset":"unknown"}})).await.unwrap();
+        assert_eq!(read_json(&mut filtered).await.unwrap()["error"]["code"], "invalid_request");
+        write_json(&mut filtered, &json!({"v":1,"id":"filter","method":"runtime.events.filter","params":{"preset":"tree"}})).await.unwrap();
+        assert_eq!(read_json(&mut filtered).await.unwrap()["result"]["preset"], "tree");
+        let (server, mut local) = tokio::io::duplex(1024 * 1024);
+        let b = tokio::spawn(serve_control(server, Arc::clone(&service), "local".into()));
+        write_json(&mut local, &json!({"v":1,"id":"health","method":"runtime.health","params":{}})).await.unwrap();
+        assert_eq!(read_json(&mut local).await.unwrap()["id"], "health");
+        let session = db.create_session(crate::db::CreateSession {project_id:None,title:Some("Tree"),provider:"codex",mode:"chat",native_id:None,operation_id:"tree-session"}).unwrap();
+        db.set_session_status(&session.id, "running", None).unwrap();
+        for (kind, data) in [
+            ("chat.turn.started", json!({})),
+            ("chat.delta", json!({"item":{"id":"answer"},"part":{"type":"text","text":"secret stream"}})),
+            ("chat.approval", json!({"approvalId":"approval","part":{"type":"approval","approvalId":"approval","status":"pending","data":{}}})),
+        ] { db.record_provider_event(&session.id, Some("turn"), kind, &data).unwrap(); }
+        let mut status = false; let mut inbox = false;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let frame = read_json(&mut filtered).await.unwrap();
+                assert_ne!(frame["event"], "chat.item");
+                assert_ne!(frame["event"], "chat.turnSpeed");
+                if frame["event"] == "session.status" && frame["data"]["status"] == "running" { status = true; }
+                if frame["event"] == "inbox.created" { inbox = true; }
+                if status && inbox && frame["event"] == "runtime.cursor" { break; }
+            }
+        }).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop { if read_json(&mut local).await.unwrap()["event"] == "chat.item" { break; } }
+        }).await.unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "chat.approval.resolved", &json!({"approvalId":"approval","status":"resolved","preserveSessionState":true})).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let frame = read_json(&mut filtered).await.unwrap();
+                assert_ne!(frame["event"], "chat.item");
+                if frame["event"] == "inbox.resolved" {
+                    assert!(frame["data"]["tree"]["inbox"].as_array().unwrap().is_empty(), "the tree inbox carries unread items only");
+                    break;
+                }
+            }
+        }).await.unwrap();
+        a.abort(); b.abort(); service.shutdown();
     }
 
     #[tokio::test]

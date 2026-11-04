@@ -12,19 +12,20 @@ import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { buildQaApp } from './lib/qa-app.mjs';
 import { connectPeer } from './pipe-client.mjs';
 
+const treeProbe = process.env.THREADTERM_QA_MACHINE_TREE === '1';
 const root = resolve(import.meta.dirname, '..');
 const qaTemp = /[\\/]tt-qa-temp$/i.test(tmpdir()) ? tmpdir() : join(tmpdir(), 'tt-qa-temp');
 await mkdir(qaTemp, { recursive: true });
 process.env.TEMP = qaTemp; process.env.TMP = qaTemp;
 const scratch = await mkdtemp(join(qaTemp, 'remote-basic-'));
-const out = join(root, 'qa/results/remote-machine-basic');
+const out = join(root, treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
 await mkdir(out, { recursive: true });
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), 'Build and copy the QA runtime first');
 const bin = join(scratch, 'provider-bin'), hostWork = join(scratch, 'host-project'), clientWork = join(scratch, 'client-project'), control = join(scratch, 'control');
 for (const directory of [bin, hostWork, clientWork, control]) await mkdir(directory);
 await writeFile(join(control, 'connect-delay-ms'), '0');
-const fake = join(root, 'qa/fixtures/fake-codex-connect-transition.cjs');
+const fake = join(root, treeProbe ? 'qa/fixtures/fake-codex-machine-tree.cjs' : 'qa/fixtures/fake-codex-connect-transition.cjs');
 await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${fake}" %*\r\n`);
 const report = { passed: false, checks: [], errors: [], cleanup: [], scratch };
 const pass = message => { report.checks.push(message); console.log(`PASS ${message}`); };
@@ -44,7 +45,7 @@ function environment(kind) {
   return env;
 }
 const hostEnv = environment('host'), clientEnv = environment('client');
-let host, hostPeer, app, built, releaseLock, localPage, remotePage;
+let host, hostPeer, app, hostApp, built, releaseLock, localPage, remotePage, attentionSession;
 const rpc = (page, method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 try {
   host = spawn(runtime, [], { env: hostEnv, windowsHide: true, stdio: 'ignore' });
@@ -78,7 +79,7 @@ try {
   await localPage.getByRole('tab', { name: 'Phones', exact: true }).waitFor();
   await localPage.getByRole('button', { name: 'Close settings', exact: true }).click();
   pass('gate off shows only the Computers switch while Phones stays available');
-  await rpc(localPage, 'settings.update', { patch: { remoteMachines: { enabled: true }, language: 'en', theme: 'dark', themeSelection: 'dark', notifications: { native: false } }, expectedRevision: localSnapshot.settings.revision, operationId: randomUUID() });
+  await rpc(localPage, 'settings.update', { patch: { remoteMachines: { enabled: true }, language: 'en', theme: 'dark', themeSelection: 'dark', notifications: { native: treeProbe, attention: true, completed: false, sound: false } }, expectedRevision: localSnapshot.settings.revision, operationId: randomUUID() });
   await rpc(localPage, 'project.add', { path: clientWork, name: 'Client-only project', operationId: randomUUID() });
   await until(async () => (await localPage.evaluate(() => window.threadterm.machineList())).enabled, 'client preview enabled');
   await localPage.getByRole('button', { name: 'Local user', exact: true }).click();
@@ -100,11 +101,55 @@ try {
   assert.ok(saved[0].encryptedCredential); assert.equal(saved[0].credential, undefined);
   pass('real Computers UI checks the pin, compares the code, pairs and stores an encrypted credential');
   await localPage.getByRole('button', { name: 'Close settings', exact: true }).click();
-  await localPage.locator('.machine-row').filter({ hasText: 'Office-PC' }).click();
+  if (treeProbe) {
+    await until(async () => (await localPage.evaluate(() => window.threadterm.machineTree())).machines.find(row => row.machine.id === machine.id)?.machine.state === 'connected', 'control-only watcher connected without opening a host view');
+    assert.equal(app.context().pages().length, 1, 'watcher creates no renderer view');
+    await app.evaluate(({ Notification }) => {
+      globalThis.__machineToasts = [];
+      Notification.prototype.show = function () { globalThis.__machineToasts.push({ title: this.title, body: this.body, target: this }); this.emit('show'); };
+    });
+    await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.focus(); });
+    attentionSession = await hostPeer.request('session.create', { projectId: hostProject.id, cwd: hostWork, provider: 'codex', mode: 'chat', title: 'Host approval', operationId: randomUUID() });
+    const lease = await hostPeer.request('session.claim', { sessionId: attentionSession.id, clientId: 'tree-setup' });
+    await hostPeer.request('chat.connect', { sessionId: attentionSession.id, leaseEpoch: lease.leaseEpoch, operationId: randomUUID() });
+    await hostPeer.request('chat.send', { sessionId: attentionSession.id, text: 'TREE-APPROVAL', leaseEpoch: lease.leaseEpoch, operationId: randomUUID() });
+    await hostPeer.request('session.release', { sessionId: attentionSession.id, leaseEpoch: lease.leaseEpoch });
+    await until(async () => (await localPage.evaluate(() => window.threadterm.machineTree())).machines.find(row => row.machine.id === machine.id)?.sessions.some(row => row.session.id === attentionSession.id && row.needsYou > 0), 'host attention reaches This PC tree');
+    await localPage.locator('.remote-project-catalog .sess-row').filter({ hasText: 'Host approval' }).waitFor();
+    await localPage.locator(`.machine-group[data-machine-id="${machine.id}"] .machine-row .badge`).waitFor();
+    await until(() => app.evaluate(() => globalThis.__machineToasts.length === 1), 'exactly one remote notification');
+    await delay(400);
+    assert.equal(await app.evaluate(() => globalThis.__machineToasts.length), 1);
+    const toast = await app.evaluate(() => globalThis.__machineToasts.map(({ title, body }) => ({ title, body })));
+    assert.match(toast[0].title, /^Office-PC · Host approval/);
+    assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()), 'ThreadTerm');
+    await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.restore(); window.show(); });
+    await localPage.screenshot({ path: join(out, 'this-pc-host-attention.png') });
+    pass('while This PC is shown, host approval updates its tree/count and records exactly one machine-named notification');
+    await localPage.locator('.remote-project-catalog .sess-row').filter({ hasText: 'Host approval' }).click();
+  } else await localPage.locator('.machine-row').filter({ hasText: 'Office-PC' }).click();
   remotePage = await until(async () => {
     for (const page of app.context().pages()) if (page !== localPage && await page.evaluate(() => window.threadterm?.machineId).catch(() => undefined) === machine.id) return page;
   }, 'remote WebContentsView renderer');
   await remotePage.getByText('Host-only project', { exact: true }).first().waitFor();
+  if (treeProbe) {
+    await remotePage.getByTestId(`session-chat-${attentionSession.id}`).waitFor();
+    await remotePage.evaluate(() => { window.__machineRetainedProof = 'retained'; });
+    // A row click asks main asynchronously; wait for each switch before the next one, or a late one wins.
+    const windowTitle = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle());
+    await remotePage.locator('.machine-row').filter({ hasText: 'This PC' }).click();
+    await until(async () => await windowTitle() === 'ThreadTerm', 'This PC shown');
+    await localPage.locator('.remote-project-catalog .sess-row').filter({ hasText: 'Host approval' }).click();
+    await until(async () => await windowTitle() === 'ThreadTerm — Office-PC', 'tree click shows the host');
+    await remotePage.getByTestId(`session-chat-${attentionSession.id}`).waitFor();
+    assert.equal(await remotePage.evaluate(() => window.__machineRetainedProof), 'retained', 'tree route does not reload a retained view');
+    await remotePage.locator('.machine-row').filter({ hasText: 'This PC' }).click();
+    await until(async () => await windowTitle() === 'ThreadTerm', 'This PC shown again');
+    await app.evaluate(() => globalThis.__machineToasts[0].target.emit('click'));
+    await until(async () => await windowTitle() === 'ThreadTerm — Office-PC', 'notification click shows the host');
+    await remotePage.getByTestId(`session-chat-${attentionSession.id}`).waitFor();
+    pass('host tree session and notification click route the correct retained view/session without reload');
+  }
   const remoteSnapshot = await rpc(remotePage, 'runtime.snapshot');
   assert.ok(remoteSnapshot.projects.some(item => item.id === hostProject.id));
   assert.ok(!remoteSnapshot.projects.some(item => item.name === 'Client-only project'));
@@ -150,10 +195,39 @@ try {
   await child.evaluate(() => window.threadterm.windowAction('close')).catch(() => {});
   assert.equal(await app.evaluate(({ session }, id) => session.fromPartition(`persist:machine-${id}`).getPreloadScripts().filter(script => script.filePath.endsWith('htmlPreviewSandboxPreload.cjs')).length, machine.id), 1);
   pass('remote child windows inherit the machine/partition, share one session preparation and use their own window actions');
+  if (treeProbe) {
+    // One real local host window and one peer view compete for the same live PTY.
+    hostApp = await electron.launch({ args: [built.appDir], env: hostEnv, timeout: 30000 });
+    const hostPage = await hostApp.firstWindow();
+    await hostPage.waitForFunction(() => !!window.threadterm);
+    const terminal = await rpc(hostPage, 'session.create', { projectId: hostProject.id, cwd: hostWork, provider: 'shell', mode: 'terminal', title: 'Shared host terminal', executable: 'cmd.exe', args: ['/Q', '/K'], operationId: randomUUID() });
+    await hostPage.locator('button.sess-row').filter({ hasText: 'Shared host terminal' }).first().click();
+    await hostPage.locator('.terminal-host').waitFor();
+    await until(async () => { try { const lease = await rpc(hostPage, 'session.claim', { sessionId: terminal.id, clientId: 'host-window' }); return lease.leaseEpoch; } catch { return false; } }, 'local window controls the terminal');
+    await remotePage.evaluate(({ id, sessionId }) => window.threadterm.machineShow(id, sessionId), { id: machine.id, sessionId: terminal.id });
+    const remoteTake = remotePage.getByRole('button', { name: 'Take control', exact: true });
+    await remoteTake.waitFor({ timeout: 20000 }); await remoteTake.click(); await remoteTake.waitFor({ state: 'hidden' });
+    const remoteLease = await rpc(remotePage, 'session.claim', { sessionId: terminal.id, clientId: 'remote-view' });
+    await rpc(remotePage, 'terminal.input', { sessionId: terminal.id, leaseEpoch: remoteLease.leaseEpoch, data: 'echo REMOTE-TAKE-CONTROL\r' });
+    await until(async () => { const value = await hostPeer.request('terminal.read', { sessionId: terminal.id, cursor: 0, limit: 65536 }); return Buffer.from(value.data, 'base64').toString().includes('REMOTE-TAKE-CONTROL'); }, 'remote input reaches same host terminal');
+    const hostTake = hostPage.getByRole('button', { name: 'Take control', exact: true });
+    await hostTake.waitFor({ timeout: 20000 }); await hostTake.click(); await hostTake.waitFor({ state: 'hidden' });
+    const localLease = await rpc(hostPage, 'session.claim', { sessionId: terminal.id, clientId: 'host-window' });
+    assert.ok(localLease.leaseEpoch > remoteLease.leaseEpoch);
+    await assert.rejects(rpc(remotePage, 'terminal.input', { sessionId: terminal.id, leaseEpoch: remoteLease.leaseEpoch, data: 'STALE-MUST-NOT-WRITE' }), /stale_lease/);
+    await rpc(hostPage, 'terminal.input', { sessionId: terminal.id, leaseEpoch: localLease.leaseEpoch, data: 'echo LOCAL-TAKE-CONTROL\r' });
+    await rpc(hostPage, 'session.stop', { sessionId: terminal.id, operationId: randomUUID() });
+    await hostApp.evaluate(({ app }) => app.exit(0)); await hostApp.close(); hostApp = undefined;
+    pass('Take control works from local host window to remote view and back; stale peer input is fenced');
+    await remotePage.evaluate(({ id, sessionId }) => window.threadterm.machineShow(id, sessionId), { id: machine.id, sessionId: session.id });
+    await chat.locator('textarea').waitFor();
+    await delay(400);
+  }
   const paired = (await hostPeer.request('device.list')).find(item => item.profile === 'desktop' && item.name === 'Office-PC'); assert.ok(paired);
   await hostPeer.request('device.revoke', { deviceId: paired.id, operationId: randomUUID() });
   await until(async () => (await remotePage.evaluate(() => window.threadterm.machineList())).machines.find(item => item.id === machine.id)?.state === 'disconnected', 'revoke disconnect state');
-  assert.equal(await chat.locator('textarea').isDisabled(), true);
+  if (treeProbe) await until(async () => (await chat.locator('textarea').count()) ? await chat.locator('textarea').isDisabled() : await remotePage.getByRole('heading', { name: 'Runtime unavailable', exact: true }).count() > 0, 'revoked view cannot accept input');
+  else assert.equal(await chat.locator('textarea').isDisabled(), true);
   await remotePage.screenshot({ path: join(out, 'remote-disconnected.png') });
   pass('host Remove disconnects the live view and disables Chat input');
   await remotePage.locator('.machine-row').filter({ hasText: 'This PC' }).click();
@@ -173,6 +247,7 @@ try {
   await (remotePage ?? localPage)?.screenshot({ path: join(out, 'failure.png') }).catch(() => {});
   process.exitCode = 1;
 } finally {
+  if (hostApp) { await hostApp.evaluate(({ app }) => app.exit(0)).catch(() => {}); await hostApp.close().catch(() => {}); }
   if (localPage) await rpc(localPage, 'runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
   if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
   if (hostPeer) { await hostPeer.request('runtime.shutdown', { operationId: randomUUID() }).catch(() => {}); hostPeer.close(); }

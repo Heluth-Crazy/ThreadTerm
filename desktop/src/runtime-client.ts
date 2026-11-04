@@ -292,7 +292,7 @@ function requestTimeoutMs(method: Method): number {
 }
 
 export class RuntimeClient {
-  constructor(private readonly options: { autoLaunch?: boolean; maxConsumerQueueBytes?: number; profile?: { kind: 'local' } | PeerProfile } = {}) {}
+  constructor(private readonly options: { autoLaunch?: boolean; controlOnly?: boolean; maxConsumerQueueBytes?: number; profile?: { kind: 'local' } | PeerProfile } = {}) {}
   private readonly peerHeartbeat = new PeerHeartbeat(
     () => { void this.request('runtime.health', {}).catch(() => {}); },
     () => this.handleDisconnect(new RuntimeUnavailableError('Computer did not respond for 45 seconds')),
@@ -324,6 +324,7 @@ export class RuntimeClient {
   private qaReconnectPaused = false;
 
   async request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
+    if (this.options.controlOnly && ['session.claim', 'session.renew', 'session.release'].includes(method)) throw new RuntimeUnavailableError('Watchers cannot claim terminal control');
     if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
     await this.ensureConnected();
     this.assertOpen();
@@ -364,6 +365,7 @@ export class RuntimeClient {
 
   /** Main-only capability transport; deliberately absent from renderer IPC. */
   browserRequest(method: BrowserDesktopMethod, params: Record<string, unknown>): Promise<unknown> {
+    if (this.options.controlOnly) return Promise.reject(new RuntimeUnavailableError('Watcher browser channel is disabled'));
     try {
       this.assertOpen();
       validateBrowserDesktopRequest(method, params);
@@ -552,6 +554,7 @@ export class RuntimeClient {
   }
 
   async subscribeOutput(sessionId: string, cursor: number, onChunk: (chunk: OutputChunk) => void | Promise<void>): Promise<() => void> {
+    if (this.options.controlOnly) throw new RuntimeUnavailableError('Watcher output channel is disabled');
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('Invalid output cursor');
     await this.ensureConnected();
     this.assertOpen();
@@ -706,7 +709,7 @@ export class RuntimeClient {
     this.assertOpen();
     if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
     if (this.incompatible) throw this.incompatible;
-    if (this.control && this.output) return;
+    if (this.control && (this.options.controlOnly || this.output)) return;
     if (!this.connecting) {
       const disconnectRevision = this.disconnectRevision;
       this.connecting = this.connectAndAuthenticate().catch(error => {
@@ -753,6 +756,7 @@ export class RuntimeClient {
       markRuntimeStartupReady(pipes.control);
       this.assertOpen();
       const controlFailure = this.attachControl(control);
+      if (!this.options.controlOnly) {
       const outputAttempt = connectUntilReady(pipes.output, RUNTIME_READY_TIMEOUT_MS);
       let output: LengthPrefixedSocket;
       try { output = await Promise.race([outputAttempt, controlFailure]); }
@@ -770,6 +774,7 @@ export class RuntimeClient {
         this.attachOutput(output);
       }
       catch (error) { output.close(); throw error; }
+      } else void controlFailure.catch(() => {});
       const previousEpoch = this.runtimeEpoch;
       this.runtimeEpoch = session.epoch;
       this.invalidateBrowser(new RuntimeUnavailableError('Runtime control session was replaced'), true);
@@ -805,11 +810,13 @@ export class RuntimeClient {
         void controlFailure.catch(() => {});
       });
       this.assertOpen();
+      if (!this.options.controlOnly) {
       output = await LengthPrefixedSocket.connectPeer(profile);
       await Promise.race([authenticatePeer(output, profile, 'output', clientId, session.epoch), controlFailure!]);
       this.assertOpen();
       if (this.control !== control) throw new RuntimeUnavailableError('Computer control connection was replaced');
       this.attachOutput(output);
+      }
       const previousEpoch = this.runtimeEpoch;
       this.runtimeEpoch = session.epoch;
       this.invalidateBrowser(new RuntimeUnavailableError('Computer control session was replaced'), true);

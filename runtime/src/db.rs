@@ -767,6 +767,38 @@ impl Database {
             providers: vec![],
         })
     }
+    /// Small projections for the server-owned control tree subscription. Never reads transcripts.
+    pub fn tree_projection(&self, event: &str, data: &Value) -> Result<Value> {
+        let conn = self.connection.lock().map_err(|_| anyhow!("database lock poisoned"))?;
+        let mut tree = json!({});
+        let kind = data.get("kind").and_then(Value::as_str).unwrap_or("");
+        // Needs-you counts only use unread items; resolved history would make every frame grow with the inbox.
+        let unread_inbox = |conn: &Connection| -> Result<Value> {
+            Ok(json!(collect_inbox(conn)?.into_iter().filter(|item| item["read"] == false).collect::<Vec<_>>()))
+        };
+        if event == "inbox.resolved" { tree["inbox"] = unread_inbox(&conn)?; }
+        if event == "state.changed" && matches!(kind, "" | "catalog.visibility") {
+            let mut stmt = conn.prepare("SELECT kind,item_id,visibility,revision FROM catalog_visibility ORDER BY kind,item_id")?;
+            let rows = stmt.query_map([], |r| Ok(json!({"kind":r.get::<_,String>(0)?,"id":r.get::<_,String>(1)?,"visibility":r.get::<_,String>(2)?,"revision":r.get::<_,i64>(3)?})))?;
+            tree["visibility"] = json!(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        if event == "state.changed" {
+            if matches!(kind, "project" | "project.catalog" | "catalog.visibility") { tree["projects"] = json!(collect_projects(&conn)?); }
+            if let Some(id) = data.get("sessionId").and_then(Value::as_str) {
+                tree["session"] = collect_tree_sessions(&conn, Some(id))?.into_iter().next().unwrap_or(Value::Null);
+            } else if matches!(kind, "session" | "catalog.visibility" | "project") {
+                tree["sessions"] = json!(collect_tree_sessions(&conn, None)?);
+            }
+            if matches!(kind, "" | "git" | "project" | "project.catalog" | "catalog.visibility") {
+                let mut stmt = conn.prepare("SELECT id,project_id,path,branch,head,is_main,locked FROM worktrees ORDER BY project_id,path")?;
+                let rows = stmt.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"projectId":r.get::<_,String>(1)?,"path":r.get::<_,String>(2)?,"branch":r.get::<_,Option<String>>(3)?,"head":r.get::<_,String>(4)?,"isMain":r.get::<_,bool>(5)?,"locked":r.get::<_,bool>(6)?,"missing":false})))?;
+                tree["worktrees"] = json!(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+            }
+            if matches!(kind, "inbox" | "chat.approval" | "chat.approval.resolved") { tree["inbox"] = unread_inbox(&conn)?; }
+            if kind == "settings" { tree["settings"] = json!(settings(&conn)?); }
+        }
+        Ok(tree)
+    }
     pub fn events_after(&self, after: i64) -> Result<Vec<(i64, String, Value)>> {
         let conn = self
             .connection
@@ -2572,6 +2604,28 @@ fn collect_projects(conn: &Connection) -> Result<Vec<Project>> {
     let projects = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(projects)
 }
+/// Sidebar projection deliberately skips delegation outcomes, run commands and native identities.
+fn collect_tree_sessions(conn: &Connection, id: Option<&str>) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare("SELECT s.id,s.project_id,s.worktree_path,s.title,s.provider,s.mode,s.status,s.created_at,s.updated_at,s.exit_code,s.read_only,t.provider FROM sessions s LEFT JOIN terminal_agents t ON t.session_id=s.id WHERE (?1 IS NULL OR s.id=?1) ORDER BY s.created_at,s.id")?;
+    let rows = stmt.query_map([id], |r| {
+        let mut session = json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(3)?,"provider":r.get::<_,String>(4)?,"mode":r.get::<_,String>(5)?,"status":r.get::<_,String>(6)?,"createdAt":r.get::<_,String>(7)?,"updatedAt":r.get::<_,String>(8)?,"readOnly":r.get::<_,bool>(10)?});
+        if let Some(project) = r.get::<_,Option<String>>(1)? { session["projectId"] = json!(project); }
+        if let Some(path) = r.get::<_,Option<String>>(2)? { session["worktreePath"] = json!(path); }
+        if let Some(code) = r.get::<_,Option<i32>>(9)? { session["exitCode"] = json!(code); }
+        if session["mode"] == "terminal" && matches!(session["provider"].as_str(), Some("shell" | "custom")) {
+            if let Some(agent) = r.get::<_,Option<String>>(11)? { session["terminalAgent"] = json!(agent); }
+        }
+        Ok(session)
+    })?;
+    let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    for session in &mut sessions {
+        let id = session["id"].as_str().unwrap().to_owned();
+        if let Some(activity) = session_activity(conn, &id)? { session["activity"] = json!(activity); }
+        session["archived"] = json!(session_organization(conn, &id)?.archived);
+    }
+    Ok(sessions)
+}
+
 fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt=conn.prepare("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port,terminal_agents.provider FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id LEFT JOIN terminal_agents ON terminal_agents.session_id=sessions.id ORDER BY sessions.created_at")?;
     let rows = stmt.query_map([], |r| {

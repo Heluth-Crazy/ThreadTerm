@@ -1821,7 +1821,13 @@ impl RuntimeService {
                 "session.resume" => self.resume_native(&request.params),
                 "session.claim" => {
                     let p: SessionClaim = parse(&request.params)?;
-                    let epoch = self.leases.claim(&self.db, &p.session_id, principal)?;
+                    let epoch = if p.takeover {
+                        let session = self.db.session_by_id(&p.session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+                        if session.mode != "terminal" { return Err(anyhow::anyhow!("invalid_request")); }
+                        self.db.require_interactive(&p.session_id)?;
+                        self.leases.take_control(&self.db, &p.session_id, principal)?
+                    } else { self.leases.claim(&self.db, &p.session_id, principal)? };
+
                     Ok(json!({"leaseEpoch":epoch}))
                 }
                 "session.release" => {
@@ -3501,6 +3507,8 @@ struct SessionUpdate {
 #[serde(rename_all = "camelCase")]
 struct SessionClaim {
     session_id: String,
+    #[serde(default)]
+    takeover: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

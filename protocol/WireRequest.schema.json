@@ -1578,6 +1578,19 @@
         "rerun"
       ]
     },
+    "RequestParams<\"runtime.events.filter\">": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "const": "tree"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"runtime.health\">": {
       "type": "object",
       "additionalProperties": false
@@ -1969,6 +1982,9 @@
         },
         "clientId": {
           "type": "string"
+        },
+        "takeover": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -7857,6 +7873,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22usage.query%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.events.filter"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22runtime.events.filter%22%3E"
         }
       },
       "required": [

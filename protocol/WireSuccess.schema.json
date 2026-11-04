@@ -3885,6 +3885,110 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"runtime.events.filter\">": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "const": "tree"
+        },
+        "tree": {
+          "type": "object",
+          "properties": {
+            "worktrees": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Worktree"
+              }
+            },
+            "visibility": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CatalogVisibility"
+              }
+            }
+          },
+          "required": [
+            "worktrees"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "preset",
+        "tree"
+      ],
+      "additionalProperties": false
+    },
+    "Worktree": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "type": "string"
+        },
+        "isMain": {
+          "type": "boolean"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "missing": {
+          "type": "boolean"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "lastCommit": {
+          "$ref": "#/definitions/CommitSummary"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "path",
+        "branch",
+        "head",
+        "isMain",
+        "locked",
+        "missing"
+      ],
+      "additionalProperties": false
+    },
+    "CommitSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "committedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "subject",
+        "committedAt"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"runtime.health\">": {
       "type": "object",
       "properties": {
@@ -4669,26 +4773,6 @@
         "pinned",
         "revision",
         "sortOrder"
-      ],
-      "additionalProperties": false
-    },
-    "CommitSummary": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "subject": {
-          "type": "string"
-        },
-        "committedAt": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "subject",
-        "committedAt"
       ],
       "additionalProperties": false
     },
@@ -10314,55 +10398,6 @@
         "$ref": "#/definitions/Worktree"
       }
     },
-    "Worktree": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "projectId": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "head": {
-          "type": "string"
-        },
-        "isMain": {
-          "type": "boolean"
-        },
-        "locked": {
-          "type": "boolean"
-        },
-        "missing": {
-          "type": "boolean"
-        },
-        "upstream": {
-          "type": "string"
-        },
-        "lastCommit": {
-          "$ref": "#/definitions/CommitSummary"
-        }
-      },
-      "required": [
-        "id",
-        "projectId",
-        "path",
-        "branch",
-        "head",
-        "isMain",
-        "locked",
-        "missing"
-      ],
-      "additionalProperties": false
-    },
     "RequestResult<\"worktree.create\">": {
       "$ref": "#/definitions/Worktree"
     },
@@ -12014,6 +12049,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22usage.query%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.events.filter"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22runtime.events.filter%22%3E"
         }
       },
       "required": [

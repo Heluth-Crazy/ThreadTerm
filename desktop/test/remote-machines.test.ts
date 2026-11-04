@@ -1,3 +1,4 @@
+import './machine-watcher.test.js';
 import assert from 'node:assert/strict';
 import { test, before, after } from 'node:test';
 import { randomUUID, X509Certificate } from 'node:crypto';
@@ -103,7 +104,7 @@ test('pairing POST uses the checked HTTP ALPN socket and retains the desktop cre
     assert.match(request, /^POST \/v1\/pair HTTP\/1.1/); assert.match(request, /"deviceName":"Office"/);
   } finally { await f.close(); }
 });
-async function peerFixture(incompatible = false, pinOverride?: string) {
+async function peerFixture(incompatible = false, pinOverride?: string, controlOnly = false) {
   const auth: Record<string, unknown>[] = [], requests: Record<string, unknown>[] = [];
   let ignoreRequests = false;
   const f = await serverFixture(undefined, socket => {
@@ -123,7 +124,7 @@ async function peerFixture(incompatible = false, pinOverride?: string) {
     });
   });
   let credentialReads = 0;
-  const client = new RuntimeClient({ profile: { kind: 'peer', endpoint: f.endpoint, pin: pinOverride ?? pin, desktopVersion: 'client-test', credential: () => { credentialReads++; return 'credential-in-main'; } } });
+  const client = new RuntimeClient({ controlOnly, profile: { kind: 'peer', endpoint: f.endpoint, pin: pinOverride ?? pin, desktopVersion: 'client-test', credential: () => { credentialReads++; return 'credential-in-main'; } } });
   return { ...f, client, auth, requests, get credentialReads() { return credentialReads; }, ignore() { ignoreRequests = true; }, async close() { client.dispose(); await f.close(); } };
 }
 async function until(predicate: () => boolean) {
@@ -218,4 +219,23 @@ test('view swapping retains views, shows exactly one, and sizes all views with t
   for (const view of views.all()) assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1000, height: 700 });
   views.remove('one'); assert.equal(views.currentId, 'local'); assert.equal(local.visible, true);
   assert.equal(views.all().filter(view => view.visible).length, 1);
+});
+
+test('watch profile opens only control, refuses output/browser/leases and reconnects control only', async t => {
+  const f = await peerFixture(false, undefined, true);
+  try {
+    t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.now() });
+    await f.client.request('runtime.health', {});
+    assert.deepEqual(f.auth.map(value => value.channel), ['control']);
+    await assert.rejects(f.client.subscribeOutput('session', 0, () => {}), /disabled/);
+    await assert.rejects(f.client.browserRequest('browser.attach', {}), /disabled/);
+    await assert.rejects(f.client.request('session.claim', { sessionId: 'session', clientId: 'watcher' }), /cannot claim/);
+    assert.deepEqual(f.auth.map(value => value.channel), ['control']);
+    f.ignore();
+    const pending = f.client.request('runtime.health', {}), rejected = assert.rejects(pending, /45 seconds/);
+    await until(() => f.requests.length === 2); t.mock.timers.tick(45000); t.mock.timers.reset();
+    await rejected; await until(() => f.auth.length === 2);
+    assert.deepEqual(f.auth.map(value => value.channel), ['control', 'control']);
+    assert.notEqual(f.auth[0].clientId, f.auth[1].clientId);
+  } finally { t.mock.timers.reset(); await f.close(); }
 });

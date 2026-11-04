@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { release } from 'node:os';
 import { canonicalRelocationPath } from './relocationPaths.js';
 import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
-import { validateRequest, type Method, type RequestParams, type RuntimeEvent } from '@threadterm/protocol';
+import { validateRequest, type Method, type RequestParams, type RuntimeEvent, type Settings } from '@threadterm/protocol';
 import { RuntimeClient, RuntimeRequestError, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
 import { nativeDelivery, type NotificationKind } from './notificationPreferences.js';
-import { inboxNotificationCopy, notificationLocale, terminalNotificationCopy, terminalNotificationKind, testNotificationCopy, type InboxNotice, type NotificationLocale } from './inboxNotification.js';
+import { machineNotificationFocused, machineNotificationCopy, inboxNotificationCopy, notificationLocale, terminalNotificationCopy, terminalNotificationKind, testNotificationCopy, type InboxNotice, type NotificationLocale } from './inboxNotification.js';
 import { ignoreBrokenStdio, isBrokenPipeError } from './stdioGuards.js';
 import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
@@ -27,6 +27,7 @@ import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
 import { BACKGROUND_IMAGE_PRIVILEGED_SCHEME, backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc } from './backgroundImages.js';
 import { buildThemeExport, importThemePackImages, qaThemeExportOverride } from './themePackCore.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
+import { MachineTreeStore, type WatchNotice } from './machineWatcher.js';
 import { MachineRegistry } from './machines.js';
 import { MachineBindings, MachineViews } from './machineViews.js';
 import { createAppSessionPreparer } from './appSession.js';
@@ -66,6 +67,10 @@ process.on('uncaughtException', (error) => {
   } catch { /* stdout may already be gone */ }
 });
 
+const machineTree = new MachineTreeStore(feed => {
+  for (const contents of machineRenderers.values()) if (!contents.isDestroyed()) contents.send('threadterm:machine-tree', feed);
+}, notice => { void notifyMachineEvent(notice); }, 250, () => remoteMachinesEnabled);
+const pendingMachineSession = new Map<string, string>();
 let adminRuntime = createAdminRuntime();
 const windowRuntimes = new Map<number, RuntimeClient>();
 const outputSubscriptions = new Map<string, { ownerId: number; unsubscribe?: () => void; acknowledgements: Array<() => void> }>();
@@ -75,7 +80,6 @@ let allowQuit = false;
 let quitPending = false;
 let stoppingRuntime = false;
 let lastSessionId: string | undefined;
-let lastNotificationSeq = 0;
 let lightweightMode = false;
 let floatMode: FloatMode = 'manual';
 const floatingWindows = new Map<string, BrowserWindow>();
@@ -91,11 +95,12 @@ if (process.env.THREADTERM_V3_USER_DATA) app.setPath('userData', process.env.THR
 if (!app.isPackaged && process.env.THREADTERM_V3_USER_DATA && process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS) app.setPath('downloads', process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS);
 app.on('window-all-closed', () => undefined);
 app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); void requestQuit(); } });
-app.on('will-quit', () => { adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
+app.on('will-quit', () => { machineTree.stop(); adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
 
 void app.whenReady().then(async () => {
   htmlPreviewPreloadReady = prepareAppSession(session.defaultSession);
   machines = new MachineRegistry(join(app.getPath('userData'), 'machines.json'), safeStorage);
+  machineTree.add(machines.list()[0], adminRuntime, false);
   registerIpc();
   // The window and its launch screen come up at once and cover the runtime start. A scheduled cache cleanup needs
   // the runtime's settings, so it runs alongside instead of keeping the window back until the runtime answers.
@@ -106,7 +111,7 @@ void app.whenReady().then(async () => {
 });
 
 function createAdminRuntime(): RuntimeClient {
-  const client = new RuntimeClient();
+  const client = new RuntimeClient({ controlOnly: true });
   attachAdminRuntime(client);
   return client;
 }
@@ -118,16 +123,17 @@ function attachAdminRuntime(client: RuntimeClient): void {
     // invented "settings" transport event. Refresh immediately so shortcut
     // registration and floating-window preference follow the confirmed state.
     if (event.event === 'state.changed' && stateChangeKind(event.data) === 'settings') void refreshDesktopPreferences();
-    if (event.seq <= lastNotificationSeq) return;
-    if (event.event === 'session.status') void notifyTerminalCompletion(event);
-    // Chat projection emits inbox.created once per durable attention item.
-    // Terminal completion stays on session.status because its inbox record is
-    // intentionally resolved and does not emit inbox.created.
-    if (event.event === 'inbox.created' && isInboxNotification(event.data)) {
-      lastNotificationSeq = event.seq;
-      void presentInboxNotification(event.data);
-    }
   });
+  if (machines) machineTree.add(machines.list()[0], client, false);
+}
+function syncMachineWatchers(): void {
+  if (!machines) return;
+  const entries = machines.list().filter(item => item.id === 'local' || remoteMachinesEnabled);
+  machineTree.retain(new Set(entries.map(item => item.id)));
+  for (const machine of entries) if (!machineTree.has(machine.id)) {
+    machineTree.add(machine, machine.id === 'local' ? adminRuntime : new RuntimeClient({ controlOnly: true,
+      profile: { ...machines.profile(machine.id), desktopVersion: app.getVersion() } }), machine.id !== 'local');
+  }
 }
 function isTrustedRendererUrl(value: string): boolean {
   try {
@@ -209,7 +215,7 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
       bindMachineRenderer(view.webContents, id, window);
       view.webContents.on('will-navigate', (event, url) => { if (!isTrustedRendererUrl(url)) event.preventDefault(); });
       root.addChildView(view);
-      void loadRenderer(view.webContents, { machineId: id });
+      void loadRenderer(view.webContents, { machineId: id, sessionId: pendingMachineSession.get(id) });
       return view;
     }, () => window.getContentSize() as [number, number]);
     machineViews.set(window.id, views);
@@ -311,19 +317,19 @@ async function refreshDesktopPreferences(): Promise<{ shortcuts: Record<string, 
   return { shortcuts: result };
 }
 function isTerminalCompletion(value: unknown): value is { sessionId: string; status: string } { return !!value && typeof value === 'object' && typeof (value as Record<string, unknown>).sessionId === 'string' && ['exited', 'error', 'interrupted'].includes(String((value as Record<string, unknown>).status)); }
-async function notifyTerminalCompletion(event: RuntimeEvent): Promise<void> {
+async function notifyMachineEvent(source: WatchNotice): Promise<void> {
+  if (stoppingRuntime) return;
+  if (source.event.event === 'session.status') await notifyTerminalCompletion(source.event, source);
+  else if (source.event.event === 'inbox.created' && isInboxNotification(source.event.data)) await presentInboxNotification(source.event.data, source);
+}
+async function notifyTerminalCompletion(event: RuntimeEvent, source: WatchNotice): Promise<void> {
   const completion = event.data;
-  if (!isTerminalCompletion(completion) || event.seq <= lastNotificationSeq) return;
-  try {
-    const snapshot = await adminRuntime.request('runtime.snapshot', {});
-    const session = snapshot.sessions.find((item) => item.id === completion.sessionId);
-    if (session?.mode !== 'terminal') return;
-    if (event.seq <= lastNotificationSeq) return;
-    lastNotificationSeq = event.seq;
-    const exitCode = (completion as { exitCode?: unknown }).exitCode;
-    const notice = { status: completion.status, exitCode: typeof exitCode === 'number' ? exitCode : session.exitCode, title: session.title, provider: session.provider, providerName: snapshot.providers.find((provider) => provider.id === session.provider)?.name };
-    void notifyNative(terminalNotificationKind(notice), (locale) => terminalNotificationCopy(notice, locale), { sessionId: completion.sessionId });
-  } catch { /* A later inbox event remains the authoritative chat notification. */ }
+  if (!isTerminalCompletion(completion)) return;
+  const session = source.state.sessions.find(item => item.id === completion.sessionId);
+  if (session?.mode !== 'terminal') return;
+  const exitCode = (completion as { exitCode?: unknown }).exitCode;
+  const notice = { status: completion.status, exitCode: typeof exitCode === 'number' ? exitCode : session.exitCode, title: session.title, provider: session.provider, providerName: source.state.providers.find(provider => provider.id === session.provider)?.name };
+  await notifyNative(terminalNotificationKind(notice), locale => terminalNotificationCopy(notice, locale), machineNoticeOptions(source, completion.sessionId));
 }
 function stateChangeKind(value: unknown): string | undefined { return value && typeof value === 'object' && !Array.isArray(value) && typeof (value as Record<string, unknown>).kind === 'string' ? (value as Record<string, unknown>).kind as string : undefined; }
 function isInboxNotification(value: unknown): value is InboxNotice { const kind = stateChangeKind(value); return kind === 'approval' || kind === 'reply' || kind === 'error' || kind === 'waiting'; }
@@ -331,35 +337,51 @@ function inboxNoticeFromEvent(value: InboxNotice): InboxNotice {
   return { kind: value.kind, sessionId: value.sessionId, title: value.title, provider: value.provider, providerName: value.providerName };
 }
 function inboxNotificationKind(value: InboxNotice): NotificationKind { return value.kind === 'reply' ? 'completed' : 'attention'; }
-async function presentInboxNotification(value: InboxNotice): Promise<void> {
+async function presentInboxNotification(value: InboxNotice, source: WatchNotice): Promise<void> {
   let notice = inboxNoticeFromEvent(value);
-  try {
-    const snapshot = await adminRuntime.request('runtime.snapshot', {});
-    const session = notice.sessionId ? snapshot.sessions.find((item) => item.id === notice.sessionId) : undefined;
-    if (session) notice = { ...notice, title: notice.title || session.title, provider: notice.provider || session.provider, providerName: snapshot.providers.find((provider) => provider.id === session.provider)?.name };
-  } catch { /* Kind-only payload is still enough to notify. */ }
-  void notifyNative(inboxNotificationKind(notice), (locale) => inboxNotificationCopy(notice, locale), { sessionId: notice.sessionId });
+  const session = source.state.sessions.find(item => item.id === notice.sessionId);
+  if (session) notice = { ...notice, title: notice.title || session.title, provider: notice.provider || session.provider, providerName: source.state.providers.find(provider => provider.id === session.provider)?.name };
+  await notifyNative(inboxNotificationKind(notice), locale => inboxNotificationCopy(notice, locale), machineNoticeOptions(source, notice.sessionId));
+}
+/** This PC's notifications keep their plain copy; another computer's carry its name. The toast is shown on this PC,
+ * so delivery and language always follow this PC's settings. */
+function machineNoticeOptions(source: WatchNotice, sessionId: string | undefined): { sessionId?: string; machineId: string; machineName?: string; settings?: Settings } {
+  return source.machine.id === 'local'
+    ? { sessionId, machineId: 'local', settings: source.state.settings }
+    : { sessionId, machineId: source.machine.id, machineName: source.machine.name, settings: machineTree.state('local')?.settings };
 }
 /** Recent notifications stay referenced, so a click (also later from the Action Center) still reaches its handler. */
 const recentNotifications: Notification[] = [];
 /** Shows an OS notification for a session event or a Settings test, as nativeDelivery decides, in the app language.
  * A click brings ThreadTerm forward on the session. Never throws: session events arrive via the admin runtime's
  * event handler. Resolves once Windows has shown the toast (or reported it failed). */
-async function notifyNative(kind: NotificationKind, copy: (locale: NotificationLocale) => { title: string; body: string }, options: { sessionId?: string; test?: boolean } = {}): Promise<{ sent: boolean; reason?: string }> {
+async function notifyNative(kind: NotificationKind, copy: (locale: NotificationLocale) => { title: string; body: string }, options: { sessionId?: string; machineId?: string; machineName?: string; settings?: Settings; test?: boolean } = {}): Promise<{ sent: boolean; reason?: string }> {
   let locale: NotificationLocale = 'en';
   try {
-    const { settings } = await adminRuntime.request('runtime.snapshot', {});
+    const settings = options.settings ?? (await adminRuntime.request('runtime.snapshot', {})).settings;
     locale = notificationLocale(settings);
     const zh = locale === 'zh-CN';
     if (!Notification.isSupported()) return { sent: false, reason: zh ? '此系统不支持系统通知。' : 'This system does not support native notifications.' };
     // A minimized or tray-hidden window can still report focus on Windows; neither is the user looking at ThreadTerm.
     const focused = BrowserWindow.getFocusedWindow();
-    const delivery = nativeDelivery(settings.notifications, kind, { appFocused: !!focused && focused.isVisible() && !focused.isMinimized(), test: options.test });
+    const viewedMachineId = focused ? machineViews.get(focused.id)?.currentId
+      ?? (machineRenderers.has(focused.webContents.id) ? machineBindings.get(focused.webContents.id).machineId : 'local') : undefined;
+    const delivery = nativeDelivery(settings.notifications, kind, { appFocused: machineNotificationFocused(options.machineId, viewedMachineId, !!focused && focused.isVisible() && !focused.isMinimized()), test: options.test });
     if (!delivery.deliver) return { sent: false, reason: delivery.reason === 'disabled' ? (zh ? '请先开启“允许系统通知”。' : 'Turn on "Allow system notifications" first.') : delivery.reason };
-    const notification = new Notification({ ...copy(locale), silent: delivery.silent });
+    const text = options.machineName ? machineNotificationCopy(options.machineName, copy(locale)) : copy(locale);
+    const notification = new Notification({ ...text, silent: delivery.silent });
     recentNotifications.push(notification);
     if (recentNotifications.length > 20) recentNotifications.shift();
-    notification.on('click', () => { if (options.sessionId) routeMainWindow({ sessionId: options.sessionId }); else showMainWindow(); });
+    notification.on('click', () => {
+      const remote = options.machineId !== undefined && options.machineId !== 'local';
+      if (remote) {
+        // A removed computer, or one hidden by the gate, cannot be reopened by an old notification.
+        if (remoteMachinesEnabled && machines.list().some(item => item.id === options.machineId)) showMachine(mainWindow, options.machineId!, options.sessionId);
+        else showMainWindow();
+      } else if (options.sessionId && remoteMachinesEnabled) showMachine(mainWindow, 'local', options.sessionId);
+      else if (options.sessionId) routeMainWindow({ sessionId: options.sessionId });
+      else showMainWindow();
+    });
     const shown = new Promise<{ sent: boolean; reason?: string }>((resolvePromise) => {
       const timer = setTimeout(() => resolvePromise({ sent: true }), 4000);
       notification.once('show', () => { clearTimeout(timer); resolvePromise({ sent: true }); });
@@ -376,19 +398,29 @@ function registerIpc(): void {
     await refreshMachinesGate();
     return machineSnapshot(event.sender.id);
   });
-  ipcMain.handle('threadterm:machine-show', async (event, id: unknown) => {
+  ipcMain.handle('threadterm:machine-show', async (event, id: unknown, sessionId: unknown) => {
     assertTrustedRenderer(event);
     await assertMachinesEnabled();
     if (typeof id !== 'string' || !machines.list().some(item => item.id === id)) throw new Error('Unknown computer');
+    if (sessionId !== undefined && !isRevealSessionId(sessionId)) throw new Error('Invalid session');
     const bound = machineBindings.get(event.sender.id);
     const owner = machineViews.has(bound.owner.id) ? bound.owner : mainWindow;
-    if (!owner || owner.isDestroyed()) throw new Error('Window is unavailable');
-    const view = machineViews.get(owner.id)!.show(id);
-    owner.setTitle(id === 'local' ? 'ThreadTerm' : `ThreadTerm — ${machines.list().find(item => item.id === id)!.name}`);
-    if (view instanceof WebContentsView) view.webContents.focus();
-    else owner.webContents.focus();
-    owner.show();
-    broadcastMachines();
+    showMachine(owner, id, sessionId as string | undefined);
+  });
+  ipcMain.handle('threadterm:machine-settings', async event => {
+    assertTrustedRenderer(event); await assertMachinesEnabled();
+    const bound = machineBindings.get(event.sender.id);
+    const owner = machineViews.has(bound.owner.id) ? bound.owner : mainWindow;
+    showMachine(owner, 'local');
+    (owner ?? mainWindow)?.webContents.send('threadterm:desktop-navigate', { action: 'computers' });
+  });
+  ipcMain.handle('threadterm:machine-tree-get', event => { assertTrustedRenderer(event); return machineTree.feed(); });
+  ipcMain.handle('threadterm:machine-expand', (event, key: unknown, expanded: unknown) => {
+    assertTrustedRenderer(event);
+    if (typeof key !== 'string' || key.length > 32768 || typeof expanded !== 'boolean') throw new Error('Invalid tree expansion');
+    let tuple: unknown; try { tuple = JSON.parse(key); } catch { throw new Error('Invalid tree key'); }
+    if (!Array.isArray(tuple) || tuple.length !== 3 || tuple.some(part => typeof part !== 'string') || !machines.list().some(item => item.id === tuple[0])) throw new Error('Unknown tree key');
+    machineTree.expand(key, expanded);
   });
   ipcMain.handle('threadterm:machine-prepare', async (event, text: unknown) => {
     assertTrustedRenderer(event); assertLocalMachine(event); await assertMachinesEnabled();
@@ -414,7 +446,7 @@ function registerIpc(): void {
     const credential = await pairOnPinnedConnection(pending.socket, pending.descriptor, name.trim());
     if (!remoteMachinesEnabled || event.sender.isDestroyed()) throw new Error('Pairing cancelled');
     const entry = machines.add({ name, color, endpoint: pending.descriptor.serverUrl, pin: pending.descriptor.tlsFingerprint }, credential);
-    broadcastMachines();
+    syncMachineWatchers(); broadcastMachines();
     return entry;
   });
   ipcMain.handle('threadterm:machine-remove', async (event, id: unknown) => {
@@ -431,7 +463,7 @@ function registerIpc(): void {
       }
     }
     for (const window of BrowserWindow.getAllWindows()) if (machineBindings.get(window.webContents.id).machineId === id) window.destroy();
-    machines.remove(id); machineStates.delete(id); broadcastMachines();
+    machines.remove(id); machineTree.remove(id); machineStates.delete(id); broadcastMachines();
   });
   registerBrowser(event => {
     assertTrustedRenderer(event);
@@ -462,6 +494,8 @@ function registerIpc(): void {
   ipcMain.handle('threadterm:request', async (event, method: unknown, params: unknown) => {
     assertTrustedRenderer(event);
     validateRequest(method, params);
+    // Narrowing a connection's events is for main's watchers; a renderer doing it would silently lose its Chat stream.
+    if (method === 'runtime.events.filter') throw new Error('runtime.events.filter is not available to windows');
     const runtime = runtimeFor(event);
     if (method === 'data.backup') await event.sender.session.flushStorageData();
     const requestParams = method === 'data.backup' ? { ...params as RequestParams<'data.backup'>, desktopDataRoot: app.getPath('userData') } : params;
@@ -746,7 +780,7 @@ async function activateDataRelocation(value: unknown): Promise<{ activated: bool
     await shutdownRuntimeAndWait(adminRuntime);
     adminRuntime.dispose();
     writePointer(pointer, { root: targetRoot, previousRoot: priorPointer?.root, activatedAt: new Date().toISOString() });
-    verifier = new RuntimeClient();
+    verifier = new RuntimeClient({ controlOnly: true });
     await verifier.request('runtime.health', {});
     verifierHealthy = true;
     const status = await verifier.request('data.status', {});
@@ -952,6 +986,8 @@ async function refreshMachinesGate(): Promise<void> {
 function applyMachinesGate(enabled: boolean): void {
   if (enabled === remoteMachinesEnabled) return;
   remoteMachinesEnabled = enabled;
+  syncMachineWatchers();
+  if (enabled) machineTree.republish();
   if (!enabled) {
     for (const [id, client] of windowRuntimes) if (machineBindings.get(id).machineId !== 'local') { client.dispose(); windowRuntimes.delete(id); }
     for (const [windowId, views] of machineViews) {
@@ -971,9 +1007,24 @@ function applyMachinesGate(enabled: boolean): void {
   }
   broadcastMachines();
 }
+function showMachine(owner: BrowserWindow | undefined, id: string, sessionId?: string): void {
+  if (!owner || owner.isDestroyed()) { showMainWindow(); owner = mainWindow; }
+  if (!owner || !machineViews.has(owner.id)) return;
+  if (sessionId) pendingMachineSession.set(id, sessionId);
+  const view = machineViews.get(owner.id)!.show(id);
+  pendingMachineSession.delete(id);
+  const contents = view instanceof WebContentsView ? view.webContents : owner.webContents;
+  if (sessionId) {
+    const route = () => { if (!contents.isDestroyed()) contents.send('threadterm:desktop-navigate', { sessionId }); };
+    if (contents.isLoading()) contents.once('did-finish-load', route); else route();
+  }
+  owner.setTitle(id === 'local' ? 'ThreadTerm' : `ThreadTerm — ${machines.list().find(item => item.id === id)?.name ?? 'Computer'}`);
+  contents.focus(); owner.show(); owner.focus(); broadcastMachines();
+}
 function machineSnapshot(senderId: number): MachineSnapshot {
+  const watched = new Map(machineTree.feed().machines.map(row => [row.machine.id, row.machine]));
   return { enabled: remoteMachinesEnabled, currentId: machineBindings.get(senderId).machineId,
-    machines: remoteMachinesEnabled ? machines.list().map(item => ({ ...item, ...machineStates.get(item.id) })) : [] };
+    machines: remoteMachinesEnabled ? machines.list().map(item => ({ ...item, ...machineStates.get(item.id), ...watched.get(item.id) })) : [] };
 }
 function broadcastMachines(): void {
   for (const contents of machineRenderers.values()) if (!contents.isDestroyed()) contents.send('threadterm:machines-changed');

@@ -17,11 +17,33 @@ import {
   type AttachedFile,
 } from '@threadterm/protocol';
 
+type DesktopNavigateTarget = { sessionId?: string; workspaceId?: string; action?: 'command-palette' | 'computers' };
+const desktopNavigateListeners = new Set<(target: DesktopNavigateTarget) => void>();
+let pendingDesktopNavigate: DesktopNavigateTarget | undefined;
+ipcRenderer.on('threadterm:desktop-navigate', (_event, value: unknown) => {
+  if (!isRecord(value)) return;
+  const target: DesktopNavigateTarget = {
+    sessionId: typeof value.sessionId === 'string' ? value.sessionId : undefined,
+    workspaceId: typeof value.workspaceId === 'string' ? value.workspaceId : undefined,
+    action: value.action === 'command-palette' || value.action === 'computers' ? value.action : undefined,
+  };
+  if (!target.sessionId && !target.workspaceId && !target.action) return;
+  if (desktopNavigateListeners.size) for (const listener of desktopNavigateListeners) listener(target);
+  else pendingDesktopNavigate = target;
+});
 type FilePathBridge = { getPathForFile: (file: File) => string };
 const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge & MachineBridge = {
   machineId: process.argv.find(value => value.startsWith('--threadterm-machine-id='))?.slice('--threadterm-machine-id='.length) ?? 'local',
   machineList: () => ipcRenderer.invoke('threadterm:machine-list'),
-  machineShow: id => ipcRenderer.invoke('threadterm:machine-show', id),
+  machineShow: (id, sessionId) => ipcRenderer.invoke('threadterm:machine-show', id, sessionId),
+  machineSettings: () => ipcRenderer.invoke('threadterm:machine-settings'),
+  machineTree: () => ipcRenderer.invoke('threadterm:machine-tree-get'),
+  machineExpand: (key, expanded) => ipcRenderer.invoke('threadterm:machine-expand', key, expanded),
+  onMachineTree: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: import('../../renderer/src/machineTypes.js').MachineTreeFeed) => { if (value && Array.isArray(value.machines) && isRecord(value.expanded)) listener(value); };
+    ipcRenderer.on('threadterm:machine-tree', handler);
+    return () => ipcRenderer.removeListener('threadterm:machine-tree', handler);
+  },
   machinePrepare: text => ipcRenderer.invoke('threadterm:machine-prepare', text),
   machineAdd: options => ipcRenderer.invoke('threadterm:machine-add', options),
   machineRemove: id => ipcRenderer.invoke('threadterm:machine-remove', id),
@@ -52,16 +74,13 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & Backgrou
     ipcRenderer.on('threadterm:event', handler);
     return () => ipcRenderer.removeListener('threadterm:event', handler);
   },
-  onDesktopNavigate: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
-      if (!isRecord(value)) return;
-      const sessionId = typeof value.sessionId === 'string' ? value.sessionId : undefined;
-      const workspaceId = typeof value.workspaceId === 'string' ? value.workspaceId : undefined;
-      const action = value.action === "command-palette" ? value.action : undefined;
-      if (sessionId || workspaceId || action) listener({ sessionId, workspaceId, action });
-    };
-    ipcRenderer.on('threadterm:desktop-navigate', handler);
-    return () => ipcRenderer.removeListener('threadterm:desktop-navigate', handler);
+  onDesktopNavigate: listener => {
+    desktopNavigateListeners.add(listener);
+    if (pendingDesktopNavigate) {
+      const target = pendingDesktopNavigate; pendingDesktopNavigate = undefined;
+      queueMicrotask(() => { if (desktopNavigateListeners.has(listener)) listener(target); });
+    }
+    return () => { desktopNavigateListeners.delete(listener); };
   },
   windowState: (): Promise<{ maximized: boolean }> => ipcRenderer.invoke('threadterm:window-state') as Promise<{ maximized: boolean }>,
   onWindowState: (listener) => {
