@@ -17,6 +17,7 @@ export const messages = {
     runtimeUnavailable: "Runtime unavailable",
     connecting: "Connecting…",
     retry: "Retry",
+    pageSelectionUnusable: "That element can’t be identified. Select another element or its parent, or drag an area.",
     screenshotCaptureFailed: "Could not take a screenshot. Try again.",
     screenshotSaveFailed: "Could not save the screenshot. Take it again.",
     screenshotRetake: "Take screenshot again",
@@ -130,6 +131,7 @@ export const messages = {
     nativeHistoryUnavailable: "Native history unavailable.",
   },
   "zh-CN": {
+    pageSelectionUnusable: "无法识别所选元素。请选择其他元素、它的父级，或拖动选择一个区域。",
     screenshotCaptureFailed: "无法截图，请重试。",
     screenshotSaveFailed: "无法保存截图，请重新截图。",
     screenshotRetake: "重新截图",

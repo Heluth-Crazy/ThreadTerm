@@ -8,6 +8,7 @@ import { registerPagePreview } from '../pageComments';
 import type { PageShotPacket, ShotDraft, usePageShotDraft } from '../pageShotDraft';
 import { SurfaceDialog } from './SurfaceDialog';
 import { translate, useLocale } from '../i18n';
+import { pageCommentErrorMessage } from '../pageCommentErrors';
 import { WbIcon } from '../workbench/icons';
 import { Select } from './ui/Select';
 import { useBrowserOcclusion } from '../browserOcclusion';
@@ -24,7 +25,7 @@ export function usePageCommentPreview(url:string, scope?:CommentScope, host?:Fil
  const pickRef=useRef<PagePick|undefined>(undefined);pickRef.current=pick;
  const generation=useRef(0),pickingRef=useRef(false);
  const enabled=Boolean(scope&&host),scopeKey=scope?`${scope.projectId}\0${scope.root}`:'';
- const error=(value:unknown)=>{const reason=value instanceof Error?value.message:String(value);return reason==='review_comments_full'?(zh?'此文件夹已有 200 条审查意见。请先加入消息或删除一些。':'This folder already has 200 comments. Add them to the message or remove some first.'):reason==='review_comment_empty'?(zh?'请先填写审查意见。':'Enter a comment first.'):reason==='review_comment_too_long'?(zh?'一条审查意见最多 4000 个字符。':'A comment can be at most 4000 characters.'):(zh?'无法完成页面评论。':'The page comment could not be completed.');};
+ const error=(value:unknown)=>pageCommentErrorMessage(value,zh);
  const fail=(value:unknown)=>setIssue(error(value));
  const surface=()=>native?.element.current??iframe.current;
  const visible=()=>Boolean(surface()?.getClientRects().length);
