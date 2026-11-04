@@ -11,6 +11,8 @@ import * as browserNewTab from '../renderer/src/browserNewTab.ts';
 import * as browserPolicy from '../desktop/src/browser/policy.ts';
 
 const ts=createRequire(import.meta.url)('typescript');
+const i18n={exports:{}};
+vm.runInNewContext(ts.transpileModule(readFileSync('renderer/src/i18n.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{module:i18n,exports:i18n.exports,require:()=>({createContext:()=>({})})});
 const capture={shot:{id:'00000000-0000-4000-8000-000000000000',path:'C:/shots/page.png',width:40,height:30,thumbnail:'data:image/jpeg;base64,AA=='},dataUrl:'data:image/png;base64,c25hcA==',url:'https://example.test/',documentGeneration:3,width:40,height:30};
 
 function fixture(extra={}){
@@ -33,6 +35,7 @@ function fixture(extra={}){
   if(name==='react/jsx-runtime')return {jsx:(type,props)=>({type,props}),jsxs:(type,props)=>({type,props})};
   if(name==='react-dom')return {createPortal:(child,target)=>{const portal={type:'portal',child,target};portals.push(portal);return portal;}};
   if(name==='../bridge')return bridge;
+  if(name==='../i18n')return i18n.exports;
   if(name==='../browserAgentUi')return browserAgentUi;
   if(name==='../browserAddress')return browserAddress;
   if(name==='../browserDevtools')return browserDevtools;
@@ -87,9 +90,11 @@ test('capture errors remain visible across unrelated browser state events and cl
  assert.equal(button().props.disabled,false);button().props.onClick();f.rejectCapture(new Error('Page screenshot save failed: EACCES'));
  await new Promise(resolve=>setImmediate(resolve));tree=f.render();
  const alert=()=>f.find(tree,node=>node.props?.['data-browser-handoff-error']!==undefined);
- assert.match(alert().props.children,/save failed: EACCES/);assert.equal(tree.props['data-handoff-state'],'error');assert.equal(f.portals.length,0);
- f.browserListener({type:'state',state:{...loadedState,zoom:1.1}});tree=f.render();assert.match(alert().props.children,/save failed: EACCES/,'an unrelated state event cannot erase the failed capture');
- button().props.onClick();tree=f.render();assert.equal(alert(),undefined);assert.equal(tree.props['data-handoff-state'],'capturing');assert.equal(button().props['aria-busy'],true);
+ const message=()=>typeof alert().props.children==='string'?alert().props.children:f.find(alert(),node=>node.type==='span').props.children;
+ assert.equal(message(),'Could not take a screenshot. Try again.');assert.equal(tree.props['data-handoff-state'],'error');assert.equal(f.portals.length,0);
+ assert.doesNotMatch(JSON.stringify(alert()),/EACCES|save failed|Error invoking|page comment/i);
+ f.browserListener({type:'state',state:{...loadedState,zoom:1.1}});tree=f.render();assert.equal(message(),'Could not take a screenshot. Try again.','an unrelated state event cannot erase the failed capture');
+ f.find(alert(),node=>node.type==='button').props.onClick();tree=f.render();assert.equal(alert(),undefined);assert.equal(tree.props['data-handoff-state'],'capturing');assert.equal(button().props['aria-busy'],true);
  f.resolveCapture(capture);await new Promise(resolve=>setImmediate(resolve));tree=f.render();assert.equal(tree.props['data-handoff-state'],'markup');assert.equal(f.portals.length,1);
 });
 test('capture stays disabled until a document is observed and groups page actions for wrapping',()=>{
@@ -98,6 +103,20 @@ test('capture stays disabled until a document is observed and groups page action
  f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();f.browserListener({type:'state',state:loadedState});tree=f.render();assert.equal(button().props.disabled,false);
  assert.equal(tree.props['data-document-generation'],3);const actions=f.find(tree,node=>node.props?.className==='wb-browser-actions');
  for(const label of ['Screenshot to Chat','Page console','Find in page','Open in browser'])assert.ok(f.find(actions,node=>node.props?.['aria-label']===label),`${label} belongs to the wrapping action group`);
+});
+
+test('capture failures show localized recovery without exposing IPC or page details',async()=>{
+ for(const zh of [false,true]){
+  const f=fixture({zh});f.render();f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();f.browserListener({type:'state',state:loadedState});let tree=f.render();
+  f.find(tree,node=>node.props?.['aria-label']===(zh?'截图到对话':'Screenshot to Chat')).props.onClick();
+  f.rejectCapture(new Error("Error invoking remote method 'threadterm:browser-handoff': Error: private page text"));
+  await new Promise(resolve=>setImmediate(resolve));tree=f.render();
+  const alert=f.find(tree,node=>node.props?.['data-browser-handoff-error']!==undefined);
+  assert.equal(alert.props.role,'alert');
+  assert.equal(f.find(alert,node=>node.type==='span').props.children,zh?'无法截图，请重试。':'Could not take a screenshot. Try again.');
+  assert.equal(f.find(alert,node=>node.type==='button').props.children,zh?'重新截图':'Take screenshot again');
+  assert.doesNotMatch(JSON.stringify(alert),/private page|Error invoking|threadterm:browser-handoff/);
+ }
 });
 
 
@@ -145,4 +164,36 @@ test('Off cancels a delayed Read save without sending a later grant request',asy
  f.browserListener({type:'state',state:{...loadedState,sharing:{level:'off',status:'idle',grantEpoch:0,viewGeneration:1,navigationEpoch:1,reading:false}}});let tree=f.render();f.find(tree,node=>node.props?.['aria-label']==='Agent access Read').props.onClick();tree=f.render();
  f.find(tree,node=>node.props?.['aria-label']==='Agent access Off').props.onClick();await new Promise(done=>setImmediate(done));finishSave({id:'workspace',revision:1});await new Promise(done=>setImmediate(done));
  assert.equal(JSON.stringify(f.commands),JSON.stringify([{type:'share',tabId:'tab-a',level:'off'}]));
+});
+
+function screenshotDataFixture(zh){
+ const states=[];let index=0,readFails=true;
+ const react={useState:initial=>{const at=index++;if(!(at in states))states[at]=initial;return [states[at],value=>{states[at]=typeof value==='function'?value(states[at]):value;}];},useEffect(){}};
+ const module={exports:{}};
+ const require=name=>name==='react'?react:name==='react/jsx-runtime'?{jsx:(type,props)=>({type,props}),jsxs:(type,props)=>({type,props})}:name==='../i18n'?{...i18n.exports,useLocale:()=>zh?'zh-CN':'en'}:name==='../bridge'?{readPageShot:async()=>{if(readFails)throw new Error("Error invoking remote method 'threadterm:read-page-shot': private path");return 'data:image/png;base64,AA==';}}:{};
+ vm.runInNewContext(ts.transpileModule(readFileSync('renderer/src/components/PageComments.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{require,module,exports:module.exports});
+ const render=(name,props)=>{index=0;return module.exports[name](props);};
+ const find=(node,predicate)=>{if(!node)return;if(predicate(node))return node;for(const child of [node.props?.children].flat()){const found=find(child,predicate);if(found)return found;}};
+ return {render,find,recoverRead(){readFails=false;}};
+}
+
+test('saved screenshot read failures hide IPC details and Retry opens the retained image',async()=>{
+ for(const zh of [false,true]){
+  const f=screenshotDataFixture(zh),props={draft:{records:[{shot:{id:'shot-a',thumbnail:''},mode:'file',url:capture.url}]},disabled:false};
+  let tree=f.render('PageShotDrafts',props);f.find(tree,node=>node.props?.['aria-label']==='Page screenshot').props.onClick();await new Promise(done=>setImmediate(done));tree=f.render('PageShotDrafts',props);
+  const alert=f.find(tree,node=>node.props?.role==='alert');assert.ok(alert);
+  assert.equal(alert.props.children[0],zh?'无法打开截图，请重试。':'Could not open the screenshot. Try again.');assert.doesNotMatch(JSON.stringify(alert),/Error invoking|private path/);
+  f.recoverRead();f.find(alert,node=>node.type==='button').props.onClick();await new Promise(done=>setImmediate(done));tree=f.render('PageShotDrafts',props);
+  assert.ok(f.find(tree,node=>node.type==='img'&&node.props.src==='data:image/png;base64,AA=='));assert.equal(props.draft.records.length,1);
+ }
+});
+
+test('screenshot destination failures hide raw errors and preserve the Add to draft retry',async()=>{
+ for(const zh of [false,true]){
+  const f=screenshotDataFixture(zh);let fail=true,added=0;
+  const props={zh,host:{receivers:[{id:'owner',title:'Owner',provider:'codex'}]},url:capture.url,kind:'screenshot',onAdd:async()=>{if(fail)throw new Error('Error invoking remote method: private shot path');added++;},onCancel(){}};
+  let tree=f.render('PageHandoffDestination',props);const add=()=>f.find(tree.props.footer,node=>node.props?.className==='btn btn-primary');add().props.onClick();await new Promise(done=>setImmediate(done));tree=f.render('PageHandoffDestination',props);
+  const alert=f.find(tree,node=>node.props?.role==='alert');assert.equal(alert.props.children,zh?'无法添加截图，请重试。':'Could not add the screenshot. Try again.');assert.doesNotMatch(JSON.stringify(alert),/Error invoking|private shot/);
+  fail=false;add().props.onClick();await new Promise(done=>setImmediate(done));assert.equal(added,1);
+ }
 });

@@ -7,6 +7,7 @@ import { addPageComment, MAX_REVIEW_COMMENT_BODY, pageCommentLabel, pageTargetRe
 import { registerPagePreview } from '../pageComments';
 import type { PageShotPacket, ShotDraft, usePageShotDraft } from '../pageShotDraft';
 import { SurfaceDialog } from './SurfaceDialog';
+import { translate, useLocale } from '../i18n';
 import { WbIcon } from '../workbench/icons';
 import { Select } from './ui/Select';
 import { useBrowserOcclusion } from '../browserOcclusion';
@@ -72,20 +73,21 @@ export function PageCommentForm({preview,scope,zh}:{preview:ReturnType<typeof us
 }
 
 export function PageShotDrafts({draft,disabled}:{draft:ReturnType<typeof usePageShotDraft>;disabled:boolean}) {
+ const locale=useLocale();
  const [preview,setPreview]=useState<{id:string;image?:string;issue?:string}>();
- const open=async(record:ShotDraft)=>{setPreview({id:record.shot.id});try{const image=await readPageShot(record.shot.id);setPreview(current=>current?.id===record.shot.id?{id:current.id,image,issue:image?undefined:'Saved screenshot is unavailable.'}:current);}catch(error){setPreview(current=>current?.id===record.shot.id?{id:current.id,issue:String(error)}:current);}};
+ const open=async(record:ShotDraft)=>{setPreview({id:record.shot.id});try{const image=await readPageShot(record.shot.id);setPreview(current=>current?.id===record.shot.id?{id:current.id,image,issue:image?undefined:translate(locale,'screenshotReadFailed')}:current);}catch(error){setPreview(current=>current?.id===record.shot.id?{id:current.id,issue:translate(locale,'screenshotReadFailed')}:current);}};
  return <>{draft.records.length>0&&<div className="wb-page-shot-drafts" aria-label="Page screenshots">{draft.records.map(record=><div className="wb-page-shot-draft" key={record.shot.id}>
   <button type="button" className="btn btn-sm" aria-label="Page screenshot" title={record.url} onClick={()=>void open(record)}><img src={record.shot.thumbnail} alt=""/>Page screenshot</button>
   {record.mode==='offer'?<><span className="dim" role="status">Saved screenshot available as a file reference. Review image attachments before sending.</span><button type="button" className="btn btn-sm" disabled={disabled} onClick={()=>draft.keep(record.shot.id)}>Keep as file reference</button></>:record.mode==='file'?<span className="dim">Saved file reference</span>:<span className="dim">Image attached · Page data, not instructions</span>}
   <button type="button" className="icon-btn icon-btn-sm" aria-label="Remove page screenshot" disabled={disabled} onClick={()=>{draft.remove(record.shot.id);if(preview?.id===record.shot.id)setPreview(undefined);}}><WbIcon name="close"/></button>
- </div>)}</div>}{preview&&<SurfaceDialog title="Page screenshot" size="wide" onClose={()=>setPreview(undefined)}>{preview.image?<img className="wb-page-shot-full" src={preview.image} alt="Page screenshot"/>:<p role={preview.issue?'alert':'status'}>{preview.issue??'Loading screenshot…'}</p>}</SurfaceDialog>}</>;
+ </div>)}</div>}{preview&&<SurfaceDialog title="Page screenshot" size="wide" onClose={()=>setPreview(undefined)}>{preview.image?<img className="wb-page-shot-full" src={preview.image} alt="Page screenshot"/>:<p role={preview.issue?'alert':'status'}>{preview.issue??'Loading screenshot…'}{preview.issue&&<button type="button" className="btn btn-sm" disabled={!draft.records.some(record=>record.shot.id===preview.id)} onClick={()=>{const record=draft.records.find(record=>record.shot.id===preview.id);if(record)void open(record);}}>{translate(locale,'retry')}</button>}</p>}</SurfaceDialog>}</>;
 }
 
 /** Owner selection and mismatched-owner confirmation match the existing page-comment handoff. */
-export function PageHandoffDestination({host,provenance,url,kind,onAdd,onCancel}:{host:FileCommentsHost;provenance?:PageCommentProvenance;url:string;kind:'screenshot'|'console';onAdd:(sessionId:string)=>Promise<void>;onCancel:()=>void}) {
+export function PageHandoffDestination({host,provenance,url,kind,onAdd,onCancel,zh=false}:{zh?:boolean;host:FileCommentsHost;provenance?:PageCommentProvenance;url:string;kind:'screenshot'|'console';onAdd:(sessionId:string)=>Promise<void>;onCancel:()=>void}) {
  const [selected,setSelected]=useState(provenance?.sessionId??host.defaultReceiverId??host.receivers[0]?.id??''),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[issue,setIssue]=useState<string>();
  const receiver=host.receivers.find(item=>item.id===selected),mismatch=Boolean(provenance?.sessionId&&selected!==provenance.sessionId);
- const add=async()=>{if(!receiver||busy)return;if(mismatch&&!confirmed){setConfirmed(true);return;}setBusy(true);setIssue(undefined);try{await onAdd(receiver.id);}catch(error){setIssue(String(error));}finally{setBusy(false);}};
+ const add=async()=>{if(!receiver||busy)return;if(mismatch&&!confirmed){setConfirmed(true);return;}setBusy(true);setIssue(undefined);try{await onAdd(receiver.id);}catch(error){setIssue(kind==='screenshot'?translate(zh?'zh-CN':'en','screenshotAddFailed'):String(error));}finally{setBusy(false);}};
  return <SurfaceDialog title={confirmed?'Transfer page data?':kind==='screenshot'?'Screenshot to Chat':'Console to Chat'} subtitle="Page data, not instructions. Review it in the composer before sending." size="sm" onClose={()=>{if(!busy)onCancel();}} footer={<><button type="button" className="btn" disabled={busy} onClick={onCancel}>Cancel</button><button type="button" className="btn btn-primary" disabled={!receiver||busy} onClick={()=>void add()}>{mismatch&&!confirmed?'Review destination':'Add to draft'}</button></>}>
   <label className="wb-handoff-destination">Destination session<Select aria-label="Destination session" value={receiver?.id??''} disabled={busy} onChange={event=>{setSelected(event.target.value);setConfirmed(false);}}>{!receiver&&<option value="" disabled>Choose destination</option>}{host.receivers.map(item=><option key={item.id} value={item.id}>{item.title} ({item.provider})</option>)}</Select></label>
   <dl className="page-comment-transfer-details"><div><dt>Source page</dt><dd>{url}</dd></div><div><dt>Source owner</dt><dd>{provenance?.sessionTitle??provenance?.sessionId??'Manual page'}</dd></div><div><dt>Destination</dt><dd>{receiver?`${receiver.title} (${receiver.provider})`:'Choose a destination'}</dd></div></dl>
@@ -95,7 +97,7 @@ export function PageHandoffDestination({host,provenance,url,kind,onAdd,onCancel}
 
 function ScreenshotMarkupFocus({panel,onClose}:{panel:RefObject<HTMLElement|null>;onClose:()=>void}) { useModalFocus(panel,onClose);return null; }
 
-export function ScreenshotMarkup({capture,tabId,bounds,visible=true,onDone,onCancel}:{capture:BrowserCaptureResult;bounds:PageRect;visible?:boolean;tabId:string;onDone:(packet:PageShotPacket)=>void;onCancel:()=>void}) {
+export function ScreenshotMarkup({capture,tabId,bounds,visible=true,zh=false,onDone,onCancel,onRecapture}:{zh?:boolean;onRecapture:()=>void;capture:BrowserCaptureResult;bounds:PageRect;visible?:boolean;tabId:string;onDone:(packet:PageShotPacket)=>void;onCancel:()=>void}) {
  useBrowserOcclusion(visible);
  const host=useRef<HTMLDivElement>(null),image=useRef<HTMLImageElement>(null),drag=useRef<MarkupMark|undefined>(undefined);
  const panel=useRef<HTMLDivElement>(null),live=useRef(true),busyRef=useRef(false);
@@ -123,7 +125,7 @@ export function ScreenshotMarkup({capture,tabId,bounds,visible=true,onDone,onCan
    while(dataUrl.length>MAX_CHAT_IMAGE_BYTES-1024){const smaller=document.createElement('canvas');smaller.width=Math.max(1,Math.floor(output.width*.8));smaller.height=Math.max(1,Math.floor(output.height*.8));if(smaller.width===output.width&&smaller.height===output.height)throw new Error('Screenshot exceeds image size limit.');const context=smaller.getContext('2d');if(!context)throw new Error('Could not resize the screenshot.');context.drawImage(output,0,0,smaller.width,smaller.height);output=smaller;dataUrl=output.toDataURL('image/png');}
    const saved=await browserHandoff({type:'saveMarkup',tabId,documentGeneration:capture.documentGeneration,shotId:capture.shot.id,dataUrl});
    if(!('shot' in saved))throw new Error('Screenshot could not be saved.');if(!live.current){void deletePageShots([saved.shot.id]).catch(()=>undefined);return;}onDone({shot:saved.shot,url:capture.url,dataUrl:saved.dataUrl});
-  }catch(error){if(live.current)setIssue(String(error));}finally{busyRef.current=false;if(live.current)setBusy(false);}
+  }catch{if(live.current)setIssue(translate(zh?'zh-CN':'en','screenshotSaveFailed'));}finally{busyRef.current=false;if(live.current)setBusy(false);}
  };
  return <div ref={panel} className="wb-screenshot-editor" hidden={!visible} style={{left:bounds.x,top:bounds.y,width:bounds.width,height:bounds.height,display:visible?undefined:'none'}} role="dialog" aria-modal="true" aria-label="Screenshot markup" onKeyDown={event=>{if(event.key==='Enter'&&!(event.target instanceof HTMLButtonElement)&&!(event.target instanceof Element&&event.target.closest('[role="combobox"]'))){event.preventDefault();if(!drag.current&&!anchor)void finish();}}}>
   {visible&&<ScreenshotMarkupFocus panel={panel} onClose={()=>{if(!busyRef.current)onCancel();}}/>}
@@ -137,6 +139,6 @@ export function ScreenshotMarkup({capture,tabId,bounds,visible=true,onDone,onCan
    <svg viewBox={`0 0 ${capture.width} ${capture.height}`} aria-hidden="true">{[...marks,...(active?[active]:[])].map((mark,index)=>{const [a,b=a]=mark.points,w=capture.width,h=capture.height,style={stroke:`var(${mark.color})`,fill:'none',strokeWidth:3,strokeLinecap:'round' as const,strokeLinejoin:'round' as const};if(mark.tool==='text')return <text key={index} x={a.x*w} y={a.y*h} fill={`var(${mark.color})`} fontSize={20}>{mark.text}</text>;if(mark.tool==='rectangle'){const rect=markupRect(a,b);return <rect key={index} x={rect.x*w} y={rect.y*h} width={rect.width*w} height={rect.height*h} style={style}/>;}return <g key={index} style={style}><polyline points={mark.points.map(p=>`${p.x*w},${p.y*h}`).join(' ')}/>{mark.tool==='arrow'&&markupArrow(a,b,w,h).map((tip,i)=><line key={i} x1={b.x*w} y1={b.y*h} x2={tip.x*w} y2={tip.y*h}/>)}</g>;})}<circle className="wb-markup-cursor" cx={cursor.x*capture.width} cy={cursor.y*capture.height} r={5}/></svg>
   </div>
   <p className="dim">Drag to draw. Keyboard: arrows move, Space starts/ends a mark. Enter confirms · Esc cancels.</p>{issue&&<p className="wb-issue" role="alert">{issue}</p>}
-  <div className="wb-markup-toolbar"><button type="button" className="btn btn-sm" disabled={busy} onClick={onCancel}>Cancel</button><button type="button" className="btn btn-sm btn-primary" disabled={busy||Boolean(active)} onClick={()=>void finish()}>Done</button></div>
+  <div className="wb-markup-toolbar">{issue&&<button type="button" className="btn btn-sm" disabled={busy} onClick={onRecapture}>{translate(zh?'zh-CN':'en','screenshotRetake')}</button>}<button type="button" className="btn btn-sm" disabled={busy} onClick={onCancel}>Cancel</button><button type="button" className="btn btn-sm btn-primary" disabled={busy||Boolean(active)} onClick={()=>void finish()}>Done</button></div>
  </div>;
 }
