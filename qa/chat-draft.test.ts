@@ -29,3 +29,21 @@ test('rapid edits are serialized against the revision returned by each prior wri
   await Promise.all([writer.write('a'), writer.write('ab'), writer.write('中文')]);
   assert.deepEqual(revisions, [0, 1, 2]);
 });
+
+test('accepted-send clearing leaves a newer local or remote draft intact', async () => {
+  let remote = {text: 'sent', revision: 1};
+  const writer = createDraftWriter(remote, async (text, revision) => {
+    if (revision !== remote.revision) throw new Error('revision_conflict');
+    remote = {text, revision: revision + 1};
+    return remote;
+  });
+  const submitted = await writer.write('sent');
+  await writer.write('newer local');
+  assert.equal(await writer.writeIfUnchanged(submitted, ''), false);
+  assert.deepEqual(remote, {text: 'newer local', revision: 2});
+
+  const stale = await writer.write('sent again');
+  remote = {text: 'newer remote', revision: 4};
+  assert.equal(await writer.writeIfUnchanged(stale, ''), false);
+  assert.deepEqual(remote, {text: 'newer remote', revision: 4});
+});
