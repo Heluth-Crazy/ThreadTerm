@@ -30,6 +30,7 @@ const environment = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !['path', 'codex_home', 'threadterm_v3_data', 'threadterm_v3_pipe'].includes(key.toLowerCase()))),
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'),
   THREADTERM_V3_DATA: data, THREADTERM_V3_PIPE: pipe, CODEX_HOME: join(root, 'provider-home'),
+  THREADTERM_QA_PROVIDER_BIN: bin,
   TT_QA_NODE: process.execPath, TT_QA_SCRIPT: resolve('qa/fixtures/fake-codex-subagent.cjs'),
   THREADTERM_QA_CODEX_SUBAGENT_LOG: log, THREADTERM_QA_CODEX_SUBAGENT_CWD: cwd,
   THREADTERM_QA_CODEX_SUBAGENT_RELEASE: release,
@@ -115,6 +116,10 @@ try {
       assert.equal(cards[0].data.toolCount, 1);
       const transcript = await peer.request('chat.subagent.read', { sessionId, key: cards[0].data.key });
       assert.equal(transcript.source, 'live');
+      const retries = transcript.items.filter(item => item.parts.some(part => part.text?.startsWith('Reconnecting...')));
+      assert.equal(retries.length, 1, 'repeated child retries replace one informational row');
+      assert.equal(retries[0].parts[0].type, 'thinking', 'successful child retry must not leave an error card');
+      assert.equal(retries[0].parts[0].text, 'Reconnecting... 2/5');
       assert.equal(transcript.items.filter(item => item.parts.some(part => part.type === 'tool')).length, 1);
       assert.ok(transcript.items.some(item => item.parts.some(part => part.text === 'CHILD-ANSWER: three files')));
       assert.ok(parentParts.some(part => part.text === 'PARENT-FINAL: verified file count'));

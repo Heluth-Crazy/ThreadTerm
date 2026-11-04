@@ -1353,19 +1353,36 @@ impl GrokChat {
                 self.start_usage(operation_id).map(Some)
             }
             "status" | "info" | "session-info" | "context" => {
-                if !args.is_empty() {
-                    self.reply_command(
-                        operation_id,
-                        &format!("/{name} does not accept arguments."),
-                    );
-                    return Ok(Some(json!({"turnId":operation_id})));
+                let active_turn = Arc::clone(&self.active_turn);
+                if active_turn.lock()
+                    .map_err(|_| ProviderError::new("provider_internal", "Grok turn lock poisoned"))?
+                    .is_some()
+                {
+                    return Err(ProviderError::new("turn_in_progress", "Grok session already has an active turn"));
                 }
-                let reply = match self.process.request("_x.ai/session/info", json!({"sessionId":self.native_id})) {
-                    Ok(value) => grok_info_text(&value)
-                        .unwrap_or_else(|| format!("Grok did not return usable data for /{name}. No usage or status values have been inferred.")),
-                    Err(error) => format!("Could not run /{name}: {}\nThis command was not sent to the model.", error.message),
+                // Never hold the turn lock while waiting for the native reader.
+                let reply = if !args.is_empty() {
+                    format!("/{name} does not accept arguments.")
+                } else {
+                    match self.process.request("_x.ai/session/info", json!({"sessionId":self.native_id})) {
+                        Ok(value) => grok_info_text(&value)
+                            .unwrap_or_else(|| format!("Grok did not return usable data for /{name}. No usage or status values have been inferred.")),
+                        Err(error) => format!("Could not run /{name}: {}\nThis command was not sent to the model.", error.message),
+                    }
                 };
+                // A background native turn may have started during the info RPC.
+                // Publish this local lifecycle atomically with idle admission.
+                let idle = active_turn.lock()
+                    .map_err(|_| ProviderError::new("provider_internal", "Grok turn lock poisoned"))?;
+                if idle.is_some() {
+                    return Err(ProviderError::new("turn_in_progress", "Grok session already has an active turn"));
+                }
+                emit(&self.events, "grok", &self.session_id, Some(&self.native_id),
+                    Some(operation_id), "chat.turn.started", json!({"command":name}));
                 self.reply_command(operation_id, &reply);
+                emit(&self.events, "grok", &self.session_id, Some(&self.native_id),
+                    Some(operation_id), "chat.turn.completed", json!({"command":name}));
+                drop(idle);
                 Ok(Some(json!({"turnId":operation_id})))
             }
             _ => {
@@ -1530,6 +1547,18 @@ impl ChatSession for GrokChat {
 
     fn is_alive(&self) -> bool {
         self.process.is_alive()
+    }
+
+    fn validate_send(&self, text: &str) -> Result<(), ProviderError> {
+        if parse_slash(text.trim()).is_some_and(|(name, _)| {
+            matches!(name.to_ascii_lowercase().as_str(), "status" | "info" | "session-info" | "context")
+        }) && self.active_turn.lock()
+            .map_err(|_| ProviderError::new("provider_internal", "Grok turn lock poisoned"))?
+            .is_some()
+        {
+            return Err(ProviderError::new("turn_in_progress", "Grok session already has an active turn"));
+        }
+        Ok(())
     }
 
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
@@ -5341,6 +5370,85 @@ mod tests {
             &json!({"agentCapabilities":{"sessionCapabilities":{"list":{}}}}),
             "list"
         ));
+    }
+
+    #[test]
+    fn grok_status_does_not_complete_work_admitted_during_info_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("status-race.cjs");
+        // Admit background work on the transport reader before resolving info.
+        std::fs::write(&script, r#"
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+ const r = JSON.parse(line);
+ const out = v => process.stdout.write(JSON.stringify(v)+'\n');
+ out({jsonrpc:'2.0',method:'qa/background'});
+ out({jsonrpc:'2.0',id:r.id,result:{model:'grok-test'}});
+});
+"#).unwrap();
+        let active_turn = Arc::new(Mutex::new(None));
+        let background_turn = Arc::clone(&active_turn);
+        let spec = CommandSpec::provider("node", &[script.to_str().unwrap()]).unwrap();
+        let process = JsonLineProcess::spawn("status-race", &spec, None, &[],
+            EnvelopeStyle::JsonRpc2, Arc::new(move |raw| {
+                if raw["method"] == "qa/background" {
+                    *background_turn.lock().unwrap() = Some("background-turn".into());
+                }
+            })).unwrap();
+        let (sender, mut received) = crate::provider_events::tap_channel(16);
+        let mut chat = GrokChat {
+            process, session_id: "s".into(), native_id: GROK_PROBE_PARENT.into(),
+            events: ScopedProviderEvents::new(sender, "status-race-worker"),
+            active_turn: Arc::clone(&active_turn),
+            permissions: Arc::new(Mutex::new(HashMap::new())),
+            ui: Arc::new(Mutex::new(GrokUiState::default())),
+            turn_started: Arc::new(Mutex::new(None)), usage_reply: None,
+        };
+        assert_eq!(chat.send("/status", "status-op").unwrap_err().code, "turn_in_progress");
+        assert_eq!(active_turn.lock().unwrap().as_deref(), Some("background-turn"));
+        assert!(received.try_recv().is_err(), "no command completion can settle the background turn");
+    }
+
+    #[test]
+    fn grok_status_commands_settle_and_preserve_active_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let (process, log) = crate::providers::conformance::stop_recording_process(
+            crate::providers::common::EnvelopeStyle::JsonRpc2, "status-grok", dir.path(),
+        ).expect("Node is required for the status regression");
+        let (sender, mut received) = crate::provider_events::tap_channel(64);
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut chat = GrokChat {
+            process, session_id: "s".into(), native_id: GROK_PROBE_PARENT.into(),
+            events: ScopedProviderEvents::new(sender, "status-worker"),
+            active_turn: Arc::clone(&active_turn),
+            permissions: Arc::new(Mutex::new(HashMap::new())),
+            ui: Arc::new(Mutex::new(GrokUiState::default())),
+            turn_started: Arc::new(Mutex::new(None)), usage_reply: None,
+        };
+        for (index, command) in ["/status", "/info", "/session-info", "/context", "/STATUS", "/status unexpected"].iter().enumerate() {
+            let op = format!("status-{index}");
+            assert_eq!(chat.send(command, &op).unwrap()["turnId"], op);
+            let events: Vec<_> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+            assert_eq!(events.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>(),
+                ["chat.turn.started", "chat.item", "chat.turn.completed"], "{command}");
+            for event in &events {
+                assert_eq!(event.turn_id.as_deref(), Some(op.as_str()));
+                assert_eq!(event.worker_token.as_deref(), Some("status-worker"));
+            }
+            assert!(active_turn.lock().unwrap().is_none());
+            assert!(chat.turn_started.lock().unwrap().is_none());
+        }
+        let frames = crate::providers::conformance::recorded_frames(&log, &["_x.ai/session/info"]);
+        assert_eq!(frames.iter().filter(|row| row["method"] == "_x.ai/session/info").count(), 5);
+        assert!(!frames.iter().any(|row| row["method"] == "session/prompt"));
+        *active_turn.lock().unwrap() = Some("native-turn".into());
+        for command in ["/status", "/info", "/status unexpected"] {
+            assert_eq!(chat.validate_send(command).unwrap_err().code, "turn_in_progress");
+            assert_eq!(chat.send(command, "busy-command").unwrap_err().code, "turn_in_progress");
+            assert!(received.try_recv().is_err());
+            assert_eq!(active_turn.lock().unwrap().as_deref(), Some("native-turn"));
+        }
+        let after = crate::providers::conformance::recorded_frames(&log, &["_x.ai/session/info"]);
+        assert_eq!(after.len(), frames.len(), "busy commands send no native requests");
     }
 
     #[test]
