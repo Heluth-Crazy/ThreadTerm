@@ -60,7 +60,7 @@ export function pagePickerScript(
         if (one(s)) return s;
       }
     const p: string[] = [];
-    for (let n: Element | null = e; n && n !== document.documentElement && p.length < 6; n = n.parentElement) {
+    for (let n: Element | null = e; n && n !== document.documentElement && p.join(' > ').length <= 500; n = n.parentElement) {
       const same = n.parentElement ? Array.from(n.parentElement.children).filter((c) => c.tagName === n!.tagName) : [];
       p.unshift(
         same.length > 1 ? `${n.tagName.toLowerCase()}:nth-of-type(${same.indexOf(n) + 1})` : n.tagName.toLowerCase(),
