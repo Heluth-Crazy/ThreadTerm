@@ -269,7 +269,9 @@ textarea.create-input { height:88px; min-height:88px; max-height:240px; padding:
 .codex-work-body .v3-chat-message.assistant .v3-tool-card { margin:0; }
 .codex-work-body > .dim { font-size:13px; }
 /* Shared transcript geometry: provider-specific cards do not own message spacing. */
-.chat-view.v3-session-chat .v3-chat-log { display:block; padding:24px max(24px, calc((100% - 920px) / 2)); }
+/* Keep the jump-to-bottom control's right clearance even while following, so
+   showing it cannot change transcript widths or text wrapping. */
+.chat-view.v3-session-chat .v3-chat-log { display:block; padding:24px max(24px, calc((100% - 920px) / 2)); padding-right:max(52px, calc((100% - 920px) / 2)); }
 .v3-chat-message.is-native.assistant { width:100%; max-width:100%; margin:0 0 24px; padding:0; border-radius:0; background:transparent; font-size:15px; line-height:1.6; }
 .v3-chat-message.is-native.user { max-width:78%; margin:0 0 24px auto; padding:10px 16px; border-radius:18px; background:var(--soft); color:var(--text); font-size:15px; line-height:1.6; }
 .chat-view.v3-session-chat { font-family:"Microsoft YaHei UI", "Segoe UI", sans-serif; }
