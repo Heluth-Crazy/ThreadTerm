@@ -42,6 +42,11 @@ export interface HtmlPreviewGrant {
   frameTreeNodeId?: number;
   rendererProcessId?: number;
   rendererOsProcessId?: number;
+  hostSource?: HtmlPreviewHostSource;
+}
+
+export interface HtmlPreviewHostSource {
+  read(path: string, offset: number, limit: number): Promise<{ path: string; size: number; offset: number; fingerprint?: string; chunk: string; eof: boolean }>;
 }
 
 export interface HtmlPreviewGrantInput {
@@ -50,6 +55,7 @@ export interface HtmlPreviewGrantInput {
   ownerWebContentsId: number;
   frameName: string;
   remoteContentAllowed?: boolean;
+  hostSource?: HtmlPreviewHostSource;
 }
 
 export interface HtmlPreviewResolvedFile {
@@ -224,9 +230,14 @@ export class HtmlPreviewGrantManager {
   async create(input: HtmlPreviewGrantInput): Promise<HtmlPreviewGrant> {
     if (!Number.isSafeInteger(input.ownerWebContentsId) || input.ownerWebContentsId < 1 || !validFrameName(input.frameName)) throw new Error('Invalid preview owner');
     const entryPath = normalizePreviewPath(input.entryPath);
-    const rootRealPath = await realpath(input.rootPath);
-    if (!(await stat(rootRealPath)).isDirectory()) throw new Error('Preview root is not a directory');
-    await this.resolvePath(rootRealPath, entryPath);
+    const rootRealPath = input.hostSource ? input.rootPath : await realpath(input.rootPath);
+    if (input.hostSource) {
+      const metadata = await input.hostSource.read(entryPath, 0, 1);
+      if (metadata.size > HTML_PREVIEW_MAX_BYTES) throw new PreviewRequestError(413, 'Preview file is too large');
+    } else {
+      if (!(await stat(rootRealPath)).isDirectory()) throw new Error('Preview root is not a directory');
+      await this.resolvePath(rootRealPath, entryPath);
+    }
     let id = '';
     for (let attempts = 0; attempts < 8 && !id; attempts += 1) {
       const candidate = this.randomId();
@@ -238,6 +249,7 @@ export class HtmlPreviewGrantManager {
       id, rootRealPath, entryPath, ownerWebContentsId: input.ownerWebContentsId,
       frameName: input.frameName, remoteContentAllowed: input.remoteContentAllowed === true,
       url: `${HTML_PREVIEW_SCHEME}://${id}/${encodedPreviewPath(entryPath)}`,
+      ...(input.hostSource ? { hostSource: input.hostSource } : {}),
     };
     this.grants.set(id, grant);
     while (this.grants.size > this.capacity) this.revoke(this.grants.keys().next().value!);
@@ -322,6 +334,11 @@ export class HtmlPreviewGrantManager {
     if (!parsed) throw new PreviewRequestError(404, 'Preview not found');
     const grant = this.touch(parsed.grantId);
     if (!grant) throw new PreviewRequestError(404, 'Preview not found');
+    if (grant.hostSource) {
+      const metadata = await grant.hostSource.read(parsed.path, 0, 1);
+      if (!Number.isSafeInteger(metadata.size) || metadata.size < 0 || metadata.size > HTML_PREVIEW_MAX_BYTES) throw new PreviewRequestError(413, 'Preview file is too large');
+      return { grant: cloneGrant(grant), path: parsed.path, size: metadata.size, mimeType: mimeTypeForPath(parsed.path) };
+    }
     const target = await this.resolvePath(grant.rootRealPath, parsed.path);
     return { grant: cloneGrant(grant), path: target.path, size: target.size, mimeType: mimeTypeForPath(target.path) };
   }
@@ -410,6 +427,24 @@ async function readExactPreviewFile(file: HtmlPreviewResolvedFile): Promise<Arra
   } finally { await handle.close(); }
 }
 
+async function readHostPreviewFile(file: HtmlPreviewResolvedFile, manager: HtmlPreviewGrantManager): Promise<ArrayBuffer> {
+  const bytes = new Uint8Array(file.size);
+  let offset = 0;
+  let fingerprint: string | undefined;
+  do {
+    if (!manager.get(file.grant.id)) throw new PreviewRequestError(404, 'Preview grant was revoked');
+    const result = await file.grant.hostSource!.read(file.path, offset, 1024 * 1024);
+    if (offset === 0) fingerprint = result.fingerprint;
+    const chunk = Buffer.from(result.chunk, 'base64');
+    if (result.offset !== offset || result.size !== file.size || result.fingerprint !== fingerprint || chunk.length > 1024 * 1024
+      || offset + chunk.length > file.size || (!chunk.length && offset < file.size)
+      || result.eof !== (offset + chunk.length === file.size)) throw new PreviewRequestError(404, 'Preview file changed');
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  } while (offset < file.size);
+  return bytes.buffer as ArrayBuffer;
+}
+
 async function protocolResponse(request: Request, manager: HtmlPreviewGrantManager, appFrameAncestor: string): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-DNS-Prefetch-Control': 'off' } });
   try {
@@ -419,7 +454,7 @@ async function protocolResponse(request: Request, manager: HtmlPreviewGrantManag
       if (!active) throw new PreviewRequestError(404, 'Preview grant was revoked');
       return new Response(null, { status: 200, headers: responseHeaders({ ...file, grant: active }, appFrameAncestor) });
     }
-    const body = await readExactPreviewFile(file);
+    const body = file.grant.hostSource ? await readHostPreviewFile(file, manager) : await readExactPreviewFile(file);
     const active = manager.get(file.grant.id);
     if (!active) throw new PreviewRequestError(404, 'Preview grant was revoked');
     return new Response(body, { status: 200, headers: responseHeaders({ ...file, grant: active }, appFrameAncestor) });

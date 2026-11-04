@@ -4,6 +4,7 @@ import { formatAgentReference, referencePath } from "./workbench/agentReference"
 import type { PagePick, PageTargetRef } from "@threadterm/protocol";
 import { operationId, request, subscribeEvents } from "./bridge";
 import { isAbsoluteFilePath } from './externalFiles';
+import { isRemoteFiles, persistRemotePageShot } from './remoteFiles';
 
 export type CommentVersion =
   | { kind: "file" }
@@ -141,6 +142,7 @@ export async function loadReviewComments(scope: CommentScope): Promise<ReviewCom
 }
 export async function loadFileComments(scope: CommentScope): Promise<FileComment[]> { return (await loadReviewComments(scope)).filter((comment): comment is FileComment => !isPageComment(comment)); }
 async function put(scope: CommentScope, comment: ReviewComment, expectedRevision: number): Promise<void> {
+  if (isRemoteFiles() && isPageComment(comment) && comment.shot) comment = { ...comment, shot: await persistRemotePageShot(comment.shot, comment.provenance?.sessionId, scope.projectId, scope.root) };
   const stored = storedScope(scope), result = await request("reviewDrafts.upsert", { draftId: comment.id, scopeProjectId: stored.projectId, scopeRoot: stored.root, draft: comment, assetPaths: assetPaths(comment), expectedRevision, operationId: operationId() });
   if (result.status === "conflict") { if (result.draft) revisions.set(result.draft.draftId, result.draft.revision); await loadReviewComments(scope); throw new Error("review_comments_conflict"); }
   revisions.set(result.draft.draftId, result.draft.revision);

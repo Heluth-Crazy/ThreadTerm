@@ -77,6 +77,8 @@ pub mod transport;
 #[cfg(windows)]
 pub mod windows_security;
 pub mod workspace_services;
+pub mod host_files;
+pub mod attachments;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Semantic contract includes remote-machine peer handshakes and device profiles. Wire HMAC still uses PROTOCOL_VERSION.

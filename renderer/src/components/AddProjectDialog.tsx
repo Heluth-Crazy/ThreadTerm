@@ -3,6 +3,7 @@ import { chooseDirectory, operationId, request } from "../bridge";
 import { useTranslation } from "../i18n";
 import { Icon } from "./PrototypeIcon";
 import { SurfaceDialog } from "./SurfaceDialog";
+import { isRemoteFiles } from '../remoteFiles';
 import "./session-create-dialog.css";
 
 type Props = { onClose: () => void; onCreated: (id: string) => void };
@@ -10,6 +11,7 @@ type Props = { onClose: () => void; onCreated: (id: string) => void };
 const folderName = (value: string) => value.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ?? "";
 
 export function AddProjectDialog({ onClose, onCreated }: Props) {
+  const remote = isRemoteFiles();
   const { locale } = useTranslation();
   const zh = locale === "zh-CN";
   const tx = (en: string, cn: string) => zh ? cn : en;
@@ -47,7 +49,7 @@ export function AddProjectDialog({ onClose, onCreated }: Props) {
   return (
     <SurfaceDialog
       title={tx("Add project", "添加项目")}
-      subtitle={tx("Choose a local directory. No command is started automatically.", "选择本地目录，不会自动运行命令。")}
+      subtitle={remote ? tx("Choose a folder on the connected computer. No command is started automatically.", "选择已连接电脑上的目录，不会自动运行命令。") : tx("Choose a local directory. No command is started automatically.", "选择本地目录，不会自动运行命令。")}
       icon="folder"
       variant="create"
       onClose={() => { if (!busy) onClose(); }}
@@ -68,7 +70,7 @@ export function AddProjectDialog({ onClose, onCreated }: Props) {
               className="create-input create-input-mono"
               value={path}
               onChange={(event) => applyPath(event.target.value)}
-              placeholder={tx("Select a local folder", "选择本地文件夹")}
+              placeholder={remote ? tx("Select a folder on the connected computer", "选择已连接电脑上的文件夹") : tx("Select a local folder", "选择本地文件夹")}
               autoFocus
               required
             />

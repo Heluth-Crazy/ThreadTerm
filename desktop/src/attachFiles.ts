@@ -12,6 +12,8 @@
 // never reads more raw bytes than the composer could ever accept.
 import { promises as fs } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { RuntimeClient } from './runtime-client.js';
 import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES } from '@threadterm/protocol';
 
 export const MAX_ATTACH_FILES = 20;
@@ -95,4 +97,31 @@ export async function readAttachFiles(
     files.push({ path: candidate, name });
   }
   return files;
+}
+
+/** Remote path chips are uploaded from the client; inline image payloads never enter this path. */
+export async function uploadAttachFile(runtime: Pick<RuntimeClient, 'request'>, sessionId: string, path: string, uploadId = randomUUID()): Promise<{ assetId: string; hostPath: string }> {
+  if (!validAttachPath(path) || !sessionId) throw new Error('Invalid attachment');
+  const handle = await fs.open(path, 'r');
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.size > 256 * 1024 * 1024) throw new Error('Attachment must be a file no larger than 256 MiB');
+    const buffer = Buffer.alloc(1024 * 1024);
+    let offset = 0;
+    do {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, before.size - offset), offset);
+      if (!bytesRead && offset < before.size) throw new Error('Attachment changed while uploading');
+      const final = offset + bytesRead === before.size;
+      const result = await runtime.request('attachment.upload', { uploadId, sessionId, name: basename(path), size: before.size, offset, chunk: buffer.subarray(0, bytesRead).toString('base64'), final });
+      offset += bytesRead;
+      if (result.offset !== offset) throw new Error('Unexpected attachment upload offset');
+      const current = await handle.stat();
+      if (current.size !== before.size || current.mtimeMs !== before.mtimeMs) throw new Error('Attachment changed while uploading');
+      if (final) {
+        if (!result.assetId || !result.hostPath) throw new Error('Attachment upload did not finish');
+        return { assetId: result.assetId, hostPath: result.hostPath };
+      }
+    } while (offset < before.size);
+    throw new Error('Attachment upload did not finish');
+  } finally { await handle.close(); }
 }

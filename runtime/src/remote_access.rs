@@ -1340,6 +1340,10 @@ mod tests {
             .is_err());
         assert!(remote.dispatch_remote("d", DevicePermission::Readonly, RemoteRpcRequest { method: "session.create".into(), params: json!({"projectId":project.id,"provider":"shell","operationId":"remote-create"}) }).is_err());
         for denied in [
+            "filesystem.browse",
+            "filesystem.preview.read",
+            "attachment.upload",
+            "attachment.read",
             "runtime.shutdown",
             "settings.update",
             "plugin.list",

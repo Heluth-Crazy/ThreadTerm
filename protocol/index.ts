@@ -1017,6 +1017,10 @@ export interface RequestMap {
  'chat.option.set': [{sessionId:string;optionId:string;value:string;leaseEpoch:number;operationId:string},ChatUiState];
  'chat.connection': [{sessionId:string},ChatConnectionState];
  'chat.connect': [{sessionId:string;leaseEpoch:number;operationId:string},ChatConnectionState];
+ 'filesystem.browse': [{path?:string},{path?:string;parent?:string|null;entries:{name:string;path:string;kind:'directory'|'file';size:number}[];truncated:boolean}];
+ 'filesystem.preview.read': [FileScope&{path:string;offset:number;limit:number},{path:string;size:number;offset:number;fingerprint:string;chunk:string;eof:boolean}];
+ 'attachment.upload': [{uploadId:string;sessionId:string;name:string;size:number;offset:number;chunk:string;final:boolean},{offset:number;assetId?:string;hostPath?:string}];
+ 'attachment.read': [{assetId:string;offset?:number;limit?:number},{assetId:string;hostPath:string;name:string;size:number;offset:number;chunk:string;eof:boolean}];
  'filesystem.list': [FileScope&{path:string},FileEntry[]];
  /** Resolve a scoped file. `sourceSearch` resolves a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root. */
  'filesystem.resolve': [{sessionId:string}&FileReference,ResolvedFileReference];
@@ -1187,6 +1191,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 // The legacy list predates review-draft RPCs; extend it here so old callers of
 // `validateRequest` accept the additive methods without rebuilding that list.
 (METHODS as unknown as string[]).unshift(
+ 'filesystem.browse','filesystem.preview.read','attachment.upload','attachment.read',
  'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
@@ -1195,6 +1200,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'filesystem.preview.read':['projectId','path'],'attachment.upload':['uploadId','sessionId','name'],'attachment.read':['assetId'],
  'git.history.plan':['projectId','hash'],'git.cherryPick':['projectId','hash','operationId'],'git.revert':['projectId','hash','operationId'],
  'git.reset':['projectId','hash','expectedHead','operationId'],'git.operation.abort':['projectId','kind','operationId'],'git.operation.continue':['projectId','kind','operationId'],
  'browser.approval.read':['sessionId','turnId','approvalId'],
@@ -1270,6 +1276,14 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if(m==='filesystem.preview.read'||m==='attachment.upload'||m==='attachment.read') {
+  for(const key of ['offset','limit',...(m==='attachment.upload'?['size']:[])]) {
+   const value=params[key];
+   if(value!==undefined&&(!Number.isSafeInteger(value)||Number(value)<(key==='limit'?1:0))) throw new Error(`Invalid ${key}`);
+  }
+  if(params.limit!==undefined&&Number(params.limit)>1024*1024) throw new Error('Invalid limit');
+  if(m==='attachment.upload'&&(Number(params.size)>256*1024*1024||typeof params.chunk!=='string'||params.chunk.length>Math.ceil(1024*1024/3)*4)) throw new Error('Invalid upload');
+ }
  if(m==='session.claim'&&params.takeover!==undefined&&typeof params.takeover!=='boolean') throw new Error('Invalid takeover');
  if(m==='runtime.events.filter'&&(params.preset!=='tree'||Object.keys(params).length!==1)) throw new Error('Invalid event filter preset');
  if((m==='git.undo'||m==='git.undo.list')&&Object.keys(params).some(key=>!['projectId','worktreePath',...(m==='git.undo'?['id','operationId']:[])].includes(key))) throw new Error('Invalid undo request');
@@ -1568,7 +1582,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m.startsWith('group.')&&m!=='group.create'&&m!=='group.list'&&m!=='group.read'&&m!=='group.prerequisites'&&params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid group revision');
  // Relative to the session's worktree root: no drive, no leading separator, no `..` segment.
  if((m==='session.documents.pin'||m==='session.documents.unpin')&&(!pathOk(params.path)||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(String(params.path)))) throw new Error('Invalid path');
- const maxLimit=m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
+ const maxLimit=m==='filesystem.preview.read'||m==='attachment.read'?1024*1024:m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {

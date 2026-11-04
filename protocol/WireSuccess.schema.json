@@ -7197,6 +7197,145 @@
     "RequestResult<\"chat.connect\">": {
       "$ref": "#/definitions/ChatConnectionState"
     },
+    "RequestResult<\"filesystem.browse\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "directory",
+                  "file"
+                ]
+              },
+              "size": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "kind",
+              "size"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.preview.read\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "offset",
+        "fingerprint",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"attachment.upload\">": {
+      "type": "object",
+      "properties": {
+        "offset": {
+          "type": "number"
+        },
+        "assetId": {
+          "type": "string"
+        },
+        "hostPath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "offset"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"attachment.read\">": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "hostPath": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "assetId",
+        "hostPath",
+        "name",
+        "size",
+        "offset",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"filesystem.list\">": {
       "type": "array",
       "items": {
@@ -14207,6 +14346,110 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.connect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.browse"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.browse%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.preview.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.preview.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.upload"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22attachment.upload%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22attachment.read%22%3E"
         }
       },
       "required": [

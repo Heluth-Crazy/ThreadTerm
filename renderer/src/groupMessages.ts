@@ -54,6 +54,7 @@ export function groupRuntimeIssue(error: unknown, fallback: { en: string; zh: st
 export type GroupComposerWarning = GroupIssue & { source: 'attach' | 'drop' };
 export const groupAttachWarning: GroupComposerWarning = { source: 'attach', en: 'Choose a path inside the group folder or an HTTP(S) URL.', zh: '请选择群聊目录内的路径或 HTTP(S) 网址。' };
 export const groupDropWarning: GroupComposerWarning = { source: 'drop', en: 'Drop a file path inside this group folder, or attach its relative path.', zh: '请拖入群聊目录中的文件路径，或附加其相对路径。' };
+export const groupRemoteDropWarning: GroupComposerWarning = { source: 'drop', en: 'Files from this computer can’t be added to a group on another computer. Attach a relative path inside the group folder.', zh: '无法把本机文件添加到另一台电脑上的群聊。请附加群聊目录中的相对路径。' };
 export type GroupWarningEvent = 'attach-edit' | 'attach-close' | 'include' | 'drop' | 'edit' | 'send' | 'dismiss';
 export function clearGroupWarning(issue: GroupComposerWarning | undefined, event: GroupWarningEvent) {
  if (event === 'send' || event === 'dismiss' || event === 'include' || event === 'drop') return undefined;

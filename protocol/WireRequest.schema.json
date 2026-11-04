@@ -3529,6 +3529,96 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"filesystem.browse\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.preview.read\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"attachment.upload\">": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "final": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "uploadId",
+        "sessionId",
+        "name",
+        "size",
+        "offset",
+        "chunk",
+        "final"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"attachment.read\">": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "assetId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"filesystem.list\">": {
       "type": "object",
       "additionalProperties": false,
@@ -10031,6 +10121,110 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.connect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.browse"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.browse%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.preview.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.preview.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.upload"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22attachment.upload%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22attachment.read%22%3E"
         }
       },
       "required": [

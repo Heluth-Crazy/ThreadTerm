@@ -5,6 +5,7 @@ import { isBrowserSharingState } from '../../renderer/src/browserTypes.js';
 import type { BrowserHandoffBridge, BrowserHandoffEvent } from './browser/handoffTypes.js';
 import type { BackgroundBridge } from './backgroundImagesCore.js';
 import type { MachineBridge } from '../../renderer/src/machineTypes.js';
+import type { RemoteFilesBridge } from '../../renderer/src/remoteFiles.js';
 import {
   isRecord,
   isRuntimeEvent,
@@ -32,7 +33,16 @@ ipcRenderer.on('threadterm:desktop-navigate', (_event, value: unknown) => {
   else pendingDesktopNavigate = target;
 });
 type FilePathBridge = { getPathForFile: (file: File) => string };
-const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge & MachineBridge = {
+const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge & MachineBridge & RemoteFilesBridge = {
+  uploadClientFiles: (sessionId, paths) => ipcRenderer.invoke('threadterm:upload-client-files', sessionId, paths),
+  readAttachPaths: paths => ipcRenderer.invoke('threadterm:read-attach-paths', paths),
+  persistPageShot: (id, sessionId, projectId, root) => ipcRenderer.invoke('threadterm:persist-page-shot', id, sessionId, projectId, root),
+  onHostFiles: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isRecord(value) && typeof value.id === 'string' && ['directory', 'files', 'reveal'].includes(String(value.mode)) && (value.path === undefined || typeof value.path === 'string') && (value.selectedPath === undefined || typeof value.selectedPath === 'string')) listener(value as import('../../renderer/src/remoteFiles.js').HostFilesRequest); };
+    ipcRenderer.on('threadterm:host-files', handler);
+    return () => ipcRenderer.removeListener('threadterm:host-files', handler);
+  },
+  completeHostFiles: (id, paths) => ipcRenderer.invoke('threadterm:host-files-complete', id, paths),
   machineId: process.argv.find(value => value.startsWith('--threadterm-machine-id='))?.slice('--threadterm-machine-id='.length) ?? 'local',
   machineList: () => ipcRenderer.invoke('threadterm:machine-list'),
   machineShow: (id, sessionId) => ipcRenderer.invoke('threadterm:machine-show', id, sessionId),

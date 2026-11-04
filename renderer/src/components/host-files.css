@@ -1,0 +1,13 @@
+.host-files-dialog .dlg-body { padding:12px 20px; }
+.host-file-location { display:flex; flex-direction:column; gap:5px; margin-bottom:8px; font-size:12px; }
+.host-file-location>div { display:flex; gap:6px; }
+.host-file-location input { flex:1; min-width:0; height:32px; padding:6px 9px; }
+.host-file-navigation { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.host-file-navigation>span { color:var(--muted); font-size:12px; }
+.host-file-rows { max-height:45vh; min-height:100px; overflow:auto; }
+.host-file-rows .cmd-row { width:100%; min-height:32px; }
+.host-file-rows .cmd-row>b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.host-files-panel { position:fixed; display:flex; flex-direction:column; z-index:70; top:48px; right:12px; bottom:12px; width:min(420px,calc(100vw - 24px)); height:auto; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow-soft); }
+.host-files-panel .wb-panel-head { flex:none; width:100%; }
+.host-files-body { flex:1; min-height:0; padding:12px; overflow:auto; }
+.host-files-panel .host-file-rows { max-height:none; }

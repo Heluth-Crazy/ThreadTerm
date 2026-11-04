@@ -11,6 +11,7 @@ type PageShotReferenceCatalog = { paths: readonly string[]; nextAfter?: string; 
 type PageShotReferenceReader = (after?: string) => Promise<PageShotReferenceCatalog>;
 type DeletePageShotOptions = { force?: boolean; assetReferences?: PageShotReferenceReader };
 const pendingPicks = new Map<string, PendingPick>();
+let remoteWindowFor: ((sender: WebContents) => BrowserWindow | undefined) | undefined;
 /** Native browser pages are deliberately registered by the browser owner, keyed to the trusted app renderer.
  * FilePreview continues to use the iframe lookup below. */
 type NativePage = { contents: WebContents; bounds: () => PageRect | undefined };
@@ -95,6 +96,18 @@ export async function readPageShot(id: unknown): Promise<string | undefined> {
   return undefined;
 }
 
+/** Only screenshots created by this desktop may be promoted to host assets. */
+export async function localPageShotPath(id: unknown): Promise<string | undefined> {
+  if (!validPageShotId(id)) throw new Error('Invalid page shot id');
+  let directory: string;
+  try { directory = await shotDirectory(); } catch (error) { if (missingFile(error)) return undefined; throw error; }
+  for (const extension of ['png', 'jpg'] as const) {
+    const path = await confinedShot(directory, id, extension);
+    if (path) return path;
+  }
+  return undefined;
+}
+
 export async function deletePageShots(ids: unknown, options: DeletePageShotOptions = {}): Promise<void> {
   if (!Array.isArray(ids) || ids.length > 200 || !ids.every(validPageShotId)) throw new Error('Invalid page shot ids');
   let directory: string;
@@ -126,7 +139,7 @@ async function cleanupPageShots(assetReferences: PageShotReferenceReader | undef
 }
 
 async function captureShot(sender: WebContents, frameRect: PageRect, pick: PagePick): Promise<PageShot | undefined> {
-  const window = BrowserWindow.fromWebContents(sender);
+  const window = BrowserWindow.fromWebContents(sender) ?? remoteWindowFor?.(sender);
   if (!window || sender.isDestroyed()) return undefined;
   const [width, height] = window.getContentSize();
   const rect = pageCaptureRect(frameRect, pick.target.rect, pick.viewport, sender.getZoomFactor(), { width, height });
@@ -271,7 +284,10 @@ async function previewFrameInfo(sender: WebContents, name: string): Promise<{ re
 export function registerPageComments(
   assertTrustedRenderer: (event: IpcMainInvokeEvent) => void,
   assetReferences?: PageShotReferenceReader,
+  remoteReader?: (event: IpcMainInvokeEvent, id: unknown) => Promise<string | undefined>,
+  remoteOwner?: (sender: WebContents) => BrowserWindow | undefined,
 ): void {
+  remoteWindowFor = remoteOwner;
   app.on('web-contents-created', (_event, contents) => {
     let latestContext = 0;
     contents.on('context-menu', (_menuEvent, params) => {
@@ -330,7 +346,7 @@ export function registerPageComments(
     if (!frame) return false;
     return frame.executeJavaScript(pagePickerSource('mark', target, request.flash as boolean | undefined), false).then((result: unknown) => result === true, () => false);
   });
-  ipcMain.handle('threadterm:read-page-shot', async (event, id: unknown) => { assertTrustedRenderer(event); return readPageShot(id); });
+  ipcMain.handle('threadterm:read-page-shot', async (event, id: unknown) => { assertTrustedRenderer(event); return await readPageShot(id) ?? await remoteReader?.(event, id); });
   ipcMain.handle('threadterm:delete-page-shots', async (event, ids: unknown) => { assertTrustedRenderer(event); return deletePageShots(ids, { assetReferences }); });
   void cleanupPageShots(assetReferences).catch(() => undefined);
 }

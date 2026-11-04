@@ -984,6 +984,7 @@ impl RuntimeService {
     }
 
     fn with_providers(config: RuntimeConfig, db: Arc<Database>, providers: Arc<Providers>) -> Self {
+        if let Err(error) = crate::attachments::recover(&db, &config.data_dir) { eprintln!("Attachment cleanup deferred: {error}"); }
         crate::code_review::forget_provider_options(&db);
         crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
         crate::group_chat::initialize(&db).expect("initialize group chats");
@@ -1469,6 +1470,8 @@ impl RuntimeService {
                 });
         }
         let outcome = (|| -> Result<Value> {
+            if let Some(value) = crate::host_files::dispatch(&self.db, &request.method, &request.params)? { return Ok(value); }
+            if let Some(value) = crate::attachments::dispatch(&self.db, &self.config.data_dir, &request.method, &request.params)? { return Ok(value); }
             if let Some(value) = crate::usage_ledger::dispatch(&self.db, &request.method, &request.params)? { return Ok(value); }
             if request.method == "browser.approval.read" {
                 return self.browser_tools.approval_read(principal, &request.params);
@@ -2014,11 +2017,15 @@ impl RuntimeService {
                     crate::review_drafts::read(&self.db, &request.method, &request.params)
                 }
                 "reviewDrafts.upsert" | "reviewDrafts.delete" | "reviewDrafts.importLegacy" => {
-                    let operation_id = request.params.get("operationId")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| anyhow::anyhow!("invalid_request"))?;
-                    self.db.bind_operation(operation_id, &request.method, &request.params)?;
-                    crate::review_drafts::mutate(&self.db, &request.method, &request.params)
+                    let persist = || {
+                        if principal.starts_with("peer:") { crate::review_drafts::validate_host_assets(&self.db, &self.config.data_dir, &request.params)?; }
+                        let operation_id = request.params.get("operationId")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| anyhow::anyhow!("invalid_request"))?;
+                        self.db.bind_operation(operation_id, &request.method, &request.params)?;
+                        crate::review_drafts::mutate(&self.db, &request.method, &request.params)
+                    };
+                    if principal.starts_with("peer:") { crate::attachments::with_reference_lock(persist) } else { persist() }
                 }
                 "chat.snapshot" => {
                     let p: ChatSnapshotRead = parse(&request.params)?;

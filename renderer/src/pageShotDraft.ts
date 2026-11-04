@@ -3,6 +3,7 @@ import type { PageShot } from '@threadterm/protocol';
 import { deletePageShots, readPageShot } from './bridge';
 import type { ContextItem } from './chatContext';
 import type { FileCommentsHost } from './fileCommentsHost';
+import { isRemoteFiles, persistRemotePageShot } from './remoteFiles';
 
 export type PageShotPacket={shot:PageShot;url:string;dataUrl:string};
 export type ShotDraft={shot:PageShot;url:string;mode:'image'|'offer'|'file';imageIndex?:number};
@@ -120,7 +121,8 @@ export function usePageShotDraft(options:{sessionId:string;images:string[];conte
   }catch(error){if(lifetime.current===epoch)current.current.onIssue(String(error));}
   finally{if(removing.current===token)removing.current=undefined;}
  };
- const keep=(id:string)=>{const record=records.current.find(row=>row.shot.id===id);if(!record)return;try{const next={...record,mode:'file' as const};if(!current.current.attachContext(shotContext(next)))throw new Error('File reference could not be attached.');try{save(records.current.map(row=>row===record?next:row));}catch(error){current.current.removeContext(shotContextId(id));throw error;}}catch(error){current.current.onIssue(String(error));}};
+ const keepRemote=async(id:string)=>{const record=records.current.find(row=>row.shot.id===id),epoch=lifetime.current;if(!record)return;try{const shot=await persistRemotePageShot(record.shot,current.current.sessionId);if(lifetime.current!==epoch||!records.current.includes(record))return;const next={...record,shot,mode:'file' as const};if(!current.current.attachContext(shotContext(next)))throw new Error('File reference could not be attached.');try{save(records.current.map(row=>row===record?next:row));}catch(error){current.current.removeContext(shotContextId(shot.id));throw error;}}catch(error){if(lifetime.current===epoch)current.current.onIssue(String(error));}};
+ const keep=(id:string)=>{if(isRemoteFiles()){void keepRemote(id);return;}const record=records.current.find(row=>row.shot.id===id);if(!record)return;try{const next={...record,mode:'file' as const};if(!current.current.attachContext(shotContext(next)))throw new Error('File reference could not be attached.');try{save(records.current.map(row=>row===record?next:row));}catch(error){current.current.removeContext(shotContextId(id));throw error;}}catch(error){current.current.onIssue(String(error));}};
  return {records:draft.key===key?draft.records:[],remove,keep};
 }
 

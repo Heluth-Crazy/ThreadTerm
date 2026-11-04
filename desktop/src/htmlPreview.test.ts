@@ -27,6 +27,29 @@ function ids() {
   return () => (++value).toString(16).padStart(32, '0');
 }
 
+test('remote preview reads host-only paths in bounded pieces and retains the cap', async () => {
+  const bytes = Buffer.alloc(7 * 1024 * 1024 + 17, 97);
+  const calls: { offset: number; limit: number }[] = [];
+  const manager = new HtmlPreviewGrantManager({ randomId: ids() });
+  const grant = await manager.create({ rootPath: 'Z:/host-only-missing-here', entryPath: 'index.html', ownerWebContentsId: 9, frameName: 'tt-preview-remote', hostSource: {
+    read: async (path, offset, limit) => {
+      assert.equal(path, 'index.html'); calls.push({ offset, limit });
+      const chunk = bytes.subarray(offset, offset + limit);
+      return { path: 'Z:/host-only/index.html', offset, size: bytes.length, chunk: chunk.toString('base64'), eof: offset + chunk.length === bytes.length };
+    },
+  } });
+  let handler!: (request: Request) => Promise<Response>;
+  installHtmlPreviewSession({ protocol: { handle: (_scheme: string, next: typeof handler) => { handler = next; } }, webRequest: { onBeforeRequest() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} } as unknown as Session, manager, { appFrameAncestor: 'file:' });
+  const response = await handler(new Request(grant.url));
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+  assert.ok(calls.some(call => call.offset > 6 * 1024 * 1024));
+  assert.ok(calls.every(call => call.limit <= 1024 * 1024));
+  await assert.rejects(manager.create({ rootPath: '', entryPath: 'huge.html', ownerWebContentsId: 9, frameName: 'tt-preview-huge', hostSource: { read: async () => ({ path: 'huge', size: HTML_PREVIEW_MAX_BYTES + 1, offset: 0, chunk: '', eof: false }) } }), /too large/);
+  manager.revoke(grant.id);
+  assert.equal((await handler(new Request(grant.url))).status, 404);
+});
+
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'threadterm-html-preview-'));
   const root = join(directory, 'root');

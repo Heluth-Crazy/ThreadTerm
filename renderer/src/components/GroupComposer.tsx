@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import type { Group } from '@threadterm/protocol';
 import { byteLabel, describeGroupReference, droppedGroupReferences, groupComposition, groupEnterSends, insertGroupMention, leadingGroupRecipientKey, mentionCompletion, referenceKey, replyReferenceHandle, selectedGroupRecipients, type GroupReferenceInput } from '../groupComposer';
-import { clearGroupWarning, groupAttachEscape, groupAttachWarning, groupDropWarning, groupIssueText, groupReferenceTitle, type GroupComposerWarning } from '../groupMessages';
+import { clearGroupWarning, groupAttachEscape, groupAttachWarning, groupDropWarning, groupRemoteDropWarning, groupIssueText, groupReferenceTitle, type GroupComposerWarning } from '../groupMessages';
 import { groupDropPaths } from '../groupFileDrop';
+import { isRemoteFiles } from '../remoteFiles';
 import { Icon } from './PrototypeIcon';
 import { groupMenuBlur, groupMenuKeys } from './groupMenuKeys';
 import './group-composer.css';
@@ -35,9 +36,10 @@ export function GroupComposer({group,zh,disabled,intent,onSend,onAddMember,onFin
    onDrop={event=>{
     event.preventDefault();setIssue(old=>clearGroupWarning(old,'drop'));
     const dropped=event.dataTransfer.getData('text/uri-list')||event.dataTransfer.getData('text/plain');
-    const refs=droppedGroupReferences([dropped,...groupDropPaths(event.dataTransfer)].filter(Boolean).join('\n'),group.cwd);
+    // In a view of another computer, dropped files are this computer's paths and name no file of the group.
+    const refs=droppedGroupReferences([dropped,...(isRemoteFiles()?[]:groupDropPaths(event.dataTransfer))].filter(Boolean).join('\n'),group.cwd);
     if(refs.length)attach(refs);
-    else if(dropped||event.dataTransfer.files.length)setIssue(groupDropWarning);
+    else if(dropped||event.dataTransfer.files.length)setIssue(isRemoteFiles()&&event.dataTransfer.files.length?groupRemoteDropWarning:groupDropWarning);
    }}
   >
    <div className="gc-composer-chips" data-testid="group-to">

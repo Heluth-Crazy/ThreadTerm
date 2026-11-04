@@ -19,7 +19,10 @@ import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } 
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
 import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
-import { qaAttachPathsOverride, readAttachFiles } from './attachFiles.js';
+import { qaAttachPathsOverride, readAttachFiles, uploadAttachFile, validAttachPath, MAX_ATTACH_FILES } from './attachFiles.js';
+import { readHostPageShot, reviewShotSession } from './remoteFiles.js';
+import { HostFilePickers, hostRevealTarget } from './hostFiles.js';
+import { localPageShotPath } from './pageComments.js';
 import { qaOpenExternalPathsOverride } from './externalFiles.js';
 
 import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
@@ -393,6 +396,12 @@ async function notifyNative(kind: NotificationKind, copy: (locale: NotificationL
 }
 
 function registerIpc(): void {
+  const hostFilePickers = new HostFilePickers();
+  ipcMain.handle('threadterm:host-files-complete', (event, id: unknown, paths: unknown) => {
+    assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId === 'local') throw new Error('Host file dialog requires another computer');
+    hostFilePickers.complete(event.sender.id, id, paths);
+  });
   ipcMain.handle('threadterm:machine-list', async event => {
     assertTrustedRenderer(event);
     await refreshMachinesGate();
@@ -478,11 +487,43 @@ function registerIpc(): void {
     const bound = machineBindings.get(contents.id);
     return machineViews.get(bound.owner.id)?.all()[0] ?? bound.owner.contentView;
   });
-  registerHtmlPreviewIpc(htmlPreviewGrants, event => { assertTrustedRenderer(event); assertLocalMachine(event); }, runtimeFor, () => htmlPreviewPreloadReady);
+  registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady, event => machineBindings.get(event.sender.id).machineId !== 'local');
   registerBackgroundImageIpc({ folder: backgroundImagesFolder(), assertTrusted: assertTrustedRenderer, isPackaged: app.isPackaged });
   registerPageComments(assertTrustedRenderer, async after => {
     const references = await adminRuntime.request('reviewDrafts.assetReferences', after ? { after, limit: 200 } : { limit: 200 });
     return { paths: references.paths, nextAfter: references.nextAfter, legacyImportComplete: references.legacyImportComplete };
+  }, async (event, id) => machineBindings.get(event.sender.id).machineId !== 'local' ? readHostPageShot(runtimeFor(event), id) : undefined, sender => {
+    if (!machineRenderers.has(sender.id)) return undefined;
+    const binding = machineBindings.get(sender.id); return binding.machineId !== 'local' ? binding.owner : undefined;
+  });
+  ipcMain.handle('threadterm:upload-client-files', async (event, sessionId: unknown, paths: unknown) => {
+    assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId === 'local') throw new Error('Remote upload requires another computer');
+    if (typeof sessionId !== 'string' || !sessionId || !Array.isArray(paths) || paths.length > MAX_ATTACH_FILES || !paths.every(validAttachPath)) throw new Error('Invalid attachment upload');
+    const result: string[] = [];
+    for (const path of paths) result.push((await uploadAttachFile(runtimeFor(event), sessionId, path)).hostPath);
+    return result;
+  });
+  ipcMain.handle('threadterm:read-attach-paths', async (event, paths: unknown) => {
+    assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId === 'local' || !Array.isArray(paths) || paths.length > MAX_ATTACH_FILES || !paths.every(validAttachPath)) throw new Error('Invalid attachment paths');
+    return readAttachFiles(paths);
+  });
+  ipcMain.handle('threadterm:persist-page-shot', async (event, id: unknown, sessionId: unknown, projectId: unknown, root: unknown) => {
+    assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId === 'local' || typeof id !== 'string') throw new Error('Invalid remote screenshot');
+    const runtime = runtimeFor(event);
+    try { const existing = await runtime.request('attachment.read', { assetId: id, offset: 0, limit: 1 }); return { id: existing.assetId, path: existing.hostPath }; }
+    catch (error) { if (!(error instanceof RuntimeRequestError) || !/asset_not_found/.test(error.message)) throw error; }
+    const path = await localPageShotPath(id);
+    if (!path) throw new Error('Screenshot is unavailable');
+    if (sessionId === undefined) {
+      const snapshot = await runtime.request('runtime.snapshot', {});
+      sessionId = reviewShotSession(snapshot, projectId, root);
+    }
+    if (typeof sessionId !== 'string' || !sessionId) throw new Error('Screenshot destination session is unavailable');
+    const uploaded = await uploadAttachFile(runtime, sessionId, path);
+    return { id: uploaded.assetId, path: uploaded.hostPath };
   });
   ipcMain.handle('threadterm:export-chat-markdown', (event, payload: unknown) => saveChatMarkdown(event, payload, {
     assertTrusted: assertTrustedRenderer,
@@ -548,6 +589,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:choose-directory', async (event) => {
     assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId !== 'local') return (await hostFilePickers.choose(event.sender, 'directory'))[0] ?? null;
     assertLocalMachine(event);
     const owner = machineBindings.get(event.sender.id).owner;
     const options = { properties: ['openDirectory', 'createDirectory'] as Electron.OpenDialogOptions['properties'] };
@@ -566,6 +608,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:open-external-files', async (event) => {
     assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId !== 'local') return hostFilePickers.choose(event.sender, 'files');
     assertLocalMachine(event);
     const qaPaths = qaOpenExternalPathsOverride(process.env.THREADTERM_V3_OPEN_EXTERNAL_QA, app.isPackaged);
     if (qaPaths) return qaPaths;
@@ -593,7 +636,7 @@ function registerIpc(): void {
     const content = kind === 'settings' ? await runtimeFor(event).request('settings.export', {}) : (await runtimeFor(event).request('runtime.snapshot', {})).settings.customThemes;
     if (kind === 'theme' && (!content || typeof content !== 'object' || Array.isArray(content) || Object.keys(content).length === 0)) throw new Error('There are no custom themes to export');
     // A theme that carries background images exports them inside the pack; a palette-only export stays plain JSON.
-    const exported = kind === 'theme' ? await buildThemeExport(backgroundImagesFolder(), content) : undefined;
+    const exported = kind === 'theme' && machineBindings.get(event.sender.id).machineId === 'local' ? await buildThemeExport(backgroundImagesFolder(), content) : undefined;
     if (exported?.missing.length) console.warn(`Theme export skipped ${exported.missing.length} background image(s) missing from the store`);
     const owner = machineBindings.get(event.sender.id).owner;
     const options = {
@@ -622,6 +665,18 @@ function registerIpc(): void {
   ipcMain.handle('threadterm:desktop-preferences', async (event) => { assertTrustedRenderer(event); return refreshDesktopPreferences(); });
   ipcMain.handle('threadterm:open-directory', async (event, projectId: unknown, worktreeId: unknown) => {
     assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId !== 'local') {
+      if (typeof projectId !== 'string' || !projectId) throw new Error('Invalid project');
+      const runtime = runtimeFor(event), snapshot = await runtime.request('runtime.snapshot', {});
+      let path = snapshot.projects.find(project => project.id === projectId)?.path;
+      if (worktreeId !== undefined) {
+        if (typeof worktreeId !== 'string' || !worktreeId) throw new Error('Invalid worktree');
+        const tree = (await runtime.request('worktree.list', { projectId })).find(tree => tree.id === worktreeId && tree.projectId === projectId && !tree.missing);
+        path = tree?.path;
+      }
+      if (!path) throw new Error('Project directory is unavailable');
+      event.sender.send('threadterm:host-files', { id: randomUUID(), mode: 'reveal', path }); return;
+    }
     assertLocalMachine(event);
     if (typeof projectId !== 'string' || !projectId) throw new Error('Invalid project');
     const data = await runtimeFor(event).request('runtime.snapshot', {});
@@ -641,6 +696,11 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:reveal-file', async (event, sessionId: unknown, path: unknown) => {
     assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId !== 'local') {
+      if (!isRevealSessionId(sessionId) || !isRevealPath(path)) throw new Error('Invalid file reveal request');
+      const target = await hostRevealTarget(runtimeFor(event), sessionId, path);
+      event.sender.send('threadterm:host-files', { id: randomUUID(), mode: 'reveal', ...target }); return;
+    }
     assertLocalMachine(event);
     if (!isRevealSessionId(sessionId) || !isRevealPath(path)) throw new Error('Invalid file reveal request');
     let target: { scope: string; path: string };
@@ -665,6 +725,10 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:open-plugins-folder', async (event) => {
     assertTrustedRenderer(event);
+    if (machineBindings.get(event.sender.id).machineId !== 'local') {
+      const { directory } = await runtimeFor(event).request('plugin.list', {});
+      event.sender.send('threadterm:host-files', { id: randomUUID(), mode: 'reveal', path: directory }); return;
+    }
     assertLocalMachine(event);
     const { directory } = await runtimeFor(event).request('plugin.list', {});
     mkdirSync(directory, { recursive: true });

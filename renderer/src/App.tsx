@@ -76,6 +76,7 @@ import { AllTerminalsPage } from "./components/AllTerminalsPage";
 import { InboxPage } from "./components/InboxPage";
 import { ImportedHistoryView } from "./components/ImportedHistoryView";
 import { SessionWorkspace } from "./components/SessionWorkspace";
+import { HostFiles } from './components/HostFiles';
 import { SessionCreateDialog } from "./components/SessionCreateDialog";
 import { AddProjectDialog } from "./components/AddProjectDialog";
 import { WorkbenchPage } from "./components/WorkbenchPage";
@@ -406,6 +407,7 @@ function MachineApp() {
     <I18nProvider locale={locale}>
       <AgentIconsProvider providers={data?.providers ?? []} images={data?.settings.terminalIcons?.images}>
       <AppSettingsProvider settings={data?.settings}>
+      {remoteMachine && <HostFiles />}
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}${remoteMachine ? ' remote-machine' : ''}`} style={{ '--machine-color': currentMachine?.color } as CSSProperties}>
         {!remoteMachine && themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
         <header className="titlebar app-chrome">

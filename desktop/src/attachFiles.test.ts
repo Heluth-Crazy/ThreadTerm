@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_ATTACH_FILES, MAX_ATTACH_INLINE_BYTES, attachmentDataUrlLength, attachmentImageMime, qaAttachPathsOverride, readAttachFiles, validAttachPath } from './attachFiles.js';
+import { MAX_ATTACH_FILES, MAX_ATTACH_INLINE_BYTES, attachmentDataUrlLength, attachmentImageMime, qaAttachPathsOverride, readAttachFiles, uploadAttachFile, validAttachPath } from './attachFiles.js';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
+import { HostFilePickers, hostRevealTarget } from './hostFiles.js';
+import { readHostPageShot, reviewShotSession } from './remoteFiles.js';
 import { MAX_CHAT_IMAGES } from '@threadterm/protocol';
 
 const png = 'data:image/png;base64,AQID';
@@ -8,6 +14,66 @@ const regular = () => ({ isFile: () => true, size: 3 });
 const directory = () => ({ isFile: () => false, size: 0 });
 const readBuffer = (buffer: Buffer) => async () => buffer;
 const statSize = (size: number | ((path: string) => number)) => async (path: string) => ({ isFile: () => true, size: typeof size === 'function' ? size(path) : size });
+
+test('review screenshot session lookup matches canonical host roots without selecting a sibling worktree', () => {
+  const snapshot = { projects: [{ id: 'p', path: 'Z:/Host' }], sessions: [{ id: 'tree', projectId: 'p', worktreePath: 'Z:/Tree' }, { id: 'main', projectId: 'p' }] };
+  assert.equal(reviewShotSession(snapshot, 'p', '\\\\?\\z:\\HOST'), 'main');
+  assert.equal(reviewShotSession(snapshot, 'p', 'z:/tree/'), 'tree');
+  assert.equal(reviewShotSession(snapshot, 'p', 'z:/other'), undefined);
+  snapshot.projects[0]!.path = '\\\\?\\UNC\\server\\share';
+  assert.equal(reviewShotSession(snapshot, 'p', '\\\\SERVER\\SHARE'), 'main');
+  snapshot.projects[0]!.path = '/Host';
+  assert.equal(reviewShotSession(snapshot, 'p', '/host'), undefined);
+});
+
+test('host picker completions are sender-bound and closing the sender cancels its dialog', async () => {
+  const picker = new HostFilePickers(), events = new EventEmitter();
+  let request!: { id: string; mode: string };
+  const sender = { id: 7, send: (_channel: string, value: unknown) => { request = value as typeof request; }, once: events.once.bind(events), removeListener: events.removeListener.bind(events) };
+  const result = picker.choose(sender, 'directory'); assert.equal(request.mode, 'directory');
+  assert.throws(() => picker.complete(8, request.id, ['Z:/host']), /another window/);
+  picker.complete(7, request.id, ['Z:/host']); assert.deepEqual(await result, ['Z:/host']);
+  const cancelled = picker.choose(sender, 'files'); events.emit('destroyed'); assert.deepEqual(await cancelled, []);
+});
+
+test('remote Reveal uses the host scope without probing the client filesystem', async () => {
+  const runtime = { request: async (method: string, value: unknown) => { assert.equal(method, 'filesystem.resolve'); assert.deepEqual(value, { sessionId: 'host-chat', path: 'src/host-only.log' }); return { projectId: 'host', worktreePath: 'Z:/missing-on-client/host', path: 'src/host-only.log' }; } } as unknown as Parameters<typeof hostRevealTarget>[0];
+  const target = await hostRevealTarget(runtime, 'host-chat', 'src/host-only.log');
+  assert.equal(target.path, join('Z:/missing-on-client/host', 'src')); assert.equal(target.selectedPath, join('Z:/missing-on-client/host', 'src/host-only.log'));
+});
+
+test('remote Reveal can select a large or deleted file without reading its contents', async () => {
+  const runtime = { request: async (method: string) => {
+    if (method === 'filesystem.resolve') throw Object.assign(new Error('file_too_large'), { code: 'file_too_large' });
+    assert.equal(method, 'runtime.snapshot'); return { projects: [{ id: 'p', path: 'Z:/host-only' }], sessions: [{ id: 's', projectId: 'p' }] };
+  } } as unknown as Parameters<typeof hostRevealTarget>[0];
+  assert.equal((await hostRevealTarget(runtime, 's', 'large.html')).selectedPath, join('Z:/host-only', 'large.html'));
+  await assert.rejects(hostRevealTarget(runtime, 's', '../escape.html'), /outside/);
+});
+
+test('another controller screenshot reader assembles bounded host chunks', async () => {
+  const bytes = Buffer.alloc(1024 * 1024 + 3, 1); let calls = 0;
+  const runtime = { request: async (_method: string, p: { offset: number; limit: number }) => { calls++; const chunk = bytes.subarray(p.offset, p.offset + p.limit); return { assetId: 'id', hostPath: 'Z:/host/shot.png', name: 'shot.png', size: bytes.length, offset: p.offset, chunk: chunk.toString('base64'), eof: p.offset + chunk.length === bytes.length }; } } as unknown as Parameters<typeof readHostPageShot>[0];
+  const image = await readHostPageShot(runtime, '11111111-1111-4111-8111-111111111111');
+  assert.deepEqual(Buffer.from(image!.split(',')[1]!, 'base64'), bytes); assert.equal(calls, 2);
+});
+
+test('remote file upload sends bounded chunks with one transfer identity and returns the host path', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'tt-remote-attach-'));
+  try {
+    const path = join(folder, 'client.log'), bytes = Buffer.alloc(2 * 1024 * 1024 + 13, 97), chunks: Buffer[] = [];
+    await writeFile(path, bytes);
+    const ids = new Set<string>(); let offset = 0;
+    const runtime = { request: async (method: string, p: { uploadId: string; offset: number; chunk: string; final: boolean }) => {
+      assert.equal(method, 'attachment.upload'); assert.equal(p.offset, offset); ids.add(p.uploadId);
+      const chunk = Buffer.from(p.chunk, 'base64'); assert.ok(chunk.length <= 1024 * 1024); chunks.push(chunk); offset += chunk.length;
+      return { offset, ...(p.final ? { assetId: 'asset', hostPath: 'Z:/host/assets/client.log' } : {}) };
+    } } as unknown as Parameters<typeof uploadAttachFile>[0];
+    assert.deepEqual(await uploadAttachFile(runtime, 'host-session', path), { assetId: 'asset', hostPath: 'Z:/host/assets/client.log' });
+    assert.equal(ids.size, 1); assert.equal(chunks.length, 3); assert.deepEqual(Buffer.concat(chunks), bytes);
+    assert.deepEqual(await readAttachFiles([path]), [{ path, name: 'client.log' }], 'local attachment remains a client-path chip');
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});
 
 test('validAttachPath accepts only absolute, control-free paths', () => {
   assert.equal(validAttachPath('C:\\work\\src\\main.ts'), true);

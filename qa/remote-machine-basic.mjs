@@ -13,12 +13,13 @@ import { buildQaApp } from './lib/qa-app.mjs';
 import { connectPeer } from './pipe-client.mjs';
 
 const treeProbe = process.env.THREADTERM_QA_MACHINE_TREE === '1';
+const filesProbe = process.env.THREADTERM_QA_MACHINE_FILES === '1';
 const root = resolve(import.meta.dirname, '..');
 const qaTemp = /[\\/]tt-qa-temp$/i.test(tmpdir()) ? tmpdir() : join(tmpdir(), 'tt-qa-temp');
 await mkdir(qaTemp, { recursive: true });
 process.env.TEMP = qaTemp; process.env.TMP = qaTemp;
 const scratch = await mkdtemp(join(qaTemp, 'remote-basic-'));
-const out = join(root, treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
+const out = join(root, filesProbe ? 'qa/results/remote-machine-files' : treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
 await mkdir(out, { recursive: true });
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), 'Build and copy the QA runtime first');
@@ -45,6 +46,11 @@ function environment(kind) {
   return env;
 }
 const hostEnv = environment('host'), clientEnv = environment('client');
+if (filesProbe) {
+  const clientLog = join(clientWork, 'client-attachment.log');
+  await writeFile(clientLog, 'CLIENT LOG CONTENT\n' + 'x'.repeat(2 * 1024 * 1024));
+  clientEnv.THREADTERM_V3_ATTACH_FILES_QA = clientLog;
+}
 let host, hostPeer, app, hostApp, built, releaseLock, localPage, remotePage, attentionSession;
 const rpc = (page, method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 try {
@@ -183,6 +189,10 @@ try {
   await chat.getByText('TRANSITION-SAVED-ANSWER', { exact: true }).waitFor({ timeout: 30000 });
   await remotePage.screenshot({ path: join(out, 'remote-chat.png') });
   pass('a Chat turn sent through peer TLS displays the fake host provider’s reply');
+  if (filesProbe) {
+    const { runRemoteFilesProbe } = await import('./remote-machine-files-scenarios.mjs');
+    await runRemoteFilesProbe({ app, remotePage, localPage, rpc, until, pass, hostPeer, hostEnv, clientEnv, hostProject, session, hostWork, clientWork, scratch, out });
+  }
   const childPromise = app.waitForEvent('window', { predicate: page => page !== localPage && page !== remotePage, timeout: 15000 });
   await remotePage.evaluate(sessionId => window.threadterm.openWindow({ sessionId }), session.id);
   const child = await childPromise;
