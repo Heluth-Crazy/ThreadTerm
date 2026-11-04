@@ -101,6 +101,63 @@ test('capture handoff rejects a navigation race and malformed markup before file
  await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:'00000000-0000-4000-8000-000000000000',dataUrl:'data:image/png;base64,WA=='}),/Page changed/);
 });
 
+test('captured screenshot survives same-document hash and History API changes with its original URL',async()=>{
+ const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const wc=f.views[0].webContents,original=wc.url,dataUrl=`data:image/png;base64,${f.png.toString('base64')}`;
+ const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0});
+ const hash=`${original}#markup`;wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url:hash},hash,true,true);wc.url=hash;wc.emit('did-navigate-in-page',{},hash,true);
+ const history='https://example.test/review?step=2#markup';wc.url=history;wc.emit('did-navigate-in-page',{},history,true);
+ const saved=await f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl});
+ assert.equal(saved.shot.id,capture.shot.id);assert.equal(saved.url,original);assert.equal(saved.documentGeneration,0);
+ await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:1,shotId:capture.shot.id,dataUrl}),/Page changed/,'generation mismatch remains fenced after same-document navigation');
+});
+
+test('same-document navigation during asynchronous markup save retains the captured screenshot',async()=>{
+ const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const wc=f.views[0].webContents,original=wc.url,dataUrl=`data:image/png;base64,${f.png.toString('base64')}`;
+ const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0});let changes=0;
+ f.setDiskStep(async step=>{if(step==='write'){const url=`${original}#saving`;wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url},url,true,true);wc.url=url;wc.emit('did-navigate-in-page',{},url,true);changes++;}else if(step==='rename'){const url='https://example.test/review?state=saved';wc.url=url;wc.emit('did-navigate-in-page',{},url,true);changes++;}});
+ const saved=await f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl});
+ assert.equal(changes,2);assert.equal(saved.url,original);assert.ok(f.savedFiles.has(saved.shot.path));assert.equal([...f.savedFiles.keys()].some(key=>key.endsWith('.tmp')),false);
+});
+
+test('screenshot ownership still rejects in-flight changes, document navigation, origin changes, and view replacement',async()=>{
+ {
+  const f=fixture();await f.show();const wc=f.views[0].webContents;let finish;
+  f.setCapture(()=>new Promise(resolve=>{finish=resolve;}));const pending=f.handoff({type:'capture',tabId:'page-one',documentGeneration:0});await new Promise(resolve=>setImmediate(resolve));const url=`${wc.url}#during-capture`;wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url},url,true,true);wc.url=url;wc.emit('did-navigate-in-page',{},url,true);finish(f.bitmap());await assert.rejects(pending,/Page changed/);
+ }
+ for(const change of ['document','origin','view']){
+  const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0}),wc=f.views[0].webContents,dataUrl=`data:image/png;base64,${f.png.toString('base64')}`;
+  if(change==='document')wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:false,url:'https://example.test/reload'},'https://example.test/reload',false,true);
+  else if(change==='origin'){const url='https://other.test/#same-document';wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url},url,true,true);wc.url=url;wc.emit('did-navigate-in-page',{},url,true);}
+  else {await f.invoke({type:'preferences',patch:{unloadAfterMinutes:1}});await f.invoke({type:'hide',tabId:'page-one'});f.advance(60_000);await f.show();}
+  await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/Screenshot is not available|Page changed/,change);
+ }
+});
+
+test('same-origin in-page events cannot revive a capture invalidated by cross-document navigation start',async()=>{
+ const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const wc=f.views[0].webContents,original=wc.url,dataUrl=`data:image/png;base64,${f.png.toString('base64')}`;
+ const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0});
+ const destination='https://example.test/reloaded';wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:false,url:destination},destination,false,true);
+ const hash=`${original}#surviving`;wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url:hash},hash,true,true);wc.url=hash;wc.emit('did-navigate-in-page',{},hash,true);
+ const history='https://example.test/surviving?state=updated';wc.url=history;wc.emit('did-navigate-in-page',{},history,true);
+ await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/Screenshot is not available/);
+});
+
+test('capture during a pending same-origin cross-document navigation cannot be saved',async()=>{
+ const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const wc=f.views[0].webContents,outgoing=wc.url,dataUrl=`data:image/png;base64,${f.png.toString('base64')}`;
+ const destination='https://example.test/pending';wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:false,url:destination},destination,false,true);
+ assert.equal(wc.url,outgoing,'Chromium still exposes the outgoing document while the destination is pending');
+ const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0});assert.equal(capture.url,outgoing);
+ await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/Screenshot is not available/);
+ const hash=`${outgoing}#surviving`;wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url:hash},hash,true,true);wc.url=hash;wc.emit('did-navigate-in-page',{},hash,true);
+ await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/Screenshot is not available/,'outgoing same-document events cannot revive a capture already mismatched with the tab URL');
+});
+
+test('capture from an unobserved same-origin URL cannot be saved',async()=>{
+ const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const wc=f.views[0].webContents,dataUrl=`data:image/png;base64,${f.png.toString('base64')}`;
+ wc.url='https://example.test/unobserved';const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0});assert.equal(capture.url,wc.url);
+ await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/Screenshot is not available/);
+});
+
 test('Electron 44 console details preserve source line and ordinary logs do not churn IPC',async()=>{
  const f=fixture();await f.show();const wc=f.views[0].webContents,count=()=>f.sent.filter(row=>row.channel==='threadterm:browser-handoff-event').length;
  wc.emit('did-navigate',{},wc.url);const initial=count();
@@ -111,8 +168,10 @@ test('Electron 44 console details preserve source line and ordinary logs do not 
 test('captured markup remains owner-scoped and atomic failures retain the original shot',async()=>{
  const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0}),dataUrl=`data:image/png;base64,${f.png.toString('base64')}`;
  assert.ok(f.savedFiles.has(capture.shot.path));const other=f.owner();await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl},other.event),/Unknown browser tab/);
+ await f.show('page-two');await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-two',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/Screenshot is not available/,'a shot cannot move to another tab owned by the same renderer');
  f.setDiskStep(async step=>{if(step==='rename')throw new Error('write unavailable');});await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/write unavailable/);assert.ok(f.savedFiles.has(capture.shot.path));assert.equal([...f.savedFiles.keys()].some(key=>key.endsWith('.tmp')),false);
  f.setDiskStep(async()=>{});const saved=await f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl});assert.equal(saved.shot.id,capture.shot.id);assert.equal(saved.dataUrl,dataUrl);assert.ok(f.savedFiles.has(saved.shot.path));
+ await f.invoke({type:'close',tabId:'page-one'});await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:capture.shot.id,dataUrl}),/Unknown browser tab/,'closing the tab removes screenshot ownership');
 });
 test('same-URL navigation during markup rename cannot return a stale screenshot',async()=>{
  const f=fixture();await f.show();f.setCapture(async()=>f.bitmap());const capture=await f.handoff({type:'capture',tabId:'page-one',documentGeneration:0}),wc=f.views[0].webContents;
