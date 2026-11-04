@@ -34,6 +34,9 @@ function item(threadId, turnId, value, started = false) {
 }
 function finishChild() {
   const { parentTurn, childTurn, spawnId } = active;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    event('error', { threadId: child, turnId: childTurn, willRetry: true, error: { message: `Reconnecting... ${attempt}/5` } });
+  }
   item(child, childTurn, { id: `${childTurn}-command`, type: 'commandExecution', status: 'completed', command: 'echo CHILD-COMMAND', aggregatedOutput: 'CHILD-OUTPUT', exitCode: 0 });
   item(child, childTurn, { id: `${childTurn}-answer`, type: 'agentMessage', text: 'CHILD-ANSWER: three files' });
   event('turn/completed', { threadId: child, turn: { id: childTurn, status: 'completed' } });

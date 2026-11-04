@@ -48,7 +48,7 @@ const cards = {
   resize: [user('u13','resize','Keep the final response visible after the pane is narrowed.'), ...Array.from({length:14}, (_, index) => assistant('resize-'+index,'resize',[text('Resize message '+(index+1)+': '+resizeParagraph)])), assistant('resize-last','resize',[text('Resize final message: this must remain visible after a following resize.')])],
 };
 const transcripts = {
-  expanded: {items:[assistant('sub-text','sub',[text('The transcript keeps ordinary subagent messages readable.')]),assistant('sub-tool','sub',[tool('subagent-command')]),assistant('sub-nested','sub',[{type:'subagent',data:{key:'nested-child',provider:'codex',name:'Nested helper',status:'completed',transcript:'none',summary:'Nested work stays a plain transcript line.'}}])],rev:2,truncated:false,source:'live'},
+  expanded: {items:[assistant('sub-text','sub',[text('The transcript keeps ordinary subagent messages readable.')]),assistant('sub-retry','sub',[{type:'thinking',text:'Reconnecting... 2/5'}]),assistant('sub-tool','sub',[tool('subagent-command')]),assistant('sub-nested','sub',[{type:'subagent',data:{key:'nested-child',provider:'codex',name:'Nested helper',status:'completed',transcript:'none',summary:'Nested work stays a plain transcript line.'}}])],rev:2,truncated:false,source:'live'},
   native: {items:[user('kimi-prompt','sub','List and count folder files.'),user('kimi-followup','sub','Also include hidden files.'),assistant('kimi-text','sub',[text('Kimi loaded this report from the local agent session files.')]),assistant('kimi-tool','sub',[tool('kimi-command')])],rev:1,truncated:false,source:'native'},
 };
 const listeners = new Set(), readCalls = []; let sequence = 1, activeScenario = 'running';
@@ -211,6 +211,10 @@ try {
   assert.equal((await page.evaluate(() => window.qaReads())).length, 0, 'a new collapsed card still has no read');
   await expanded.locator('> details > summary').click();
   await page.locator('.chat-subagent-transcript').waitFor({state:'attached'});
+  const retry = page.locator('.chat-subagent-transcript .v3-thinking').filter({hasText:'Reconnecting... 2/5'});
+  assert.equal(await retry.count(), 1, 'child retry renders as one informational thinking entry');
+  await retry.locator('summary').click();
+  assert.equal(await retry.getByText('Reconnecting... 2/5', {exact:true}).isVisible(), true);
   assert.deepEqual(await page.evaluate(() => window.qaReads()), [{sessionId:'expanded',key:'expanded',afterRev:0}], 'opening reads once from the initial transcript revision');
   await page.waitForTimeout(1100);
   assert.equal((await page.evaluate(() => window.qaReads())).length, 1, 'open running card does not poll without a newer revision');
