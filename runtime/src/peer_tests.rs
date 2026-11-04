@@ -50,6 +50,7 @@ impl ProviderAdapter for EmittingAdapter {
             plugin_id: None,
             icon: None,
             sign_in: None,
+            remote_sign_in: None,
             homepage: None,
             id: self.id().into(),
             name: "Peer fixture".into(),

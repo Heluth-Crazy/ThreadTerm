@@ -75,7 +75,7 @@ impl ProviderAdapter for FixtureAdapter {
 
     fn capability(&self) -> ProviderCapability {
         ProviderCapability {
-            source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+            source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
             id: self.provider.into(),
             name: "Lifecycle fixture".into(),
             installed: true,

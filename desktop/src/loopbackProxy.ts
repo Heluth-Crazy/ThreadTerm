@@ -17,6 +17,29 @@ export function loopbackAddress(hostname: string): '127.0.0.1' | '::1' | undefin
 export function isLoopbackUrl(value: string): boolean {
   try { const url = new URL(value); return ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol) && !!loopbackAddress(url.hostname); } catch { return false; }
 }
+/** A sign-in page opens in that computer's panel browser only when its callback is a literal loopback address.
+ * Google forbids embedded sign-in; leave its normal route (and explicit preview choice) alone. */
+export function isRemoteSignInUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    if (!['http:', 'https:'].includes(url.protocol) || host === 'google.com' || host.endsWith('.google.com')) return false;
+    for (const [name, value] of url.searchParams) {
+      if (!['redirect_uri', 'redirect_url'].includes(name.toLowerCase())) continue;
+      try {
+        const callback = new URL(value);
+        if (['http:', 'https:'].includes(callback.protocol) && loopbackAddress(callback.hostname)) return true;
+      } catch { /* Another redirect parameter may still be valid. */ }
+    }
+  } catch { /* Invalid outer URL or redirect. */ }
+  return false;
+}
+
+/** The caller supplies the trusted sender binding, never a renderer-selected machine. */
+export function externalLinkOpensInPanel(value: string, remote: boolean): boolean {
+  return remote && (isLoopbackUrl(value) || isRemoteSignInUrl(value));
+}
+
 function destination(value: string, connect = false): { url: URL; target: TunnelTarget } {
   const url = new URL(connect ? `http://${value}` : value);
   if (url.username || url.password || url.hash || !['http:', 'https:'].includes(url.protocol) || connect && (url.pathname !== '/' || url.search)) throw new Error('Invalid proxy destination');

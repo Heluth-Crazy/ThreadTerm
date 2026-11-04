@@ -39,6 +39,7 @@ impl ProviderAdapter for RepairAdapter {
             plugin_id: None,
             icon: None,
             sign_in: None,
+            remote_sign_in: None,
             homepage: None,
             id: "codex".into(),
             name: "Repair fixture".into(),

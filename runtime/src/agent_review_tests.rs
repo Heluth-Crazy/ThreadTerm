@@ -17,7 +17,7 @@ impl ProviderAdapter for Adapter {
     fn id(&self) -> &str { "reviewer" }
     fn capability(&self) -> ProviderCapability {
         ProviderCapability {
-            source: "fixture", plugin_id: None, icon: None, sign_in: None, homepage: None,
+            source: "fixture", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
             id: "reviewer".into(), name: "Reviewer".into(), installed: self.installed,
             version: None, terminal: false, chat: self.chat, history: false, resume: false,
             terminal_resume_capture: "none", reason: None, auth: "authenticated".into(),

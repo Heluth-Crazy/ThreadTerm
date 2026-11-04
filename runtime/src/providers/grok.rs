@@ -193,6 +193,7 @@ impl ProviderAdapter for GrokAdapter {
             plugin_id: None,
             icon: None,
             sign_in: super::builtin_sign_in("grok"),
+            remote_sign_in: super::builtin_remote_sign_in("grok"),
             homepage: None,
             id: "grok".to_owned(),
             name: super::builtin_name("grok").to_owned(),

@@ -632,6 +632,7 @@ mod tests {
                 plugin_id: None,
                 icon: None,
                 sign_in: None,
+                remote_sign_in: None,
                 homepage: None,
                 id: self.id().into(),
                 name: "Fork fixture".into(),

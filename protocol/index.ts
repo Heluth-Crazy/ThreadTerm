@@ -173,6 +173,8 @@ export interface ProviderCapability { id:ProviderId; name:string; installed:bool
  icon?:string;
  /** The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show. */
  signIn?:{ executable:string; args:string[]; display:string };
+ /** Sign-in command used from another computer's view, a flow that needs no browser on the host. */
+ remoteSignIn?:{ executable:string; args:string[]; display:string };
  homepage?:string }
 /** One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat,
  * sign-in), shown to the user before the plugin is enabled. */

@@ -65,6 +65,7 @@ impl ProviderAdapter for OpenCodeAdapter {
             plugin_id: None,
             icon: None,
             sign_in: super::builtin_sign_in("opencode"),
+            remote_sign_in: None,
             homepage: None,
             id: "opencode".to_owned(),
             name: super::builtin_name("opencode").to_owned(),
@@ -3550,7 +3551,7 @@ mod tests {
     impl ProviderAdapter for Oc2ForkOutcomeFixture {
         fn id(&self) -> &str { "opencode" }
         fn capability(&self) -> ProviderCapability {
-            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,homepage:None,id:"opencode".into(),name:"OpenCode fixture".into(),installed:true,version:None,terminal:false,chat:true,history:true,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
+            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,remote_sign_in:None,homepage:None,id:"opencode".into(),name:"OpenCode fixture".into(),installed:true,version:None,terminal:false,chat:true,history:true,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
         }
         fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }
         fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }

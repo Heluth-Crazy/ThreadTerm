@@ -7,7 +7,7 @@ struct Chat { calls: Arc<AtomicUsize>, sends: Arc<AtomicUsize>, partial: bool }
 impl ProviderAdapter for Adapter {
     fn id(&self) -> &str { "plan-fixture" }
     fn capability(&self) -> ProviderCapability {
-        ProviderCapability { source:"test", plugin_id:None, icon:None, sign_in:None, homepage:None, id:self.id().into(), name:"Plan fixture".into(), installed:true, version:None, terminal:false, chat:true, history:false, resume:false, terminal_resume_capture:"none", reason:None, auth:"authenticated".into() }
+        ProviderCapability { source:"test", plugin_id:None, icon:None, sign_in:None,remote_sign_in:None, homepage:None, id:self.id().into(), name:"Plan fixture".into(), installed:true, version:None, terminal:false, chat:true, history:false, resume:false, terminal_resume_capture:"none", reason:None, auth:"authenticated".into() }
     }
     fn terminal_command(&self, _:Option<&str>, _:Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "no terminal")) }
     fn history_list(&self, _:Option<&str>, _:u32, _:Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }

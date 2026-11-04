@@ -3960,7 +3960,7 @@ mod tests {
         fn id(&self) -> &'static str { "opencode" }
         fn capability(&self) -> ProviderCapability {
             ProviderCapability {
-                source:"builtin",plugin_id:None,icon:None,sign_in:None,homepage:None,
+                source:"builtin",plugin_id:None,icon:None,sign_in:None,remote_sign_in:None,homepage:None,
                 id:"opencode".into(),name:"OpenCode fixture".into(),installed:true,version:None,
                 terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into(),
             }
@@ -4116,7 +4116,7 @@ mod tests {
         fn id(&self) -> &'static str { "pi" }
         fn capability(&self) -> ProviderCapability {
             ProviderCapability {
-                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
                 id: "pi".into(), name: "Pi fixture".into(), installed: true, version: None,
                 terminal: false, chat: true, history: false, resume: false,
                 terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
@@ -4274,7 +4274,7 @@ mod tests {
         fn id(&self) -> &'static str { "codex" }
         fn capability(&self) -> ProviderCapability {
             ProviderCapability {
-                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
                 id: "codex".into(), name: "Codex fixture".into(), installed: true, version: None,
                 terminal: false, chat: true, history: false, resume: true,
                 terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
@@ -5978,7 +5978,7 @@ mod oc2_checkpoint_tests {
     impl ProviderAdapter for CheckpointAdapter {
         fn id(&self) -> &str { "opencode" }
         fn capability(&self) -> ProviderCapability {
-            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,homepage:None,id:"opencode".into(),name:"Checkpoint fixture".into(),installed:true,version:None,terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
+            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,remote_sign_in:None,homepage:None,id:"opencode".into(),name:"Checkpoint fixture".into(),installed:true,version:None,terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
         }
         fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }
         fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }

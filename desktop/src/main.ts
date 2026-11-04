@@ -16,7 +16,7 @@ import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
 import { registerBrowser, clearBrowserPartition } from './browser/index.js';
 import { MachineBrowserProfiles, machineBrowserPartition } from './machineBrowser.js';
-import { isLoopbackUrl } from './loopbackProxy.js';
+import { externalLinkOpensInPanel } from './loopbackProxy.js';
 import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } from './chatMarkdownExport.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
@@ -762,7 +762,7 @@ function registerIpc(): void {
     if (typeof url !== 'string') throw new Error('Invalid external URL');
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('Only HTTP(S) external URLs are allowed');
-    if (machineBindings.get(_event.sender.id).machineId !== 'local' && isLoopbackUrl(parsed.toString())) {
+    if (externalLinkOpensInPanel(parsed.toString(), machineBindings.get(_event.sender.id).machineId !== 'local')) {
       _event.sender.send('threadterm:browser-event', { type: 'open', url: parsed.toString() }); return;
     }
     await shell.openExternal(parsed.toString());

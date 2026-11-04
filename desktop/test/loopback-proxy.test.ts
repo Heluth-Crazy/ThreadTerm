@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { LoopbackProxy, isLoopbackUrl } from '../src/loopbackProxy.js';
+import { LoopbackProxy, isLoopbackUrl, isRemoteSignInUrl, externalLinkOpensInPanel } from '../src/loopbackProxy.js';
 import { LengthPrefixedSocket } from '../src/runtime-client.js';
 import { authenticatePeer } from '../src/peer-transport.js';
 import { X509Certificate } from 'node:crypto';
@@ -211,4 +211,49 @@ test('control loss fences a tunnel establishment already in flight', async () =>
     socket.write(`CONNECT localhost:5173 HTTP/1.1\r\nProxy-Authorization: ${auth(proxy)}\r\n\r\n`);await pending;
     proxy.closeConnections();const late=new PassThrough();establish!(late);await new Promise(resolve=>setImmediate(resolve));assert.ok(late.destroyed,'a late result must not reopen a closed machine tunnel');
   } finally {socket.destroy();proxy.close();}
+});
+
+const signInCases: Array<[string, boolean]> = [
+  ['https://auth.example/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fcallback', true],
+  ['https://auth.example/authorize?redirect_uri=http://localhost:1455/callback', true],
+  ['https://auth.example/authorize?ReDiReCt_Url=https%3A%2F%2Fapp.localhost%3A443%2Fcallback', true],
+  ['http://auth.example/?redirect_url=http://127.234.1.2:3000/callback', true],
+  ['https://auth.example/?redirect_uri=http://[::1]:3000/callback', true],
+  ['https://auth.example/?redirect_uri=http%3A%2F%2F%5B%3A%3Affff%3A127.2.3.4%5D%3A3000%2Fcallback', true],
+  ['https://auth.example/?redirect_uri=http://[::ffff:7f02:304]:3000/callback', true],
+  ['https://auth.example/?redirect_uri=http://LOCALHOST.:3000/callback', true],
+  ['https://auth.example/?redirect_uri=http://127.1/callback', true],
+  ['https://auth.example/?redirect_uri=http://0x7f000001/callback', true],
+  ['https://auth.example/?redirect_uri=https://public.example/callback', false],
+  ['https://auth.example/device', false],
+  ['https://auth.example/code?user_code=QA', false],
+  ['https://auth.example/?redirect_uri=http://localhost.example.com/callback', false],
+  ['https://auth.example/?redirect_uri=http://lvh.me/callback', false],
+  ['https://accounts.google.com/o/oauth2/auth?redirect_uri=http://localhost:3000/callback', false],
+  ['https://signin.google.com/?redirect_url=http://127.0.0.1/callback', false],
+  ['https://GOOGLE.COM./?redirect_uri=http://localhost/callback', false],
+  ['https://notgoogle.com/?redirect_uri=http://localhost/callback', true],
+  ['https://google.com.example/?redirect_uri=http://localhost/callback', true],
+  ['ftp://auth.example/?redirect_uri=http://localhost/callback', false],
+  ['javascript:alert(1)?redirect_uri=http://localhost/callback', false],
+  ['https://auth.example/?redirect_uri=file:///C:/callback', false],
+  ['https://auth.example/?redirect_uri=ws://localhost/callback', false],
+  ['not a URL', false],
+  ['https://auth.example/?redirect_uri=%ZZ&redirect_url=http://localhost/callback', true],
+];
+
+
+test('sign-in links use literal HTTP callbacks and exclude Google, with matching renderer/desktop cases', () => {
+  for (const [url, expected] of signInCases) assert.equal(isRemoteSignInUrl(url), expected, url);
+});
+
+test('remote link decision opens host callbacks in the panel and keeps local, Google and device-code actions', () => {
+  for (const [url, expected] of signInCases) {
+    assert.equal(externalLinkOpensInPanel(url, true), expected, `remote ${url}`);
+    assert.equal(externalLinkOpensInPanel(url, false), false, `local ${url}`);
+  }
+  for (const url of ['http://localhost:5173/', 'http://127.234.1.2:3000/', 'http://[::ffff:127.2.3.4]/']) {
+    assert.equal(externalLinkOpensInPanel(url, true), true);
+    assert.equal(externalLinkOpensInPanel(url, false), false);
+  }
 });

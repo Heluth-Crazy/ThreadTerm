@@ -4691,6 +4691,30 @@
           "additionalProperties": false,
           "description": "The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show."
         },
+        "remoteSignIn": {
+          "type": "object",
+          "properties": {
+            "executable": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "display": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "executable",
+            "args",
+            "display"
+          ],
+          "additionalProperties": false,
+          "description": "Sign-in command used from another computer's view, a flow that needs no browser on the host."
+        },
         "homepage": {
           "type": "string"
         }

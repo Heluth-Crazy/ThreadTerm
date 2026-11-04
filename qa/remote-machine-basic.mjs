@@ -14,13 +14,14 @@ import { connectPeer } from './pipe-client.mjs';
 
 const treeProbe = process.env.THREADTERM_QA_MACHINE_TREE === '1';
 const browserProbe = process.env.THREADTERM_QA_MACHINE_BROWSER === '1';
+const signInProbe = process.env.THREADTERM_QA_MACHINE_SIGN_IN === '1';
 const filesProbe = process.env.THREADTERM_QA_MACHINE_FILES === '1';
 const root = resolve(import.meta.dirname, '..');
 const qaTemp = /[\\/]tt-qa-temp$/i.test(tmpdir()) ? tmpdir() : join(tmpdir(), 'tt-qa-temp');
 await mkdir(qaTemp, { recursive: true });
 process.env.TEMP = qaTemp; process.env.TMP = qaTemp;
 const scratch = await mkdtemp(join(qaTemp, 'remote-basic-'));
-const out = join(root, browserProbe ? 'qa/results/remote-machine-browser' : filesProbe ? 'qa/results/remote-machine-files' : treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
+const out = join(root, signInProbe ? 'qa/results/remote-machine-sign-in' : browserProbe ? 'qa/results/remote-machine-browser' : filesProbe ? 'qa/results/remote-machine-files' : treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
 await mkdir(out, { recursive: true });
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), 'Build and copy the QA runtime first');
@@ -29,10 +30,12 @@ for (const directory of [bin, hostWork, clientWork, control]) await mkdir(direct
 await writeFile(join(control, 'connect-delay-ms'), '0');
 const browserScenarios = browserProbe ? await import('./remote-machine-browser-scenarios.mjs') : undefined;
 const browserFixtures = await browserScenarios?.setupRemoteBrowserProbe(scratch);
-const fake = join(root, browserProbe ? 'qa/fixtures/browser-agent-reads/codex.cjs' : treeProbe ? 'qa/fixtures/fake-codex-machine-tree.cjs' : 'qa/fixtures/fake-codex-connect-transition.cjs');
+const signInScenarios = signInProbe ? await import('./remote-machine-sign-in-scenarios.mjs') : undefined;
+const signInFixtures = await signInScenarios?.setupRemoteSignInProbe(scratch);
+const fake = join(root, signInProbe ? 'qa/fixtures/fake-codex-sign-in.cjs' : browserProbe ? 'qa/fixtures/browser-agent-reads/codex.cjs' : treeProbe ? 'qa/fixtures/fake-codex-machine-tree.cjs' : 'qa/fixtures/fake-codex-connect-transition.cjs');
 await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${fake}" %*\r\n`);
 const report = { passed: false, checks: [], errors: [], cleanup: [], scratch, ...(browserProbe?{acceptancePassed:false,limitations:[],blockedChecks:[]}: {}) };
-const note = (message, blocked=false) => { if(browserProbe){report.limitations.push(message);if(blocked)report.blockedChecks.push(message);}console.log(`NOTE ${message}`); };
+const note = (message, blocked=false) => { if(signInProbe)(report.notes ??= []).push(message);if(browserProbe){report.limitations.push(message);if(blocked)report.blockedChecks.push(message);}console.log(`NOTE ${message}`); };
 const pass = message => { report.checks.push(message); console.log(`PASS ${message}`); };
 const delay = ms => new Promise(done => setTimeout(done, ms));
 async function until(check, label, timeout = 30000) {
@@ -48,6 +51,7 @@ function environment(kind) {
     THREADTERM_V3_RUNTIME: runtime, THREADTERM_QA_REMOTE_BIND: '127.0.0.1', THREADTERM_QA_PROVIDER_BIN: bin,
     THREADTERM_QA_TRANSITION_CONTROL: control, THREADTERM_QA_TRANSITION_LOG: join(scratch, `${kind}-provider.jsonl`), THREADTERM_QA_TRANSITION_CWD: kind === 'host' ? hostWork : clientWork });
   if(browserProbe){env.THREADTERM_QA_BROWSER_EVENTS=join(scratch,`${kind}-browser-events.jsonl`);env.THREADTERM_QA_BROWSER_CWD=kind==='host'?hostWork:clientWork;env.THREADTERM_QA_BROWSER_URL=`http://localhost:${browserFixtures.port}`;if(kind==='host')env.THREADTERM_QA_TUNNEL_PORT_MAP=browserFixtures.portMap;}
+  if(signInProbe){env.THREADTERM_QA_SIGN_IN_LOG=join(scratch,`${kind}-sign-in.jsonl`);env.THREADTERM_QA_SIGN_IN_KIND=kind;env.THREADTERM_QA_SIGN_IN_URL=signInFixtures.url??'';env.THREADTERM_QA_SIGN_IN_PORT=String(signInFixtures.hostPort??0);if(kind==='host'&&signInFixtures.portMap)env.THREADTERM_QA_TUNNEL_PORT_MAP=signInFixtures.portMap;}
   return env;
 }
 const hostEnv = environment('host'), clientEnv = environment('client');
@@ -199,6 +203,7 @@ try {
     const { runRemoteFilesProbe } = await import('./remote-machine-files-scenarios.mjs');
     await runRemoteFilesProbe({ app, remotePage, localPage, rpc, until, pass, hostPeer, hostEnv, clientEnv, hostProject, session, hostWork, clientWork, scratch, out });
   }
+  if(signInProbe)report.signIn=await signInScenarios.runRemoteSignInProbe({app,remotePage,localPage,rpc,until,pass,hostPeer,hostProject,session,hostWork,clientWork,scratch,out,machine,note,fixtures:signInFixtures});
   if(browserProbe)browserReceipt=await browserScenarios.runRemoteBrowserProbe({app,remotePage,localPage,rpc,until,pass,hostPeer,hostProject,session,hostWork,scratch,out,machine,note,fixtures:browserFixtures});
   const childPromise = app.waitForEvent('window', { predicate: page => page !== localPage && page !== remotePage, timeout: 15000 });
   await remotePage.evaluate(sessionId => window.threadterm.openWindow({ sessionId }), session.id);
@@ -268,6 +273,7 @@ try {
   process.exitCode = 1;
 } finally {
   await browserFixtures?.cleanup();
+  await signInFixtures?.cleanup().catch(error=>report.cleanup.push(String(error)));
   if (hostApp) { await hostApp.evaluate(({ app }) => app.exit(0)).catch(() => {}); await hostApp.close().catch(() => {}); }
   if (localPage) await rpc(localPage, 'runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
   if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); }

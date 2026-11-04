@@ -81,6 +81,7 @@ impl ProviderAdapter for PiAdapter {
             plugin_id: None,
             icon: None,
             sign_in: None,
+            remote_sign_in: None,
             homepage: Some(PI_HOME.to_owned()),
         }
     }

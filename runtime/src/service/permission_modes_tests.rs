@@ -20,6 +20,7 @@ impl ProviderAdapter for PermissionAdapter {
             plugin_id: None,
             icon: None,
             sign_in: None,
+            remote_sign_in: None,
             homepage: None,
             id: self.provider.into(),
             name: "Permission fixture".into(),

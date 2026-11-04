@@ -338,6 +338,7 @@ impl ProviderAdapter for ClaudeAdapter {
             plugin_id: None,
             icon: None,
             sign_in: super::builtin_sign_in("claude"),
+            remote_sign_in: None,
             homepage: None,
             id: "claude".to_owned(),
             name: super::builtin_name("claude").to_owned(),
