@@ -32,7 +32,7 @@
       (function () {
         var splash = document.getElementById("boot-splash");
         var query = new URLSearchParams(location.search);
-        if (query.has("floating") || query.has("sessionId") || query.has("workspaceId")) { splash.remove(); return; }
+        if (query.has("floating") || query.has("sessionId") || query.has("workspaceId") || query.has("machineView")) { splash.remove(); return; }
         var saved = {};
         try { saved = JSON.parse(localStorage.getItem("threadterm.v3.boot-appearance") || "{}") || {}; } catch (error) { saved = {}; }
         var dark = saved.theme === "dark" || (saved.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);

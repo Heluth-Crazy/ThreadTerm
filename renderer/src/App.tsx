@@ -8,7 +8,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
+import { MachineProvider, machineBridge, useMachines } from './machines';
+import { MachineRows, MachineChrome } from './components/MachineRows';
+import './components/machines.css';
 import type {
   CatalogVisibility,
   ProviderId,
@@ -104,6 +108,12 @@ const active = (status: Session["status"]) =>
   ["starting", "running", "idle", "waiting"].includes(status);
 
 export function App() {
+  return <MachineProvider><MachineApp /></MachineProvider>;
+}
+function MachineApp() {
+  const machineSnapshot = useMachines();
+  const remoteMachine = machineSnapshot.currentId !== 'local';
+  const currentMachine = machineSnapshot.machines.find(item => item.id === machineSnapshot.currentId);
   const floatingWindow = new URLSearchParams(window.location.search).get("floating") === "1";
   const nativeChrome = new URLSearchParams(window.location.search).get("chrome") === "native";
   const [windowMaximized, setWindowMaximized] = useState(false);
@@ -179,7 +189,7 @@ export function App() {
       if (event.event === "runtime.transport") {
         const state = (event.data as { state?: string } | undefined)?.state;
         if (state === "disconnected") setRuntimeState("reconnecting");
-        if (state === "incompatible") setRuntimeState("unavailable");
+        if (state === "incompatible" || state === 'pin-mismatch') setRuntimeState("unavailable");
         if (state === "reconnected") void refresh();
         return;
       }
@@ -395,10 +405,10 @@ export function App() {
     <I18nProvider locale={locale}>
       <AgentIconsProvider providers={data?.providers ?? []} images={data?.settings.terminalIcons?.images}>
       <AppSettingsProvider settings={data?.settings}>
-      <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}`}>
-        {themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
+      <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}${remoteMachine ? ' remote-machine' : ''}`} style={{ '--machine-color': currentMachine?.color } as CSSProperties}>
+        {!remoteMachine && themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
         <header className="titlebar app-chrome">
-          <div className="drag-region"><span className="chrome-title">ThreadTerm</span></div>
+          <div className="drag-region"><span className="chrome-title">{remoteMachine ? `ThreadTerm — ${currentMachine?.name ?? ''}` : 'ThreadTerm'}</span><MachineChrome zh={locale === 'zh-CN'} /></div>
           <div className="window-controls">
             <button
               aria-label={t("minimize")}
@@ -426,7 +436,7 @@ export function App() {
             <button className="icon-btn" aria-label={t("commandPalette")} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
             <button aria-label={t("inbox")} className="icon-btn" aria-expanded={shellMenu?.kind==="notifications"} onClick={event => setShellMenu(shellMenu?.kind==="notifications"?undefined:{kind:"notifications",anchor:event.currentTarget})}><Icon name="bell" />{inboxUnread > 0 && <i className="bell-badge">{inboxUnread}</i>}</button>
           </div>
-          <div className="side-scroll"><nav className="side-nav" aria-label={t("primaryNavigation")}>
+          <div className="side-scroll"><MachineRows zh={locale === 'zh-CN'} /><nav className="side-nav" aria-label={t("primaryNavigation")}>
             <button className="nav-item new" onClick={() => setCreatorOpen(true)}><Icon name="plus" />{locale==="zh-CN"?"新建终端":"New terminal"}</button>
             <button
               className={route.kind === "inbox" ? "nav-item active" : "nav-item"}
@@ -460,6 +470,7 @@ export function App() {
           <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar runtime-avatar"><WbIcon name="person" /><RuntimeAvatarBadge state={visibleRuntimeProblem} locale={locale} /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button></div>
         </aside>
         <main className="content main">
+          {remoteMachine && currentMachine && ['incompatible', 'pin-mismatch'].includes(currentMachine.state) && <div className="machine-failure" role="alert"><strong>{currentMachine.state === 'pin-mismatch' ? (locale === 'zh-CN' ? '此电脑的身份已更改' : 'This computer’s identity changed') : (locale === 'zh-CN' ? '版本不一致' : 'Version mismatch')}</strong><p>{currentMachine.message}</p><button type="button" className="btn" onClick={() => void machineBridge()?.machineShow('local')}>{locale === 'zh-CN' ? '返回这台电脑' : 'Back to This PC'}</button></div>}
           <div data-runtime-header-host />
           <div className="toolbar legacy-toolbar">
             <div>

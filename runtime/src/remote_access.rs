@@ -380,6 +380,12 @@ impl RemoteAccess {
         let bind_ip = Ipv4Addr::LOCALHOST;
         #[cfg(not(test))]
         let bind_ip = Ipv4Addr::UNSPECIFIED;
+        #[cfg(all(debug_assertions, not(test)))]
+        let bind_ip = if std::env::var("THREADTERM_QA_REMOTE_BIND").as_deref() == Ok("127.0.0.1") {
+            Ipv4Addr::LOCALHOST
+        } else {
+            bind_ip
+        };
         let std_listener = match StdTcpListener::bind((bind_ip, requested_port)) {
             Ok(listener) => listener,
             Err(error) => {
@@ -404,7 +410,7 @@ impl RemoteAccess {
             .set_nonblocking(true)
             .context("making remote HTTPS listener nonblocking")?;
         let port = std_listener.local_addr()?.port();
-        let ip = lan_ipv4();
+        let ip = if bind_ip.is_loopback() { IpAddr::V4(bind_ip) } else { lan_ipv4() };
         let url = format!("https://{ip}:{port}");
         let listener =
             TcpListener::from_std(std_listener).context("registering remote HTTPS listener")?;

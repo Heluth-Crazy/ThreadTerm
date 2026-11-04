@@ -8,6 +8,7 @@ import { SurfaceDialog } from "./SurfaceDialog";
 import { SettingsSwitch } from "./SettingsControls";
 import { RemoteIdentityRecovery } from "./RemoteIdentityRecovery";
 import { useVisibleTicker } from "../visibleTicker";
+import { devicesForProfile } from '../machines';
 
 type Props = { language: Locale; active?: boolean };
 export function DeviceSettings({ language, active = true }: Props) {
@@ -23,7 +24,7 @@ export function DeviceSettings({ language, active = true }: Props) {
     const [access, list] = await Promise.allSettled([request("device.status", {}), request("device.list", {})]);
     if (!alive.current || token !== generation.current) return;
     if (access.status === "fulfilled") setStatus(access.value);
-    if (list.status === "fulfilled") setDevices(list.value);
+    if (list.status === "fulfilled") setDevices(devicesForProfile(list.value, 'phone'));
     setNow(Date.now());
     const failure = [access, list].find(result => result.status === "rejected");
     if (failure?.status === "rejected") setIssue(errorText(failure.reason));

@@ -141,8 +141,8 @@ async function nativeContext(tab:Tab,x:number,y:number):Promise<void> {
   if(pick&&current()&&!tab.owner.isDestroyed()){const shot=await captureNativePageShot(wc,pick);if(!current()){if(shot)await deletePageShots([shot.id]);return;}tab.owner.send('threadterm:page-context-menu',{frameName:tab.frameName,x:tab.bounds.x+x/appZoom,y:tab.bounds.y+y/appZoom,pick:{...pick,...(shot?{shot}:{})},selectionText:''});}
 }
 function applyViewRadius(tab:Tab):void { const radius=Math.round(tab.radius*tab.owner.getZoomFactor());for(const view of [tab.view,tab.devtools?.view])if(view&&!view.webContents.isDestroyed())view.setBorderRadius(radius); }
-function detachDevtools(tab:Tab):void { const view=tab.devtools?.view;if(view&&!tab.window.isDestroyed()&&tab.window.contentView.children.includes(view))tab.window.contentView.removeChildView(view); }
-function attachDevtools(tab:Tab):void { const devtools=tab.devtools;if(!devtools||!tab.devtoolsWanted||!tab.visible||tab.leases||!devtools.bounds||tab.window.isDestroyed()||devtools.view.webContents.isDestroyed()){detachDevtools(tab);return;}const zoom=tab.owner.getZoomFactor(),bounds=devtools.bounds;applyViewRadius(tab);if(!tab.window.contentView.children.includes(devtools.view))tab.window.contentView.addChildView(devtools.view);devtools.view.setBounds({x:Math.round(bounds.x*zoom),y:Math.round(bounds.y*zoom),width:Math.round(bounds.width*zoom),height:Math.round(bounds.height*zoom)}); }
+function detachDevtools(tab:Tab):void { const view=tab.devtools?.view;if(view&&!tab.window.isDestroyed()&&appView(tab).children.includes(view))appView(tab).removeChildView(view); }
+function attachDevtools(tab:Tab):void { const devtools=tab.devtools;if(!devtools||!tab.devtoolsWanted||!tab.visible||tab.leases||!devtools.bounds||tab.window.isDestroyed()||devtools.view.webContents.isDestroyed()){detachDevtools(tab);return;}const zoom=tab.owner.getZoomFactor(),bounds=devtools.bounds;applyViewRadius(tab);if(!appView(tab).children.includes(devtools.view))appView(tab).addChildView(devtools.view);devtools.view.setBounds({x:Math.round(bounds.x*zoom),y:Math.round(bounds.y*zoom),width:Math.round(bounds.width*zoom),height:Math.round(bounds.height*zoom)}); }
 function setDevtoolsBounds(tab:Tab,bounds?:BrowserBounds):void { tab.devtoolsBounds=bounds;if(tab.devtools)tab.devtools.bounds=bounds;if(!bounds)detachDevtools(tab); }
 function selectDevtoolsPanel(tab:Tab,devtools:Devtools):void {
   if(tab.devtools!==devtools||!tab.devtoolsWanted||!devtools.ready||devtools.view.webContents.isDestroyed())return;
@@ -184,15 +184,15 @@ function inspectDevtools(tab:Tab):void {
   if(wc!==previous)wc.once('did-finish-load',inspect);else inspect();
 }
 function handleDevtoolsShortcut(tab:Tab,event:Electron.Event,input:Electron.Input):boolean { const shortcut=browserDevtoolsShortcut(input);if(!shortcut)return false;event.preventDefault();if(shortcut.action==='toggle'&&tab.devtoolsWanted)closeDevtools(tab);else openDevtools(tab,shortcut.panel,shortcut.panel==='elements');return true; }
-function attach(tab:Tab):void { if (!tab.view || tab.window.isDestroyed() || !tab.bounds) return; applyViewRadius(tab);if (!tab.window.contentView.children.includes(tab.view)) tab.window.contentView.addChildView(tab.view); const zoom=tab.owner.getZoomFactor();tab.view.setBounds({x:Math.round(tab.bounds.x*zoom),y:Math.round(tab.bounds.y*zoom),width:Math.round(tab.bounds.width*zoom),height:Math.round(tab.bounds.height*zoom)});attachDevtools(tab); }
-function detach(tab:Tab):void { detachDevtools(tab);if (tab.view && !tab.window.isDestroyed() && tab.window.contentView.children.includes(tab.view)) tab.window.contentView.removeChildView(tab.view); }
+function attach(tab:Tab):void { if (!tab.view || tab.window.isDestroyed() || !tab.bounds) return; applyViewRadius(tab);if (!appView(tab).children.includes(tab.view)) appView(tab).addChildView(tab.view); const zoom=tab.owner.getZoomFactor();tab.view.setBounds({x:Math.round(tab.bounds.x*zoom),y:Math.round(tab.bounds.y*zoom),width:Math.round(tab.bounds.width*zoom),height:Math.round(tab.bounds.height*zoom)});attachDevtools(tab); }
+function detach(tab:Tab):void { detachDevtools(tab);if (tab.view && !tab.window.isDestroyed() && appView(tab).children.includes(tab.view)) appView(tab).removeChildView(tab.view); }
 function destroyView(tab:Tab):void { tab.faviconAbort?.abort();tab.faviconAbort=undefined;agentControllers.get(tab.owner)?.invalidate(tab.id,'Sharing stopped — the browser view was unloaded.');const contents=tab.view?.webContents,url=contents&&!contents.isDestroyed()?contents.getURL():undefined;if(url){tab.url=url;tab.origin=pageOrigin(url);} tab.findRequestId=undefined; tab.find=undefined; tab.occlusionGeneration++; detach(tab);destroyDevtools(tab);tab.contextPoint=undefined; nativePageClosed(tab.owner,tab.frameName); const view=tab.view; tab.view=undefined; tab.snapshot=undefined; tab.loading=false;tab.consoleStatus='pending';tab.consoleUrl=undefined; if (view && !view.webContents.isDestroyed()) view.webContents.close(); emit(tab); }
 function scheduleHidden():void { if (hiddenTimer) { clearInterval(hiddenTimer); hiddenTimer=undefined; } if ([...tabs.values()].some(tab=>!!tab.view&&!tab.visible) && preferences.unloadAfterMinutes>0) { hiddenTimer=setInterval(()=>{ for(const id of expiredHidden([...tabs.values()].filter(tab=>!!tab.view),Date.now(),preferences.unloadAfterMinutes)) destroyView(tabs.get(id)!); scheduleHidden(); },60_000); hiddenTimer.unref(); } }
 function trimLive():void { const live=[...tabs.values()].filter(tab=>!!tab.view); for(const id of lruVictims(live,6)) destroyView(tabs.get(id)!); scheduleHidden(); }
 async function occlude(tab:Tab):Promise<void> {
   const wc=tab.view?.webContents; if (!wc || !tab.visible) return;
   if(tab.window.isFocused())tab.owner.focus();
-  const devtools=tab.devtools,contents=devtools?.view.webContents,attached=!!devtools&&!tab.window.isDestroyed()&&tab.window.contentView.children.includes(devtools.view);
+  const devtools=tab.devtools,contents=devtools?.view.webContents,attached=!!devtools&&!tab.window.isDestroyed()&&appView(tab).children.includes(devtools.view);
   const token=++tab.occlusionGeneration,current=()=>tab.occlusionGeneration===token&&tab.leases&&tab.visible&&tab.view?.webContents===wc&&!wc.isDestroyed();
   // Keep the live page attached until the renderer has loaded its replacement image.
   // A transient capture may wake a background page, but never focuses its OS window.
@@ -242,7 +242,10 @@ async function saveMarkup(tab:Tab,command:Extract<BrowserHandoffCommand,{type:'s
 }
 
 export function lookupNativePage(sender: WebContents, frameName: string): WebContents | undefined { const tab=[...tabs.values()].find(value=>value.owner===sender&&value.frameName===frameName); return tab?.view?.webContents; }
-export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)=>void, runtimeFor?:(event:IpcMainInvokeEvent)=>BrowserAgentRuntime):void {
+let appViewFor: ((owner: WebContents) => Electron.View | undefined) | undefined;
+function appView(tab: Tab): Electron.View { return appViewFor?.(tab.owner) ?? tab.window.contentView; }
+export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)=>void, runtimeFor?:(event:IpcMainInvokeEvent)=>BrowserAgentRuntime, contentViewFor?: (owner: WebContents) => Electron.View | undefined):void {
+  appViewFor = contentViewFor;
   runtimeForBrowser=runtimeFor;
   loadPreferences();
   configureProfile();

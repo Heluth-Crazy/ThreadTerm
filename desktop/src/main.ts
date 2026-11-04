@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, globalShortcut, Notification, screen, session, protocol, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, WebContentsView, View, Menu, Tray, dialog, ipcMain, nativeImage, safeStorage, shell, globalShortcut, Notification, screen, session, protocol, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,12 +27,36 @@ import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
 import { BACKGROUND_IMAGE_PRIVILEGED_SCHEME, backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc } from './backgroundImages.js';
 import { buildThemeExport, importThemePackImages, qaThemeExportOverride } from './themePackCore.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
+import { MachineRegistry } from './machines.js';
+import { MachineBindings, MachineViews } from './machineViews.js';
+import { createAppSessionPreparer } from './appSession.js';
+import { certificateCheckCode, connectPinned, pairOnPinnedConnection, parsePairDescriptor, type PairDescriptor } from './peer-transport.js';
+import type { MachineInfo, MachineSnapshot } from '../../renderer/src/machineTypes.js';
+import type { TLSSocket } from 'node:tls';
 
 // One call for every privileged scheme: Electron keeps only the last registerSchemesAsPrivileged call.
 protocol.registerSchemesAsPrivileged([HTML_PREVIEW_PRIVILEGED_SCHEME, BACKGROUND_IMAGE_PRIVILEGED_SCHEME]);
 app.commandLine.appendSwitch('enable-features', mergePreviewIsolationFeatures(app.commandLine.getSwitchValue('enable-features')));
 const htmlPreviewGrants = new HtmlPreviewGrantManager();
 let htmlPreviewPreloadReady = false;
+const prepareAppSession = createAppSessionPreparer((appSession: Electron.Session) => {
+  installAppCspHeader(appSession);
+  installHtmlPreviewSession(appSession, htmlPreviewGrants, { appFrameAncestor: process.env.THREADTERM_V3_DEV_SERVER_URL ? new URL(process.env.THREADTERM_V3_DEV_SERVER_URL).origin : 'file:' });
+  installBackgroundImageSession(appSession, backgroundImagesFolder());
+  try {
+    const preloadPath = join(__dirname, 'htmlPreviewSandboxPreload.cjs');
+    if (!statSync(preloadPath).isFile()) return false;
+    appSession.registerPreloadScript({ type: 'frame', filePath: preloadPath });
+    return true;
+  } catch { return false; }
+});
+const machineBindings = new MachineBindings<BrowserWindow>();
+const machineRenderers = new Map<number, Electron.WebContents>();
+const machineViews = new Map<number, MachineViews<View>>();
+const machineStates = new Map<string, Pick<MachineInfo, 'state' | 'message'>>();
+const pendingPairings = new Map<number, { descriptor: PairDescriptor; socket: TLSSocket; timer: NodeJS.Timeout }>();
+let machines: MachineRegistry;
+let remoteMachinesEnabled = false;
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -70,15 +94,8 @@ app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); voi
 app.on('will-quit', () => { adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
 
 void app.whenReady().then(async () => {
-  installAppCspHeader(session.defaultSession);
-  installHtmlPreviewSession(session.defaultSession, htmlPreviewGrants, { appFrameAncestor: process.env.THREADTERM_V3_DEV_SERVER_URL ? new URL(process.env.THREADTERM_V3_DEV_SERVER_URL).origin : 'file:' });
-  installBackgroundImageSession(session.defaultSession, backgroundImagesFolder());
-  try {
-    const preloadPath = join(__dirname, 'htmlPreviewSandboxPreload.cjs');
-    if (!statSync(preloadPath).isFile()) throw new Error('Missing HTML preview safety preload');
-    session.defaultSession.registerPreloadScript({ type: 'frame', filePath: preloadPath });
-    htmlPreviewPreloadReady = true;
-  } catch { /* Preview grants fail closed when the safety asset is unavailable. */ }
+  htmlPreviewPreloadReady = prepareAppSession(session.defaultSession);
+  machines = new MachineRegistry(join(app.getPath('userData'), 'machines.json'), safeStorage);
   registerIpc();
   // The window and its launch screen come up at once and cover the runtime start. A scheduled cache cleanup needs
   // the runtime's settings, so it runs alongside instead of keeping the window back until the runtime answers.
@@ -144,13 +161,17 @@ function installAppCspHeader(appSession: Electron.Session): void {
 }
 function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
   if (!event.senderFrame || !isTrustedRendererUrl(event.senderFrame.url)) throw new Error('Untrusted renderer IPC sender');
+  machineBindings.get(event.sender.id);
 }
 function trayImage(): Electron.NativeImage {
   return nativeImage.createFromDataURL(trayIconPng);
 }
 function delay(ms: number): Promise<void> { return new Promise((resolvePromise) => setTimeout(resolvePromise, ms)); }
 
-function createWindow(options: { sessionId?: string; workspaceId?: string; floating?: boolean; background?: boolean } = {}): BrowserWindow {
+function createWindow(options: { sessionId?: string; workspaceId?: string; floating?: boolean; background?: boolean; machineId?: string } = {}): BrowserWindow {
+  const machineId = options.machineId ?? 'local';
+  const partition = machineId === 'local' ? undefined : `persist:machine-${machineId}`;
+  prepareAppSession(partition ? session.fromPartition(partition) : session.defaultSession);
   const window = new BrowserWindow({
     width: options.floating ? 900 : 1440,
     height: options.floating ? 640 : 920,
@@ -165,21 +186,52 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
     // rounds .app-shell in CSS (see resolveWindowChrome, chrome= query param).
     ...(windowChrome === 'native' ? { roundedCorners: true } : { transparent: true }),
     webPreferences: {
+      ...(partition ? { partition } : {}),
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
       nodeIntegrationInSubFrames: true,
       webSecurity: true,
-      additionalArguments: terminalWindowArguments(process.platform, release()),
+      additionalArguments: [...terminalWindowArguments(process.platform, release()), `--threadterm-machine-id=${machineId}`],
     },
   });
+  bindMachineRenderer(window.webContents, machineId, window);
+  if (!options.floating) {
+    const localView = window.contentView;
+    const root = new View();
+    window.setContentView(root);
+    root.addChildView(localView);
+    const views = new MachineViews<View>(localView, id => {
+      const appSession = session.fromPartition(`persist:machine-${id}`);
+      prepareAppSession(appSession);
+      const view = new WebContentsView({ webPreferences: { session: appSession, preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, additionalArguments: [...terminalWindowArguments(process.platform, release()), `--threadterm-machine-id=${id}`] } });
+      bindMachineRenderer(view.webContents, id, window);
+      view.webContents.on('will-navigate', (event, url) => { if (!isTrustedRendererUrl(url)) event.preventDefault(); });
+      root.addChildView(view);
+      void loadRenderer(view.webContents, { machineId: id });
+      return view;
+    }, () => window.getContentSize() as [number, number]);
+    machineViews.set(window.id, views);
+    views.show('local');
+    window.on('resize', () => views.resize());
+    window.once('closed', () => {
+      machineViews.delete(window.id);
+      for (const view of views.all()) if (view instanceof WebContentsView && !view.webContents.isDestroyed()) view.webContents.close();
+    });
+  }
+  if (machineId !== 'local') window.setTitle(`ThreadTerm — ${machines.list().find(item => item.id === machineId)?.name ?? 'Computer'}`);
   // The taskbar group has a separate icon source from WM_GETICON. Bind it to
   // this packaged executable instead of relying on a matching old shortcut.
   if (process.platform === 'win32' && app.isPackaged) {
     window.setAppDetails({ appId: 'com.threadterm.v3', appIconPath: process.execPath, appIconIndex: 0 });
   }
-  const emitWindowState = () => { if (!window.isDestroyed()) window.webContents.send('threadterm:window-state', { maximized: window.isMaximized() }); };
+  const emitWindowState = () => {
+    if (window.isDestroyed()) return;
+    const state = { maximized: window.isMaximized() };
+    window.webContents.send('threadterm:window-state', state);
+    for (const view of machineViews.get(window.id)?.all() ?? []) if (view instanceof WebContentsView && view.webContents !== window.webContents && !view.webContents.isDestroyed()) view.webContents.send('threadterm:window-state', state);
+  };
   window.on('maximize', emitWindowState);
   window.on('unmaximize', emitWindowState);
   window.once('ready-to-show', () => { if (options.background) window.showInactive(); else window.show(); });
@@ -190,12 +242,13 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
   window.on('close', (event) => {
     if (!allowQuit && !options.floating) { event.preventDefault(); window.hide(); }
   });
-  void loadRenderer(window, options);
+  void loadRenderer(window.webContents, options);
   return window;
 }
 
-async function loadRenderer(window: BrowserWindow, options: { sessionId?: string; workspaceId?: string; floating?: boolean }): Promise<void> {
+async function loadRenderer(window: Electron.WebContents, options: { sessionId?: string; workspaceId?: string; floating?: boolean; machineId?: string }): Promise<void> {
   const query = new URLSearchParams();
+  if (options.machineId && options.machineId !== 'local') query.set('machineView', '1');
   if (options.sessionId) query.set('sessionId', options.sessionId);
   if (options.workspaceId) query.set('workspaceId', options.workspaceId);
   if (options.floating) query.set('floating', '1');
@@ -243,6 +296,8 @@ function showMainWindow(): void {
 async function refreshDesktopPreferences(): Promise<{ shortcuts: Record<string, string> }> {
   const snapshot = await adminRuntime.request('runtime.snapshot', {});
   const settings = snapshot.settings;
+  const enabled = !!(settings.remoteMachines as { enabled?: boolean } | undefined)?.enabled;
+  applyMachinesGate(enabled);
   lightweightMode = settings.lightweightMode === true;
   const shortcuts = settings.shortcuts && typeof settings.shortcuts === 'object' ? settings.shortcuts as Record<string, unknown> : {};
   globalShortcut.unregisterAll();
@@ -316,15 +371,82 @@ async function notifyNative(kind: NotificationKind, copy: (locale: NotificationL
 }
 
 function registerIpc(): void {
+  ipcMain.handle('threadterm:machine-list', async event => {
+    assertTrustedRenderer(event);
+    await refreshMachinesGate();
+    return machineSnapshot(event.sender.id);
+  });
+  ipcMain.handle('threadterm:machine-show', async (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    await assertMachinesEnabled();
+    if (typeof id !== 'string' || !machines.list().some(item => item.id === id)) throw new Error('Unknown computer');
+    const bound = machineBindings.get(event.sender.id);
+    const owner = machineViews.has(bound.owner.id) ? bound.owner : mainWindow;
+    if (!owner || owner.isDestroyed()) throw new Error('Window is unavailable');
+    const view = machineViews.get(owner.id)!.show(id);
+    owner.setTitle(id === 'local' ? 'ThreadTerm' : `ThreadTerm — ${machines.list().find(item => item.id === id)!.name}`);
+    if (view instanceof WebContentsView) view.webContents.focus();
+    else owner.webContents.focus();
+    owner.show();
+    broadcastMachines();
+  });
+  ipcMain.handle('threadterm:machine-prepare', async (event, text: unknown) => {
+    assertTrustedRenderer(event); assertLocalMachine(event); await assertMachinesEnabled();
+    machines.assertEncryptionAvailable();
+    if (typeof text !== 'string') throw new Error('Paste a ThreadTerm pairing offer');
+    cancelPendingPairing(event.sender.id);
+    const descriptor = parsePairDescriptor(text);
+    const socket = await connectPinned(descriptor.serverUrl, descriptor.tlsFingerprint, 'http/1.1');
+    if (event.sender.isDestroyed() || !remoteMachinesEnabled) { socket.destroy(); throw new Error('Pairing cancelled'); }
+    cancelPendingPairing(event.sender.id);
+    const timer = setTimeout(() => cancelPendingPairing(event.sender.id), 60000);
+    pendingPairings.set(event.sender.id, { descriptor, socket, timer });
+    return { checkCode: certificateCheckCode(descriptor.tlsFingerprint), endpoint: descriptor.serverUrl };
+  });
+  ipcMain.handle('threadterm:machine-add', async (event, options: unknown) => {
+    assertTrustedRenderer(event); assertLocalMachine(event); await assertMachinesEnabled(); machines.assertEncryptionAvailable();
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Choose a computer name and color');
+    const { name, color } = options as { name?: unknown; color?: unknown };
+    if (typeof name !== 'string' || !name.trim() || name.length > 80 || /[\x00-\x1f]/.test(name) || typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) throw new Error('Choose a computer name and color');
+    const pending = pendingPairings.get(event.sender.id);
+    if (!pending) throw new Error('Check the pairing offer before adding a computer');
+    pendingPairings.delete(event.sender.id); clearTimeout(pending.timer);
+    const credential = await pairOnPinnedConnection(pending.socket, pending.descriptor, name.trim());
+    if (!remoteMachinesEnabled || event.sender.isDestroyed()) throw new Error('Pairing cancelled');
+    const entry = machines.add({ name, color, endpoint: pending.descriptor.serverUrl, pin: pending.descriptor.tlsFingerprint }, credential);
+    broadcastMachines();
+    return entry;
+  });
+  ipcMain.handle('threadterm:machine-remove', async (event, id: unknown) => {
+    assertTrustedRenderer(event); assertLocalMachine(event); await assertMachinesEnabled();
+    if (typeof id !== 'string' || id === 'local' || !machines.list().some(item => item.id === id)) throw new Error('Unknown computer');
+    for (const [key, client] of windowRuntimes) if (machineBindings.get(key).machineId === id) { client.dispose(); windowRuntimes.delete(key); }
+    for (const [windowId, views] of machineViews) {
+      const removed = views.remove(id);
+      if (removed) {
+        const owner = BrowserWindow.fromId(windowId);
+        owner?.contentView.removeChildView(removed);
+        if (removed instanceof WebContentsView && !removed.webContents.isDestroyed()) removed.webContents.close();
+        if (views.currentId === 'local') owner?.setTitle('ThreadTerm');
+      }
+    }
+    for (const window of BrowserWindow.getAllWindows()) if (machineBindings.get(window.webContents.id).machineId === id) window.destroy();
+    machines.remove(id); machineStates.delete(id); broadcastMachines();
+  });
   registerBrowser(event => {
     assertTrustedRenderer(event);
-    const owner = BrowserWindow.fromWebContents(event.sender);
+    assertLocalMachine(event);
+    const owner = machineBindings.get(event.sender.id).owner;
     if (!owner || owner.webContents !== event.sender || event.senderFrame !== event.sender.mainFrame) throw new Error('Browser commands require the application main frame');
   },event=>{
     const runtime=runtimeFor(event);
     return {browserRequest:(method,params)=>runtime.browserRequest(method,params),onBrowserFrame:listener=>runtime.onBrowserFrame(listener),onBrowserDisconnect:listener=>runtime.onBrowserDisconnect(listener),onEvent:listener=>runtime.onEvent(listener),snapshot:()=>runtime.request('runtime.snapshot',{})};
+  }, contents => {
+    if (!machineRenderers.has(contents.id)) return undefined;
+    const bound = machineBindings.get(contents.id);
+    return machineViews.get(bound.owner.id)?.all()[0] ?? bound.owner.contentView;
   });
-  registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady);
+  registerHtmlPreviewIpc(htmlPreviewGrants, event => { assertTrustedRenderer(event); assertLocalMachine(event); }, runtimeFor, () => htmlPreviewPreloadReady);
   registerBackgroundImageIpc({ folder: backgroundImagesFolder(), assertTrusted: assertTrustedRenderer, isPackaged: app.isPackaged });
   registerPageComments(assertTrustedRenderer, async after => {
     const references = await adminRuntime.request('reviewDrafts.assetReferences', after ? { after, limit: 200 } : { limit: 200 });
@@ -332,7 +454,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:export-chat-markdown', (event, payload: unknown) => saveChatMarkdown(event, payload, {
     assertTrusted: assertTrustedRenderer,
-    choosePath: async options => { const owner = BrowserWindow.fromWebContents(event.sender); return owner ? dialog.showSaveDialog(owner, options) : dialog.showSaveDialog(options); },
+    choosePath: async options => { const owner = machineBindings.get(event.sender.id).owner; return owner ? dialog.showSaveDialog(owner, options) : dialog.showSaveDialog(options); },
     write: writeChatMarkdownAtomic,
     files: nativeMarkdownExportFiles,
     alive: () => !event.sender.isDestroyed(),
@@ -341,7 +463,7 @@ function registerIpc(): void {
     assertTrustedRenderer(event);
     validateRequest(method, params);
     const runtime = runtimeFor(event);
-    if (method === 'data.backup') await session.defaultSession.flushStorageData();
+    if (method === 'data.backup') await event.sender.session.flushStorageData();
     const requestParams = method === 'data.backup' ? { ...params as RequestParams<'data.backup'>, desktopDataRoot: app.getPath('userData') } : params;
     return runtime.request(method, requestParams as RequestParams<Method>);
   });
@@ -392,7 +514,8 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:choose-directory', async (event) => {
     assertTrustedRenderer(event);
-    const owner = BrowserWindow.fromWebContents(event.sender);
+    assertLocalMachine(event);
+    const owner = machineBindings.get(event.sender.id).owner;
     const options = { properties: ['openDirectory', 'createDirectory'] as Electron.OpenDialogOptions['properties'] };
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     return result.canceled ? null : (result.filePaths[0] ?? null);
@@ -402,25 +525,26 @@ function registerIpc(): void {
     // QA can point the picker at fixture paths so the real app never opens a native dialog.
     const qaPaths = qaAttachPathsOverride(process.env.THREADTERM_V3_ATTACH_FILES_QA, app.isPackaged);
     if (qaPaths) return readAttachFiles(qaPaths);
-    const owner = BrowserWindow.fromWebContents(event.sender);
+    const owner = machineBindings.get(event.sender.id).owner;
     const options = { title: 'Attach files', properties: ['openFile', 'multiSelections'] as Electron.OpenDialogOptions['properties'] };
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : readAttachFiles(result.filePaths);
   });
   ipcMain.handle('threadterm:open-external-files', async (event) => {
     assertTrustedRenderer(event);
+    assertLocalMachine(event);
     const qaPaths = qaOpenExternalPathsOverride(process.env.THREADTERM_V3_OPEN_EXTERNAL_QA, app.isPackaged);
     if (qaPaths) return qaPaths;
-    const owner = BrowserWindow.fromWebContents(event.sender);
+    const owner = machineBindings.get(event.sender.id).owner;
     const options = { title: 'Open file outside workspace', properties: ['openFile', 'multiSelections'] as Electron.OpenDialogOptions['properties'] };
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
   });
-  ipcMain.handle('threadterm:activate-data-relocation', async (event, prepared: unknown) => { assertTrustedRenderer(event); return activateDataRelocation(prepared); });
+  ipcMain.handle('threadterm:activate-data-relocation', async (event, prepared: unknown) => { assertTrustedRenderer(event); assertLocalMachine(event); return activateDataRelocation(prepared); });
   ipcMain.handle('threadterm:choose-save-path', async (event, kind: unknown) => {
     assertTrustedRenderer(event);
     if (kind !== 'database' && kind !== 'settings' && kind !== 'theme') throw new Error('Unsupported save kind');
-    const owner = BrowserWindow.fromWebContents(event.sender);
+    const owner = machineBindings.get(event.sender.id).owner;
     const options = {
       title: kind === 'database' ? 'Back up ThreadTerm data' : 'Save ThreadTerm settings',
       defaultPath: kind === 'database' ? `threadterm-v3-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.sqlite3` : `threadterm-v3-${kind}.json`,
@@ -432,12 +556,12 @@ function registerIpc(): void {
   ipcMain.handle('threadterm:export-file', async (event, kind: unknown) => {
     assertTrustedRenderer(event);
     if (kind !== 'settings' && kind !== 'theme') throw new Error('Unsupported export kind');
-    const content = kind === 'settings' ? await adminRuntime.request('settings.export', {}) : (await adminRuntime.request('runtime.snapshot', {})).settings.customThemes;
+    const content = kind === 'settings' ? await runtimeFor(event).request('settings.export', {}) : (await runtimeFor(event).request('runtime.snapshot', {})).settings.customThemes;
     if (kind === 'theme' && (!content || typeof content !== 'object' || Array.isArray(content) || Object.keys(content).length === 0)) throw new Error('There are no custom themes to export');
     // A theme that carries background images exports them inside the pack; a palette-only export stays plain JSON.
     const exported = kind === 'theme' ? await buildThemeExport(backgroundImagesFolder(), content) : undefined;
     if (exported?.missing.length) console.warn(`Theme export skipped ${exported.missing.length} background image(s) missing from the store`);
-    const owner = BrowserWindow.fromWebContents(event.sender);
+    const owner = machineBindings.get(event.sender.id).owner;
     const options = {
       title: kind === 'settings' ? 'Save ThreadTerm settings' : 'Export ThreadTerm themes',
       defaultPath: kind === 'settings' ? 'threadterm-v3-settings.json' : 'threadterm-v3-themes.json',
@@ -455,23 +579,24 @@ function registerIpc(): void {
     return importThemePackImages(backgroundImagesFolder(), images);
   });
   ipcMain.handle('threadterm:window-action', async (event, action: unknown) => { assertTrustedRenderer(event); return windowAction(event, action); });
-  ipcMain.handle('threadterm:window-state', (event) => { assertTrustedRenderer(event); return { maximized: BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false }; });
+  ipcMain.handle('threadterm:window-state', (event) => { assertTrustedRenderer(event); return { maximized: machineBindings.get(event.sender.id).owner?.isMaximized() ?? false }; });
   ipcMain.handle('threadterm:open-window', async (_event, options: unknown) => {
     assertTrustedRenderer(_event);
     if (!isWindowOptions(options)) throw new Error('Invalid window options');
-    openFloatingWindow(options);
+    openFloatingWindow({ ...options, machineId: machineBindings.get(_event.sender.id).machineId });
   });
   ipcMain.handle('threadterm:desktop-preferences', async (event) => { assertTrustedRenderer(event); return refreshDesktopPreferences(); });
   ipcMain.handle('threadterm:open-directory', async (event, projectId: unknown, worktreeId: unknown) => {
     assertTrustedRenderer(event);
+    assertLocalMachine(event);
     if (typeof projectId !== 'string' || !projectId) throw new Error('Invalid project');
-    const data = await adminRuntime.request('runtime.snapshot', {});
+    const data = await runtimeFor(event).request('runtime.snapshot', {});
     const project = data.projects.find(item => item.id === projectId);
     if (!project) throw new Error('Project directory is unavailable');
     let directory = project.path;
     if (worktreeId !== undefined) {
       if (typeof worktreeId !== 'string' || !worktreeId) throw new Error('Invalid worktree');
-      const trees = await adminRuntime.request('worktree.list', { projectId });
+      const trees = await runtimeFor(event).request('worktree.list', { projectId });
       const tree = trees.find(item => item.id === worktreeId && item.projectId === projectId);
       if (!tree || tree.missing) throw new Error('Worktree directory is unavailable');
       directory = tree.path;
@@ -482,15 +607,16 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:reveal-file', async (event, sessionId: unknown, path: unknown) => {
     assertTrustedRenderer(event);
+    assertLocalMachine(event);
     if (!isRevealSessionId(sessionId) || !isRevealPath(path)) throw new Error('Invalid file reveal request');
     let target: { scope: string; path: string };
     try {
-      const resolved = await adminRuntime.request('filesystem.resolve', { sessionId, path });
+      const resolved = await runtimeFor(event).request('filesystem.resolve', { sessionId, path });
       if (!resolved.worktreePath) throw new Error('File project scope is unavailable');
       target = revealTarget(resolved, realpathSync(resolved.worktreePath));
     } catch (error) {
       if (!(error instanceof RuntimeRequestError) || error.code !== 'file_reference_not_found') throw error;
-      const scope = deletedRevealScope(await adminRuntime.request('runtime.snapshot', {}), sessionId);
+      const scope = deletedRevealScope(await runtimeFor(event).request('runtime.snapshot', {}), sessionId);
       target = revealTarget({ worktreePath: scope, path }, realpathSync(scope));
     }
     try {
@@ -505,19 +631,21 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:open-plugins-folder', async (event) => {
     assertTrustedRenderer(event);
-    const { directory } = await adminRuntime.request('plugin.list', {});
+    assertLocalMachine(event);
+    const { directory } = await runtimeFor(event).request('plugin.list', {});
     mkdirSync(directory, { recursive: true });
     const error = await shell.openPath(directory);
     if (error) throw new Error(error);
   });
-  ipcMain.handle('threadterm:export-diagnostics', async (event) => { assertTrustedRenderer(event); const owner=BrowserWindow.fromWebContents(event.sender); const saved=owner?await dialog.showSaveDialog(owner,{defaultPath:'threadterm-v3-diagnostics.json',filters:[{name:'JSON',extensions:['json']}]}):await dialog.showSaveDialog({defaultPath:'threadterm-v3-diagnostics.json'}); if(saved.canceled||!saved.filePath)return null; const snapshot=await adminRuntime.request('runtime.snapshot',{}); const health=await adminRuntime.request('runtime.health',{}); const report={version:app.getVersion(),platform:process.platform,runtime:health,counts:{projects:snapshot.projects.length,sessions:snapshot.sessions.length,providers:snapshot.providers.length},providers:snapshot.providers.map(p=>({id:p.id,installed:p.installed,version:p.version,terminal:p.terminal,chat:p.chat}))}; writeFileSync(saved.filePath,JSON.stringify(report,null,2)); return saved.filePath; });
+  ipcMain.handle('threadterm:export-diagnostics', async (event) => { assertTrustedRenderer(event); const owner=machineBindings.get(event.sender.id).owner; const saved=owner?await dialog.showSaveDialog(owner,{defaultPath:'threadterm-v3-diagnostics.json',filters:[{name:'JSON',extensions:['json']}]}):await dialog.showSaveDialog({defaultPath:'threadterm-v3-diagnostics.json'}); if(saved.canceled||!saved.filePath)return null; const snapshot=await runtimeFor(event).request('runtime.snapshot',{}); const health=await runtimeFor(event).request('runtime.health',{}); const report={version:app.getVersion(),platform:process.platform,runtime:health,counts:{projects:snapshot.projects.length,sessions:snapshot.sessions.length,providers:snapshot.providers.length},providers:snapshot.providers.map(p=>({id:p.id,installed:p.installed,version:p.version,terminal:p.terminal,chat:p.chat}))}; writeFileSync(saved.filePath,JSON.stringify(report,null,2)); return saved.filePath; });
   ipcMain.handle('threadterm:test-notification', async (event) => { assertTrustedRenderer(event); return notifyNative('attention', testNotificationCopy, { test: true }); });
   ipcMain.handle('threadterm:schedule-electron-cache-cleanup', async (event, schedule: unknown) => {
     assertTrustedRenderer(event);
+    assertLocalMachine(event);
     if (typeof schedule !== 'boolean') throw new Error('Invalid cleanup schedule');
     if (process.platform !== 'win32') return { scheduled: false, available: false, result: 'Cache cleanup is available on Windows only.' };
-    const snapshot = await adminRuntime.request('runtime.snapshot', {});
-    await adminRuntime.request('settings.update', { patch: { electronCacheCleanup: schedule ? { state: 'scheduled', scheduledAt: new Date().toISOString() } : null }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
+    const snapshot = await runtimeFor(event).request('runtime.snapshot', {});
+    await runtimeFor(event).request('settings.update', { patch: { electronCacheCleanup: schedule ? { state: 'scheduled', scheduledAt: new Date().toISOString() } : null }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
     return { scheduled: schedule, available: true };
   });
   ipcMain.handle('threadterm:open-external', async (_event, url: unknown) => {
@@ -529,9 +657,10 @@ function registerIpc(): void {
   });
 }
 
-function openFloatingWindow(options: { sessionId?: string; workspaceId?: string; background?: boolean }): void {
-  if (lightweightMode) { routeMainWindow(options); return; }
-  const key = floatIdentity(options);
+function openFloatingWindow(options: { sessionId?: string; workspaceId?: string; background?: boolean; machineId?: string }): void {
+  if (lightweightMode && (!options.machineId || options.machineId === 'local')) { routeMainWindow(options); return; }
+  const identity = floatIdentity(options);
+  const key = identity ? `${options.machineId ?? 'local'}:${identity}` : undefined;
   const existing = key ? floatingWindows.get(key) : undefined;
   if (existing && !existing.isDestroyed()) {
     activeFloatKey = key;
@@ -588,7 +717,8 @@ async function runScheduledElectronCacheCleanup(): Promise<void> {
     if (scheduled?.state !== 'scheduled' || typeof scheduled.scheduledAt !== 'string') return;
     let result: Record<string, string>;
     try {
-      await session.defaultSession.clearCache();
+      const appSessions = [session.defaultSession, ...machines.list().filter(machine => machine.id !== 'local').map(machine => session.fromPartition(`persist:machine-${machine.id}`))];
+      for (const appSession of appSessions) await appSession.clearCache();
       result = { state: 'completed', completedAt: new Date().toISOString() };
     } catch (error) {
       result = { state: 'failed', failedAt: new Date().toISOString(), message: String(error).slice(0, 2048) };
@@ -688,7 +818,7 @@ function isPreparedRelocation(value: unknown): value is { sourceRoot: string; ta
 
 async function windowAction(event: IpcMainInvokeEvent, action: unknown): Promise<void> {
   if (action !== 'minimize' && action !== 'maximize' && action !== 'close' && action !== 'quit') throw new Error('Unsupported window action');
-  const window = BrowserWindow.fromWebContents(event.sender);
+  const window = machineBindings.get(event.sender.id).owner;
   if (!window) throw new Error('Window is no longer available');
   if (action === 'minimize') window.minimize();
   else if (action === 'maximize') window.isMaximized() ? window.unmaximize() : window.maximize();
@@ -788,14 +918,84 @@ async function requestQuit(): Promise<void> {
 }
 
 function closeOutputSubscription(id: string): void { const subscription = outputSubscriptions.get(id); if (subscription) { for (const acknowledge of subscription.acknowledgements.splice(0)) acknowledge(); subscription.unsubscribe?.(); } outputSubscriptions.delete(id); }
+function bindMachineRenderer(contents: Electron.WebContents, machineId: string, owner: BrowserWindow): void {
+  machineBindings.bind(contents.id, machineId, owner);
+  machineRenderers.set(contents.id, contents);
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.on('page-title-updated', event => {
+    event.preventDefault();
+    if (owner.isDestroyed()) return;
+    const current = machineViews.get(owner.id)?.currentId ?? machineId;
+    owner.setTitle(current === 'local' ? 'ThreadTerm' : `ThreadTerm — ${machines.list().find(item => item.id === current)?.name ?? 'Computer'}`);
+  });
+  contents.once('destroyed', () => {
+    cancelPendingPairing(contents.id);
+    machineBindings.remove(contents.id);
+    machineRenderers.delete(contents.id);
+  });
+}
+function cancelPendingPairing(senderId: number): void {
+  const pending = pendingPairings.get(senderId);
+  if (pending) { clearTimeout(pending.timer); pending.socket.destroy(); pendingPairings.delete(senderId); }
+}
+function assertLocalMachine(event: IpcMainInvokeEvent): void {
+  if (machineBindings.get(event.sender.id).machineId !== 'local') throw new Error('This action is only available on This PC');
+}
+async function assertMachinesEnabled(): Promise<void> {
+  await refreshMachinesGate();
+  if (!remoteMachinesEnabled) throw new Error('Enable the Computers preview on This PC first');
+}
+async function refreshMachinesGate(): Promise<void> {
+  const { settings } = await adminRuntime.request('runtime.snapshot', {});
+  applyMachinesGate(!!(settings.remoteMachines as { enabled?: boolean } | undefined)?.enabled);
+}
+function applyMachinesGate(enabled: boolean): void {
+  if (enabled === remoteMachinesEnabled) return;
+  remoteMachinesEnabled = enabled;
+  if (!enabled) {
+    for (const [id, client] of windowRuntimes) if (machineBindings.get(id).machineId !== 'local') { client.dispose(); windowRuntimes.delete(id); }
+    for (const [windowId, views] of machineViews) {
+      const owner = BrowserWindow.fromId(windowId);
+      views.show('local'); owner?.setTitle('ThreadTerm');
+      for (const machine of machines.list()) if (machine.id !== 'local') {
+        const removed = views.remove(machine.id);
+        if (removed) {
+          owner?.contentView.removeChildView(removed);
+          if (removed instanceof WebContentsView && !removed.webContents.isDestroyed()) removed.webContents.close();
+        }
+      }
+    }
+    for (const window of BrowserWindow.getAllWindows()) if (machineBindings.get(window.webContents.id).machineId !== 'local') window.destroy();
+    for (const id of pendingPairings.keys()) cancelPendingPairing(id);
+    machineStates.clear();
+  }
+  broadcastMachines();
+}
+function machineSnapshot(senderId: number): MachineSnapshot {
+  return { enabled: remoteMachinesEnabled, currentId: machineBindings.get(senderId).machineId,
+    machines: remoteMachinesEnabled ? machines.list().map(item => ({ ...item, ...machineStates.get(item.id) })) : [] };
+}
+function broadcastMachines(): void {
+  for (const contents of machineRenderers.values()) if (!contents.isDestroyed()) contents.send('threadterm:machines-changed');
+}
 function runtimeFor(event: IpcMainInvokeEvent): RuntimeClient {
   if (stoppingRuntime) throw new Error('ThreadTerm is shutting down');
   const key = event.sender.id;
+  const { machineId } = machineBindings.get(key);
+  if (machineId !== 'local' && !remoteMachinesEnabled) throw new Error('Remote computers are disabled on This PC');
   let client = windowRuntimes.get(key);
   if (!client) {
-    client = new RuntimeClient();
+    client = new RuntimeClient(machineId === 'local' ? {} : { profile: { ...machines.profile(machineId), desktopVersion: app.getVersion() } });
+    if (machineId !== 'local') { machineStates.set(machineId, { state: 'connecting' }); broadcastMachines(); }
     windowRuntimes.set(key, client);
-    client.onEvent((value: RuntimeEvent) => { if (!event.sender.isDestroyed()) event.sender.send('threadterm:event', value); });
+    client.onEvent((value: RuntimeEvent) => {
+      if (!event.sender.isDestroyed()) event.sender.send('threadterm:event', value);
+      if (machineId !== 'local' && value.event === 'runtime.transport' && value.data && typeof value.data === 'object') {
+        const data = value.data as { state?: string; message?: string; reason?: string };
+        const state = data.state === 'reconnected' ? 'connected' : data.state === 'incompatible' ? 'incompatible' : data.state === 'pin-mismatch' ? 'pin-mismatch' : 'disconnected';
+        machineStates.set(machineId, { state, message: data.message ?? data.reason }); broadcastMachines();
+      }
+    });
     event.sender.once('destroyed', () => {
       client?.dispose();
       windowRuntimes.delete(key);

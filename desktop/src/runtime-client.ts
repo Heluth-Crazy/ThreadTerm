@@ -27,6 +27,7 @@ import {
 } from '@threadterm/protocol';
 import { OutputFanout } from './output-fanout.js';
 import { RuntimeLogWriter } from './runtime-log.js';
+import { authenticatePeer, connectPinned, PeerHeartbeat, PeerTransportError, type PeerProfile } from './peer-transport.js';
 
 const CONNECT_TIMEOUT_MS = 1_500;
 const RUNTIME_READY_TIMEOUT_MS = 12_000;
@@ -220,7 +221,11 @@ class LengthPrefixedSocket {
     });
   }
 
-  onFrame(listener: (frame: Buffer) => void): () => void { this.frames.add(listener); return () => this.frames.delete(listener); }
+  static async connectPeer(profile: PeerProfile): Promise<LengthPrefixedSocket> {
+    return new LengthPrefixedSocket(await connectPinned(profile.endpoint, profile.pin));
+  }
+
+  onFrame(listener: (frame: Buffer) => void): () => void { this.frames.add(listener); this.socket.resume(); return () => this.frames.delete(listener); }
   onFailure(listener: (error: Error) => void): () => void { this.failures.add(listener); return () => this.failures.delete(listener); }
   close(): void { this.socket.destroy(); }
 
@@ -287,7 +292,11 @@ function requestTimeoutMs(method: Method): number {
 }
 
 export class RuntimeClient {
-  constructor(private readonly options: { autoLaunch?: boolean; maxConsumerQueueBytes?: number } = {}) {}
+  constructor(private readonly options: { autoLaunch?: boolean; maxConsumerQueueBytes?: number; profile?: { kind: 'local' } | PeerProfile } = {}) {}
+  private readonly peerHeartbeat = new PeerHeartbeat(
+    () => { void this.request('runtime.health', {}).catch(() => {}); },
+    () => this.handleDisconnect(new RuntimeUnavailableError('Computer did not respond for 45 seconds')),
+  );
   private control?: LengthPrefixedSocket;
   private output?: LengthPrefixedSocket;
   private browser?: LengthPrefixedSocket;
@@ -298,7 +307,7 @@ export class RuntimeClient {
   private readonly browserPending = new Map<string, PendingBrowserRequest>();
   private readonly browserFrameListeners = new Set<(frame: BrowserPrivateFrame) => void>();
   private readonly browserDisconnectListeners = new Set<(error: Error) => void>();
-  private readonly clientId = randomUUID();
+  private clientId = randomUUID();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly eventListeners = new Set<(event: RuntimeEvent) => void>();
   private readonly subscriptions = new Map<string, OutputSubscription>();
@@ -311,7 +320,7 @@ export class RuntimeClient {
   private runtimeEpoch = '';
   private sawDisconnect = false;
   private disconnectRevision = 0;
-  private incompatible?: ProtocolIncompatibleError;
+  private incompatible?: ProtocolIncompatibleError | PeerTransportError;
   private qaReconnectPaused = false;
 
   async request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
@@ -406,11 +415,12 @@ export class RuntimeClient {
     const attempt: BrowserConnectionAttempt = { session, promise: undefined! };
     this.browserConnecting = attempt;
     attempt.promise = (async () => {
-      const connection = await LengthPrefixedSocket.connect(session.pipe);
+      const profile = this.options.profile;
+      const connection = profile?.kind === 'peer' ? await LengthPrefixedSocket.connectPeer(profile) : await LengthPrefixedSocket.connect(session.pipe);
       attempt.connection = connection;
       try {
         this.assertBrowserSession(session, attempt);
-        await authenticate(connection, session.token, this.clientId, (authenticated, proofFrame) => {
+        const onAuthenticated = (authenticated: { epoch: string }, proofFrame: Buffer) => {
           this.assertBrowserSession(session, attempt);
           if (authenticated.epoch !== session.epoch) throw new RuntimeUnavailableError('Browser runtime epoch changed');
           // Install synchronously with proof verification, before another frame
@@ -418,10 +428,12 @@ export class RuntimeClient {
           this.browser = connection;
           this.browserCapabilityEpoch = undefined;
           connection.onFrame(frame => {
-            if (frame !== proofFrame && this.browser === connection) this.handleBrowserFrame(frame, connection, session);
+            if (frame !== proofFrame && this.browser === connection) { this.peerHeartbeat.frame(); this.handleBrowserFrame(frame, connection, session); }
           });
           connection.onFailure(error => { if (this.browser === connection) this.invalidateBrowser(error); });
-        });
+        };
+        if (profile?.kind === 'peer') await authenticatePeer(connection, profile, 'browser', this.clientId, session.epoch, onAuthenticated);
+        else await authenticate(connection, session.token, this.clientId, onAuthenticated);
         this.assertBrowserSession(session, attempt);
         if (this.browser !== connection) throw new RuntimeUnavailableError('Browser connection closed during authentication');
         return connection;
@@ -439,6 +451,7 @@ export class RuntimeClient {
     const epoch = this.runtimeEpoch;
     const revision = this.browserSessionRevision;
     if (!control || !this.output || !epoch) throw new RuntimeUnavailableError('Browser control session is unavailable');
+    if (this.options.profile?.kind === 'peer') return this.browserSession ??= { control, pipe: '', token: '', epoch };
     // A cancelled shutdown discarded the previous credential cache. Only a
     // fresh explicit attachment may read it again; resume itself stays idle.
     const pipes = await runtimePipes();
@@ -667,6 +680,7 @@ export class RuntimeClient {
 
   dispose(): void {
     this.expectedDisconnect = true;
+    this.peerHeartbeat.stop();
     this.invalidateBrowser(new RuntimeUnavailableError('Desktop is closing'), true);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.control?.close();
@@ -679,6 +693,7 @@ export class RuntimeClient {
 
   setSuspended(suspended: boolean): void {
     this.suspended = suspended;
+    if (suspended) this.peerHeartbeat.stop();
     if (suspended) this.invalidateBrowser(new RuntimeUnavailableError('Desktop shutdown is in progress'), true);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
@@ -710,6 +725,7 @@ export class RuntimeClient {
   }
 
   private async connectAndAuthenticate(): Promise<void> {
+    if (this.options.profile?.kind === 'peer') return this.connectPeer(this.options.profile);
     const pipes = await runtimePipes();
     this.assertOpen();
     if (!readCredential()) {
@@ -772,15 +788,47 @@ export class RuntimeClient {
     }
   }
 
+  private async connectPeer(profile: PeerProfile): Promise<void> {
+    this.assertOpen();
+    this.clientId = randomUUID();
+    const clientId = this.clientId;
+    const control = await LengthPrefixedSocket.connectPeer(profile);
+    let output: LengthPrefixedSocket | undefined;
+    try {
+      this.assertOpen();
+      // Attach synchronously on authenticated, so events coalesced with the
+      // proof frame cannot be lost before the caller's await resumes.
+      let controlFailure: Promise<never> | undefined;
+      const session = await authenticatePeer(control, profile, 'control', clientId, null, (_session, proof) => {
+        this.assertOpen();
+        controlFailure = this.attachControl(control, proof);
+        void controlFailure.catch(() => {});
+      });
+      this.assertOpen();
+      output = await LengthPrefixedSocket.connectPeer(profile);
+      await Promise.race([authenticatePeer(output, profile, 'output', clientId, session.epoch), controlFailure!]);
+      this.assertOpen();
+      if (this.control !== control) throw new RuntimeUnavailableError('Computer control connection was replaced');
+      this.attachOutput(output);
+      const previousEpoch = this.runtimeEpoch;
+      this.runtimeEpoch = session.epoch;
+      this.invalidateBrowser(new RuntimeUnavailableError('Computer control session was replaced'), true);
+      this.browserSession = { control, pipe: '', token: '', epoch: session.epoch };
+      this.peerHeartbeat.start();
+      this.sawDisconnect = false;
+      this.emitSynthetic('runtime.transport', { state: 'reconnected', epoch: session.epoch, epochChanged: Boolean(previousEpoch) && previousEpoch !== session.epoch });
+    } catch (error) { control.close(); output?.close(); throw error; }
+  }
+
   async whenConnectionAttemptSettled(): Promise<void> {
     const connecting = this.connecting;
     if (!connecting) return;
     try { await connecting; } catch {}
   }
 
-  private attachControl(control: LengthPrefixedSocket): Promise<never> {
+  private attachControl(control: LengthPrefixedSocket, proof?: Buffer): Promise<never> {
     this.control = control;
-    control.onFrame((frame) => { if (this.control === control) this.handleControlFrame(frame); });
+    control.onFrame((frame) => { if (frame !== proof && this.control === control) { this.peerHeartbeat.frame(); this.handleControlFrame(frame); } });
     return new Promise((_, reject) => {
       control.onFailure((error) => {
         if (this.control !== control) return;
@@ -793,6 +841,7 @@ export class RuntimeClient {
   private attachOutput(output: LengthPrefixedSocket): void {
     this.output = output;
     output.onFrame((frame) => {
+      this.peerHeartbeat.frame();
       void this.handleOutputFrame(frame, output).catch((error) => {
         if (this.output === output) this.handleDisconnect(asError(error));
       });
@@ -900,6 +949,7 @@ export class RuntimeClient {
 
   private handleDisconnect(error: Error): void {
     if (this.expectedDisconnect || this.disconnecting) return;
+    this.peerHeartbeat.stop();
     this.disconnectRevision++;
     this.disconnecting = true;
     const control = this.control;
@@ -912,11 +962,11 @@ export class RuntimeClient {
     this.disconnecting = false;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();
-    if (error instanceof ProtocolIncompatibleError) {
+    if (error instanceof ProtocolIncompatibleError || error instanceof PeerTransportError) {
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
       this.incompatible = error;
-      this.emitSynthetic('runtime.transport', { state: 'incompatible', message: error.message });
+      this.emitSynthetic('runtime.transport', { state: error instanceof PeerTransportError && error.code === 'pin-mismatch' ? 'pin-mismatch' : 'incompatible', message: error.message });
       return;
     }
     this.sawDisconnect = true;

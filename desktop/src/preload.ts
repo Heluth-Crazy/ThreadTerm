@@ -4,6 +4,7 @@ import type { BrowserBridge, BrowserEvent } from '../../renderer/src/browserType
 import { isBrowserSharingState } from '../../renderer/src/browserTypes.js';
 import type { BrowserHandoffBridge, BrowserHandoffEvent } from './browser/handoffTypes.js';
 import type { BackgroundBridge } from './backgroundImagesCore.js';
+import type { MachineBridge } from '../../renderer/src/machineTypes.js';
 import {
   isRecord,
   isRuntimeEvent,
@@ -17,7 +18,18 @@ import {
 } from '@threadterm/protocol';
 
 type FilePathBridge = { getPathForFile: (file: File) => string };
-const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge = {
+const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge & MachineBridge = {
+  machineId: process.argv.find(value => value.startsWith('--threadterm-machine-id='))?.slice('--threadterm-machine-id='.length) ?? 'local',
+  machineList: () => ipcRenderer.invoke('threadterm:machine-list'),
+  machineShow: id => ipcRenderer.invoke('threadterm:machine-show', id),
+  machinePrepare: text => ipcRenderer.invoke('threadterm:machine-prepare', text),
+  machineAdd: options => ipcRenderer.invoke('threadterm:machine-add', options),
+  machineRemove: id => ipcRenderer.invoke('threadterm:machine-remove', id),
+  onMachinesChanged: listener => {
+    const handler = () => listener();
+    ipcRenderer.on('threadterm:machines-changed', handler);
+    return () => ipcRenderer.removeListener('threadterm:machines-changed', handler);
+  },
   browserCommand: command => ipcRenderer.invoke('threadterm:browser-command', command),
   onBrowserEvent: listener => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isBrowserEvent(value)) listener(value); };
