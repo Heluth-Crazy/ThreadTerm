@@ -14,6 +14,9 @@ import {ChatView} from './renderer/src/components/ChatView';
 import {I18nProvider} from './renderer/src/i18n';
 import './renderer/src/styles.css';
 let provider = 'kimi', sessionId = 'qa-kimi', items = [], locale = 'zh-CN', sessionStatus = 'idle', sessionUpdatedAt = 'initial', failNextSend = false, deferNextSend = false, omitUserOnSend = false, resolveDeferredSend, sequence = 0;
+const drafts = new Map(), draftRevisions = new Map();
+const leases = new Map(); let nextLeaseEpoch = 1;
+let deferDraftClear = false, resolveDraftClear;
 const listeners = new Set();
 window.qaSendCount = 0;
 const connection = id => ({sessionId:id, runtimeEpoch:'qa', connectionGeneration:1, revision:1, phase:'ready', optionsLoadState:'ready'});
@@ -21,11 +24,12 @@ window.threadterm = {
   onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   async request(method, params) {
     if (method === 'chat.snapshot') return {items, revision:0};
-    if (method === 'chat.draft.read') return {text:'', revision:0};
-    if (method === 'chat.draft.save') return {revision:(params.expectedRevision || 0) + 1};
+    if (method === 'chat.draft.read') return {text:drafts.get(params.sessionId) || '', revision:draftRevisions.get(params.sessionId) || 0};
+    if (method === 'chat.draft.save') { const lease=leases.get(params.sessionId);if(!lease || params.leaseEpoch !== lease.epoch) throw new Error('lease_lost');const current=draftRevisions.get(params.sessionId) || 0;if(params.expectedRevision !== current) throw new Error('revision_conflict');const revision=current+1;drafts.set(params.sessionId,params.text);draftRevisions.set(params.sessionId,revision);if(deferDraftClear && params.text === '') { deferDraftClear=false;await new Promise(resolve => { resolveDraftClear=resolve; }); }return {text:params.text, revision}; }
     if (method === 'chat.connection' || method === 'chat.connect') return connection(params.sessionId);
     if (method === 'chat.options') return {options:[], commands:[], loadState:'ready'};
     if (method === 'chat.send') {
+      const lease=leases.get(params.sessionId);if(!lease || params.leaseEpoch !== lease.epoch) throw new Error('lease_lost');
       window.qaSendCount++;
       if (failNextSend) { failNextSend=false; throw new Error('QA send failure'); }
       if (!omitUserOnSend) {
@@ -36,8 +40,10 @@ window.threadterm = {
       if (deferNextSend) { deferNextSend=false; return new Promise(resolve => { resolveDeferredSend=() => resolve({turnId:'turn-1'}); }); }
       return {turnId:'turn-1'};
     }
-    if (method === 'session.claim' || method === 'session.renew') return {leaseEpoch:1};
-    if (method === 'session.release' || method === 'chat.cancel') return null;
+    if (method === 'session.claim') { const lease=leases.get(params.sessionId) || {epoch:nextLeaseEpoch++, holders:0};lease.holders++;leases.set(params.sessionId,lease);return {leaseEpoch:lease.epoch}; }
+    if (method === 'session.renew') { const lease=leases.get(params.sessionId);if(!lease || params.leaseEpoch !== lease.epoch) throw new Error('lease_lost');return {leaseEpoch:lease.epoch}; }
+    if (method === 'session.release') { const lease=leases.get(params.sessionId);if(!lease || params.leaseEpoch !== lease.epoch) throw new Error('lease_lost');if(--lease.holders===0) leases.delete(params.sessionId);return null; }
+    if (method === 'chat.cancel') return null;
     // ChatView mounts ChatNotes and ChatQueue, which read these on mount; return
     // the real empty states so an unmocked read cannot render an error banner.
     if (method === 'chat.queue.read') return { sessionId: params.sessionId, paused: false, items: [] };
@@ -64,6 +70,12 @@ window.qaFailNextSend = () => { failNextSend=true; };
 window.qaDeferNextSend = () => { deferNextSend=true; };
 window.qaOmitUserOnSend = () => { omitUserOnSend=true; };
 window.qaResolveSend = () => resolveDeferredSend?.();
+window.qaDeferDraftClear = () => { deferDraftClear=true;resolveDraftClear=undefined; };
+window.qaDraftClearPending = () => Boolean(resolveDraftClear);
+window.qaResolveDraftClear = () => resolveDraftClear?.();
+window.qaHasLease = id => leases.has(id);
+window.qaDraft = id => drafts.get(id) || '';
+window.qaSetDraft = (id, text) => { drafts.set(id,text);draftRevisions.set(id,(draftRevisions.get(id) || 0)+1); };
 window.qaCompleteEmptyTurn = (status='idle') => { sessionStatus=status; sessionUpdatedAt='complete-'+(++sequence); render(); };
 window.qaNetworkRetry = (state='retrying') => {
   const item={id:'network-retry',role:'assistant',turnId:'turn-1',createdAt:'now',parts:[{type:'status',data:{kind:'providerRetry',state,attempt:2,maxRetries:15,errorType:'http'}}]};
@@ -152,6 +164,83 @@ try {
   await ready();
   await page.evaluate(() => window.qaResolveSend());
   assert.equal(await page.locator('.chat-first-response-wait').count(), 0, 'switching sessions clears the previous wait indicator');
+
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-blur-send', updatedAt:'blur-send'}));
+  await ready();
+  await page.evaluate(() => window.qaDeferNextSend());
+  await send('sent while blurred');
+  await page.locator('.chat-first-response-wait').waitFor();
+  await page.evaluate(() => { window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')); window.qaResolveSend(); });
+  await page.waitForFunction(() => window.qaDraft('qa-blur-send') === '');
+  assert.equal(await page.locator('.chat-compose-shell textarea').inputValue(), '', 'ordinary focus loss does not retain an accepted send as a draft');
+
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-remount-send', updatedAt:'remount-send'}));
+  await ready();
+  await page.evaluate(() => window.qaDeferNextSend());
+  await send('sent across remount');
+  await page.locator('.chat-first-response-wait').waitFor();
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-remount-other', updatedAt:'remount-other'}));
+  await ready();
+  await page.waitForFunction(() => window.qaDraft('qa-remount-send') === 'sent across remount');
+  await page.evaluate(() => window.qaResolveSend());
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-remount-send', updatedAt:'remount-return'}));
+  await ready();
+  await page.waitForFunction(() => window.qaDraft('qa-remount-send') === '');
+  assert.equal(await page.locator('.chat-compose-shell textarea').inputValue(), '', 'a late accepted send clears the prior view draft after remount');
+
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-return-before-ack', updatedAt:'return-before-ack'}));
+  await ready();
+  await page.evaluate(() => window.qaDeferNextSend());
+  await send('sent before return');
+  await page.locator('.chat-first-response-wait').waitFor();
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-return-before-ack-other', updatedAt:'return-before-ack-other'}));
+  await ready();
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-return-before-ack', updatedAt:'return-before-ack-return'}));
+  await page.evaluate(() => window.qaResolveSend());
+  await ready();
+  assert.equal(await page.locator('.chat-compose-shell textarea').inputValue(), '', 'the returned view reads the confirmed empty draft after the late acknowledgement');
+
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-unmount-clear', updatedAt:'unmount-clear'}));
+  await ready();
+  await page.evaluate(() => window.qaDeferDraftClear());
+  await send('sent before delayed draft clear');
+  await page.waitForFunction(() => window.qaDraftClearPending());
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-unmount-clear-other', updatedAt:'unmount-clear-other'}));
+  await ready();
+  await page.evaluate(() => window.qaResolveDraftClear());
+  await page.waitForFunction(() => !window.qaHasLease('qa-unmount-clear'));
+  assert.equal(await page.evaluate(() => window.qaDraft('qa-unmount-clear')), '', 'unmount during draft-clear IPC cannot flush accepted text back into storage');
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-unmount-clear', updatedAt:'unmount-clear-return'}));
+  await ready();
+  assert.equal(await page.locator('.chat-compose-shell textarea').inputValue(), '', 'the draft stays empty after reopening following delayed clear IPC');
+
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-remount-newer', updatedAt:'remount-newer'}));
+  await ready();
+  await page.evaluate(() => window.qaDeferNextSend());
+  await send('sent before newer cross-view draft');
+  await page.locator('.chat-first-response-wait').waitFor();
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-remount-newer-other', updatedAt:'remount-newer-other'}));
+  await ready();
+  await page.waitForFunction(() => window.qaDraft('qa-remount-newer') === 'sent before newer cross-view draft');
+  await page.evaluate(() => { window.qaSetDraft('qa-remount-newer', 'newer draft from another view'); window.qaResolveSend(); });
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-remount-newer', updatedAt:'remount-newer-return'}));
+  await ready();
+  assert.equal(await page.locator('.chat-compose-shell textarea').inputValue(), 'newer draft from another view', 'a stale acknowledgement does not erase a newer cross-view draft written before it resolves');
+
+  await page.evaluate(() => window.qaRender({provider:'kimi', sessionId:'qa-newer-local', updatedAt:'newer-local'}));
+  await ready();
+  await page.evaluate(() => window.qaDeferNextSend());
+  await send('sent before newer local draft');
+  await page.locator('.chat-first-response-wait').waitFor();
+  await page.evaluate(() => {
+    const textarea = document.querySelector('.chat-compose-shell textarea');
+    if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('Composer is unavailable');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(textarea, 'newer local draft');
+    textarea.dispatchEvent(new Event('input', {bubbles:true}));
+  });
+  await page.waitForFunction(() => window.qaDraft('qa-newer-local') === 'newer local draft');
+  await page.evaluate(() => window.qaResolveSend());
+  assert.equal(await page.locator('.chat-compose-shell textarea').inputValue(), 'newer local draft', 'a local edit made while sending survives the accepted acknowledgement');
 
   await page.evaluate(() => window.qaRender({provider:'claude', sessionId:'qa-empty-completion', updatedAt:'empty-start'}));
   await ready();
