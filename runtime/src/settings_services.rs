@@ -48,6 +48,7 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "themeSelection",
     "lightweightMode",
     "desktopCompanion",
+    "remoteMachines",
     "modelPrices",
     "terminalCompatibility",
     "electronCacheCleanup",
@@ -1088,6 +1089,16 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         "desktopCompanion"
             if value.as_object().is_some_and(|companion| {
                 companion.len() == 1 && companion.get("enabled").is_some_and(Value::is_boolean)
+            }) =>
+        {
+            Ok(())
+        }
+        "remoteMachines"
+            if value.as_object().is_some_and(|remote_machines| {
+                remote_machines.len() == 1
+                    && remote_machines
+                        .get("enabled")
+                        .is_some_and(Value::is_boolean)
             }) =>
         {
             Ok(())

@@ -28,7 +28,7 @@ impl ProviderAdapter for TrustAdapter {
 
     fn capability(&self) -> ProviderCapability {
         ProviderCapability {
-            source: "test", plugin_id: None, icon: None, sign_in: None, homepage: None,
+            source: "test", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
             id: "pi".into(), name: "Pi trust fixture".into(), installed: true,
             version: None, terminal: false, chat: true, history: false, resume: false,
             terminal_resume_capture: "none", reason: None, auth: "authenticated".into(),

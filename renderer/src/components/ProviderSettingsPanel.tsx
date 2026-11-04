@@ -6,6 +6,7 @@ import { chooseDirectory, operationId, request, subscribeEvents } from "../bridg
 import { displayPath } from "../projectScope";
 import { accountProviders, signInTerminal } from "./providerSettings";
 import { agentName } from "../agents";
+import { isRemoteFiles } from "../remoteFiles";
 import {
   IDLE_PROVIDER_REFRESH,
   observeProviderRefresh,
@@ -157,6 +158,7 @@ export function ProviderSettingsPanel({ data, onCreated, onRefreshed }: Props) {
         return <article key={capability.id} role="listitem" className="tool-row">
           <div><strong>{capability.name}</strong><p>{capability.installed ? `${copy.installed}${capability.version ? ` · ${capability.version}` : ""}` : copy.notInstalled} · {copy.authentication}: {capability.auth ?? copy.unknown}</p>
             <p>{copy.terminal}: {yesNo(capability.terminal, copy)} · {copy.chat}: {yesNo(capability.chat, copy)} · {copy.history}: {yesNo(capability.history, copy)} · {copy.resume}: {yesNo(capability.resume, copy)}</p>
+            {capability.id === "gemini" && capability.source === "plugin" && isRemoteFiles() && <p>{copy.remoteGoogleSignIn}</p>}
             {capability.reason && <p>{capability.reason}</p>}</div>
           {command && <button className="btn btn-sm" type="button" onClick={() => void openSignIn(capability)} disabled={!canOpen}>{busyProvider === capability.id ? copy.opening : copy.open}</button>}
         </article>;
@@ -168,7 +170,7 @@ export function ProviderSettingsPanel({ data, onCreated, onRefreshed }: Props) {
 }
 
 type Copy = typeof en;
-const en = { title: "Provider accounts", signIn: "sign-in", managed: "Authentication and status are managed by each provider CLI.", folder: "Terminal folder", chooseFolder: "Choose a folder when opening a sign-in terminal", statusLabel: "Provider account status", detecting: "Detecting providers…", installed: "Installed", notInstalled: "Not installed", authentication: "authentication", unknown: "unknown", terminal: "Terminal", chat: "Chat", history: "History", resume: "Resume", available: "available", unavailable: "unavailable", open: "Open sign-in terminal", opening: "Opening…", created: (name: string) => `${name} sign-in terminal created. Complete sign-in in that terminal, then refresh status.`, runtimeUnavailable: "The runtime could not complete this provider action." };
-const zh: Copy = { title: "提供商账户", signIn: "登录", managed: "认证和状态由各提供商 CLI 管理。", folder: "终端文件夹", chooseFolder: "打开登录终端时选择文件夹", statusLabel: "提供商账户状态", detecting: "正在检测提供商…", installed: "已安装", notInstalled: "未安装", authentication: "认证", unknown: "未知", terminal: "终端", chat: "聊天", history: "历史", resume: "恢复", available: "可用", unavailable: "不可用", open: "打开登录终端", opening: "正在打开…", created: (name: string) => `已创建 ${name} 登录终端。请在该终端中完成登录，然后刷新状态。`, runtimeUnavailable: "运行时无法完成此提供商操作。" };
+const en = { remoteGoogleSignIn: "Google sign-in can’t run in ThreadTerm’s browser. Use an API key, or sign in on that computer.", title: "Provider accounts", signIn: "sign-in", managed: "Authentication and status are managed by each provider CLI.", folder: "Terminal folder", chooseFolder: "Choose a folder when opening a sign-in terminal", statusLabel: "Provider account status", detecting: "Detecting providers…", installed: "Installed", notInstalled: "Not installed", authentication: "authentication", unknown: "unknown", terminal: "Terminal", chat: "Chat", history: "History", resume: "Resume", available: "available", unavailable: "unavailable", open: "Open sign-in terminal", opening: "Opening…", created: (name: string) => `${name} sign-in terminal created. Complete sign-in in that terminal, then refresh status.`, runtimeUnavailable: "The runtime could not complete this provider action." };
+const zh: Copy = { remoteGoogleSignIn: "Google 登录无法在 ThreadTerm 浏览器中完成。请使用 API 密钥，或在那台电脑上登录。", title: "提供商账户", signIn: "登录", managed: "认证和状态由各提供商 CLI 管理。", folder: "终端文件夹", chooseFolder: "打开登录终端时选择文件夹", statusLabel: "提供商账户状态", detecting: "正在检测提供商…", installed: "已安装", notInstalled: "未安装", authentication: "认证", unknown: "未知", terminal: "终端", chat: "聊天", history: "历史", resume: "恢复", available: "可用", unavailable: "不可用", open: "打开登录终端", opening: "正在打开…", created: (name: string) => `已创建 ${name} 登录终端。请在该终端中完成登录，然后刷新状态。`, runtimeUnavailable: "运行时无法完成此提供商操作。" };
 function yesNo(value: boolean, copy: Copy): string { return value ? copy.available : copy.unavailable; }
 function errorMessage(error: unknown, fallback: string): string { return error instanceof Error ? error.message : fallback; }

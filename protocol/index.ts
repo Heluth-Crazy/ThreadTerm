@@ -6,8 +6,8 @@ export interface BrowserEvalApprovalRead {
  tabId:string; origin:string; expiresAtUnixMs:number; settingsGeneration:string; status:'pending';
 }
 export const PROTOCOL_VERSION = 1 as const;
-/** Semantic contract includes Chat Code Review RPCs and session-backed subagent transcripts. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 18 as const;
+/** Semantic contract includes remote-machine peer handshakes and device profiles. Framing/HMAC still use PROTOCOL_VERSION. */
+export const PROTOCOL_CONTRACT = 19 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Largest answer the runtime writes for one request. A bigger answer is a typed
  * `response_too_large` error for that request; the connection stays open. */
@@ -173,6 +173,8 @@ export interface ProviderCapability { id:ProviderId; name:string; installed:bool
  icon?:string;
  /** The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show. */
  signIn?:{ executable:string; args:string[]; display:string };
+ /** Sign-in command used from another computer's view, a flow that needs no browser on the host. */
+ remoteSignIn?:{ executable:string; args:string[]; display:string };
  homepage?:string }
 /** One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat,
  * sign-in), shown to the user before the plugin is enabled. */
@@ -211,7 +213,7 @@ export interface TerminalIconRule { id:string; match:string; /** A built-in mark
 /** A user's icon: only ever drawn as an <img> data URL (png, svg+xml, webp, jpeg or gif), at most about 64 KB. */
 export interface TerminalIconImage { id:string; name:string; src:string }
 export interface TerminalIconSettings { rules:TerminalIconRule[]; images:TerminalIconImage[] }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; [key:string]:unknown }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export type ExternalFileSource = 'dialog'|'drop'|'link'|'recent';
@@ -437,9 +439,20 @@ export interface ChatApprovalData {
 }
 export interface RuntimeError { code:string; message:string; details?:unknown }
 export type DevicePermission = 'readonly'|'fullcontrol';
-export interface RemoteAccessStatus { enabled:boolean; url?:string; port?:number; tlsFingerprint:string; error?:string; identityError?:string }
-export interface PairingOffer { id:string; code:string; qrPayload:string; permission:DevicePermission; expiresAt:string; serverUrl:string; tlsFingerprint:string }
-export interface PairedDevice { id:string; name:string; permission:DevicePermission; createdAt:string; expiresAt:string; lastSeenAt?:string; revokedAt?:string }
+/** The trust profile selected by the host when a pairing offer is created. */
+export type DeviceProfile = 'phone'|'desktop';
+export interface RemoteAccessStatus { enabled:boolean; tailscaleOnly:boolean; url?:string; port?:number; tlsFingerprint:string; error?:string; identityError?:string }
+export interface PairingOffer { id:string; code:string; qrPayload:string; permission:DevicePermission; profile:DeviceProfile; expiresAt:string; serverUrl:string; tlsFingerprint:string }
+export interface PairedDevice { connected?:boolean; id:string; name:string; permission:DevicePermission; profile:DeviceProfile; createdAt:string; expiresAt:string; lastSeenAt?:string; revokedAt?:string }
+/** Raw-TLS peer channels. Tunnel authenticates after connecting to the host loopback target, then carries raw TCP. */
+export type PeerChannel = 'control'|'output'|'browser'|'tunnel';
+export interface PeerChallenge { kind:'challenge'; protocol:1; contract:number; nonce:string; version:string }
+export interface PeerAuth { kind:'auth'; protocol:number; contract:number; nonce:string; channel:PeerChannel; clientId:string; credential:string; epoch:string|null; port?:number; loopback?:'127.0.0.1'|'::1' }
+export interface PeerAuthenticated { kind:'authenticated'; protocol:1; contract:number; principal:string; epoch:string; version?:string }
+/** `protocol`/`contract`/`version` are the sender's values; received fields name the rejected peer values. */
+export interface PeerIncompatible { kind:'incompatible'; code:'protocol_incompatible'; protocol:1; contract:number; version:string; receivedProtocol?:number; receivedContract?:number; receivedVersion?:string }
+export interface PeerTunnelFailed { kind:'tunnel_failed'; code:'connection_refused'|'connection_timeout'|'connection_failed' }
+export type PeerHandshakeFrame = PeerChallenge|PeerAuth|PeerAuthenticated|PeerIncompatible|PeerTunnelFailed;
 export interface DataRelocationStatus { frozen:boolean; sourceRoot:string; targetRoot?:string }
 export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; activationToken:string; includes?:string[] }
 export interface RuntimeEvent<E extends string=string,D=unknown> { v:1; event:E; epoch:string; seq:number; data:D }
@@ -838,9 +851,10 @@ export interface RequestMap {
  'catalog.visibility.update': [{kind:CatalogVisibility['kind'];id:string;visibility:CatalogVisibility['visibility'];expectedRevision:number;operationId:string},CatalogVisibility];
  'device.status': [{},RemoteAccessStatus];
  'device.enable': [{operationId:string},RemoteAccessStatus];
+ 'device.tailscaleOnly.set': [{enabled:boolean;operationId:string},RemoteAccessStatus];
  'device.disable': [{operationId:string},RemoteAccessStatus];
  'device.identity.reset': [{operationId:string},RemoteAccessStatus];
- 'device.pairing.create': [{permission:DevicePermission;operationId:string},PairingOffer];
+ 'device.pairing.create': [{permission:DevicePermission;profile?:DeviceProfile;operationId:string},PairingOffer];
  'device.pairing.cancel': [{pairingId:string;operationId:string},null];
  'device.list': [{},PairedDevice[]];
  'device.rename': [{deviceId:string;name:string;operationId:string},PairedDevice];
@@ -882,6 +896,7 @@ export interface RequestMap {
  'settings.import.apply': [{bundle:string;selected:string[];expectedRevision:number;operationId:string},Settings];
  'usage.query': [{from?:string;to?:string;sessionId?:string;projectId?:string;provider?:ProviderId;status?:SessionStatus;source?:UsageSource;sourceSessionId?:string},UsageResult];
 
+ 'runtime.events.filter': [{preset:'tree'},{preset:'tree';tree:{worktrees:Worktree[];visibility?:CatalogVisibility[]}}];
  'runtime.health': [{},{version:string;epoch:string;contract:number}];
  /** Which console host Windows terminals run on: the in-box ConPTY or ThreadTerm's bundled OpenConsole. */
  'terminal.host': [{},{conptyHost:'system'|'bundled';bundledAvailable:boolean;pwshAvailable?:boolean}];
@@ -901,7 +916,7 @@ export interface RequestMap {
  'session.organize': [{sessionId:string;archived?:boolean;pinned?:boolean;bookmarked?:boolean;intent?:'review'|'fix'|'research'|'test'|'docs'|'none';sortOrder?:number;expectedRevision:number;operationId:string},Session];
  'session.update': [{sessionId:string;title?:string;followed?:boolean;operationId:string},Session];
  'session.attention.acknowledge': [{sessionId:string;expectedRevision:number;operationId:string},Session];
- 'session.claim': [{sessionId:string;clientId:string},{leaseEpoch:number}];
+ 'session.claim': [{sessionId:string;clientId:string;takeover?:boolean},{leaseEpoch:number}];
  'session.renew': [{sessionId:string;leaseEpoch:number},{leaseEpoch:number}];
  'session.release': [{sessionId:string;leaseEpoch:number},null];
  'terminal.input': [{sessionId:string;data:string;leaseEpoch:number},null];
@@ -1006,6 +1021,10 @@ export interface RequestMap {
  'chat.option.set': [{sessionId:string;optionId:string;value:string;leaseEpoch:number;operationId:string},ChatUiState];
  'chat.connection': [{sessionId:string},ChatConnectionState];
  'chat.connect': [{sessionId:string;leaseEpoch:number;operationId:string},ChatConnectionState];
+ 'filesystem.browse': [{path?:string},{path?:string;parent?:string|null;entries:{name:string;path:string;kind:'directory'|'file';size:number}[];truncated:boolean}];
+ 'filesystem.preview.read': [FileScope&{path:string;offset:number;limit:number},{path:string;size:number;offset:number;fingerprint:string;chunk:string;eof:boolean}];
+ 'attachment.upload': [{uploadId:string;sessionId:string;name:string;size:number;offset:number;chunk:string;final:boolean},{offset:number;assetId?:string;hostPath?:string}];
+ 'attachment.read': [{assetId:string;offset?:number;limit?:number},{assetId:string;hostPath:string;name:string;size:number;offset:number;chunk:string;eof:boolean}];
  'filesystem.list': [FileScope&{path:string},FileEntry[]];
  /** Resolve a scoped file. `sourceSearch` resolves a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root. */
  'filesystem.resolve': [{sessionId:string}&FileReference,ResolvedFileReference];
@@ -1128,7 +1147,7 @@ export interface ThreadTermBridge {
  readonly windowsPty?:{backend:'conpty';buildNumber:number};
  request<M extends Method>(method:M,params:RequestParams<M>):Promise<RequestResult<M>>;
  onEvent(listener:(event:RuntimeEvent)=>void):()=>void;
- onDesktopNavigate(listener:(target:{sessionId?:string;workspaceId?:string;action?:"command-palette"})=>void):()=>void;
+ onDesktopNavigate(listener:(target:{sessionId?:string;workspaceId?:string;action?:"command-palette"|"computers"})=>void):()=>void;
  windowState():Promise<{maximized:boolean}>;
  onWindowState(listener:(state:{maximized:boolean})=>void):()=>void;
  subscribeOutput(sessionId:string,cursor:number,onChunk:(chunk:OutputChunk)=>void|Promise<void>):Promise<()=>void>;
@@ -1168,14 +1187,15 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.restart','quickLaunch.detect','quickLaunch.repo.list','quickLaunch.repo.save','quickLaunch.repo.delete','quickLaunch.repo.trust','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','chat.tool.run.list','chat.tool.run.start','chat.tool.run.status','chat.tool.run.logs','chat.tool.run.stop','chat.tool.run.restart','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','codeReview.options','codeReview.start','codeReview.cancel','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.tailscaleOnly.set','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.events.filter','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.restart','quickLaunch.detect','quickLaunch.repo.list','quickLaunch.repo.save','quickLaunch.repo.delete','quickLaunch.repo.trust','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','chat.tool.run.list','chat.tool.run.start','chat.tool.run.status','chat.tool.run.logs','chat.tool.run.stop','chat.tool.run.restart','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','codeReview.options','codeReview.start','codeReview.cancel','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
 /* feat/run-p3 additions are registered below without rebuilding the legacy literal.
-export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.restart','quickLaunch.detect','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','quickLaunch.recent','quickLaunch.proposals.list','quickLaunch.proposals.accept','quickLaunch.proposals.reject','chat.tool.run.list','chat.tool.run.start','chat.tool.run.status','chat.tool.run.logs','chat.tool.run.stop','chat.tool.run.restart','chat.tool.run.propose','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
+export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.reset','git.operation.abort','git.operation.continue','browser.approval.read','browser.approval.resolve','git.commit.selected','preview.attach','preview.detach','preview.snapshot','preview.prepare','preview.ack','preview.observe','preview.close','chat.repair','filesystem.resolve','filesystem.external.open','filesystem.external.read','filesystem.external.image','filesystem.external.list','filesystem.external.forget','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','git.push.preview','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.tailscaleOnly.set','device.enable','device.disable','device.identity.reset','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','chat.image.read','terminal.read','session.lookup','session.present','chat.read','chat.subagent.read','data.status','data.backup','data.backup.verify','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','usage.query','usage.ledger.summary','usage.ledger.series','usage.ledger.breakdown','usage.ledger.sessions','usage.ledger.session','usage.ledger.sources','usage.ledger.refresh','usage.ledger.rebuild','usage.ledger.cancel','usage.ledger.settings','usage.ledger.settings.update','runtime.events.filter','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','provider.refresh','plugin.list','plugin.setEnabled','plugin.selectBrowserBinding','plugin.reload','chat.queue.read','chat.queue.add','chat.queue.update','chat.queue.remove','chat.queue.move','chat.queue.pause','chat.queue.resume','chat.queue.send','quickLaunch.list','quickLaunch.save','quickLaunch.delete','quickLaunch.run','quickLaunch.restart','quickLaunch.detect','quickLaunch.setup.read','quickLaunch.setup.save','quickLaunch.setup.run','quickLaunch.setup.status','quickLaunch.recent','quickLaunch.proposals.list','quickLaunch.proposals.accept','quickLaunch.proposals.reject','chat.tool.run.list','chat.tool.run.start','chat.tool.run.status','chat.tool.run.logs','chat.tool.run.stop','chat.tool.run.restart','chat.tool.run.propose','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.answer','chat.options','chat.option.set','chat.connection','chat.context.read','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.fingerprints','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.stash.list','git.stash.show','git.stash.push','git.stash.apply','git.stash.drop','git.log','git.commit.show','git.commit.diff','git.blame','git.compare.files','git.compare.diff','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint','agentReview.start','agentReview.list','agentReview.mark','group.prerequisites','group.create','group.list','group.read','group.send','group.stop','group.resend','group.member.add','group.member.update','group.member.remove','group.rename','group.archive','session.documents.list','session.documents.pin','session.documents.unpin','chat.projectTrust.set','chat.feedback.add','chat.feedback.read','chat.feedback.dismiss','chat.fork','chat.backgroundTasks.list','chat.backgroundTask.stop','chat.steer'] as const satisfies readonly Method[];
 */
 // Kept additive while this long-standing literal remains source-compatible.
 // The legacy list predates review-draft RPCs; extend it here so old callers of
 // `validateRequest` accept the additive methods without rebuilding that list.
 (METHODS as unknown as string[]).unshift(
+ 'filesystem.browse','filesystem.preview.read','attachment.upload','attachment.read',
  'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
@@ -1184,6 +1204,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'filesystem.preview.read':['projectId','path'],'attachment.upload':['uploadId','sessionId','name'],'attachment.read':['assetId'],
  'git.history.plan':['projectId','hash'],'git.cherryPick':['projectId','hash','operationId'],'git.revert':['projectId','hash','operationId'],
  'git.reset':['projectId','hash','expectedHead','operationId'],'git.operation.abort':['projectId','kind','operationId'],'git.operation.continue':['projectId','kind','operationId'],
  'browser.approval.read':['sessionId','turnId','approvalId'],
@@ -1201,7 +1222,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.resume':['sessionId','operationId'],
  'session.organize':['sessionId','operationId'],'git.merge':['projectId','operationId'],'git.merge.abort':['projectId','operationId'],
  'project.update':['id','operationId'],'worktree.branches':['projectId'],'worktree.relocate':['id','path','operationId'],
- 'device.enable':['operationId'],'device.disable':['operationId'],'device.identity.reset':['operationId'],'device.pairing.create':['permission','operationId'],'device.pairing.cancel':['pairingId','operationId'],'device.rename':['deviceId','name','operationId'],'device.renew':['deviceId','operationId'],'device.revoke':['deviceId','operationId'],
+ 'device.tailscaleOnly.set':['operationId'],'device.enable':['operationId'],'device.disable':['operationId'],'device.identity.reset':['operationId'],'device.pairing.create':['permission','operationId'],'device.pairing.cancel':['pairingId','operationId'],'device.rename':['deviceId','name','operationId'],'device.renew':['deviceId','operationId'],'device.revoke':['deviceId','operationId'],
  'terminal.read':['sessionId'],'session.lookup':['operationId'],'session.present':['sessionId','placement','presentation','operationId'],
  'chat.read':['sessionId'],
  'chat.subagent.read':['sessionId','key'],
@@ -1259,6 +1280,17 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if(m==='filesystem.preview.read'||m==='attachment.upload'||m==='attachment.read') {
+  for(const key of ['offset','limit',...(m==='attachment.upload'?['size']:[])]) {
+   const value=params[key];
+   if(value!==undefined&&(!Number.isSafeInteger(value)||Number(value)<(key==='limit'?1:0))) throw new Error(`Invalid ${key}`);
+  }
+  if(params.limit!==undefined&&Number(params.limit)>1024*1024) throw new Error('Invalid limit');
+  if(m==='attachment.upload'&&(Number(params.size)>256*1024*1024||typeof params.chunk!=='string'||params.chunk.length>Math.ceil(1024*1024/3)*4)) throw new Error('Invalid upload');
+ }
+ if(m==='device.tailscaleOnly.set'&&typeof params.enabled!=='boolean') throw new Error('Invalid Tailscale-only option');
+ if(m==='session.claim'&&params.takeover!==undefined&&typeof params.takeover!=='boolean') throw new Error('Invalid takeover');
+ if(m==='runtime.events.filter'&&(params.preset!=='tree'||Object.keys(params).length!==1)) throw new Error('Invalid event filter preset');
  if((m==='git.undo'||m==='git.undo.list')&&Object.keys(params).some(key=>!['projectId','worktreePath',...(m==='git.undo'?['id','operationId']:[])].includes(key))) throw new Error('Invalid undo request');
  if(['git.history.plan','git.cherryPick','git.revert','git.reset'].includes(m)&&!/^[a-fA-F0-9]{7,64}$/.test(String(params.hash))) throw new Error('Invalid commit hash');
  if(m==='git.revert'&&params.mainline!==undefined&&(!Number.isSafeInteger(params.mainline)||Number(params.mainline)<1)) throw new Error('Invalid mainline parent');
@@ -1326,6 +1358,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='filesystem.external.open'&&params.sessionId!==undefined&&(typeof params.sessionId!=='string'||params.sessionId==='')) throw new Error('Invalid sessionId');
  if(m==='device.pairing.create'&&!['readonly','fullcontrol'].includes(String(params.permission))) throw new Error('Invalid device permission');
+ if(m==='device.pairing.create'&&params.profile!==undefined&&!['phone','desktop'].includes(String(params.profile))) throw new Error('Invalid device profile');
  if(m==='catalog.visibility.update') {
   if(!['project','worktree','session'].includes(String(params.kind))) throw new Error('Invalid catalog kind');
   if(!['active','archived','removed'].includes(String(params.visibility))) throw new Error('Invalid catalog visibility');
@@ -1554,7 +1587,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m.startsWith('group.')&&m!=='group.create'&&m!=='group.list'&&m!=='group.read'&&m!=='group.prerequisites'&&params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid group revision');
  // Relative to the session's worktree root: no drive, no leading separator, no `..` segment.
  if((m==='session.documents.pin'||m==='session.documents.unpin')&&(!pathOk(params.path)||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(String(params.path)))) throw new Error('Invalid path');
- const maxLimit=m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
+ const maxLimit=m==='filesystem.preview.read'||m==='attachment.read'?1024*1024:m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {

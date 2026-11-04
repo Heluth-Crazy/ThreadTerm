@@ -1,0 +1,37 @@
+.machine-rows { padding: 4px 8px 8px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.machine-row { width: 100%; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.machine-row:hover { background: var(--soft); }
+.machine-row.active { background: var(--soft); box-shadow: inset 3px 0 var(--machine-color); }
+.machine-row:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.machine-dot { display: inline-block; width: 9px; height: 9px; flex: none; border-radius: 3px; background: var(--machine-color); }
+.machine-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.machine-row small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.remote-machine > .titlebar { border-top: 3px solid var(--machine-color); }
+.machine-chip { display: inline-flex; gap: 7px; align-items: center; margin-left: 14px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.machine-settings label { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.machine-settings textarea, .machine-settings input { padding: 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; }
+.machine-settings textarea { resize: vertical; width: 100%; min-width: 0; font-family: inherit; overflow-wrap: anywhere; }
+.machine-settings h4 { margin: 24px 0 8px; }
+.machine-settings h3 small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.machine-offer { display: flex; align-items: flex-start; gap: 16px; padding: 14px; margin-top: 12px; border: 1px solid var(--border); border-radius: 9px; }
+.machine-offer > div { flex: 1; min-width: 0; }
+.machine-offer img { flex: none; border-radius: 6px; }
+.machine-check-code { font-family: var(--mono); letter-spacing: .08em; }
+.machine-local-fields { display: flex; gap: 12px; }
+.machine-local-fields label:first-child { flex: 1; }
+.machine-settings input[type=color] { width: 64px; height: 36px; padding: 3px; }
+.machine-confirm, .machine-failure { padding: 14px; border: 1px solid var(--border); border-radius: 9px; margin: 12px; background: var(--surface); }
+.machine-failure { position: relative; z-index: 2; flex: none; }
+@media (max-width: 1000px) { .machine-offer { flex-wrap: wrap; } .machine-offer img { width: 132px; height: 132px; } }
+
+.machine-row-wrap { display:flex; align-items:center; position:relative; min-width:0; }
+.machine-row-wrap .machine-row { flex:1; min-width:0; }
+.machine-disclosure { flex:none; display:grid; place-items:center; width:20px; height:28px; padding:0; border:0; background:transparent; color:var(--muted); cursor:pointer; }
+.machine-disclosure .chev { width:12px; height:12px; transform:rotate(-90deg); }
+.machine-disclosure.open .chev { transform:rotate(0); }
+.machine-disclosure:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.machine-group > .project-catalog { margin-left:10px; }
+.machine-add { margin-top:6px; width:100%; }
+.remote-project-catalog .sess-row:hover .badge { visibility:visible; }
+
+.machine-settings .tailscale-only-setting .setting-switch { flex-direction: row; }

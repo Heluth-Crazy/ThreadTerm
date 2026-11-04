@@ -22,7 +22,7 @@ function runner() {
   return { react, render:options => render(current.fn, options), renderAsync:async options => { render(current.fn, options); await new Promise(setImmediate); return render(current.fn, options); }, mount:(fn, options) => render(fn, options), dispose:() => hooks.forEach(hook => hook?.cleanup?.()) };
 }
 
-function load(react, storage, deleted, readShot = async id => packet(id).dataUrl) {
+function load(react, storage, deleted, readShot = async id => packet(id).dataUrl, remote = { isRemoteFiles: () => false, persistRemotePageShot: async shot => shot }) {
   const source = readFileSync('renderer/src/pageShotDraft.ts', 'utf8');
   const code = ts.transpileModule(source, { compilerOptions:{ module:ts.ModuleKind.CommonJS, target:ts.ScriptTarget.ES2022, jsx:ts.JsxEmit.ReactJSX, esModuleInterop:true } }).outputText;
   const module = { exports:{} };
@@ -30,6 +30,7 @@ function load(react, storage, deleted, readShot = async id => packet(id).dataUrl
   const localRequire = name => {
     if (name === 'react') return react;
     if (name === './bridge') return bridge;
+    if (name === './remoteFiles') return remote;
     throw new Error(`Unexpected screenshot draft dependency: ${name}`);
   };
   vm.runInNewContext(`(function(require,module,exports){${code}\n})(require,module,module.exports)`, { require:localRequire, module, URL, localStorage:storage, console, Promise, setTimeout, clearTimeout });
@@ -46,6 +47,33 @@ function compose(sessionId, imageMode = 'accept') {
   const host = { insert:async(id, text) => { state.inserted.push([id, text]); } };
   return { state, options, host };
 }
+
+test('remote screenshot file offer waits for host upload before attaching a reference', async () => {
+  const storage = memoryStorage(), deleted = [], hooks = runner(), composeState = compose('remote-chat', 'unsupported');
+  let finish;
+  const remote = { isRemoteFiles: () => true, persistRemotePageShot: async (value, sessionId) => { assert.equal(sessionId, 'remote-chat'); assert.equal(value.path, shot().path); return new Promise(resolve => { finish = resolve; }); } };
+  const api = load(hooks.react, storage, deleted, undefined, remote);
+  let draft = hooks.mount(api.usePageShotDraft, composeState.options());
+  await api.addPageShotToDraft(composeState.host, 'remote-chat', packet()); draft = await hooks.renderAsync(composeState.options());
+  draft.keep(ids[0]); assert.deepEqual(composeState.state.contextItems, []);
+  finish({ ...shot(ids[1]), path: 'Z:/host-assets/shot.png' }); draft = await hooks.renderAsync(composeState.options());
+  assert.equal(draft.records[0].mode, 'file'); assert.equal(draft.records[0].shot.path, 'Z:/host-assets/shot.png');
+  assert.equal(composeState.state.contextItems[0].id, `browser-shot:${ids[1]}`);
+  assert.ok(composeState.state.contextItems[0].text.includes('Z:/host-assets/shot.png')); assert.deepEqual(deleted, []);
+  hooks.dispose();
+});
+
+test('remote screenshot upload completed after a session switch cannot attach to the new session', async () => {
+  const storage = memoryStorage(), deleted = [], hooks = runner(), composeState = compose('remote-before', 'unsupported');
+  let finish;
+  const api = load(hooks.react, storage, deleted, undefined, { isRemoteFiles: () => true, persistRemotePageShot: () => new Promise(resolve => { finish = resolve; }) });
+  let draft = hooks.mount(api.usePageShotDraft, composeState.options());
+  await api.addPageShotToDraft(composeState.host, 'remote-before', packet()); draft = await hooks.renderAsync(composeState.options());
+  draft.keep(ids[0]); composeState.state.sessionId = 'remote-after'; hooks.render(composeState.options());
+  finish({ ...shot(ids[1]), path: 'Z:/host-assets/shot.png' }); draft = await hooks.renderAsync(composeState.options());
+  assert.deepEqual(composeState.state.contextItems, []); assert.deepEqual(plain(draft.records), []); assert.deepEqual(deleted, []);
+  hooks.dispose();
+});
 
 test('hydrates image metadata and attaches a page screenshot without sending', async () => {
   const storage = memoryStorage(), deleted = [], hooks = runner(), api = load(hooks.react, storage, deleted), composeState = compose('chat-a'); composeState.state.images = [packet().dataUrl];

@@ -89,6 +89,7 @@ impl ProviderAdapter for Adapter {
             plugin_id: None,
             icon: None,
             sign_in: None,
+            remote_sign_in: None,
             homepage: None,
             id: "reviewer".into(),
             name: "Reviewer".into(),

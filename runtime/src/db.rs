@@ -103,7 +103,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS session_organization (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_activity (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, state TEXT NOT NULL, revision INTEGER NOT NULL, turn_id TEXT, reason TEXT);
              CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-             INSERT OR IGNORE INTO settings(singleton,revision,value) VALUES (1,0,'{}');"
+             INSERT OR IGNORE INTO settings(singleton,revision,value) VALUES (1,0,'{\"remoteMachines\":{\"enabled\":false}}');"
         )?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL);")?;
         // Additive migration: prompt overrides are provider-neutral and separate
@@ -766,6 +766,38 @@ impl Database {
             inbox: collect_inbox(&conn)?,
             providers: vec![],
         })
+    }
+    /// Small projections for the server-owned control tree subscription. Never reads transcripts.
+    pub fn tree_projection(&self, event: &str, data: &Value) -> Result<Value> {
+        let conn = self.connection.lock().map_err(|_| anyhow!("database lock poisoned"))?;
+        let mut tree = json!({});
+        let kind = data.get("kind").and_then(Value::as_str).unwrap_or("");
+        // Needs-you counts only use unread items; resolved history would make every frame grow with the inbox.
+        let unread_inbox = |conn: &Connection| -> Result<Value> {
+            Ok(json!(collect_inbox(conn)?.into_iter().filter(|item| item["read"] == false).collect::<Vec<_>>()))
+        };
+        if event == "inbox.resolved" { tree["inbox"] = unread_inbox(&conn)?; }
+        if event == "state.changed" && matches!(kind, "" | "catalog.visibility") {
+            let mut stmt = conn.prepare("SELECT kind,item_id,visibility,revision FROM catalog_visibility ORDER BY kind,item_id")?;
+            let rows = stmt.query_map([], |r| Ok(json!({"kind":r.get::<_,String>(0)?,"id":r.get::<_,String>(1)?,"visibility":r.get::<_,String>(2)?,"revision":r.get::<_,i64>(3)?})))?;
+            tree["visibility"] = json!(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        if event == "state.changed" {
+            if matches!(kind, "project" | "project.catalog" | "catalog.visibility") { tree["projects"] = json!(collect_projects(&conn)?); }
+            if let Some(id) = data.get("sessionId").and_then(Value::as_str) {
+                tree["session"] = collect_tree_sessions(&conn, Some(id))?.into_iter().next().unwrap_or(Value::Null);
+            } else if matches!(kind, "session" | "catalog.visibility" | "project") {
+                tree["sessions"] = json!(collect_tree_sessions(&conn, None)?);
+            }
+            if matches!(kind, "" | "git" | "project" | "project.catalog" | "catalog.visibility") {
+                let mut stmt = conn.prepare("SELECT id,project_id,path,branch,head,is_main,locked FROM worktrees ORDER BY project_id,path")?;
+                let rows = stmt.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"projectId":r.get::<_,String>(1)?,"path":r.get::<_,String>(2)?,"branch":r.get::<_,Option<String>>(3)?,"head":r.get::<_,String>(4)?,"isMain":r.get::<_,bool>(5)?,"locked":r.get::<_,bool>(6)?,"missing":false})))?;
+                tree["worktrees"] = json!(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+            }
+            if matches!(kind, "inbox" | "chat.approval" | "chat.approval.resolved") { tree["inbox"] = unread_inbox(&conn)?; }
+            if kind == "settings" { tree["settings"] = json!(settings(&conn)?); }
+        }
+        Ok(tree)
     }
     pub fn events_after(&self, after: i64) -> Result<Vec<(i64, String, Value)>> {
         let conn = self
@@ -2080,6 +2112,24 @@ impl Database {
             Ok(())
         })
     }
+    /// After a runtime stop, the Chat turn that was streaming has no outcome: settle it
+    /// as interrupted, once, so its partial reply stops reading as streaming. Nothing is
+    /// sent to the provider. Runs after `mark_live_sessions_interrupted`.
+    pub fn settle_interrupted_chat_turns(&self) -> Result<()> {
+        let turns = self.transaction(|tx| {
+            let mut statement = tx.prepare("SELECT a.session_id,a.turn_id FROM session_activity a JOIN sessions s ON s.id=a.session_id
+                WHERE s.mode='chat' AND s.read_only=0 AND a.reason='runtime_interrupted' AND a.turn_id IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM chat_items i WHERE i.session_id=a.session_id AND i.turn_id=a.turn_id
+                    AND json_extract(i.data,'$.turnStatus') IN ('completed','failed','interrupted','unknown'))")?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })?;
+        for (session, turn) in turns {
+            self.record_provider_event(&session, Some(&turn), "chat.turn.completed", &json!({"status":"interrupted","reason":"runtime_interrupted"}))?;
+        }
+        Ok(())
+    }
     pub fn lease(&self, session_id: &str) -> Result<Option<(String, i64, String)>> {
         let conn = self
             .connection
@@ -2572,6 +2622,28 @@ fn collect_projects(conn: &Connection) -> Result<Vec<Project>> {
     let projects = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(projects)
 }
+/// Sidebar projection deliberately skips delegation outcomes, run commands and native identities.
+fn collect_tree_sessions(conn: &Connection, id: Option<&str>) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare("SELECT s.id,s.project_id,s.worktree_path,s.title,s.provider,s.mode,s.status,s.created_at,s.updated_at,s.exit_code,s.read_only,t.provider FROM sessions s LEFT JOIN terminal_agents t ON t.session_id=s.id WHERE (?1 IS NULL OR s.id=?1) ORDER BY s.created_at,s.id")?;
+    let rows = stmt.query_map([id], |r| {
+        let mut session = json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(3)?,"provider":r.get::<_,String>(4)?,"mode":r.get::<_,String>(5)?,"status":r.get::<_,String>(6)?,"createdAt":r.get::<_,String>(7)?,"updatedAt":r.get::<_,String>(8)?,"readOnly":r.get::<_,bool>(10)?});
+        if let Some(project) = r.get::<_,Option<String>>(1)? { session["projectId"] = json!(project); }
+        if let Some(path) = r.get::<_,Option<String>>(2)? { session["worktreePath"] = json!(path); }
+        if let Some(code) = r.get::<_,Option<i32>>(9)? { session["exitCode"] = json!(code); }
+        if session["mode"] == "terminal" && matches!(session["provider"].as_str(), Some("shell" | "custom")) {
+            if let Some(agent) = r.get::<_,Option<String>>(11)? { session["terminalAgent"] = json!(agent); }
+        }
+        Ok(session)
+    })?;
+    let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    for session in &mut sessions {
+        let id = session["id"].as_str().unwrap().to_owned();
+        if let Some(activity) = session_activity(conn, &id)? { session["activity"] = json!(activity); }
+        session["archived"] = json!(session_organization(conn, &id)?.archived);
+    }
+    Ok(sessions)
+}
+
 fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt=conn.prepare("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port,terminal_agents.provider FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id LEFT JOIN terminal_agents ON terminal_agents.session_id=sessions.id ORDER BY sessions.created_at")?;
     let rows = stmt.query_map([], |r| {
@@ -5048,6 +5120,36 @@ pub(crate) fn browser_eval_context_tx(
         settings_revision,
         enabled: settings.get("browserEvalEnabled").and_then(Value::as_bool) == Some(true),
     })
+}
+
+#[cfg(test)]
+mod interrupted_turn_tests {
+    use super::*;
+
+    #[test]
+    fn startup_settles_only_the_unfinished_chat_turn_once() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("runtime.sqlite3")).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        let create = |op: &str| db.create_session(CreateSession { project_id: None, title: None, provider: "codex", mode: "chat", native_id: None, operation_id: op }).unwrap();
+        let held = create("held");
+        db.record_provider_event(&held.id, Some("held-turn"), "message.user", &json!({"text":"held work"})).unwrap();
+        db.bind_chat_activity_turn(&held.id, "held-turn", "held-turn").unwrap();
+        db.record_provider_event(&held.id, Some("held-turn"), "chat.delta", &json!({"part":{"type":"text","text":"partial"}})).unwrap();
+        let completed = create("completed");
+        db.record_provider_event(&completed.id, Some("done-turn"), "message.user", &json!({"text":"done"})).unwrap();
+        db.bind_chat_activity_turn(&completed.id, "done-turn", "done-turn").unwrap();
+        db.record_provider_event(&completed.id, Some("done-turn"), "chat.turn.completed", &json!({})).unwrap();
+        db.mark_live_sessions_interrupted().unwrap();
+        let settled = db.chat_items(&completed.id).unwrap();
+        db.settle_interrupted_chat_turns().unwrap();
+        let recovered = db.chat_items(&held.id).unwrap();
+        assert!(recovered.iter().any(|item| item.turn_status == Some(crate::domain::NativeTurnStatus::Interrupted)));
+        assert!(recovered.iter().flat_map(|item| &item.parts).all(|part| part["status"] != "streaming"));
+        assert_eq!(db.chat_items(&completed.id).unwrap(), settled, "completed turn unchanged");
+        db.settle_interrupted_chat_turns().unwrap();
+        assert_eq!(db.chat_items(&held.id).unwrap(), recovered, "settling is idempotent");
+    }
 }
 
 #[cfg(test)]

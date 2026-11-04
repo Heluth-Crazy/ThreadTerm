@@ -70,3 +70,11 @@ export function partitionAttachedFiles(
   });
   return { images, files: contexts, imagesAsFiles };
 }
+
+/** Apply host paths only after every file chip has a confirmed upload. */
+export async function uploadAttachedFilesPlan(plan: AttachedFilesPlan, upload: (paths: string[]) => Promise<string[]>): Promise<AttachedFilesPlan> {
+  if (!plan.files.length) return plan;
+  const paths = await upload(plan.files.map(file => file.path));
+  if (paths.length !== plan.files.length || paths.some(path => !path)) throw new Error('File upload did not finish');
+  return { ...plan, files: plan.files.map((file, index) => ({ ...file, path: paths[index]! })) };
+}

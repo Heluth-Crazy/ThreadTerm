@@ -215,6 +215,16 @@ impl LeaseManager {
             }
         })
     }
+    /// Explicit user action only. Serialize with in-flight PTY effects before fencing the old owner.
+    pub fn take_control(&self, db: &Database, session_id: &str, principal: &str) -> Result<i64> {
+        let Some(_fence) = SessionFence::acquire(self.fence_arc(session_id), Some(CLAIM_FENCE_WAIT)) else { bail!("lease_held"); };
+        db.transaction(|tx| {
+            let next = read_lease(tx, session_id)?.map(|(_, epoch, _)| epoch + 1).unwrap_or(1);
+            tx.execute("INSERT INTO leases(session_id,client_id,epoch,expires_at) VALUES (?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET client_id=excluded.client_id,epoch=excluded.epoch,expires_at=excluded.expires_at",
+                params![session_id, principal, next, (Utc::now() + self.ttl).to_rfc3339()])?;
+            Ok(next)
+        })
+    }
     pub fn require(
         &self,
         db: &Database,
@@ -325,6 +335,26 @@ mod tests {
             })
             .collect();
         (root, db, ids)
+    }
+
+    #[test]
+    fn explicit_terminal_takeover_fences_both_directions_and_old_release() {
+        let (_root, db, ids) = database(1);
+        let leases = LeaseManager::default();
+        let _local = leases.connect("local-window");
+        let _remote = leases.connect("peer:device:remote-window");
+        let local = leases.claim(&db, &ids[0], "local-window").unwrap();
+        assert!(leases.claim(&db, &ids[0], "peer:device:remote-window").is_err());
+        let remote = leases.take_control(&db, &ids[0], "peer:device:remote-window").unwrap();
+        assert!(remote > local);
+        assert!(leases.require(&db, &ids[0], "local-window", local).is_err());
+        assert!(leases.renew(&db, &ids[0], "local-window", local).is_err());
+        let _ = leases.release(&db, &ids[0], "local-window", local);
+        assert!(leases.require(&db, &ids[0], "peer:device:remote-window", remote).is_ok());
+        let next = leases.take_control(&db, &ids[0], "local-window").unwrap();
+        assert!(next > remote);
+        assert!(leases.require(&db, &ids[0], "peer:device:remote-window", remote).is_err());
+        assert!(leases.require(&db, &ids[0], "local-window", next).is_ok());
     }
 
     #[test]

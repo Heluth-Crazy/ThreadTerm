@@ -56,6 +56,10 @@ pub mod plugins;
 mod plugin_services;
 pub mod pty;
 pub mod remote_access;
+pub(crate) mod peer;
+pub(crate) mod tunnel;
+#[cfg(all(test, windows))]
+mod peer_tests;
 pub mod retry_scheduler;
 pub mod review;
 pub mod review_drafts;
@@ -74,10 +78,12 @@ pub mod transport;
 #[cfg(windows)]
 pub mod windows_security;
 pub mod workspace_services;
+pub mod host_files;
+pub mod attachments;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Semantic contract includes native-history repair, exact selected-commit snapshots, Chat fork, feedback notes, and Chat Code Review. Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 18;
+/// Semantic contract includes remote-machine peer handshakes and device profiles. Wire HMAC still uses PROTOCOL_VERSION.
+pub const PROTOCOL_CONTRACT: u32 = 19;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;

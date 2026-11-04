@@ -460,6 +460,7 @@ impl ProviderAdapter for CodexAdapter {
             plugin_id: None,
             icon: None,
             sign_in: super::builtin_sign_in("codex"),
+            remote_sign_in: super::builtin_remote_sign_in("codex"),
             homepage: None,
             id: "codex".to_owned(),
             name: super::builtin_name("codex").to_owned(),

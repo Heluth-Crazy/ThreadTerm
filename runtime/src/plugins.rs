@@ -1245,6 +1245,7 @@ impl ProviderAdapter for ManifestTerminalAdapter {
             plugin_id: self.descriptor.plugin_id.clone(),
             icon: self.descriptor.icon.clone(),
             sign_in: self.descriptor.sign_in(),
+            remote_sign_in: None,
             homepage: self.descriptor.homepage.clone(),
         }
     }

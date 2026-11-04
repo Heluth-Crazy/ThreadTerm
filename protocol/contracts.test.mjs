@@ -530,10 +530,13 @@ test('catalog and device admin results keep scope metadata additive and credenti
  const visibility={kind:'worktree',id:'w',visibility:'archived',revision:1,projectId:'p',worktreePath:'C:\\repo\\tree'};
  validateResult('catalog.visibility.list',[visibility]);
  validateResult('catalog.visibility.update',visibility);
- const device={id:'d',name:'Phone',permission:'fullcontrol',createdAt:'2026-09-10T00:00:00Z',expiresAt:'2026-09-11T00:00:00Z'};
+ const device={id:'d',name:'Phone',permission:'fullcontrol',profile:'phone',createdAt:'2026-09-10T00:00:00Z',expiresAt:'2026-09-11T00:00:00Z'};
  validateResult('device.rename',device);
  validateResult('device.renew',device);
  assert.throws(()=>validateResult('device.renew',{...device,token:'must-not-cross-admin-result'}));
+ validateRequest('device.pairing.create',{permission:'fullcontrol',profile:'desktop',operationId:'pair-desktop'});
+ validateRequest('device.pairing.create',{permission:'fullcontrol',operationId:'pair-phone-default'});
+ assert.throws(()=>validateRequest('device.pairing.create',{permission:'fullcontrol',profile:'tablet',operationId:'pair-invalid'}));
 });
 test('workspace layouts reject excessive panes, invalid active identities and duplicate node ids',()=>{
  const pane=id=>({kind:'pane',id,tabs:[],activeTabId:null});
@@ -590,10 +593,10 @@ test('handshake rejects old and mismatched Chat approval contracts without imply
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION}),/older and was left running/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00'},'runtime'),/Running jobs were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:1}),new RegExp('contract '+PROTOCOL_CONTRACT));
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/contract 18/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),new RegExp('contract '+PROTOCOL_CONTRACT));
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:12}),/left running/);
- assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/contract 18/);
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),/contract 18/);
+ assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),new RegExp('contract '+PROTOCOL_CONTRACT));
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:13}),new RegExp('contract '+PROTOCOL_CONTRACT));
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00',contract:12},'runtime'),/were not stopped/);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:99,contract:PROTOCOL_CONTRACT}),/wire protocol/);
  validateResult('runtime.health',{version:'0.1.0',epoch:'e',contract:PROTOCOL_CONTRACT});
@@ -772,7 +775,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,18);
+ assert.equal(PROTOCOL_CONTRACT,19);
 });
 
 test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{
@@ -1175,4 +1178,13 @@ test('agent run list composes repo entries, own proposals, and dependency sequen
   entries:[{id:'repo:api',name:'Shared API',command:'node app.mjs',cwd:'',kind:'service',source:'repo',approved:false}],
   runs:[{runId:'r',entryId:'prepare',name:'Prepare',state:'running',startedAt:'now',startedBy:'agent',startedBySelf:true,sequence}],
   proposals:[{proposalId:'q',name:'Suggested',state:'pending',createdAt:'now'}],truncated:false});
+});
+
+test('tree event filter accepts only the server-owned preset and terminal takeover is explicit', () => {
+ validateRequest('runtime.events.filter', { preset: 'tree' });
+ validateResult('runtime.events.filter', { preset: 'tree', tree: { worktrees: [] } });
+ for (const params of [{ preset: 'all' }, { events: ['chat.item'] }, { preset: 'tree', events: [] }]) assert.throws(() => validateRequest('runtime.events.filter', params));
+ validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window', takeover: true });
+ validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window' });
+ assert.throws(() => validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window', takeover: 'yes' }));
 });

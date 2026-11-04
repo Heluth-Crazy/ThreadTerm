@@ -819,6 +819,22 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"device.tailscaleOnly.set\">": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"device.disable\">": {
       "type": "object",
       "properties": {
@@ -849,6 +865,9 @@
         "permission": {
           "$ref": "#/definitions/DevicePermission"
         },
+        "profile": {
+          "$ref": "#/definitions/DeviceProfile"
+        },
         "operationId": {
           "type": "string"
         }
@@ -865,6 +884,14 @@
         "readonly",
         "fullcontrol"
       ]
+    },
+    "DeviceProfile": {
+      "type": "string",
+      "enum": [
+        "phone",
+        "desktop"
+      ],
+      "description": "The trust profile selected by the host when a pairing offer is created."
     },
     "RequestParams<\"device.pairing.cancel\">": {
       "type": "object",
@@ -1567,6 +1594,19 @@
         "rerun"
       ]
     },
+    "RequestParams<\"runtime.events.filter\">": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "const": "tree"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"runtime.health\">": {
       "type": "object",
       "additionalProperties": false
@@ -1958,6 +1998,9 @@
         },
         "clientId": {
           "type": "string"
+        },
+        "takeover": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -3499,6 +3542,96 @@
         "sessionId",
         "leaseEpoch",
         "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.browse\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.preview.read\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"attachment.upload\">": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "final": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "uploadId",
+        "sessionId",
+        "name",
+        "size",
+        "offset",
+        "chunk",
+        "final"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"attachment.read\">": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "assetId"
       ],
       "additionalProperties": false
     },
@@ -6854,6 +6987,32 @@
         },
         "method": {
           "type": "string",
+          "const": "device.tailscaleOnly.set"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.tailscaleOnly.set%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "device.disable"
         },
         "params": {
@@ -7846,6 +8005,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22usage.query%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.events.filter"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22runtime.events.filter%22%3E"
         }
       },
       "required": [
@@ -9978,6 +10163,110 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22chat.connect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.browse"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.browse%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.preview.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.preview.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.upload"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22attachment.upload%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22attachment.read%22%3E"
         }
       },
       "required": [

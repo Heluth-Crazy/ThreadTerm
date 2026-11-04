@@ -65,3 +65,9 @@ export const acquireControl = createLeasePool({
   renew: (sessionId, leaseEpoch) => runtimeRequest('session.renew', {sessionId, leaseEpoch}),
   release: (sessionId, leaseEpoch) => runtimeRequest('session.release', {sessionId, leaseEpoch}),
 });
+
+/** Only called by the explicit blocked-terminal action; automatic claim/renew never steals a lease. */
+export async function takeTerminalControl(sessionId: string): Promise<void> {
+  const { request } = await import('./bridge');
+  await request('session.claim', { sessionId, clientId: 'threadterm-renderer', takeover: true });
+}

@@ -45,6 +45,12 @@ fn advance_cursor_past_history_gap(cursor: &mut i64, durable_end: i64) {
 }
 
 #[cfg(windows)]
+fn guard_stream(service: &RuntimeService, principal: &str, method: &str) -> Result<()> {
+    crate::peer::guard(service, principal, method)
+        .map_err(|error| anyhow::anyhow!("{}: {}", error.code, error.message))
+}
+
+#[cfg(windows)]
 pub async fn serve(service: Arc<RuntimeService>, credential: String) -> Result<()> {
     // Before the first connection, so every live lease still belongs to a client of a previous runtime.
     service.leases.adopt_previous(&service.db)?;
@@ -62,7 +68,7 @@ async fn accept_control(service: Arc<RuntimeService>, credential: String) -> Res
     let mut first = true;
     loop {
         let mut acl = crate::windows_security::SecurityAttributes::current_user_only()?;
-        let pipe = unsafe {
+        let mut pipe = unsafe {
             ServerOptions::new()
                 .first_pipe_instance(first)
                 .create_with_security_attributes_raw(&name, acl.raw().cast())
@@ -84,7 +90,9 @@ async fn accept_control(service: Arc<RuntimeService>, credential: String) -> Res
         let s = Arc::clone(&service);
         let c = credential.clone();
         tokio::spawn(async move {
-            let _ = serve_control(pipe, s, &c).await;
+            let Ok(epoch) = s.db.epoch() else { return; };
+            let Ok(principal) = authenticate(&mut pipe, &c, &epoch).await else { return; };
+            let _ = serve_control(pipe, s, principal).await;
         });
         if service.shutdown_requested() {
             return Ok(());
@@ -98,7 +106,7 @@ async fn accept_browser(service: Arc<RuntimeService>, credential: String) -> Res
     let mut first = true;
     loop {
         let mut acl = crate::windows_security::SecurityAttributes::current_user_only()?;
-        let pipe = unsafe {
+        let mut pipe = unsafe {
             ServerOptions::new().first_pipe_instance(first)
                 .create_with_security_attributes_raw(&name, acl.raw().cast())
         }.context("creating private browser named pipe")?;
@@ -109,7 +117,11 @@ async fn accept_browser(service: Arc<RuntimeService>, credential: String) -> Res
         }
         let service = Arc::clone(&service);
         let credential = credential.clone();
-        tokio::spawn(async move { let _ = serve_browser(pipe, service, &credential).await; });
+        tokio::spawn(async move {
+            let Ok(epoch) = service.db.epoch() else { return; };
+            let Ok(principal) = authenticate(&mut pipe, &credential, &epoch).await else { return; };
+            let _ = serve_browser(pipe, service, principal).await;
+        });
     }
 }
 
@@ -126,12 +138,11 @@ struct BrowserRequest {
 /// This connection carries only private browser traffic. Admission never
 /// waits in the decoder; replies retain capacity independently of admin work.
 #[cfg(windows)]
-async fn serve_browser(
-    mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
+pub(crate) async fn serve_browser<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    pipe: T,
     service: Arc<RuntimeService>,
-    credential: &str,
+    principal: String,
 ) -> Result<()> {
-    let principal = authenticate(&mut pipe, credential, &service.db.epoch()?).await?;
     let connection_id = uuid::Uuid::new_v4().to_string();
     let (events, mut notifications) = tokio::sync::mpsc::channel::<Value>(128);
     let _presence = service.browser_tools.connect(&principal, &connection_id, events)?;
@@ -169,6 +180,7 @@ async fn serve_browser(
                 tokio::spawn(async move {
                     let id = request.id;
                     let result = tokio::task::spawn_blocking(move || {
+                        guard_stream(&service, &principal, &request.method)?;
                         service.browser_tools.desktop_dispatch(&principal, &connection_id, &request.method, &request.params)
                     }).await;
                     let body = match result {
@@ -194,7 +206,7 @@ async fn accept_output(service: Arc<RuntimeService>, credential: String) -> Resu
     let mut first = true;
     loop {
         let mut acl = crate::windows_security::SecurityAttributes::current_user_only()?;
-        let pipe = unsafe {
+        let mut pipe = unsafe {
             ServerOptions::new()
                 .first_pipe_instance(first)
                 .create_with_security_attributes_raw(&name, acl.raw().cast())
@@ -216,7 +228,9 @@ async fn accept_output(service: Arc<RuntimeService>, credential: String) -> Resu
         let s = Arc::clone(&service);
         let c = credential.clone();
         tokio::spawn(async move {
-            let _ = serve_output(pipe, s, &c).await;
+            let Ok(epoch) = s.db.epoch() else { return; };
+            let Ok(principal) = authenticate(&mut pipe, &c, &epoch).await else { return; };
+            let _ = serve_output(pipe, s, principal).await;
         });
         if service.shutdown_requested() {
             return Ok(());
@@ -433,12 +447,16 @@ async fn run_request(
         .flatten();
     let trace_timer = is_chat_send.then(SendTraceTimer::start);
     let result = if request.method == "browser.tool.call" {
-        service.browser_tool_call(&principal, request).await
+        match crate::peer::guard(&service, &principal, &request.method) {
+            Ok(()) => service.browser_tool_call(&principal, request).await,
+            Err(error) => Err(error),
+        }
     } else { tokio::task::spawn_blocking(move || {
         let _trace_context = trace_context.map(SendTraceContext::enter);
         if is_chat_send {
             send_trace::emit(SendTraceEvent::new("transport.dispatch.begin").method("chat.send"));
         }
+        crate::peer::guard(&service, &principal, &request.method)?;
         let result = service.dispatch(&principal, request);
         if is_chat_send {
             send_trace::emit(SendTraceEvent::new("transport.dispatch.end")
@@ -521,13 +539,30 @@ fn lane_worker(
     LaneSender { sender, active, traced }
 }
 
+fn parse_event_filter(params: &Value) -> std::result::Result<(), crate::domain::RpcError> {
+    if params.as_object().is_some_and(|p| p.len() == 1 && p.get("preset") == Some(&json!("tree"))) { return Ok(()); }
+    Err(crate::domain::RpcError { code:"invalid_request".into(), message:"Unknown event filter preset".into(), details:None })
+}
+
+fn tree_event(event: &str, data: &Value) -> bool {
+    match event {
+        "session.status" | "session.activity" | "inbox.created" | "inbox.resolved" | "presentation.requested" | "runtime.degraded" => true,
+        "state.changed" => matches!(data.get("kind").and_then(Value::as_str),
+            None | Some("project" | "project.catalog" | "catalog.visibility" | "session" | "session.title"
+            | "session.activity" | "session.organization" | "session.launch" | "session.native_bound"
+            | "session.native_replaced" | "session.resume" | "history.import" | "history.import.restore"
+            | "chat.fork" | "chat.turn.started" | "chat.turn.completed" | "chat.approval"
+            | "chat.approval.resolved" | "chat.error" | "inbox" | "git" | "settings")),
+        _ => false,
+    }
+}
+
 #[cfg(windows)]
-async fn serve_control(
-    mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
+pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    pipe: T,
     service: Arc<RuntimeService>,
-    credential: &str,
+    principal: String,
 ) -> Result<()> {
-    let principal = authenticate(&mut pipe, credential, &service.db.epoch()?).await?;
     // Leases follow the principal's control connections; this one counts until serve_control returns.
     let _presence = service.leases.connect(&principal);
     let _preview_presence = service.previews.connect(&principal);
@@ -535,6 +570,7 @@ async fn serve_control(
     let mut turn_speeds = service.subscribe_turn_speed();
     let mut turn_speeds_open = true;
     let mut sent_seq = service.db.snapshot()?.revision;
+    let mut tree_filter = false;
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
     let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
@@ -548,6 +584,19 @@ async fn serve_control(
         tokio::select! {
             frame = decoder.read(&mut reader) => {
                 let request: RpcRequest = serde_json::from_slice(&frame?)?;
+                if request.method == "runtime.events.filter" {
+                    let result = crate::peer::guard(&service, &principal, &request.method)
+                        .and_then(|()| parse_event_filter(&request.params));
+                    let response = match result {
+                        Ok(()) => {
+                            tree_filter = true;
+                            json!({"v":PROTOCOL_VERSION,"id":request.id,"result":{"preset":"tree","tree":service.db.tree_projection("state.changed", &json!({}))?}})
+                        }
+                        Err(error) => json!({"v":PROTOCOL_VERSION,"id":request.id,"error":error}),
+                    };
+                    write_json(&mut writer, &response).await?;
+                    continue;
+                }
                 match request_lane(&request.method) {
                     Lane::Ordered => {
                         sequenced_in_flight += 1;
@@ -587,20 +636,28 @@ async fn serve_control(
                 delivery?;
                 if reply.served_snapshot { service.db.start_retention(); }
             }
-            received = turn_speeds.recv(), if turn_speeds_open && sequenced_in_flight == 0 => {
+            received = turn_speeds.recv(), if !tree_filter && turn_speeds_open && sequenced_in_flight == 0 => {
                 let epoch = service.db.epoch()?;
+                if received.is_ok() { guard_stream(&service, &principal, "runtime.event")?; }
                 turn_speeds_open = forward_turn_speed(&mut writer, &epoch, received).await?;
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
         if sequenced_in_flight == 0 {
             let epoch = service.db.epoch()?;
-            for (seq, event, data) in service.db.events_after(sent_seq)? {
+            let previous_seq = sent_seq;
+            for (seq, event, mut data) in service.db.events_after(sent_seq)? {
+                sent_seq = seq;
+                if tree_filter && !tree_event(&event, &data) { continue; }
+                if tree_filter && event != "runtime.degraded" {
+                    data["tree"] = service.db.tree_projection(&event, &data)?;
+                }
                 let frame = json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data});
                 // Durable state that cannot fit a frame stays in the database; the
                 // connection reports a projection gap instead of dying, and the view
                 // resynchronizes through the bounded snapshot pages.
                 let bytes = serde_json::to_vec(&frame)?;
+                guard_stream(&service, &principal, "runtime.event")?;
                 if bytes.len() > MAX_RESPONSE_BYTES {
                     write_json(
                         &mut writer,
@@ -610,7 +667,9 @@ async fn serve_control(
                 } else {
                     write_binary(&mut writer, &bytes).await?;
                 }
-                sent_seq = seq;
+            }
+            if tree_filter && sent_seq != previous_seq {
+                write_json(&mut writer, &json!({"v":PROTOCOL_VERSION,"event":"runtime.cursor","epoch":epoch,"seq":sent_seq,"data":{}})).await?;
             }
         }
         if service.shutdown_requested() {
@@ -639,12 +698,11 @@ async fn forward_turn_speed<T: tokio::io::AsyncWrite + Unpin>(
 }
 
 #[cfg(windows)]
-async fn serve_output(
-    mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
+pub(crate) async fn serve_output<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    mut pipe: T,
     service: Arc<RuntimeService>,
-    credential: &str,
+    principal: String,
 ) -> Result<()> {
-    let _principal = authenticate(&mut pipe, credential, &service.db.epoch()?).await?;
     let mut decoder = FrameDecoder::default();
     let mut subscriptions: std::collections::HashMap<String, (i64, i64)> =
         std::collections::HashMap::new();
@@ -658,6 +716,7 @@ async fn serve_output(
             let (header, _body) = split_binary(&input[1..])?;
             match kind {
                 3 => {
+                    guard_stream(&service, &principal, "terminal.output")?;
                     let session_id = header
                         .get("sessionId")
                         .and_then(Value::as_str)
@@ -670,6 +729,7 @@ async fn serve_output(
                     subscriptions.insert(session_id, (cursor, 0));
                 }
                 2 => {
+                    guard_stream(&service, &principal, "terminal.output")?;
                     let credit = header
                         .get("credit")
                         .and_then(Value::as_i64)
@@ -710,6 +770,7 @@ async fn serve_output(
                             // hole keeps the existing durable-end resync. Neither
                             // consumes credit or drops the multiplexed pipe.
                             let next = output_gap_cursor(&service.db, id, *cursor)?;
+                            guard_stream(&service, &principal, "terminal.output")?;
                             write_output(&mut pipe, 4, &json!({"sessionId":id,"cursor":next}), &[])
                                 .await?;
                             advance_cursor_past_history_gap(cursor, next);
@@ -724,6 +785,7 @@ async fn serve_output(
                     let offset = (*cursor - start).max(0) as usize;
                     let bytes = &data[offset..];
                     let take = bytes.len().min(*credit as usize);
+                    guard_stream(&service, &principal, "terminal.output")?;
                     write_output(
                         &mut pipe,
                         1,
@@ -831,12 +893,12 @@ async fn authenticate<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 }
 
 #[cfg(windows)]
-async fn read_json<T: tokio::io::AsyncRead + Unpin>(stream: &mut T) -> Result<Value> {
+pub(crate) async fn read_json<T: tokio::io::AsyncRead + Unpin>(stream: &mut T) -> Result<Value> {
     let bytes = read_binary(stream).await?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 #[cfg(windows)]
-async fn write_json<T: tokio::io::AsyncWrite + Unpin>(stream: &mut T, value: &Value) -> Result<()> {
+pub(crate) async fn write_json<T: tokio::io::AsyncWrite + Unpin>(stream: &mut T, value: &Value) -> Result<()> {
     write_binary(stream, &serde_json::to_vec(value)?).await
 }
 /// One oversized answer becomes a typed error for its own request id; the
@@ -991,6 +1053,78 @@ mod decoder_tests {
         let durable = json!({"v":PROTOCOL_VERSION,"event":"chat.item","epoch":"epoch","seq":42,"data":{"sessionId":"s"}});
         write_json(&mut writer, &durable).await.unwrap();
         assert_eq!(read_json(&mut reader).await.unwrap(), durable);
+    }
+
+    #[test]
+    fn tree_filter_accepts_only_the_named_preset() {
+        assert!(parse_event_filter(&json!({"preset":"tree"})).is_ok());
+        for params in [json!({"preset":"other"}), json!({"preset":"tree","events":["chat.item"]}), json!({"events":[]})] {
+            assert!(parse_event_filter(&params).is_err());
+        }
+        assert!(!tree_event("chat.item", &json!({})));
+        assert!(!tree_event("chat.turnSpeed", &json!({})));
+        assert!(!tree_event("state.changed", &json!({"kind":"chat.delta"})));
+        assert!(tree_event("state.changed", &json!({"kind":"chat.approval.resolved"})));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn tree_filter_delivers_status_and_inbox_but_no_chat_stream_and_default_is_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let config = crate::config::RuntimeConfig {
+            data_dir:root.path().into(), database_path:root.path().join("runtime.sqlite"),
+            credential_path:root.path().join("credential"), pipe_base:"tree-filter-test".into(),
+        };
+        let db = Arc::new(crate::db::Database::open(&config.database_path).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::project_catalog::initialize(&db).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        crate::retry_scheduler::initialize(&db).unwrap();
+        let service = Arc::new(RuntimeService::with_test_providers(config, Arc::clone(&db), vec![]));
+        let (server, mut filtered) = tokio::io::duplex(1024 * 1024);
+        let a = tokio::spawn(serve_control(server, Arc::clone(&service), "filtered".into()));
+        write_json(&mut filtered, &json!({"v":1,"id":"unknown","method":"runtime.events.filter","params":{"preset":"unknown"}})).await.unwrap();
+        assert_eq!(read_json(&mut filtered).await.unwrap()["error"]["code"], "invalid_request");
+        write_json(&mut filtered, &json!({"v":1,"id":"filter","method":"runtime.events.filter","params":{"preset":"tree"}})).await.unwrap();
+        assert_eq!(read_json(&mut filtered).await.unwrap()["result"]["preset"], "tree");
+        let (server, mut local) = tokio::io::duplex(1024 * 1024);
+        let b = tokio::spawn(serve_control(server, Arc::clone(&service), "local".into()));
+        write_json(&mut local, &json!({"v":1,"id":"health","method":"runtime.health","params":{}})).await.unwrap();
+        assert_eq!(read_json(&mut local).await.unwrap()["id"], "health");
+        let session = db.create_session(crate::db::CreateSession {project_id:None,title:Some("Tree"),provider:"codex",mode:"chat",native_id:None,operation_id:"tree-session"}).unwrap();
+        db.set_session_status(&session.id, "running", None).unwrap();
+        for (kind, data) in [
+            ("chat.turn.started", json!({})),
+            ("chat.delta", json!({"item":{"id":"answer"},"part":{"type":"text","text":"secret stream"}})),
+            ("chat.approval", json!({"approvalId":"approval","part":{"type":"approval","approvalId":"approval","status":"pending","data":{}}})),
+        ] { db.record_provider_event(&session.id, Some("turn"), kind, &data).unwrap(); }
+        let mut status = false; let mut inbox = false;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let frame = read_json(&mut filtered).await.unwrap();
+                assert_ne!(frame["event"], "chat.item");
+                assert_ne!(frame["event"], "chat.turnSpeed");
+                if frame["event"] == "session.status" && frame["data"]["status"] == "running" { status = true; }
+                if frame["event"] == "inbox.created" { inbox = true; }
+                if status && inbox && frame["event"] == "runtime.cursor" { break; }
+            }
+        }).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop { if read_json(&mut local).await.unwrap()["event"] == "chat.item" { break; } }
+        }).await.unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "chat.approval.resolved", &json!({"approvalId":"approval","status":"resolved","preserveSessionState":true})).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let frame = read_json(&mut filtered).await.unwrap();
+                assert_ne!(frame["event"], "chat.item");
+                if frame["event"] == "inbox.resolved" {
+                    assert!(frame["data"]["tree"]["inbox"].as_array().unwrap().is_empty(), "the tree inbox carries unread items only");
+                    break;
+                }
+            }
+        }).await.unwrap();
+        a.abort(); b.abort(); service.shutdown();
     }
 
     #[tokio::test]

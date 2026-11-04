@@ -70,7 +70,9 @@ import { stopFailureMessage } from '../stopTurn';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { CodeReviewDialog } from './CodeReviewDialog';
 import { CODE_REVIEW_SLASH, isCodeReviewSession, parseReviewSlash } from '../codeReview';
-import { partitionAttachedFiles } from '../chatAttachments';
+import { partitionAttachedFiles, uploadAttachedFilesPlan } from '../chatAttachments';
+import { isRemoteFiles, readRemoteDropPaths, uploadRemotePaths } from '../remoteFiles';
+import { groupDropPaths } from '../groupFileDrop';
 import { parseQuickMessages } from '../quickMessages';
 import { useAppSettings } from '../appSettings';
 import { showContextMenu, type ContextMenuItem } from './ContextMenu';
@@ -1150,16 +1152,21 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   // F3: attach files picked in the native dialog. Images use the composer's image
   // path when the agent accepts images; every other file becomes a context chip.
-  async function attachPickedFiles() {
+  async function attachPickedFiles(droppedPaths?: string[]) {
     if (!composerEditable(composerStateRef.current)) return;
+    const remote = isRemoteFiles();
+    if (remote && imageReadingRef.current) return;
+    if (remote) { imageReadingRef.current = true; setImageReading(true); }
     setError(undefined);
     const target = lifecycle.current;
     try {
-      const picked = await attachFiles();
+      const picked = droppedPaths ? await readRemoteDropPaths(droppedPaths) : await attachFiles();
       if (lifecycle.current !== target || !picked.length) return;
       const canImages = Boolean(ui.inputCapabilities?.images);
       const idFor = () => `attach-${crypto.randomUUID()}`;
-      const plan = partitionAttachedFiles(picked, imagesRef.current, canImages, idFor);
+      const localPlan = partitionAttachedFiles(picked, imagesRef.current, canImages, idFor);
+      const plan = remote ? await uploadAttachedFilesPlan(localPlan, paths => uploadRemotePaths(session.id, paths)) : localPlan;
+      if (lifecycle.current !== target) return;
       if (plan.images.length) updateImages([...imagesRef.current, ...plan.images]);
       for (const item of plan.files) {
         try { context.attach(item); }
@@ -1173,6 +1180,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       }
     } catch (caught) {
       if (lifecycle.current === target) setError(asUserError(caught, copy('Files could not be attached.', '无法附加文件。')));
+    } finally {
+      if (remote) { imageReadingRef.current = false; setImageReading(false); }
     }
   }
   // F3: insert a snippet at the caret without replacing context chips. The
@@ -1902,7 +1911,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       : copy('Could not repair history. The local transcript is unchanged.', '未能修复历史。本地对话记录未更改。')}</p>}
     <ChatNotesPanel sessionId={session.id} liveTurn={liveTurn} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} busy={busy} zh={zh} onIssue={message => setError(message)} />
     <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} canNote={steerKind === 'split-note'} onSendNote={sendNoteFromQueue} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
-    <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}>
+    <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}
+      {...(isRemoteFiles() ? { onDragOver: (event: React.DragEvent<HTMLFormElement>) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); } }, onDrop: (event: React.DragEvent<HTMLFormElement>) => { const paths = groupDropPaths(event.dataTransfer); if (paths.length) { event.preventDefault(); event.stopPropagation(); void attachPickedFiles(paths); } } } : {})}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
         {slashCommands.length ? slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? "active" : ""} key={command.name} onMouseEnter={() => setSlashIndex(index)} onClick={() => applySlash(command)}>
           <b>/{command.name.replace(/^\//, "")}</b><span>{command.description ?? ""}</span>

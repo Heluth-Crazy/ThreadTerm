@@ -20,16 +20,16 @@ export function parseHtmlPreviewCommand(value: unknown): GrantCommand | RevokeCo
   return data as GrantCommand;
 }
 
-export function registerHtmlPreviewIpc(manager: HtmlPreviewGrantManager, assertTrusted: (event: IpcMainInvokeEvent) => void, runtimeFor: (event: IpcMainInvokeEvent) => RuntimeClient, available = () => true): void {
+export function registerHtmlPreviewIpc(manager: HtmlPreviewGrantManager, assertTrusted: (event: IpcMainInvokeEvent) => void, runtimeFor: (event: IpcMainInvokeEvent) => RuntimeClient, available = () => true, isRemote = (_event: IpcMainInvokeEvent) => false): void {
   // This read-only policy query is the only channel the untrusted frame preload uses.
   ipcMain.on(HTML_PREVIEW_RTC_POLICY_CHANNEL, event => {
     try { event.returnValue = !event.senderFrame || shouldDisableHtmlPreviewWebRtc(event.senderFrame, event.sender.id, manager); }
     catch { event.returnValue = true; }
   });
-  ipcMain.handle('threadterm:html-preview', createHtmlPreviewHandler(manager, assertTrusted, runtimeFor, available));
+  ipcMain.handle('threadterm:html-preview', createHtmlPreviewHandler(manager, assertTrusted, runtimeFor, available, isRemote));
 }
 
-export function createHtmlPreviewHandler(manager: HtmlPreviewGrantManager, assertTrusted: (event: IpcMainInvokeEvent) => void, runtimeFor: (event: IpcMainInvokeEvent) => RuntimeClient, available = () => true) {
+export function createHtmlPreviewHandler(manager: HtmlPreviewGrantManager, assertTrusted: (event: IpcMainInvokeEvent) => void, runtimeFor: (event: IpcMainInvokeEvent) => RuntimeClient, available = () => true, isRemote = (_event: IpcMainInvokeEvent) => false) {
   return async (event: IpcMainInvokeEvent, input: unknown) => {
     assertTrusted(event);
     const sender = event.sender, frame = event.senderFrame;
@@ -49,13 +49,14 @@ export function createHtmlPreviewHandler(manager: HtmlPreviewGrantManager, asser
     }
     if (!available()) throw new Error('The HTML preview safety preload is unavailable. Rebuild the desktop application.');
     const runtime = runtimeFor(event);
-    const rootPath = await resolveHtmlPreviewRoot({
+    const hostSource = isRemote(event) ? { read: (path: string, offset: number, limit: number) => runtime.request('filesystem.preview.read', { projectId: command.projectId, ...(command.worktreePath ? { worktreePath: command.worktreePath } : {}), path, offset, limit }) } : undefined;
+    const rootPath = hostSource ? '' : await resolveHtmlPreviewRoot({
       projects: async () => (await runtime.request('runtime.snapshot', {})).projects,
       worktrees: projectId => runtime.request('worktree.list', { projectId }),
     }, command);
     const current = () => !sender.isDestroyed() && !frame.detached && sender.mainFrame === frame;
     if (!current()) throw new Error('Preview window closed');
-    const grant = await manager.create({ rootPath, entryPath: command.path, ownerWebContentsId: sender.id, frameName: command.frameName, remoteContentAllowed: command.remote });
+    const grant = await manager.create({ rootPath, entryPath: command.path, ownerWebContentsId: sender.id, frameName: command.frameName, remoteContentAllowed: command.remote, ...(hostSource ? { hostSource } : {}) });
     if (!current()) { manager.revoke(grant.id); throw new Error('Preview window closed'); }
     return { id: grant.id, url: grant.url };
   };

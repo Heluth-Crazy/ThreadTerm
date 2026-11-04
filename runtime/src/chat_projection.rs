@@ -5,6 +5,12 @@ use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
+fn emit_inbox_resolved(tx: &rusqlite::Transaction<'_>, id: &str, session_id: &str, now: &str) -> Result<()> {
+    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('inbox.resolved',?,?)",
+        params![json!({"id":id,"sessionId":session_id}).to_string(), now])?;
+    Ok(())
+}
+
 fn emit_attention_notice(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
@@ -436,6 +442,7 @@ fn record_tx(
      changed=true;
     }}
     tx.execute("UPDATE inbox SET resolved=1,read=1 WHERE id=?",[&id])?;
+    emit_inbox_resolved(tx, &id, session_id, &now)?;
    }
    "chat.connection"=>{
     tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.connection',?,?)",params![serde_json::to_string(&{
@@ -1258,6 +1265,7 @@ fn expire_pending_parts_matching(
             ],
         )?;
         tx.execute("UPDATE inbox SET resolved=1,read=1 WHERE id=?", [&id])?;
+        emit_inbox_resolved(tx, &id, session_id, now)?;
     }
     if !retired_runtime_turns.is_empty() && !has_pending_approval(tx, session_id)? {
         if let Some(activity) = crate::db::session_activity_tx(tx, session_id)? {

@@ -191,6 +191,15 @@ pub(crate) fn builtin_sign_in(id: &str) -> Option<ProviderSignIn> {
     Some(ProviderSignIn { executable: spec.program, args: spec.args, display: spec.display })
 }
 
+pub(crate) fn builtin_remote_sign_in(id: &str) -> Option<ProviderSignIn> {
+    let args: &[&str] = match id {
+        "codex" | "grok" => &["login", "--device-auth"],
+        _ => return None,
+    };
+    let spec = common::CommandSpec::provider(id, args).ok()?;
+    Some(ProviderSignIn { executable: spec.program, args: spec.args, display: spec.display })
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSignIn {
@@ -292,6 +301,9 @@ pub struct ProviderCapability {
     pub icon: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<ProviderSignIn>,
+    /// Sign-in from another computer, without needing a browser on the host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_sign_in: Option<ProviderSignIn>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
     pub id: String,
@@ -1569,6 +1581,11 @@ impl Providers {
             adapters,
             network::NetworkSettings::default(),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_event_sender(&self) -> ProviderEventSender {
+        self.events.clone()
     }
 
     /// Takes the sole reliable projection receiver. Broadcast subscribers are
@@ -3564,7 +3581,7 @@ mod capability_cache_tests {
 
     fn capability(id: &str, name: String) -> ProviderCapability {
         ProviderCapability {
-            source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+            source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
             id: id.into(), name, installed: true, version: None, terminal: false, chat: false,
             history: false, resume: false, terminal_resume_capture: "none", reason: None,
             auth: "unknown".into(),
@@ -4291,5 +4308,48 @@ mod browser_generation_tests {
         assert!(!Providers::browser_generation_matches(&slot, "retained", false));
         slot.connecting = false;
         assert!(!Providers::browser_generation_matches(&slot, "retained", true));
+    }
+}
+
+#[cfg(test)]
+mod sign_in_tests {
+    use super::*;
+
+    #[test]
+    fn local_commands_stay_unchanged_and_remote_overrides_are_device_auth_only() {
+        // A subprocess isolates discovery from other tests; no installed CLI is started.
+        const MARKER: &str = "THREADTERM_SIGN_IN_TEST_CHILD";
+        if std::env::var_os(MARKER).is_none() {
+            let root = tempfile::tempdir().unwrap();
+            for id in ["codex", "claude", "kimi", "opencode", "grok", "pi"] {
+                let name = if cfg!(windows) { format!("{id}.cmd") } else { id.to_owned() };
+                std::fs::write(root.path().join(name), "fake CLI; never executed").unwrap();
+            }
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "providers::sign_in_tests::local_commands_stay_unchanged_and_remote_overrides_are_device_auth_only", "--test-threads=1"])
+                .env(MARKER, "1").env("THREADTERM_QA_PROVIDER_BIN", root.path())
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        for (id, local) in [
+            ("codex", vec!["login"]), ("claude", vec!["auth", "login"]),
+            ("kimi", vec!["login"]), ("opencode", vec!["providers", "login"]),
+            ("grok", vec![]), ("pi", vec![]), ("gemini", vec![]),
+            ("shell", vec![]), ("custom", vec![]),
+        ] {
+            let command = builtin_sign_in(id);
+            assert_eq!(command.as_ref().map(|s| s.args.iter().map(String::as_str).collect::<Vec<_>>()),
+                (!local.is_empty()).then_some(local), "local {id}");
+            let remote = builtin_remote_sign_in(id);
+            if matches!(id, "codex" | "grok") {
+                let remote = remote.unwrap();
+                assert_eq!(remote.args, ["login", "--device-auth"]);
+                assert!(std::path::Path::new(&remote.executable).starts_with(std::env::var_os("THREADTERM_QA_PROVIDER_BIN").unwrap()));
+                assert!(remote.display.ends_with("login --device-auth"));
+            } else {
+                assert!(remote.is_none(), "remote {id} must remain unset");
+            }
+        }
     }
 }

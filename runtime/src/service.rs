@@ -48,7 +48,7 @@ pub struct RuntimeService {
     retry_gate: Mutex<()>,
     settings_apply_gate: Mutex<()>,
     plugin_gate: Mutex<()>,
-    remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
+    pub(crate) remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
     delegations: Arc<crate::delegation::Delegations>,
     chat_queues: Arc<crate::chat_queue::ChatQueues>,
     pub(crate) previews: Arc<crate::preview::Previews>,
@@ -967,12 +967,29 @@ impl RuntimeService {
     }
 
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
+        let providers = Arc::new(Providers::with_plugins(
+            &config.data_dir,
+            &db.settings_value().unwrap_or_else(|_| json!({})),
+        ));
+        Self::with_providers(config, db, providers)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_providers(
+        config: RuntimeConfig,
+        db: Arc<Database>,
+        adapters: Vec<Arc<dyn crate::providers::ProviderAdapter>>,
+    ) -> Self {
+        Self::with_providers(config, db, Arc::new(Providers::for_test(adapters)))
+    }
+
+    fn with_providers(config: RuntimeConfig, db: Arc<Database>, providers: Arc<Providers>) -> Self {
+        if let Err(error) = crate::attachments::recover(&db, &config.data_dir) { eprintln!("Attachment cleanup deferred: {error}"); }
         crate::code_review::forget_provider_options(&db);
         crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
         crate::group_chat::initialize(&db).expect("initialize group chats");
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
         let output = Arc::new(OutputStore::default());
-        let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
         crate::group_chat::kick(&db, &providers, &chat_queues);
         let retirement_db = Arc::downgrade(&db);
         providers.set_retirement_projector(Arc::new(move |event| {
@@ -1146,6 +1163,11 @@ impl RuntimeService {
             previews,
             browser_tools,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_provider_events(&self) -> crate::provider_events::Sender {
+        self.providers.test_event_sender()
     }
     #[cfg(test)]
     fn browser_test_tools(db: &Arc<Database>) -> Arc<crate::browser_tools::BrowserTools> {
@@ -1448,6 +1470,8 @@ impl RuntimeService {
                 });
         }
         let outcome = (|| -> Result<Value> {
+            if let Some(value) = crate::host_files::dispatch(&self.db, &request.method, &request.params)? { return Ok(value); }
+            if let Some(value) = crate::attachments::dispatch(&self.db, &self.config.data_dir, &request.method, &request.params)? { return Ok(value); }
             if let Some(value) = crate::usage_ledger::dispatch(&self.db, &request.method, &request.params)? { return Ok(value); }
             if request.method == "browser.approval.read" {
                 return self.browser_tools.approval_read(principal, &request.params);
@@ -1800,7 +1824,13 @@ impl RuntimeService {
                 "session.resume" => self.resume_native(&request.params),
                 "session.claim" => {
                     let p: SessionClaim = parse(&request.params)?;
-                    let epoch = self.leases.claim(&self.db, &p.session_id, principal)?;
+                    let epoch = if p.takeover {
+                        let session = self.db.session_by_id(&p.session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+                        if session.mode != "terminal" { return Err(anyhow::anyhow!("invalid_request")); }
+                        self.db.require_interactive(&p.session_id)?;
+                        self.leases.take_control(&self.db, &p.session_id, principal)?
+                    } else { self.leases.claim(&self.db, &p.session_id, principal)? };
+
                     Ok(json!({"leaseEpoch":epoch}))
                 }
                 "session.release" => {
@@ -1987,11 +2017,15 @@ impl RuntimeService {
                     crate::review_drafts::read(&self.db, &request.method, &request.params)
                 }
                 "reviewDrafts.upsert" | "reviewDrafts.delete" | "reviewDrafts.importLegacy" => {
-                    let operation_id = request.params.get("operationId")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| anyhow::anyhow!("invalid_request"))?;
-                    self.db.bind_operation(operation_id, &request.method, &request.params)?;
-                    crate::review_drafts::mutate(&self.db, &request.method, &request.params)
+                    let persist = || {
+                        if principal.starts_with("peer:") { crate::review_drafts::validate_host_assets(&self.db, &self.config.data_dir, &request.params)?; }
+                        let operation_id = request.params.get("operationId")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| anyhow::anyhow!("invalid_request"))?;
+                        self.db.bind_operation(operation_id, &request.method, &request.params)?;
+                        crate::review_drafts::mutate(&self.db, &request.method, &request.params)
+                    };
+                    if principal.starts_with("peer:") { crate::attachments::with_reference_lock(persist) } else { persist() }
                 }
                 "chat.snapshot" => {
                     let p: ChatSnapshotRead = parse(&request.params)?;
@@ -3480,6 +3514,8 @@ struct SessionUpdate {
 #[serde(rename_all = "camelCase")]
 struct SessionClaim {
     session_id: String,
+    #[serde(default)]
+    takeover: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3924,7 +3960,7 @@ mod tests {
         fn id(&self) -> &'static str { "opencode" }
         fn capability(&self) -> ProviderCapability {
             ProviderCapability {
-                source:"builtin",plugin_id:None,icon:None,sign_in:None,homepage:None,
+                source:"builtin",plugin_id:None,icon:None,sign_in:None,remote_sign_in:None,homepage:None,
                 id:"opencode".into(),name:"OpenCode fixture".into(),installed:true,version:None,
                 terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into(),
             }
@@ -4080,7 +4116,7 @@ mod tests {
         fn id(&self) -> &'static str { "pi" }
         fn capability(&self) -> ProviderCapability {
             ProviderCapability {
-                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
                 id: "pi".into(), name: "Pi fixture".into(), installed: true, version: None,
                 terminal: false, chat: true, history: false, resume: false,
                 terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
@@ -4238,7 +4274,7 @@ mod tests {
         fn id(&self) -> &'static str { "codex" }
         fn capability(&self) -> ProviderCapability {
             ProviderCapability {
-                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
                 id: "codex".into(), name: "Codex fixture".into(), installed: true, version: None,
                 terminal: false, chat: true, history: false, resume: true,
                 terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
@@ -5942,7 +5978,7 @@ mod oc2_checkpoint_tests {
     impl ProviderAdapter for CheckpointAdapter {
         fn id(&self) -> &str { "opencode" }
         fn capability(&self) -> ProviderCapability {
-            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,homepage:None,id:"opencode".into(),name:"Checkpoint fixture".into(),installed:true,version:None,terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
+            ProviderCapability { source:"test",plugin_id:None,icon:None,sign_in:None,remote_sign_in:None,homepage:None,id:"opencode".into(),name:"Checkpoint fixture".into(),installed:true,version:None,terminal:false,chat:true,history:false,resume:true,terminal_resume_capture:"none",reason:None,auth:"unknown".into() }
         }
         fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }
         fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }

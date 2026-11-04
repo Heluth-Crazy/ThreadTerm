@@ -4,6 +4,8 @@ import type { BrowserBridge, BrowserEvent } from '../../renderer/src/browserType
 import { isBrowserSharingState } from '../../renderer/src/browserTypes.js';
 import type { BrowserHandoffBridge, BrowserHandoffEvent } from './browser/handoffTypes.js';
 import type { BackgroundBridge } from './backgroundImagesCore.js';
+import type { MachineBridge } from '../../renderer/src/machineTypes.js';
+import type { RemoteFilesBridge } from '../../renderer/src/remoteFiles.js';
 import {
   isRecord,
   isRuntimeEvent,
@@ -16,8 +18,50 @@ import {
   type AttachedFile,
 } from '@threadterm/protocol';
 
+type DesktopNavigateTarget = { sessionId?: string; workspaceId?: string; action?: 'command-palette' | 'computers' };
+const desktopNavigateListeners = new Set<(target: DesktopNavigateTarget) => void>();
+let pendingDesktopNavigate: DesktopNavigateTarget | undefined;
+ipcRenderer.on('threadterm:desktop-navigate', (_event, value: unknown) => {
+  if (!isRecord(value)) return;
+  const target: DesktopNavigateTarget = {
+    sessionId: typeof value.sessionId === 'string' ? value.sessionId : undefined,
+    workspaceId: typeof value.workspaceId === 'string' ? value.workspaceId : undefined,
+    action: value.action === 'command-palette' || value.action === 'computers' ? value.action : undefined,
+  };
+  if (!target.sessionId && !target.workspaceId && !target.action) return;
+  if (desktopNavigateListeners.size) for (const listener of desktopNavigateListeners) listener(target);
+  else pendingDesktopNavigate = target;
+});
 type FilePathBridge = { getPathForFile: (file: File) => string };
-const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge = {
+const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge & MachineBridge & RemoteFilesBridge = {
+  uploadClientFiles: (sessionId, paths) => ipcRenderer.invoke('threadterm:upload-client-files', sessionId, paths),
+  readAttachPaths: paths => ipcRenderer.invoke('threadterm:read-attach-paths', paths),
+  persistPageShot: (id, sessionId, projectId, root) => ipcRenderer.invoke('threadterm:persist-page-shot', id, sessionId, projectId, root),
+  onHostFiles: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isRecord(value) && typeof value.id === 'string' && ['directory', 'files', 'reveal'].includes(String(value.mode)) && (value.path === undefined || typeof value.path === 'string') && (value.selectedPath === undefined || typeof value.selectedPath === 'string')) listener(value as import('../../renderer/src/remoteFiles.js').HostFilesRequest); };
+    ipcRenderer.on('threadterm:host-files', handler);
+    return () => ipcRenderer.removeListener('threadterm:host-files', handler);
+  },
+  completeHostFiles: (id, paths) => ipcRenderer.invoke('threadterm:host-files-complete', id, paths),
+  machineId: process.argv.find(value => value.startsWith('--threadterm-machine-id='))?.slice('--threadterm-machine-id='.length) ?? 'local',
+  machineList: () => ipcRenderer.invoke('threadterm:machine-list'),
+  machineShow: (id, sessionId) => ipcRenderer.invoke('threadterm:machine-show', id, sessionId),
+  machineSettings: () => ipcRenderer.invoke('threadterm:machine-settings'),
+  machineTree: () => ipcRenderer.invoke('threadterm:machine-tree-get'),
+  machineExpand: (key, expanded) => ipcRenderer.invoke('threadterm:machine-expand', key, expanded),
+  onMachineTree: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: import('../../renderer/src/machineTypes.js').MachineTreeFeed) => { if (value && Array.isArray(value.machines) && isRecord(value.expanded)) listener(value); };
+    ipcRenderer.on('threadterm:machine-tree', handler);
+    return () => ipcRenderer.removeListener('threadterm:machine-tree', handler);
+  },
+  machinePrepare: text => ipcRenderer.invoke('threadterm:machine-prepare', text),
+  machineAdd: options => ipcRenderer.invoke('threadterm:machine-add', options),
+  machineRemove: id => ipcRenderer.invoke('threadterm:machine-remove', id),
+  onMachinesChanged: listener => {
+    const handler = () => listener();
+    ipcRenderer.on('threadterm:machines-changed', handler);
+    return () => ipcRenderer.removeListener('threadterm:machines-changed', handler);
+  },
   browserCommand: command => ipcRenderer.invoke('threadterm:browser-command', command),
   onBrowserEvent: listener => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (isBrowserEvent(value)) listener(value); };
@@ -40,16 +84,13 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & Backgrou
     ipcRenderer.on('threadterm:event', handler);
     return () => ipcRenderer.removeListener('threadterm:event', handler);
   },
-  onDesktopNavigate: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
-      if (!isRecord(value)) return;
-      const sessionId = typeof value.sessionId === 'string' ? value.sessionId : undefined;
-      const workspaceId = typeof value.workspaceId === 'string' ? value.workspaceId : undefined;
-      const action = value.action === "command-palette" ? value.action : undefined;
-      if (sessionId || workspaceId || action) listener({ sessionId, workspaceId, action });
-    };
-    ipcRenderer.on('threadterm:desktop-navigate', handler);
-    return () => ipcRenderer.removeListener('threadterm:desktop-navigate', handler);
+  onDesktopNavigate: listener => {
+    desktopNavigateListeners.add(listener);
+    if (pendingDesktopNavigate) {
+      const target = pendingDesktopNavigate; pendingDesktopNavigate = undefined;
+      queueMicrotask(() => { if (desktopNavigateListeners.has(listener)) listener(target); });
+    }
+    return () => { desktopNavigateListeners.delete(listener); };
   },
   windowState: (): Promise<{ maximized: boolean }> => ipcRenderer.invoke('threadterm:window-state') as Promise<{ maximized: boolean }>,
   onWindowState: (listener) => {
@@ -156,6 +197,7 @@ function isPagePick(value: unknown): value is PagePick {
 
 function isBrowserEvent(value: unknown): value is BrowserEvent {
   if (!isRecord(value)) return false;
+  if (value.type === 'open') { if(typeof value.url!=='string'||value.url.length>16384)return false;try{return /^https?:$/.test(new URL(value.url).protocol);}catch{return false;} }
   if (value.type === 'popup') return typeof value.openerId === 'string' && typeof value.tabId === 'string' && typeof value.url === 'string' && value.url.length <= 16384;
   if (value.type === 'shortcut') return (value.phase===undefined||value.phase==='keydown'||value.phase==='keyup') && typeof value.tabId === 'string' && typeof value.key === 'string' && typeof value.code === 'string' && ['control', 'meta', 'shift', 'alt'].every(key => typeof value[key] === 'boolean');
   if (value.type !== 'state' || !isRecord(value.state)) return false;

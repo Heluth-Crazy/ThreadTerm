@@ -1678,6 +1678,9 @@
         "enabled": {
           "type": "boolean"
         },
+        "tailscaleOnly": {
+          "type": "boolean"
+        },
         "url": {
           "type": "string"
         },
@@ -1696,11 +1699,15 @@
       },
       "required": [
         "enabled",
+        "tailscaleOnly",
         "tlsFingerprint"
       ],
       "additionalProperties": false
     },
     "RequestResult<\"device.enable\">": {
+      "$ref": "#/definitions/RemoteAccessStatus"
+    },
+    "RequestResult<\"device.tailscaleOnly.set\">": {
       "$ref": "#/definitions/RemoteAccessStatus"
     },
     "RequestResult<\"device.disable\">": {
@@ -1727,6 +1734,9 @@
         "permission": {
           "$ref": "#/definitions/DevicePermission"
         },
+        "profile": {
+          "$ref": "#/definitions/DeviceProfile"
+        },
         "expiresAt": {
           "type": "string"
         },
@@ -1742,6 +1752,7 @@
         "code",
         "qrPayload",
         "permission",
+        "profile",
         "expiresAt",
         "serverUrl",
         "tlsFingerprint"
@@ -1755,6 +1766,14 @@
         "fullcontrol"
       ]
     },
+    "DeviceProfile": {
+      "type": "string",
+      "enum": [
+        "phone",
+        "desktop"
+      ],
+      "description": "The trust profile selected by the host when a pairing offer is created."
+    },
     "RequestResult<\"device.pairing.cancel\">": {
       "type": "null"
     },
@@ -1767,6 +1786,9 @@
     "PairedDevice": {
       "type": "object",
       "properties": {
+        "connected": {
+          "type": "boolean"
+        },
         "id": {
           "type": "string"
         },
@@ -1775,6 +1797,9 @@
         },
         "permission": {
           "$ref": "#/definitions/DevicePermission"
+        },
+        "profile": {
+          "$ref": "#/definitions/DeviceProfile"
         },
         "createdAt": {
           "type": "string"
@@ -1793,6 +1818,7 @@
         "id",
         "name",
         "permission",
+        "profile",
         "createdAt",
         "expiresAt"
       ],
@@ -3613,6 +3639,18 @@
         },
         "terminalIcons": {
           "$ref": "#/definitions/TerminalIconSettings"
+        },
+        "remoteMachines": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -3854,6 +3892,110 @@
         "startedAt",
         "durationKind",
         "history"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"runtime.events.filter\">": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "const": "tree"
+        },
+        "tree": {
+          "type": "object",
+          "properties": {
+            "worktrees": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Worktree"
+              }
+            },
+            "visibility": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CatalogVisibility"
+              }
+            }
+          },
+          "required": [
+            "worktrees"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "preset",
+        "tree"
+      ],
+      "additionalProperties": false
+    },
+    "Worktree": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "type": "string"
+        },
+        "isMain": {
+          "type": "boolean"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "missing": {
+          "type": "boolean"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "lastCommit": {
+          "$ref": "#/definitions/CommitSummary"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "path",
+        "branch",
+        "head",
+        "isMain",
+        "locked",
+        "missing"
+      ],
+      "additionalProperties": false
+    },
+    "CommitSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "committedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "subject",
+        "committedAt"
       ],
       "additionalProperties": false
     },
@@ -4559,6 +4701,30 @@
           "additionalProperties": false,
           "description": "The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show."
         },
+        "remoteSignIn": {
+          "type": "object",
+          "properties": {
+            "executable": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "display": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "executable",
+            "args",
+            "display"
+          ],
+          "additionalProperties": false,
+          "description": "Sign-in command used from another computer's view, a flow that needs no browser on the host."
+        },
         "homepage": {
           "type": "string"
         }
@@ -4641,26 +4807,6 @@
         "pinned",
         "revision",
         "sortOrder"
-      ],
-      "additionalProperties": false
-    },
-    "CommitSummary": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "subject": {
-          "type": "string"
-        },
-        "committedAt": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "subject",
-        "committedAt"
       ],
       "additionalProperties": false
     },
@@ -7084,6 +7230,145 @@
     },
     "RequestResult<\"chat.connect\">": {
       "$ref": "#/definitions/ChatConnectionState"
+    },
+    "RequestResult<\"filesystem.browse\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "directory",
+                  "file"
+                ]
+              },
+              "size": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "kind",
+              "size"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.preview.read\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "offset",
+        "fingerprint",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"attachment.upload\">": {
+      "type": "object",
+      "properties": {
+        "offset": {
+          "type": "number"
+        },
+        "assetId": {
+          "type": "string"
+        },
+        "hostPath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "offset"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"attachment.read\">": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "hostPath": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "assetId",
+        "hostPath",
+        "name",
+        "size",
+        "offset",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
     },
     "RequestResult<\"filesystem.list\">": {
       "type": "array",
@@ -10286,55 +10571,6 @@
         "$ref": "#/definitions/Worktree"
       }
     },
-    "Worktree": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "projectId": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "head": {
-          "type": "string"
-        },
-        "isMain": {
-          "type": "boolean"
-        },
-        "locked": {
-          "type": "boolean"
-        },
-        "missing": {
-          "type": "boolean"
-        },
-        "upstream": {
-          "type": "string"
-        },
-        "lastCommit": {
-          "$ref": "#/definitions/CommitSummary"
-        }
-      },
-      "required": [
-        "id",
-        "projectId",
-        "path",
-        "branch",
-        "head",
-        "isMain",
-        "locked",
-        "missing"
-      ],
-      "additionalProperties": false
-    },
     "RequestResult<\"worktree.create\">": {
       "$ref": "#/definitions/Worktree"
     },
@@ -10972,6 +11208,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22device.enable%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.tailscaleOnly.set"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22device.tailscaleOnly.set%22%3E"
         }
       },
       "required": [
@@ -11986,6 +12248,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22usage.query%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.events.filter"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22runtime.events.filter%22%3E"
         }
       },
       "required": [
@@ -14118,6 +14406,110 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.connect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.browse"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.browse%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.preview.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.preview.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.upload"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22attachment.upload%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "attachment.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22attachment.read%22%3E"
         }
       },
       "required": [

@@ -1,11 +1,11 @@
-//! Disabled-by-default HTTPS gateway for paired terminal devices.
+//! Disabled-by-default TLS listener for paired phones and desktop peers.
 //!
-//! The gateway owns a separate, closed dispatcher. It never forwards a
-//! caller-supplied method directly to the local control dispatcher.
+//! HTTP retains its closed phone dispatcher. Peer ALPN enters the shared
+//! framed transport through the peer authority guard.
 use crate::{
     config::RuntimeConfig,
     db::Database,
-    devices::{DeviceManager, DevicePermission},
+    devices::{DeviceManager, DevicePermission, DeviceProfile},
     domain::RpcRequest,
     service::RuntimeService,
 };
@@ -58,6 +58,7 @@ const LISTENER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAccessStatus {
+    pub tailscale_only: bool,
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -70,6 +71,24 @@ pub struct RemoteAccessStatus {
     // is unusable; Devices settings offers an explicit reset for that case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity_error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TailscaleOnly { enabled: bool, operation_id: String }
+
+fn source_allowed(address: IpAddr, tailscale_only: bool) -> bool {
+    if !tailscale_only { return true; }
+    match address {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 100 && (64..=127).contains(&octets[1])
+        }
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(ip) => source_allowed(IpAddr::V4(ip), true),
+            None => ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        },
+    }
 }
 
 struct CertificateMaterial {
@@ -92,7 +111,8 @@ struct ListenerState {
 
 pub struct RemoteAccess {
     service: Weak<RuntimeService>,
-    devices: DeviceManager,
+    pub(crate) devices: DeviceManager,
+    pub(crate) peers: crate::peer::ConnectionGroups,
     db: Arc<Database>,
     data_dir: PathBuf,
     // Loaded lazily: the TLS identity is optional and never created while
@@ -118,6 +138,7 @@ impl RemoteAccess {
         let this = Arc::new(Self {
             service,
             devices,
+            peers: crate::peer::ConnectionGroups::default(),
             db,
             data_dir: config.data_dir,
             identity: RwLock::new(None),
@@ -152,6 +173,22 @@ impl RemoteAccess {
                 }
                 serde_json::to_value(self.status()?)?
             }
+            "device.tailscaleOnly.set" => {
+                let request: TailscaleOnly = parse(params)?;
+                if !self.devices.operation_completed(&request.operation_id)? {
+                    let preference = self.devices.remote_access_preference()?;
+                    if preference.tailscale_only != request.enabled {
+                        // One listener owns every phone and peer socket. Drain it
+                        // completely before applying the new admission policy.
+                        self.stop_listener_inner(None)?;
+                        self.devices.set_tailscale_only(request.enabled, &request.operation_id)?;
+                        if preference.enabled { self.start_listener()?; }
+                    } else {
+                        self.devices.complete_marker(&request.operation_id, "device.tailscaleOnly.set")?;
+                    }
+                }
+                serde_json::to_value(self.status()?)?
+            }
             "device.disable" => {
                 let request: OperationOnly = parse(params)?;
                 if !self.devices.operation_completed(&request.operation_id)? {
@@ -175,8 +212,9 @@ impl RemoteAccess {
                     .url
                     .as_deref()
                     .ok_or_else(|| anyhow!("remote_access_disabled"))?;
-                serde_json::to_value(self.devices.create_pairing(
+                serde_json::to_value(self.devices.create_pairing_with_profile(
                     request.permission,
+                    request.profile,
                     &request.operation_id,
                     server_url,
                     &status.tls_fingerprint,
@@ -190,7 +228,13 @@ impl RemoteAccess {
             }
             "device.list" => {
                 parse::<Empty>(params)?;
-                serde_json::to_value(self.devices.list()?)?
+                let mut devices = self.devices.list()?;
+                for device in &mut devices {
+                    if device.profile == DeviceProfile::Desktop {
+                        device.connected = Some(self.peers.connected(&device.id));
+                    }
+                }
+                serde_json::to_value(devices)?
             }
             "device.rename" => {
                 let request: RenameDevice = parse(params)?;
@@ -218,6 +262,7 @@ impl RemoteAccess {
                     .map_err(|_| anyhow!("remote access gate poisoned"))?;
                 self.devices
                     .revoke(&request.device_id, &request.operation_id)?;
+                self.peers.revoke(&request.device_id, &self.db)?;
                 Value::Null
             }
             _ => return Ok(None),
@@ -232,6 +277,7 @@ impl RemoteAccess {
             .map_err(|_| anyhow!("remote access state lock poisoned"))?;
         Ok(RemoteAccessStatus {
             enabled: state.enabled,
+            tailscale_only: self.devices.remote_access_preference()?.tailscale_only,
             url: state.url.clone(),
             port: state.port,
             tls_fingerprint: self.fingerprint(),
@@ -279,7 +325,20 @@ impl RemoteAccess {
             .unwrap_or(false)
     }
 
-    fn is_generation_enabled(&self, generation: u64) -> bool {
+    pub(crate) fn runtime(&self) -> Option<Arc<RuntimeService>> {
+        self.service.upgrade()
+    }
+
+    pub(crate) fn peer_enabled(&self, generation: u64) -> bool {
+        self.is_generation_enabled(generation)
+            && self.devices.remote_machines_enabled().unwrap_or(false)
+    }
+
+    pub(crate) fn record_peer_address(&self, device_id: &str, address: &str) -> Result<()> {
+        self.devices.record_peer_address(device_id, address)
+    }
+
+    pub(crate) fn is_generation_enabled(&self, generation: u64) -> bool {
         self.state
             .lock()
             .map(|state| state.enabled && state.generation == generation)
@@ -358,7 +417,18 @@ impl RemoteAccess {
         };
         state.identity_error = None;
         let requested_port = preference.port.unwrap_or(0);
-        let std_listener = match StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, requested_port)) {
+        // Test listeners must never trigger a Windows Firewall prompt.
+        #[cfg(test)]
+        let bind_ip = Ipv4Addr::LOCALHOST;
+        #[cfg(not(test))]
+        let bind_ip = Ipv4Addr::UNSPECIFIED;
+        #[cfg(all(debug_assertions, not(test)))]
+        let bind_ip = if std::env::var("THREADTERM_QA_REMOTE_BIND").as_deref() == Ok("127.0.0.1") {
+            Ipv4Addr::LOCALHOST
+        } else {
+            bind_ip
+        };
+        let std_listener = match StdTcpListener::bind((bind_ip, requested_port)) {
             Ok(listener) => listener,
             Err(error) => {
                 let message = if requested_port == 0 {
@@ -382,7 +452,7 @@ impl RemoteAccess {
             .set_nonblocking(true)
             .context("making remote HTTPS listener nonblocking")?;
         let port = std_listener.local_addr()?.port();
-        let ip = lan_ipv4();
+        let ip = if bind_ip.is_loopback() { IpAddr::V4(bind_ip) } else { lan_ipv4() };
         let url = format!("https://{ip}:{port}");
         let listener =
             TcpListener::from_std(std_listener).context("registering remote HTTPS listener")?;
@@ -390,35 +460,67 @@ impl RemoteAccess {
         state.generation = state.generation.wrapping_add(1);
         let generation = state.generation;
         let weak = Arc::downgrade(self);
+        let tailscale_only = preference.tailscale_only;
         let acceptor = TlsAcceptor::from(Arc::clone(&certificate.config));
         let task = tokio::spawn(async move {
+            // Handshakes are short-lived and have their own bound. Once ALPN
+            // is known, HTTP/pairing and peer control/dependents use separate
+            // budgets so long-lived data streams cannot consume their slots.
+            let handshakes = Arc::new(Semaphore::new(MAX_CONNECTIONS));
             let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
             let mut tasks = JoinSet::new();
             let mut listener_error = None;
+            let mut cleanup = tokio::time::interval(Duration::from_secs(60));
             loop {
                 let accepted = tokio::select! {
                     _ = &mut cancelled => break,
                     accepted = listener.accept() => accepted,
                     _ = tasks.join_next(), if !tasks.is_empty() => continue,
+                    _ = cleanup.tick() => {
+                        if let Some(remote) = weak.upgrade() {
+                            let _ = remote.devices.cleanup_expired_desktops();
+                        }
+                        continue;
+                    }
                 };
-                let (stream, _peer) = match accepted {
+                let (stream, peer) = match accepted {
                     Ok(value) => value,
                     Err(error) => {
                         listener_error = Some(format!("Remote HTTPS listener stopped: {error}"));
                         break;
                     }
                 };
-                let Ok(permit) = Arc::clone(&connections).try_acquire_owned() else {
+                if !source_allowed(peer.ip(), tailscale_only) {
+                    drop(stream);
+                    continue;
+                }
+                let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else {
                     drop(stream);
                     continue;
                 };
                 let acceptor = acceptor.clone();
                 let connection_weak = weak.clone();
+                let connections = Arc::clone(&connections);
                 tasks.spawn(async move {
-                    let _permit = permit;
                     let Ok(Ok(tls)) = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await else {
                         return;
                     };
+                    drop(permit);
+                    if tls.get_ref().1.alpn_protocol() == Some(crate::peer::ALPN) {
+                        // Peer streams idle for hours; a client that slept or lost its
+                        // network must not keep holding its slot and group.
+                        let _ = socket2::SockRef::from(tls.get_ref().0).set_tcp_keepalive(
+                            &socket2::TcpKeepalive::new()
+                                .with_time(Duration::from_secs(30))
+                                .with_interval(Duration::from_secs(10)),
+                        );
+                        #[cfg(windows)]
+                        if let Some(remote) = connection_weak.upgrade() {
+                            let _ = crate::peer::accept(tls, remote, generation, peer).await;
+                        }
+                        return;
+                    }
+                    let Ok(_permit) = connections.try_acquire_owned() else { return };
                     let request_weak = connection_weak.clone();
                     let service = service_fn(move |request| {
                         let weak = request_weak.clone();
@@ -818,6 +920,8 @@ struct OperationOnly {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreatePairing {
+    #[serde(default)]
+    profile: DeviceProfile,
     permission: DevicePermission,
     operation_id: String,
 }
@@ -1089,10 +1193,11 @@ fn load_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
     let key = rustls_pemfile::private_key(&mut key_reader)
         .with_context(|| format!("reading {}", key_path.display()))?
         .ok_or_else(|| anyhow!("remote TLS private key is empty"))?;
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certificates, key)
         .context("loading remote TLS identity")?;
+    config.alpn_protocols = vec![crate::peer::ALPN.to_vec(), b"http/1.1".to_vec()];
     Ok(CertificateMaterial {
         config: Arc::new(config),
         fingerprint,
@@ -1282,6 +1387,10 @@ mod tests {
             .is_err());
         assert!(remote.dispatch_remote("d", DevicePermission::Readonly, RemoteRpcRequest { method: "session.create".into(), params: json!({"projectId":project.id,"provider":"shell","operationId":"remote-create"}) }).is_err());
         for denied in [
+            "filesystem.browse",
+            "filesystem.preview.read",
+            "attachment.upload",
+            "attachment.read",
             "runtime.shutdown",
             "settings.update",
             "plugin.list",
@@ -1352,6 +1461,7 @@ mod tests {
             "group.archive",
             "history.list",
             "device.identity.reset",
+            "device.tailscaleOnly.set",
             "device.list",
             "device.pairing.cancel",
             "device.rename",
@@ -1443,6 +1553,7 @@ mod tests {
         Arc::new(RemoteAccess {
             service: Weak::new(),
             devices: DeviceManager::new(Arc::clone(&db)).unwrap(),
+            peers: crate::peer::ConnectionGroups::default(),
             db,
             data_dir: data_dir.to_owned(),
             identity: RwLock::new(Some(Arc::new(
@@ -1737,7 +1848,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn occupied_persisted_port_disables_remote_without_failing_runtime() {
         let directory = tempdir().unwrap();
-        let occupied = StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let occupied = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = occupied.local_addr().unwrap().port();
         let config = RuntimeConfig {
             data_dir: directory.path().to_owned(),
@@ -2050,5 +2161,41 @@ mod tests {
         let status = response.status().as_u16();
         let body = response.json().await.unwrap();
         (status, body)
+    }
+}
+
+#[cfg(test)]
+mod hosting_tests {
+    use super::*;
+    #[test]
+    fn source_policy_covers_boundaries_mapped_ipv6_and_loopback() {
+        for (address, allowed) in [
+            ("100.64.0.0",true),("100.127.255.255",true),("100.63.255.255",false),("100.128.0.0",false),
+            ("fd7a:115c:a1e0::",true),("fd7a:115c:a1e0:ffff::1",true),("fd7a:115c:a1df::1",false),("fd7a:115c:a1e1::1",false),
+            ("::ffff:100.64.0.1",true),("::ffff:100.127.255.255",true),("::ffff:100.128.0.0",false),
+            ("127.0.0.1",false),("::1",false),("::ffff:127.0.0.1",false),("192.168.1.1",false),("8.8.8.8",false),
+        ] {
+            let ip = address.parse().unwrap();
+            assert_eq!(source_allowed(ip,true),allowed,"{address}");
+            assert!(source_allowed(ip,false),"disabled: {address}");
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn policy_status_persists_while_disabled_and_on_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite3")).unwrap());
+        let config = RuntimeConfig {
+            data_dir: root.path().into(), database_path: root.path().join("runtime.sqlite3"),
+            credential_path: root.path().join("runtime.credential"), pipe_base: r"\\.\pipe\hosting-test".into(),
+        };
+        let remote = RemoteAccess::new(Weak::new(), Arc::clone(&db), config.clone()).unwrap();
+        assert!(!remote.status().unwrap().tailscale_only);
+        let params = json!({"enabled":true,"operationId":"persist-policy"});
+        assert_eq!(remote.dispatch("device.tailscaleOnly.set", &params).unwrap().unwrap()["tailscaleOnly"],true);
+        remote.dispatch("device.tailscaleOnly.set", &params).unwrap();
+        drop(remote);
+        let reopened = RemoteAccess::new(Weak::new(), db, config).unwrap();
+        assert!(reopened.status().unwrap().tailscale_only);
+        assert!(!reopened.status().unwrap().enabled);
     }
 }

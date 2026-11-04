@@ -8,7 +8,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
+import { MachineProvider, machineBridge, useMachines } from './machines';
+import { MachineRows, MachineChrome } from './components/MachineRows';
+import './components/machines.css';
 import type {
   CatalogVisibility,
   ProviderId,
@@ -72,6 +76,7 @@ import { AllTerminalsPage } from "./components/AllTerminalsPage";
 import { InboxPage } from "./components/InboxPage";
 import { ImportedHistoryView } from "./components/ImportedHistoryView";
 import { SessionWorkspace } from "./components/SessionWorkspace";
+import { HostFiles } from './components/HostFiles';
 import { SessionCreateDialog } from "./components/SessionCreateDialog";
 import { AddProjectDialog } from "./components/AddProjectDialog";
 import { WorkbenchPage } from "./components/WorkbenchPage";
@@ -104,6 +109,12 @@ const active = (status: Session["status"]) =>
   ["starting", "running", "idle", "waiting"].includes(status);
 
 export function App() {
+  return <MachineProvider><MachineApp /></MachineProvider>;
+}
+function MachineApp() {
+  const machineSnapshot = useMachines();
+  const remoteMachine = machineSnapshot.currentId !== 'local';
+  const currentMachine = machineSnapshot.machines.find(item => item.id === machineSnapshot.currentId);
   const floatingWindow = new URLSearchParams(window.location.search).get("floating") === "1";
   const nativeChrome = new URLSearchParams(window.location.search).get("chrome") === "native";
   const [windowMaximized, setWindowMaximized] = useState(false);
@@ -123,7 +134,7 @@ export function App() {
   const [error, setError] = useState<unknown>();
   const [runtimeState, setRuntimeState] = useState<RuntimeStatusState>("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools">();
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools" | "computers">();
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string;draft?:string;mode?:"chat"|"terminal"}>();
   const [groupCreate,setGroupCreate]=useState(false);
@@ -179,7 +190,7 @@ export function App() {
       if (event.event === "runtime.transport") {
         const state = (event.data as { state?: string } | undefined)?.state;
         if (state === "disconnected") setRuntimeState("reconnecting");
-        if (state === "incompatible") setRuntimeState("unavailable");
+        if (state === "incompatible" || state === 'pin-mismatch') setRuntimeState("unavailable");
         if (state === "reconnected") void refresh();
         return;
       }
@@ -352,6 +363,7 @@ export function App() {
   );
   useEffect(
     () => onDesktopNavigate((target) => {
+      if (target.action === "computers") {setSettingsInitialTab("computers");setSettingsOpen(true);return;}
       if (target.action === "command-palette") {setPaletteOpen(true);return;}
       if (target.sessionId) {setSettingsOpen(false);void navigate({ kind: "session", id: target.sessionId });}
       else if (target.workspaceId) {setSettingsOpen(false);void navigate({ kind: "workspace", id: target.workspaceId });}
@@ -395,10 +407,11 @@ export function App() {
     <I18nProvider locale={locale}>
       <AgentIconsProvider providers={data?.providers ?? []} images={data?.settings.terminalIcons?.images}>
       <AppSettingsProvider settings={data?.settings}>
-      <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}`}>
-        {themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
+      {remoteMachine && <HostFiles />}
+      <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}${remoteMachine ? ' remote-machine' : ''}`} style={{ '--machine-color': currentMachine?.color } as CSSProperties}>
+        {!remoteMachine && themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
         <header className="titlebar app-chrome">
-          <div className="drag-region"><span className="chrome-title">ThreadTerm</span></div>
+          <div className="drag-region"><span className="chrome-title">{remoteMachine ? `ThreadTerm — ${currentMachine?.name ?? ''}` : 'ThreadTerm'}</span><MachineChrome zh={locale === 'zh-CN'} /></div>
           <div className="window-controls">
             <button
               aria-label={t("minimize")}
@@ -441,6 +454,7 @@ export function App() {
               <Icon name="terminal" />{locale==="zh-CN"?"所有终端":"All terminals"}
             </button>
           </nav>
+          <MachineRows zh={locale === 'zh-CN'} onAddComputer={() => { if (remoteMachine) void machineBridge()?.machineSettings(); else { setSettingsInitialTab('computers'); setSettingsOpen(true); } }}>
           <ProjectCatalog
             sessions={rawData?.sessions}
             visibility={catalogVisibility}
@@ -456,10 +470,12 @@ export function App() {
             onAddProject={() => setProjectCreatorOpen(true)}
             onNewSession={(projectId,path) => {const selected=data?.projects.find(item=>item.id===projectId);if(selected)setCreatorDefaults({projectId:selected.id,path:path??selected.path});setCreatorOpen(true);}}
           />
+          </MachineRows>
           </div>
           <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar runtime-avatar"><WbIcon name="person" /><RuntimeAvatarBadge state={visibleRuntimeProblem} locale={locale} /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button></div>
         </aside>
         <main className="content main">
+          {remoteMachine && currentMachine && ['incompatible', 'pin-mismatch'].includes(currentMachine.state) && <div className="machine-failure" role="alert"><strong>{currentMachine.state === 'pin-mismatch' ? (locale === 'zh-CN' ? '此电脑的身份已更改' : 'This computer’s identity changed') : (locale === 'zh-CN' ? '版本不一致' : 'Version mismatch')}</strong><p>{currentMachine.message}</p><button type="button" className="btn" onClick={() => void machineBridge()?.machineShow('local')}>{locale === 'zh-CN' ? '返回这台电脑' : 'Back to This PC'}</button></div>}
           <div data-runtime-header-host />
           <div className="toolbar legacy-toolbar">
             <div>

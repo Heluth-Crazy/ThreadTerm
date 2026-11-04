@@ -22,6 +22,9 @@ use uuid::Uuid;
 
 pub const PAIRING_TTL_MINUTES: i64 = 5;
 pub const DEVICE_TOKEN_TTL_HOURS: i64 = 24;
+pub const DESKTOP_TOKEN_IDLE_TTL_DAYS: i64 = 30;
+pub const DESKTOP_UNCONFIRMED_TTL_MINUTES: i64 = 10;
+const PEER_ACTIVITY_WRITE_INTERVAL_MINUTES: i64 = 5;
 pub const MAX_PAIRING_ATTEMPTS: i64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +32,41 @@ pub const MAX_PAIRING_ATTEMPTS: i64 = 5;
 pub enum DevicePermission {
     Readonly,
     Fullcontrol,
+}
+
+/// The credential's transport boundary. Phone credentials stay on the HTTPS
+/// allowlist; desktop credentials are accepted only by the peer TLS path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceProfile {
+    Phone,
+    Desktop,
+}
+
+impl Default for DeviceProfile {
+    fn default() -> Self {
+        Self::Phone
+    }
+}
+
+impl fmt::Display for DeviceProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Phone => "phone",
+            Self::Desktop => "desktop",
+        })
+    }
+}
+
+impl FromStr for DeviceProfile {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "phone" => Ok(Self::Phone),
+            "desktop" => Ok(Self::Desktop),
+            _ => bail!("invalid_device_profile"),
+        }
+    }
 }
 
 impl fmt::Display for DevicePermission {
@@ -54,9 +92,14 @@ impl FromStr for DevicePermission {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PairedDevice {
+    /// Live control-group membership, populated only by device.list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connected: Option<bool>,
     pub id: String,
     pub name: String,
     pub permission: DevicePermission,
+    #[serde(default)]
+    pub profile: DeviceProfile,
     pub created_at: String,
     pub expires_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,6 +115,8 @@ pub struct PairingOffer {
     pub code: String,
     pub qr_payload: String,
     pub permission: DevicePermission,
+    #[serde(default)]
+    pub profile: DeviceProfile,
     pub expires_at: String,
     pub server_url: String,
     pub tls_fingerprint: String,
@@ -92,6 +137,7 @@ pub struct AuthenticatedDevice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAccessPreference {
+    pub tailscale_only: bool,
     pub enabled: bool,
     pub port: Option<u16>,
     pub last_error: Option<String>,
@@ -101,6 +147,7 @@ struct NewPairing {
     id: String,
     secret: String,
     permission: DevicePermission,
+    profile: DeviceProfile,
     expires_at: String,
 }
 
@@ -122,6 +169,7 @@ impl DeviceManager {
             pairing_replays: Arc::new(Mutex::new(HashMap::new())),
         };
         this.initialize()?;
+        this.cleanup_expired_desktops()?;
         Ok(this)
     }
 
@@ -139,6 +187,7 @@ impl DeviceManager {
                     id TEXT PRIMARY KEY,
                     secret_hash BLOB NOT NULL,
                     permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     failed_attempts INTEGER NOT NULL DEFAULT 0,
@@ -149,9 +198,11 @@ impl DeviceManager {
                     name TEXT NOT NULL,
                     token_hash BLOB NOT NULL UNIQUE,
                     permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     last_seen_at TEXT,
+                    last_address TEXT,
                     revoked_at TEXT
                  );
                  CREATE INDEX IF NOT EXISTS paired_devices_expiry ON paired_devices(expires_at);
@@ -186,14 +237,15 @@ impl DeviceManager {
 
     pub fn remote_access_preference(&self) -> Result<RemoteAccessPreference> {
         self.db.transaction(|tx| {
-            let (enabled, port, last_error) = tx.query_row(
-                "SELECT enabled,port,last_error FROM remote_access_state WHERE singleton=1",
+            let (enabled, port, last_error, tailscale_only) = tx.query_row(
+                "SELECT enabled,port,last_error,tailscale_only FROM remote_access_state WHERE singleton=1",
                 [],
                 |row| {
                     Ok((
                         row.get::<_, bool>(0)?,
                         row.get::<_, Option<i64>>(1)?,
                         row.get::<_, Option<String>>(2)?,
+                        row.get::<_, bool>(3)?,
                     ))
                 },
             )?;
@@ -202,10 +254,18 @@ impl DeviceManager {
                 .transpose()
                 .map_err(|_| anyhow::anyhow!("invalid stored remote port"))?;
             Ok(RemoteAccessPreference {
+                tailscale_only,
                 enabled,
                 port,
                 last_error,
             })
+        })
+    }
+
+    pub fn set_tailscale_only(&self, enabled: bool, operation_id: &str) -> Result<()> {
+        self.db.transaction(|tx| {
+            tx.execute("UPDATE remote_access_state SET tailscale_only=? WHERE singleton=1", [enabled])?;
+            complete_operation(tx, operation_id, "device.tailscaleOnly.set", &Value::Null)
         })
     }
 
@@ -236,8 +296,28 @@ impl DeviceManager {
         server_url: &str,
         tls_fingerprint: &str,
     ) -> Result<PairingOffer> {
-        self.create_pairing_at(
+        self.create_pairing_at(permission, operation_id, server_url, tls_fingerprint, Utc::now())
+    }
+
+    pub fn create_pairing_with_profile(
+        &self,
+        permission: DevicePermission,
+        profile: DeviceProfile,
+        operation_id: &str,
+        server_url: &str,
+        tls_fingerprint: &str,
+    ) -> Result<PairingOffer> {
+        if profile == DeviceProfile::Desktop {
+            if permission != DevicePermission::Fullcontrol {
+                bail!("invalid_desktop_permission")
+            }
+            if !self.remote_machines_enabled()? {
+                bail!("remote_machines_disabled")
+            }
+        }
+        self.create_pairing_profile_at(
             permission,
+            profile,
             operation_id,
             server_url,
             tls_fingerprint,
@@ -248,6 +328,25 @@ impl DeviceManager {
     fn create_pairing_at(
         &self,
         permission: DevicePermission,
+        operation_id: &str,
+        server_url: &str,
+        tls_fingerprint: &str,
+        now: DateTime<Utc>,
+    ) -> Result<PairingOffer> {
+        self.create_pairing_profile_at(
+            permission,
+            DeviceProfile::Phone,
+            operation_id,
+            server_url,
+            tls_fingerprint,
+            now,
+        )
+    }
+
+    fn create_pairing_profile_at(
+        &self,
+        permission: DevicePermission,
+        profile: DeviceProfile,
         operation_id: &str,
         server_url: &str,
         tls_fingerprint: &str,
@@ -278,13 +377,13 @@ impl DeviceManager {
             let secret = hex::encode_upper(secret_bytes);
             let expires_at = timestamp(now + Duration::minutes(PAIRING_TTL_MINUTES));
             tx.execute(
-                "INSERT INTO device_pairings(id,secret_hash,permission,created_at,expires_at,failed_attempts,consumed_at)
-                 VALUES(?,?,?,?,?,0,NULL)",
-                params![id, digest(secret.as_bytes()).as_slice(), permission.to_string(), timestamp(now), expires_at],
+                "INSERT INTO device_pairings(id,secret_hash,permission,profile,created_at,expires_at,failed_attempts,consumed_at)
+                 VALUES(?,?,?,?,?,?,0,NULL)",
+                params![id, digest(secret.as_bytes()).as_slice(), permission.to_string(), profile.to_string(), timestamp(now), expires_at],
             )?;
             complete_operation(tx, operation_id, "device.pairing.create", &json!({"pairingId":id}))?;
             emit_device_change(tx, "pairing.created")?;
-            Ok(NewPairing { id, secret, permission, expires_at })
+            Ok(NewPairing { id, secret, permission, profile, expires_at })
         })?;
         let code = group_code(&pairing.secret);
         let data = json!({
@@ -301,6 +400,7 @@ impl DeviceManager {
             code,
             qr_payload: format!("threadterm://pair?data={encoded}"),
             permission: pairing.permission,
+            profile: pairing.profile,
             expires_at: pairing.expires_at,
             server_url: server_url.to_owned(),
             tls_fingerprint: tls_fingerprint.to_owned(),
@@ -333,7 +433,7 @@ impl DeviceManager {
         let attempt = self.db.transaction(|tx| {
             let row = tx
                 .query_row(
-                    "SELECT secret_hash,permission,expires_at,failed_attempts,consumed_at
+                    "SELECT secret_hash,permission,profile,expires_at,failed_attempts,consumed_at
                      FROM device_pairings WHERE id=?",
                     [pairing_id],
                     |row| {
@@ -341,13 +441,14 @@ impl DeviceManager {
                             row.get::<_, Vec<u8>>(0)?,
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
-                            row.get::<_, i64>(3)?,
-                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, Option<String>>(5)?,
                         ))
                     },
                 )
                 .optional()?;
-            let Some((expected_hash, permission, expires_at, failures, consumed_at)) = row else {
+            let Some((expected_hash, permission, profile, expires_at, failures, consumed_at)) = row else {
                 return Ok(PairAttempt::Rejected)
             };
             let valid_window = consumed_at.is_none()
@@ -374,22 +475,28 @@ impl DeviceManager {
                 return Ok(PairAttempt::Rejected)
             }
             let permission = DevicePermission::from_str(&permission)?;
+            let profile = DeviceProfile::from_str(&profile)?;
             let mut token_bytes = [0_u8; 32];
             rand::thread_rng().fill_bytes(&mut token_bytes);
             let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes);
             let device = PairedDevice {
+                connected: None,
                 id: Uuid::new_v4().to_string(),
                 name: name.to_owned(),
                 permission,
+                profile,
                 created_at: timestamp(now),
-                expires_at: timestamp(now + Duration::hours(DEVICE_TOKEN_TTL_HOURS)),
+                expires_at: timestamp(now + match profile {
+                    DeviceProfile::Phone => Duration::hours(DEVICE_TOKEN_TTL_HOURS),
+                    DeviceProfile::Desktop => Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS),
+                }),
                 last_seen_at: None,
                 revoked_at: None,
             };
             tx.execute(
-                "INSERT INTO paired_devices(id,name,token_hash,permission,created_at,expires_at,last_seen_at,revoked_at)
-                 VALUES(?,?,?,?,?,?,NULL,NULL)",
-                params![device.id, device.name, digest(token.as_bytes()).as_slice(), device.permission.to_string(), device.created_at, device.expires_at],
+                "INSERT INTO paired_devices(id,name,token_hash,permission,profile,created_at,expires_at,last_seen_at,revoked_at)
+                 VALUES(?,?,?,?,?,?,?,NULL,NULL)",
+                params![device.id, device.name, digest(token.as_bytes()).as_slice(), device.permission.to_string(), profile.to_string(), device.created_at, device.expires_at],
             )?;
             emit_device_change(tx, "device.paired")?;
             Ok(PairAttempt::Paired(PairingResult { token, device }))
@@ -417,22 +524,23 @@ impl DeviceManager {
         self.db.transaction(|tx| {
             let row = tx
                 .query_row(
-                    "SELECT id,permission,expires_at,revoked_at FROM paired_devices WHERE token_hash=?",
+                    "SELECT id,permission,profile,expires_at,revoked_at FROM paired_devices WHERE token_hash=?",
                     [token_hash.as_slice()],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
-                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
                         ))
                     },
                 )
                 .optional()?;
-            let Some((id, permission, expires_at, revoked_at)) = row else {
+            let Some((id, permission, profile, expires_at, revoked_at)) = row else {
                 bail!("invalid_device_token")
             };
-            if revoked_at.is_some() || parse_timestamp(&expires_at)? <= now {
+            if DeviceProfile::from_str(&profile)? != DeviceProfile::Phone || revoked_at.is_some() || parse_timestamp(&expires_at)? <= now {
                 bail!("invalid_device_token")
             }
             tx.execute(
@@ -446,10 +554,107 @@ impl DeviceManager {
         })
     }
 
+    /// Authenticates only a desktop credential for the peer ALPN transport.
+    pub fn authenticate_peer(&self, token: &str) -> Result<AuthenticatedDevice> {
+        self.authenticate_peer_at(token, Utc::now())
+    }
+
+    fn authenticate_peer_at(&self, token: &str, now: DateTime<Utc>) -> Result<AuthenticatedDevice> {
+        if token.len() < 32 || token.len() > 128 {
+            bail!("invalid_device_token")
+        }
+        let token_hash = digest(token.as_bytes());
+        let authenticated = self.db.transaction(|tx| {
+            let row = tx.query_row("SELECT id,permission,created_at,last_seen_at,expires_at,revoked_at FROM paired_devices WHERE token_hash=? AND profile='desktop'", [token_hash.as_slice()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<String>>(5)?))).optional()?;
+            let Some((id, permission, created_at, last_seen_at, expires_at, revoked_at)) = row else { return Ok(None) };
+            let expired = parse_timestamp(&expires_at)? <= now;
+            let unconfirmed = last_seen_at.is_none() && parse_timestamp(&created_at)? + Duration::minutes(DESKTOP_UNCONFIRMED_TTL_MINUTES) <= now;
+            if revoked_at.is_some() || expired || unconfirmed {
+                if expired || unconfirmed { tx.execute("DELETE FROM paired_devices WHERE id=?", [&id])?; }
+                return Ok(None)
+            }
+            // First authentication is durable immediately; later writes are coalesced.
+            if last_seen_at.is_none() {
+                tx.execute("UPDATE paired_devices SET last_seen_at=?,expires_at=? WHERE id=? AND revoked_at IS NULL", params![timestamp(now), timestamp(now + Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS)), id])?;
+            }
+            Ok(Some(AuthenticatedDevice { id, permission: DevicePermission::from_str(&permission)? }))
+        })?;
+        authenticated.ok_or_else(|| anyhow::anyhow!("invalid_device_token"))
+    }
+
+    pub fn validate_peer(&self, device_id: &str) -> Result<()> {
+        self.validate_peer_at(device_id, Utc::now())
+    }
+
+    fn validate_peer_at(&self, device_id: &str, now: DateTime<Utc>) -> Result<()> {
+        let valid = self.db.transaction(|tx| {
+            let row = tx.query_row("SELECT created_at,last_seen_at,expires_at,revoked_at FROM paired_devices WHERE id=? AND profile='desktop'", [device_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?))).optional()?;
+            let Some((created_at, last_seen_at, expires_at, revoked_at)) = row else { return Ok(false) };
+            let expired = parse_timestamp(&expires_at)? <= now;
+            let unconfirmed = last_seen_at.is_none() && parse_timestamp(&created_at)? + Duration::minutes(DESKTOP_UNCONFIRMED_TTL_MINUTES) <= now;
+            if revoked_at.is_some() || expired || unconfirmed {
+                if expired || unconfirmed { tx.execute("DELETE FROM paired_devices WHERE id=?", [device_id])?; }
+                return Ok(false)
+            }
+            Ok(true)
+        })?;
+        if valid {
+            Ok(())
+        } else {
+            bail!("invalid_device_token")
+        }
+    }
+
+    /// Extends the 30-day desktop idle expiry, at most once per five minutes.
+    pub fn peer_activity(&self, device_id: &str) -> Result<()> {
+        self.peer_activity_at(device_id, Utc::now())
+    }
+
+    fn peer_activity_at(&self, device_id: &str, now: DateTime<Utc>) -> Result<()> {
+        self.db.transaction(|tx| {
+            let row = tx.query_row("SELECT last_seen_at,expires_at,revoked_at FROM paired_devices WHERE id=? AND profile='desktop'", [device_id], |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))).optional()?;
+            let Some((last_seen, expires_at, revoked_at)) = row else { bail!("invalid_device_token") };
+            if revoked_at.is_some() || parse_timestamp(&expires_at)? <= now { bail!("invalid_device_token") }
+            let write = match last_seen { None => true, Some(value) => parse_timestamp(&value)? + Duration::minutes(PEER_ACTIVITY_WRITE_INTERVAL_MINUTES) <= now };
+            if write { let changed = tx.execute("UPDATE paired_devices SET last_seen_at=?,expires_at=? WHERE id=? AND profile='desktop' AND revoked_at IS NULL", params![timestamp(now), timestamp(now + Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS)), device_id])?; if changed != 1 { bail!("invalid_device_token") } }
+            Ok(())
+        })
+    }
+
+    pub fn remote_machines_enabled(&self) -> Result<bool> {
+        self.db.transaction(|tx| {
+            let raw: String =
+                tx.query_row("SELECT value FROM settings WHERE singleton=1", [], |row| {
+                    row.get(0)
+                })?;
+            Ok(serde_json::from_str::<Value>(&raw)?
+                .get("remoteMachines")
+                .and_then(Value::as_object)
+                .and_then(|value| value.get("enabled"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false))
+        })
+    }
+
+    /// Persist only the connected peer's IP address, never its token or a
+    /// caller-provided display address.
+    pub fn record_peer_address(&self, device_id: &str, address: &str) -> Result<()> {
+        if address.is_empty() || address.len() > 255 {
+            bail!("invalid_peer_address")
+        }
+        self.db.transaction(|tx| {
+            let known = tx.query_row("SELECT 1 FROM paired_devices WHERE id=? AND profile='desktop' AND revoked_at IS NULL", [device_id], |_| Ok(())).optional()?.is_some();
+            if !known { bail!("invalid_device_token") }
+            tx.execute("UPDATE paired_devices SET last_address=? WHERE id=? AND last_address IS NOT ?", params![address, device_id, address])?;
+            Ok(())
+        })
+    }
+
     pub fn list(&self) -> Result<Vec<PairedDevice>> {
+        self.cleanup_expired_desktops()?;
         self.db.transaction(|tx| {
             let mut statement = tx.prepare(
-                "SELECT id,name,permission,created_at,expires_at,last_seen_at,revoked_at
+                "SELECT id,name,permission,profile,created_at,expires_at,last_seen_at,revoked_at
                  FROM paired_devices ORDER BY created_at DESC,id",
             )?;
             let rows = statement.query_map([], |row| {
@@ -460,16 +665,28 @@ impl DeviceManager {
                     permission,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(5)?,
                     row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             })?;
             rows.map(|row| {
-                let (id, name, permission, created_at, expires_at, last_seen_at, revoked_at) = row?;
+                let (
+                    id,
+                    name,
+                    permission,
+                    profile,
+                    created_at,
+                    expires_at,
+                    last_seen_at,
+                    revoked_at,
+                ) = row?;
                 Ok(PairedDevice {
+                    connected: None,
                     id,
                     name,
                     permission: DevicePermission::from_str(&permission)?,
+                    profile: DeviceProfile::from_str(&profile)?,
                     created_at,
                     expires_at,
                     last_seen_at,
@@ -568,7 +785,12 @@ impl DeviceManager {
             if device.revoked_at.is_some() {
                 bail!("device_revoked")
             }
-            device.expires_at = timestamp(now + Duration::hours(DEVICE_TOKEN_TTL_HOURS));
+            device.expires_at = timestamp(
+                now + match device.profile {
+                    DeviceProfile::Phone => Duration::hours(DEVICE_TOKEN_TTL_HOURS),
+                    DeviceProfile::Desktop => Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS),
+                },
+            );
             tx.execute(
                 "UPDATE paired_devices SET expires_at=? WHERE id=? AND revoked_at IS NULL",
                 params![device.expires_at, device_id],
@@ -640,6 +862,19 @@ impl DeviceManager {
             bail!("invalid operationId")
         }
         self.db.transaction(|tx| operation_exists(tx, operation_id))
+    }
+
+    /// Removes expired or never-confirmed desktop credentials without touching
+    /// phone rows, whose existing renewal lifecycle is unchanged.
+    pub(crate) fn cleanup_expired_desktops(&self) -> Result<()> {
+        let now = Utc::now();
+        self.db.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM paired_devices WHERE profile='desktop' AND (expires_at<=? OR (last_seen_at IS NULL AND created_at<=?))",
+                params![timestamp(now), timestamp(now - Duration::minutes(DESKTOP_UNCONFIRMED_TTL_MINUTES))],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn complete_marker(&self, operation_id: &str, method: &str) -> Result<()> {
@@ -723,7 +958,7 @@ fn operation_value(tx: &Transaction<'_>, operation_id: &str) -> Result<Option<Va
 fn paired_device(tx: &Transaction<'_>, device_id: &str) -> Result<Option<PairedDevice>> {
     let row = tx
         .query_row(
-            "SELECT id,name,permission,created_at,expires_at,last_seen_at,revoked_at
+            "SELECT id,name,permission,profile,created_at,expires_at,last_seen_at,revoked_at
              FROM paired_devices WHERE id=?",
             [device_id],
             |row| {
@@ -733,18 +968,21 @@ fn paired_device(tx: &Transaction<'_>, device_id: &str) -> Result<Option<PairedD
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(5)?,
                     row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             },
         )
         .optional()?;
     row.map(
-        |(id, name, permission, created_at, expires_at, last_seen_at, revoked_at)| {
+        |(id, name, permission, profile, created_at, expires_at, last_seen_at, revoked_at)| {
             Ok(PairedDevice {
+                connected: None,
                 id,
                 name,
                 permission: DevicePermission::from_str(&permission)?,
+                profile: DeviceProfile::from_str(&profile)?,
                 created_at,
                 expires_at,
                 last_seen_at,
@@ -951,6 +1189,97 @@ mod tests {
     }
 
     #[test]
+    fn desktop_credentials_are_peer_only_idle_expiring_and_unconfirmed_rows_are_deleted() {
+        let (_directory, manager) = manager();
+        let now = Utc::now();
+        let offer = manager
+            .create_pairing_profile_at(
+                DevicePermission::Fullcontrol,
+                DeviceProfile::Desktop,
+                "desktop-pair",
+                "https://x",
+                "AA",
+                now,
+            )
+            .unwrap();
+        let paired = manager
+            .pair_at(&offer.id, &offer.code, "Office PC", now)
+            .unwrap();
+        assert!(manager.authenticate_at(&paired.token, now).is_err());
+        assert!(manager.authenticate_peer_at(&paired.token, now).is_ok());
+        assert!(manager
+            .validate_peer_at(
+                &paired.device.id,
+                now + Duration::days(30) - Duration::milliseconds(1)
+            )
+            .is_ok());
+        assert!(manager
+            .validate_peer_at(&paired.device.id, now + Duration::days(30))
+            .is_err());
+        assert!(
+            manager
+                .db
+                .transaction(|tx| Ok(tx
+                    .query_row(
+                        "SELECT 1 FROM paired_devices WHERE id=?",
+                        [&paired.device.id],
+                        |_| Ok(())
+                    )
+                    .optional()?
+                    .is_some()))
+                .unwrap()
+                == false
+        );
+
+        // Exercise the deterministic helper for the ten-minute boundary.
+        let late_offer = manager
+            .create_pairing_profile_at(
+                DevicePermission::Readonly,
+                DeviceProfile::Desktop,
+                "late-pair",
+                "https://x",
+                "AA",
+                now,
+            )
+            .unwrap();
+        let late = manager
+            .pair_at(&late_offer.id, &late_offer.code, "Late", now)
+            .unwrap();
+        assert!(manager
+            .authenticate_peer_at(&late.token, now + Duration::minutes(11))
+            .is_err());
+        assert!(!manager
+            .db
+            .transaction(|tx| Ok(tx
+                .query_row(
+                    "SELECT 1 FROM paired_devices WHERE id=?",
+                    [&late.device.id],
+                    |_| Ok(())
+                )
+                .optional()?
+                .is_some()))
+            .unwrap());
+    }
+
+    #[test]
+    fn remote_machines_setting_defaults_off_and_requires_enabled_boolean() {
+        let (_directory, manager) = manager();
+        assert!(!manager.remote_machines_enabled().unwrap());
+        manager
+            .db
+            .update_settings(
+                &json!({"remoteMachines":{"enabled":true}}),
+                0,
+                "enable-remote-machines",
+            )
+            .unwrap();
+        assert!(manager.remote_machines_enabled().unwrap());
+        for invalid in [json!({"enabled":"yes"}), json!({}), json!({"enabled":true,"extra":true}), Value::Null] {
+            assert!(crate::settings_services::valid_runtime_patch(&json!({"remoteMachines":invalid})).is_err());
+        }
+    }
+
+    #[test]
     fn rename_trims_persists_and_replays_the_committed_device() {
         let (directory, manager) = manager();
         let now = Utc::now();
@@ -1142,5 +1471,132 @@ mod tests {
             .map(|attempt| attempt.join().unwrap().is_ok())
             .collect::<Vec<_>>();
         assert_eq!(outcomes.iter().filter(|success| **success).count(), 1);
+    }
+
+    #[test]
+    fn desktop_offers_require_the_gate_and_desktop_activity_is_idle_based() {
+        let (_directory, manager) = manager();
+        let now = Utc::now();
+        assert!(manager
+            .create_pairing_with_profile(
+                DevicePermission::Fullcontrol,
+                DeviceProfile::Desktop,
+                "desktop-disabled",
+                "https://x",
+                "AA",
+            )
+            .is_err());
+        assert!(manager
+            .create_pairing_with_profile(
+                DevicePermission::Readonly,
+                DeviceProfile::Desktop,
+                "desktop-readonly",
+                "https://x",
+                "AA",
+            )
+            .is_err());
+        manager
+            .db
+            .update_settings(
+                &json!({"remoteMachines":{"enabled":true}}),
+                0,
+                "enable-remote-machines",
+            )
+            .unwrap();
+        let offer = manager
+            .create_pairing_with_profile(
+                DevicePermission::Fullcontrol,
+                DeviceProfile::Desktop,
+                "desktop-enabled",
+                "https://x",
+                "AA",
+            )
+            .unwrap();
+        let paired = manager
+            .pair_at(&offer.id, &offer.code, "Office", now)
+            .unwrap();
+        assert!(manager.authenticate_at(&paired.token, now).is_err());
+        manager.authenticate_peer_at(&paired.token, now).unwrap();
+        let initial_expiry: String = manager
+            .db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT expires_at FROM paired_devices WHERE id=?",
+                    [&paired.device.id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        manager
+            .peer_activity_at(&paired.device.id, now + Duration::minutes(1))
+            .unwrap();
+        let coalesced_expiry: String = manager
+            .db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT expires_at FROM paired_devices WHERE id=?",
+                    [&paired.device.id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(coalesced_expiry, initial_expiry);
+        manager
+            .peer_activity_at(&paired.device.id, now + Duration::minutes(5))
+            .unwrap();
+        let extended_expiry: String = manager
+            .db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT expires_at FROM paired_devices WHERE id=?",
+                    [&paired.device.id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            extended_expiry,
+            timestamp(now + Duration::minutes(5) + Duration::days(30))
+        );
+        assert!(manager
+            .validate_peer_at(
+                &paired.device.id,
+                now + Duration::days(30) + Duration::minutes(5)
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn desktop_cleanup_does_not_delete_expired_phone_credentials() {
+        let (_directory, manager) = manager();
+        let now = Utc::now();
+        let phone_offer = manager
+            .create_pairing_at(DevicePermission::Readonly, "phone", "https://x", "AA", now)
+            .unwrap();
+        let phone = manager
+            .pair_at(&phone_offer.id, &phone_offer.code, "Phone", now)
+            .unwrap();
+        manager
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE paired_devices SET expires_at=? WHERE id=?",
+                    params![timestamp(now - Duration::days(1)), phone.device.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        manager.cleanup_expired_desktops().unwrap();
+        assert!(manager
+            .db
+            .transaction(|tx| Ok(tx
+                .query_row(
+                    "SELECT 1 FROM paired_devices WHERE id=?",
+                    [&phone.device.id],
+                    |_| Ok(())
+                )
+                .optional()?
+                .is_some()))
+            .unwrap());
     }
 }

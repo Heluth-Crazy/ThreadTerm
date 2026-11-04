@@ -1,10 +1,12 @@
+import { isRemoteFiles } from '../remoteFiles';
+import { terminalLinkOpensInPanel } from '../remoteBrowser';
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import "@xterm/xterm/css/xterm.css";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { browserHandoff, onBrowserHandoffEvent, openExternal, operationId, outputSubscription, request, subscribeEvents } from "../bridge";
-import { acquireControl } from '../controlLease';
+import { acquireControl, takeTerminalControl } from '../controlLease';
 import { createTerminalControl, type TerminalControlState } from '../terminalControl';
 import { registerTerminalInputTarget } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
@@ -289,7 +291,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       resumeFramePendingRef.current = false;
       startupFrameSeenRef.current = true; setStartupFrameSeen(true);
     };
-    terminal.loadAddon(new WebLinksAddon((_event, url) => setSelectedLink(url)));
+    terminal.loadAddon(new WebLinksAddon((_event, url) => {if(terminalLinkOpensInPanel(url,isRemoteFiles())){void openExternal(url).catch(error=>setIssue(String(error)));return;}setSelectedLink(url);}));
     const fileLinkInteraction = createTerminalFileLinkInteraction(element);
     // Link only what the session's runtime can find, so `3.14` or half of a wrapped path is not offered.
     const fileLinkValidator = createFileLinkValidator((path, sourceSearch) => request('filesystem.resolve', sourceSearch ? { sessionId, path, sourceSearch: true } : { sessionId, path }).then(() => 'exists' as const, fileLinkStatusOf));
@@ -698,7 +700,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         : controlState.phase === 'incompatible' ? (zh ? '终端连接协议不兼容，请更新应用。' : 'Terminal connection is incompatible. Update the application.')
         : controlState.phase === 'blocked' ? (zh ? '另一个窗口正在控制此终端。' : 'Another window controls this terminal.')
           : (zh ? '终端输入暂不可用，可以在此重试。' : 'Terminal input is unavailable. Retry here.')}</span>
-      {['blocked', 'failed'].includes(controlState.phase) && <button type="button" className="btn" onClick={() => retryControlRef.current?.()}>{zh ? '重试输入连接' : 'Retry input connection'}</button>}
+      {['blocked', 'failed'].includes(controlState.phase) && <button type="button" className="btn" onClick={() => { if (controlState.phase === 'blocked') void takeTerminalControl(sessionId).then(() => retryControlRef.current?.()).catch(error => setControlState({ phase: 'blocked', error })); else retryControlRef.current?.(); }}>{controlState.phase === 'blocked' ? (zh ? '接管控制' : 'Take control') : (zh ? '重试输入连接' : 'Retry input connection')}</button>}
     </div>}
     {(replaying || replayFailed || launchFailed || (launchPending && !showTerminal)) && <div className={`term-loading-overlay${replaying ? " term-replaying" : ""}${replayFailed || launchFailed ? " is-failed" : ""}`} role={replayFailed || launchFailed ? "alert" : "status"} aria-live="polite" aria-label={replayFailed ? (zh ? "无法显示终端画面" : "Couldn't show the terminal screen") : loadingStatus}>
       <div className="chat-connect-center">

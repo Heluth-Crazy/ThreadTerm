@@ -486,7 +486,7 @@ fn provider_refresh_returns_before_the_probe_completes() {
             let mut released = lock.lock().unwrap();
             while !*released { released = wait.wait(released).unwrap(); }
             ProviderCapability {
-                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
                 id: "codex".into(), name: "blocked".into(), installed: true, version: None,
                 terminal: false, chat: false, history: false, resume: false,
                 terminal_resume_capture: "none", reason: None, auth: "unknown".into(),

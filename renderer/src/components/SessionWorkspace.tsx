@@ -1,8 +1,9 @@
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
-import { browserCommand, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
+import { browserCommand, onBrowserEvent, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
+import { isRemoteFiles, uploadRemotePaths } from '../remoteFiles';
 import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
@@ -326,6 +327,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   const owner=latestData.current.sessions.find(candidate=>candidate.id===ownerId),ownerProject=latestData.current.projects.find(candidate=>candidate.id===owner?.projectId);
   if(!owner||!ownerProject){setIssue(externalFileError({code:'file_reference_project_missing'},zh));return;}
   const generation=++fileOpenGeneration.current;
+  // Dropped files are this computer's paths: in a view of another computer, open their uploaded copies there.
+  if(source==='drop'&&isRemoteFiles()){try{paths=await uploadRemotePaths(owner.id,[...paths]);}catch{setIssue(zh?'无法把文件复制到已连接的电脑。':'The files could not be copied to the connected computer.');return;}}
   await openExternalPaths({paths,source,sessionId:owner.id,projectId:ownerProject.id,projectPath:ownerProject.path,worktreePath:owner.worktreePath,zh,...position,onNotice:setIssue,onOpen:target=>openScopedFile(target,generation)});
  };
  const chooseOutside=async()=>{if(externalDisabledReason){setIssue(externalDisabledReason);return;}const ownerId=previewSessionId;try{const paths=await openExternalFiles();if(paths.length)await openOutside(paths,'dialog',ownerId);}catch(error){setIssue(externalFileError(error,zh));}};
@@ -546,6 +549,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openFile:target=>{if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent');return;}void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail);},
   historyFocus,
  };
+ useEffect(()=>onBrowserEvent(event=>{if(event.type==='open'){panelBrowser.open(event.url);setWorkbenchCommand({view:'browser',key:crypto.randomUUID()});}}),[panelBrowser.key]);
  const closeRuntimePreview=(tabId:string)=>{
   const association=previewAssociations.current.get(tabId);
   if(!association)return;

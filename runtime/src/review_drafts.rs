@@ -13,6 +13,19 @@ const MAX_PAGE_ROWS: usize = 200;
 const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
 const LEGACY_IMPORT_MARKER: &str = "review-comments-local-storage-v1";
 
+/// Desktop peers must persist host assets, never a controller's local screenshot path.
+pub fn validate_host_assets(db: &Database, data: &std::path::Path, value: &Value) -> Result<()> {
+    if let Some(paths) = value.get("assetPaths").and_then(Value::as_array) {
+        for path in paths {
+            crate::attachments::validate_reference(db,data,path.as_str().ok_or_else(||anyhow!("invalid_asset_reference"))?)?;
+        }
+    }
+    if let Some(drafts) = value.get("drafts").and_then(Value::as_array) {
+        for draft in drafts { validate_host_assets(db,data,draft)?; }
+    }
+    Ok(())
+}
+
 pub fn read(db: &Database, method: &str, params_value: &Value) -> Result<Value> {
     db.transaction(|tx| match method {
         "reviewDrafts.list" => Ok(list(tx, params_value)?),

@@ -1,5 +1,6 @@
 import type { ProviderCapability, ProviderId } from "@threadterm/protocol";
 import { agentIds, agentName } from "../agents";
+import { isRemoteFiles } from "../remoteFiles";
 
 export type SignInTerminal = Readonly<{
   provider: "custom";
@@ -7,9 +8,10 @@ export type SignInTerminal = Readonly<{
   args: readonly string[];
 }>;
 
-export function signInTerminal(capability: ProviderCapability): SignInTerminal | undefined {
-  if (!capability.installed || !capability.signIn) return undefined;
-  return { provider: "custom", executable: capability.signIn.executable, args: [...capability.signIn.args] };
+export function signInTerminal(capability: ProviderCapability, remote = isRemoteFiles()): SignInTerminal | undefined {
+  const command = remote ? capability.remoteSignIn ?? capability.signIn : capability.signIn;
+  if (!capability.installed || !command) return undefined;
+  return { provider: "custom", executable: command.executable, args: [...command.args] };
 }
 
 export function accountProviders(capabilities: readonly ProviderCapability[]): ProviderCapability[] {

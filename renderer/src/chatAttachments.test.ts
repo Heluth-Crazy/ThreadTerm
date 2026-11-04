@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { attachmentFileName, attachmentImageMime, fileAttachmentItem, isAttachmentImage, partitionAttachedFiles } from './chatAttachments';
+import { attachmentFileName, attachmentImageMime, fileAttachmentItem, isAttachmentImage, partitionAttachedFiles, uploadAttachedFilesPlan } from './chatAttachments';
 import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES } from './chatImages';
 
 const image = 'data:image/png;base64,AAAA';
 const id = (path: string) => `id:${path}`;
+
+test('remote plans retain inline images and upload only log and overflow-image chips', async () => {
+  const picked = [{ path: 'C:/client/one.png', name: 'one.png', dataUrl: image }, { path: 'C:/client/log.txt', name: 'log.txt' }];
+  const inline = await uploadAttachedFilesPlan(partitionAttachedFiles(picked, [], true, id), async paths => { assert.deepEqual(paths, ['C:/client/log.txt']); return ['Z:/host/log.txt']; });
+  assert.deepEqual(inline.images, [image]); assert.equal(inline.files[0]!.path, 'Z:/host/log.txt');
+  const overflow = await uploadAttachedFilesPlan(partitionAttachedFiles(picked, Array(MAX_CHAT_IMAGES).fill(image), true, id), async paths => paths.map(path => path.replace('C:/client', 'Z:/host')));
+  assert.deepEqual(overflow.images, []); assert.equal(overflow.imagesAsFiles, 1);
+  assert.ok(overflow.files.every(file => file.path.startsWith('Z:/host/')));
+});
 
 test('attachment names and image mime types come from the path', () => {
   assert.equal(attachmentFileName('C:\\work\\src\\main.ts'), 'main.ts');
