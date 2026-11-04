@@ -83,3 +83,9 @@ test('occluded views yield no input target even when same-URL contents remain li
  assert.equal((await nativeBrowserContents(f.app)).length,3);
  assert.deepEqual(await attachedNativeBrowserPages(f.app,{}),[]);assert.equal(f.disposed,1);assert.equal(f.events.length,0);
 });
+test('nested machine native views retain exact identity and hidden machine ancestors cannot receive input',async()=>{
+ const f=fixture();let visible=true;
+ const machineView={getVisible:()=>visible,children:[{webContents:f.b}]};f.window.contentView.children=[machineView];
+ const [page]=await attachedNativeBrowserPages(f.app,{});assert.equal(page.id,f.b.id);await page.click('#target');assert.equal(f.events.length,3);
+ visible=false;assert.deepEqual(await attachedNativeBrowserPages(f.app,{}),[]);await assert.rejects(page.click('#target'),/no longer attached/);assert.equal(f.events.length,3);
+});

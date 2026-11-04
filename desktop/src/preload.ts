@@ -197,6 +197,7 @@ function isPagePick(value: unknown): value is PagePick {
 
 function isBrowserEvent(value: unknown): value is BrowserEvent {
   if (!isRecord(value)) return false;
+  if (value.type === 'open') { if(typeof value.url!=='string'||value.url.length>16384)return false;try{return /^https?:$/.test(new URL(value.url).protocol);}catch{return false;} }
   if (value.type === 'popup') return typeof value.openerId === 'string' && typeof value.tabId === 'string' && typeof value.url === 'string' && value.url.length <= 16384;
   if (value.type === 'shortcut') return (value.phase===undefined||value.phase==='keydown'||value.phase==='keyup') && typeof value.tabId === 'string' && typeof value.key === 'string' && typeof value.code === 'string' && ['control', 'meta', 'shift', 'alt'].every(key => typeof value[key] === 'boolean');
   if (value.type !== 'state' || !isRecord(value.state)) return false;

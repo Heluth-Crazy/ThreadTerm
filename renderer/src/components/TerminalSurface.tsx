@@ -1,3 +1,5 @@
+import { isRemoteFiles } from '../remoteFiles';
+import { remoteLoopbackUrl } from '../remoteBrowser';
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -289,7 +291,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       resumeFramePendingRef.current = false;
       startupFrameSeenRef.current = true; setStartupFrameSeen(true);
     };
-    terminal.loadAddon(new WebLinksAddon((_event, url) => setSelectedLink(url)));
+    terminal.loadAddon(new WebLinksAddon((_event, url) => {if(isRemoteFiles()&&remoteLoopbackUrl(url)){void openExternal(url).catch(error=>setIssue(String(error)));return;}setSelectedLink(url);}));
     const fileLinkInteraction = createTerminalFileLinkInteraction(element);
     // Link only what the session's runtime can find, so `3.14` or half of a wrapped path is not offered.
     const fileLinkValidator = createFileLinkValidator((path, sourceSearch) => request('filesystem.resolve', sourceSearch ? { sessionId, path, sourceSearch: true } : { sessionId, path }).then(() => 'exists' as const, fileLinkStatusOf));

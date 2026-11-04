@@ -442,14 +442,15 @@ export type DeviceProfile = 'phone'|'desktop';
 export interface RemoteAccessStatus { enabled:boolean; url?:string; port?:number; tlsFingerprint:string; error?:string; identityError?:string }
 export interface PairingOffer { id:string; code:string; qrPayload:string; permission:DevicePermission; profile:DeviceProfile; expiresAt:string; serverUrl:string; tlsFingerprint:string }
 export interface PairedDevice { id:string; name:string; permission:DevicePermission; profile:DeviceProfile; createdAt:string; expiresAt:string; lastSeenAt?:string; revokedAt?:string }
-/** Raw-TLS peer channels; `tunnel` is reserved for a later slice. */
+/** Raw-TLS peer channels. Tunnel authenticates after connecting to the host loopback target, then carries raw TCP. */
 export type PeerChannel = 'control'|'output'|'browser'|'tunnel';
 export interface PeerChallenge { kind:'challenge'; protocol:1; contract:number; nonce:string; version:string }
 export interface PeerAuth { kind:'auth'; protocol:number; contract:number; nonce:string; channel:PeerChannel; clientId:string; credential:string; epoch:string|null; port?:number; loopback?:'127.0.0.1'|'::1' }
 export interface PeerAuthenticated { kind:'authenticated'; protocol:1; contract:number; principal:string; epoch:string; version?:string }
 /** `protocol`/`contract`/`version` are the sender's values; received fields name the rejected peer values. */
 export interface PeerIncompatible { kind:'incompatible'; code:'protocol_incompatible'; protocol:1; contract:number; version:string; receivedProtocol?:number; receivedContract?:number; receivedVersion?:string }
-export type PeerHandshakeFrame = PeerChallenge|PeerAuth|PeerAuthenticated|PeerIncompatible;
+export interface PeerTunnelFailed { kind:'tunnel_failed'; code:'connection_refused'|'connection_timeout'|'connection_failed' }
+export type PeerHandshakeFrame = PeerChallenge|PeerAuth|PeerAuthenticated|PeerIncompatible|PeerTunnelFailed;
 export interface DataRelocationStatus { frozen:boolean; sourceRoot:string; targetRoot?:string }
 export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; activationToken:string; includes?:string[] }
 export interface RuntimeEvent<E extends string=string,D=unknown> { v:1; event:E; epoch:string; seq:number; data:D }

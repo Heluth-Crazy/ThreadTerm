@@ -86,7 +86,7 @@ export class PeerHeartbeat {
   }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 }
-export async function authenticatePeer(connection: PeerFrames, profile: PeerProfile, channel: 'control' | 'output' | 'browser', clientId: string, epoch: string | null, onAuthenticated?: (session: { epoch: string }, proof: Buffer) => void): Promise<{ epoch: string }> {
+export async function authenticatePeer(connection: PeerFrames, profile: PeerProfile, channel: 'control' | 'output' | 'browser' | 'tunnel', clientId: string, epoch: string | null, onAuthenticated?: (session: { epoch: string }, proof: Buffer) => void, target?: { port: number; loopback: '127.0.0.1' | '::1' }): Promise<{ epoch: string }> {
   // Resolve credentials only after the TLS pin/ALPN checks have succeeded.
   const credential = await profile.credential();
   return new Promise((resolve, reject) => {
@@ -98,12 +98,13 @@ export async function authenticatePeer(connection: PeerFrames, profile: PeerProf
       try {
         const value: unknown = JSON.parse(frame.toString('utf8'));
         if (!isRecord(value)) throw new Error('Invalid computer handshake');
+        if (value.kind === 'tunnel_failed') throw new Error(`Host tunnel failed: ${String(value.code)}`);
         if (value.kind === 'incompatible' || value.protocol !== PROTOCOL_VERSION || value.contract !== PROTOCOL_CONTRACT) {
           throw new PeerTransportError('incompatible', `Version mismatch: desktop ${profile.desktopVersion ?? 'unknown'} (contract ${PROTOCOL_CONTRACT}); computer ${typeof value.version === 'string' ? value.version : 'unknown'} (contract ${String(value.contract)}). Update one so they match.`);
         }
         if (value.kind === 'challenge' && !challenged && typeof value.nonce === 'string') {
           challenged = true;
-          connection.write(Buffer.from(JSON.stringify({ kind: 'auth', protocol: PROTOCOL_VERSION, contract: PROTOCOL_CONTRACT, nonce: value.nonce, channel, clientId, credential, epoch })));
+          connection.write(Buffer.from(JSON.stringify({ kind: 'auth', protocol: PROTOCOL_VERSION, contract: PROTOCOL_CONTRACT, nonce: value.nonce, channel, clientId, credential, epoch, ...(channel === 'tunnel' ? target : {}) })));
           return;
         }
         if (!challenged || value.kind !== 'authenticated' || typeof value.epoch !== 'string' || typeof value.principal !== 'string' || !value.principal.endsWith(`:${clientId}`) || epoch !== null && value.epoch !== epoch) throw new Error('Computer authentication refused. Pair again if access was removed.');

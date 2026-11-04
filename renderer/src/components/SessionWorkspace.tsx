@@ -1,7 +1,7 @@
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
-import { browserCommand, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
+import { browserCommand, onBrowserEvent, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
 import { isRemoteFiles, uploadRemotePaths } from '../remoteFiles';
 import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
@@ -549,6 +549,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openFile:target=>{if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent');return;}void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail);},
   historyFocus,
  };
+ useEffect(()=>onBrowserEvent(event=>{if(event.type==='open'){panelBrowser.open(event.url);setWorkbenchCommand({view:'browser',key:crypto.randomUUID()});}}),[panelBrowser.key]);
  const closeRuntimePreview=(tabId:string)=>{
   const association=previewAssociations.current.get(tabId);
   if(!association)return;

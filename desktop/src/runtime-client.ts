@@ -190,15 +190,17 @@ export class RuntimeRequestError extends Error {
   constructor(error: RuntimeError) { super(error.message); this.name = 'RuntimeRequestError'; this.code = error.code; }
 }
 
-class LengthPrefixedSocket {
+export class LengthPrefixedSocket {
   readonly socket: net.Socket;
   private incoming = Buffer.alloc(0);
+  private raw = false;
+  private readonly consumeData = (chunk: Buffer) => this.consume(chunk);
   private readonly frames = new Set<(frame: Buffer) => void>();
   private readonly failures = new Set<(error: Error) => void>();
 
   private constructor(socket: net.Socket) {
     this.socket = socket;
-    socket.on('data', (chunk: Buffer) => this.consume(chunk));
+    socket.on('data', this.consumeData);
     socket.on('error', (error: Error) => this.fail(error));
     socket.on('close', () => this.fail(new RuntimeUnavailableError('Runtime pipe closed')));
   }
@@ -237,6 +239,16 @@ class LengthPrefixedSocket {
     this.socket.write(frame);
   }
 
+  /** Called synchronously from the authenticated callback, before parsing another frame. */
+  takeRawSocket(): net.Socket {
+    this.raw = true;
+    this.socket.pause();
+    this.socket.removeListener('data', this.consumeData);
+    if (this.incoming.length) this.socket.unshift(this.incoming);
+    this.incoming = Buffer.alloc(0);
+    return this.socket;
+  }
+
   private consume(chunk: Buffer): void {
     this.incoming = Buffer.concat([this.incoming, chunk]);
     while (this.incoming.length >= 4) {
@@ -246,6 +258,7 @@ class LengthPrefixedSocket {
       const frame = this.incoming.subarray(4, 4 + length);
       this.incoming = this.incoming.subarray(4 + length);
       for (const listener of this.frames) listener(frame);
+      if (this.raw) return;
     }
   }
 
@@ -297,6 +310,7 @@ export class RuntimeClient {
     () => { void this.request('runtime.health', {}).catch(() => {}); },
     () => this.handleDisconnect(new RuntimeUnavailableError('Computer did not respond for 45 seconds')),
   );
+  private readonly tunnels = new Set<net.Socket>();
   private control?: LengthPrefixedSocket;
   private output?: LengthPrefixedSocket;
   private browser?: LengthPrefixedSocket;
@@ -681,7 +695,28 @@ export class RuntimeClient {
     }
   }
 
+  async openTunnel(port: number, loopback: '127.0.0.1' | '::1'): Promise<net.Socket> {
+    const profile = this.options.profile;
+    if (profile?.kind !== 'peer') throw new Error('Tunnel requires a remote computer');
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || !['127.0.0.1', '::1'].includes(loopback)) throw new Error('Invalid tunnel target');
+    await this.ensureConnected();
+    const control = this.control, clientId = this.clientId, epoch = this.runtimeEpoch;
+    if (!control || !epoch || this.expectedDisconnect || this.suspended) throw new RuntimeUnavailableError('Computer is disconnected');
+    const connection = await LengthPrefixedSocket.connectPeer(profile);
+    this.tunnels.add(connection.socket);
+    connection.socket.once('close', () => this.tunnels.delete(connection.socket));
+    try {
+      if (this.control !== control) throw new RuntimeUnavailableError('Computer connection changed');
+      await authenticatePeer(connection, profile, 'tunnel', clientId, epoch, () => connection.takeRawSocket(), { port, loopback });
+      if (this.control !== control || this.expectedDisconnect || this.suspended) throw new RuntimeUnavailableError('Computer connection changed');
+      return connection.socket;
+    } catch (error) { connection.close(); throw error; }
+  }
+
+  private closeTunnels(): void { for (const socket of this.tunnels) socket.destroy(); this.tunnels.clear(); }
+
   dispose(): void {
+    this.closeTunnels();
     this.expectedDisconnect = true;
     this.peerHeartbeat.stop();
     this.invalidateBrowser(new RuntimeUnavailableError('Desktop is closing'), true);
@@ -955,6 +990,7 @@ export class RuntimeClient {
   }
 
   private handleDisconnect(error: Error): void {
+    this.closeTunnels();
     if (this.expectedDisconnect || this.disconnecting) return;
     this.peerHeartbeat.stop();
     this.disconnectRevision++;

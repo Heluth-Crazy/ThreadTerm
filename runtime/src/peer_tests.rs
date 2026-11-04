@@ -1258,3 +1258,111 @@ async fn wrong_certificate_pin_sends_zero_credential_bytes_to_server() {
         "the counter must observe a correctly pinned auth frame"
     );
 }
+async fn tunnel_auth(fixture: &Fixture, port: u16, token: &str, client: &str, epoch: Value, target: Value) -> PeerStream {
+    let mut stream = tls(fixture.root.path(), port, crate::peer::ALPN).await;
+    let challenge = read_frame(&mut stream).await;
+    let mut auth = json!({"kind":"auth","protocol":PROTOCOL_VERSION,"contract":PROTOCOL_CONTRACT,
+        "nonce":challenge["nonce"],"channel":"tunnel","clientId":client,"credential":token,"epoch":epoch});
+    for (key, value) in target.as_object().unwrap() { auth[key] = value.clone(); }
+    write_frame(&mut stream, &auth).await;
+    stream
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tunnel_requires_control_epoch_and_exact_target_before_connect() {
+    let fixture = Fixture::new();
+    let (status, paired) = fixture.desktop().await;
+    let port = status["port"].as_u64().unwrap() as u16;
+    let token = paired["token"].as_str().unwrap();
+    let client = uuid::Uuid::new_v4().to_string();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = json!({"loopback":"127.0.0.1","port":listener.local_addr().unwrap().port()});
+    let mut orphan = tunnel_auth(&fixture, port, token, &client, json!("wrong"), target.clone()).await;
+    assert_closed(&mut orphan).await;
+    let (_control, hello) = peer(fixture.root.path(), port, token, "control", &client, Value::Null).await;
+    let mut wrong = tunnel_auth(&fixture, port, token, &client, json!("wrong"), target.clone()).await;
+    assert_closed(&mut wrong).await;
+    for invalid in [json!({"loopback":"127.0.0.2","port":80}), json!({"loopback":"localhost","port":80}), json!({"loopback":"::1","port":0}), json!({"loopback":"127.0.0.1","port":65536})] {
+        let mut stream = tunnel_auth(&fixture, port, token, &client, hello["epoch"].clone(), invalid).await;
+        assert_closed(&mut stream).await;
+    }
+    assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err(), "refused auth must not connect");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tunnel_raw_bytes_failed_connect_and_control_revoke_gate_shutdown() {
+    let fixture = Fixture::new();
+    let (status, paired) = fixture.desktop().await;
+    let port = status["port"].as_u64().unwrap() as u16;
+    let token = paired["token"].as_str().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_port = listener.local_addr().unwrap().port();
+    let target = json!({"loopback":"127.0.0.1","port":target_port});
+    for reason in ["control", "gate", "revoke"] {
+        let client = uuid::Uuid::new_v4().to_string();
+        let (control, hello) = peer(fixture.root.path(), port, token, "control", &client, Value::Null).await;
+        let mut stream = tunnel_auth(&fixture, port, token, &client, hello["epoch"].clone(), target.clone()).await;
+        assert_eq!(read_frame(&mut stream).await["kind"], "authenticated");
+        let (mut host, _) = listener.accept().await.unwrap();
+        host.write_all(b"HOST\0\xff").await.unwrap();
+        let mut bytes = [0; 6]; stream.read_exact(&mut bytes).await.unwrap(); assert_eq!(&bytes, b"HOST\0\xff");
+        stream.write_all(b"CLIENT\0\xff").await.unwrap();
+        let mut bytes = [0; 8]; host.read_exact(&mut bytes).await.unwrap(); assert_eq!(&bytes, b"CLIENT\0\xff");
+        match reason {
+            "control" => drop(control),
+            "gate" => { fixture.rpc("settings.update", json!({"patch":{"remoteMachines":{"enabled":false}},"expectedRevision":1,"operationId":"tunnel-gate-off"})); },
+            _ => { fixture.rpc("device.revoke", json!({"deviceId":paired["device"]["id"],"operationId":"tunnel-revoke"})); }
+        }
+        assert_closed(&mut stream).await;
+        let mut byte = [0]; assert_eq!(tokio::time::timeout(Duration::from_secs(2), host.read(&mut byte)).await.unwrap().unwrap(), 0);
+        if reason == "gate" { fixture.rpc("settings.update", json!({"patch":{"remoteMachines":{"enabled":true}},"expectedRevision":2,"operationId":"tunnel-gate-on"})); }
+    }
+    // A fresh device permits checking failed establishment after the revoke above.
+    let offer = fixture.rpc("device.pairing.create", json!({"permission":"fullcontrol","profile":"desktop","operationId":"tunnel-second-device"}));
+    let paired = pair(fixture.root.path(), port, &offer, "Second peer").await;
+    let token = paired["token"].as_str().unwrap();
+    let client = uuid::Uuid::new_v4().to_string();
+    let (_control, hello) = peer(fixture.root.path(), port, token, "control", &client, Value::Null).await;
+    drop(listener);
+    let mut stream = tunnel_auth(&fixture, port, token, &client, hello["epoch"].clone(), target.clone()).await;
+    let failed = read_frame(&mut stream).await;
+    assert_eq!(failed["kind"], "tunnel_failed"); assert_eq!(failed["code"], "connection_refused");
+    assert_closed(&mut stream).await;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", target_port)).await.unwrap();
+    let mut stream = tunnel_auth(&fixture, port, token, &client, hello["epoch"].clone(), target).await;
+    assert_eq!(read_frame(&mut stream).await["kind"], "authenticated");
+    fixture.service.shutdown(); assert_closed(&mut stream).await;
+    drop(listener);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tunnel_saturation_preserves_all_other_peer_channels_and_phone_alpn() {
+    let fixture = Fixture::new();
+    let (status, paired) = fixture.desktop().await;
+    let port = status["port"].as_u64().unwrap() as u16;
+    let token = paired["token"].as_str().unwrap();
+    let client = uuid::Uuid::new_v4().to_string();
+    let (_control, hello) = peer(fixture.root.path(), port, token, "control", &client, Value::Null).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = json!({"loopback":"127.0.0.1","port":listener.local_addr().unwrap().port()});
+    let mut tunnels = Vec::new(); let mut hosts = Vec::new();
+    for _ in 0..64 {
+        let mut stream = tunnel_auth(&fixture, port, token, &client, hello["epoch"].clone(), target.clone()).await;
+        assert_eq!(read_frame(&mut stream).await["kind"], "authenticated");
+        hosts.push(listener.accept().await.unwrap().0); tunnels.push(stream);
+    }
+    let mut extra = tunnel_auth(&fixture, port, token, &client, hello["epoch"].clone(), target).await;
+    assert_closed(&mut extra).await;
+    let (_extra_control, proof) = peer(fixture.root.path(), port, token, "control", &uuid::Uuid::new_v4().to_string(), Value::Null).await;
+    assert_eq!(proof["kind"], "authenticated");
+    for channel in ["output", "browser"] {
+        let (_stream, proof) = peer(fixture.root.path(), port, token, channel, &client, hello["epoch"].clone()).await;
+        assert_eq!(proof["kind"], "authenticated");
+    }
+    let mut phone = tls(fixture.root.path(), port, b"http/1.1").await;
+    let body = r#"{"kind":"auth","channel":"tunnel"}"#;
+    phone.write_all(format!("POST /v1/rpc HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+    let mut bytes = Vec::new(); tokio::time::timeout(Duration::from_secs(2), phone.read_to_end(&mut bytes)).await.unwrap().ok();
+    assert!(!String::from_utf8_lossy(&bytes).contains("authenticated"));
+    assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
+}

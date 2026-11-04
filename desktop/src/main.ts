@@ -14,7 +14,9 @@ import { ignoreBrokenStdio, isBrokenPipeError } from './stdioGuards.js';
 import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
 import { registerPageComments } from './pageComments.js';
-import { registerBrowser } from './browser/index.js';
+import { registerBrowser, clearBrowserPartition } from './browser/index.js';
+import { MachineBrowserProfiles, machineBrowserPartition } from './machineBrowser.js';
+import { isLoopbackUrl } from './loopbackProxy.js';
 import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } from './chatMarkdownExport.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
@@ -61,6 +63,7 @@ const machineStates = new Map<string, Pick<MachineInfo, 'state' | 'message'>>();
 const pendingPairings = new Map<number, { descriptor: PairDescriptor; socket: TLSSocket; timer: NodeJS.Timeout }>();
 let machines: MachineRegistry;
 let remoteMachinesEnabled = false;
+let machineBrowsers: MachineBrowserProfiles | undefined;
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -98,7 +101,7 @@ if (process.env.THREADTERM_V3_USER_DATA) app.setPath('userData', process.env.THR
 if (!app.isPackaged && process.env.THREADTERM_V3_USER_DATA && process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS) app.setPath('downloads', process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS);
 app.on('window-all-closed', () => undefined);
 app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); void requestQuit(); } });
-app.on('will-quit', () => { machineTree.stop(); adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
+app.on('will-quit', () => { machineBrowsers?.close(); machineTree.stop(); adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
 
 void app.whenReady().then(async () => {
   htmlPreviewPreloadReady = prepareAppSession(session.defaultSession);
@@ -472,20 +475,28 @@ function registerIpc(): void {
       }
     }
     for (const window of BrowserWindow.getAllWindows()) if (machineBindings.get(window.webContents.id).machineId === id) window.destroy();
+    machineBrowsers?.release(machineBrowserPartition(id));await clearBrowserPartition(machineBrowserPartition(id));
     machines.remove(id); machineTree.remove(id); machineStates.delete(id); broadcastMachines();
   });
+  machineBrowsers = new MachineBrowserProfiles();
   registerBrowser(event => {
     assertTrustedRenderer(event);
-    assertLocalMachine(event);
-    const owner = machineBindings.get(event.sender.id).owner;
-    if (!owner || owner.webContents !== event.sender || event.senderFrame !== event.sender.mainFrame) throw new Error('Browser commands require the application main frame');
+    const { owner, machineId } = machineBindings.get(event.sender.id);
+    if (machineId !== 'local' && !remoteMachinesEnabled) throw new Error('Remote computers are disabled');
+    if (!owner || machineRenderers.get(event.sender.id) !== event.sender || event.senderFrame !== event.sender.mainFrame) throw new Error('Browser commands require the application main frame');
   },event=>{
     const runtime=runtimeFor(event);
     return {browserRequest:(method,params)=>runtime.browserRequest(method,params),onBrowserFrame:listener=>runtime.onBrowserFrame(listener),onBrowserDisconnect:listener=>runtime.onBrowserDisconnect(listener),onEvent:listener=>runtime.onEvent(listener),snapshot:()=>runtime.request('runtime.snapshot',{})};
   }, contents => {
     if (!machineRenderers.has(contents.id)) return undefined;
     const bound = machineBindings.get(contents.id);
-    return machineViews.get(bound.owner.id)?.all()[0] ?? bound.owner.contentView;
+    const views=machineViews.get(bound.owner.id)?.all();
+    return views?.find(view=>view instanceof WebContentsView&&view.webContents===contents) ?? (bound.machineId==='local'?views?.[0]??bound.owner.contentView:undefined);
+  }, {
+    partitionFor: contents => machineBrowserPartition(machineBindings.get(contents.id).machineId),
+    windowFor: contents => machineBindings.get(contents.id).owner,
+    prepare: async event => { const {machineId}=machineBindings.get(event.sender.id);if(machineId!=='local')await machineBrowsers!.prepare(machineId,machines.list().find(machine=>machine.id===machineId)?.name??'Computer',event.sender,runtimeFor(event)); },
+    released: partition => machineBrowsers?.release(partition),
   });
   registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady, event => machineBindings.get(event.sender.id).machineId !== 'local');
   registerBackgroundImageIpc({ folder: backgroundImagesFolder(), assertTrusted: assertTrustedRenderer, isPackaged: app.isPackaged });
@@ -751,6 +762,9 @@ function registerIpc(): void {
     if (typeof url !== 'string') throw new Error('Invalid external URL');
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('Only HTTP(S) external URLs are allowed');
+    if (machineBindings.get(_event.sender.id).machineId !== 'local' && isLoopbackUrl(parsed.toString())) {
+      _event.sender.send('threadterm:browser-event', { type: 'open', url: parsed.toString() }); return;
+    }
     await shell.openExternal(parsed.toString());
   });
 }
@@ -1053,6 +1067,7 @@ function applyMachinesGate(enabled: boolean): void {
   syncMachineWatchers();
   if (enabled) machineTree.republish();
   if (!enabled) {
+    machineBrowsers?.close();
     for (const [id, client] of windowRuntimes) if (machineBindings.get(id).machineId !== 'local') { client.dispose(); windowRuntimes.delete(id); }
     for (const [windowId, views] of machineViews) {
       const owner = BrowserWindow.fromId(windowId);
@@ -1108,6 +1123,7 @@ function runtimeFor(event: IpcMainInvokeEvent): RuntimeClient {
       if (machineId !== 'local' && value.event === 'runtime.transport' && value.data && typeof value.data === 'object') {
         const data = value.data as { state?: string; message?: string; reason?: string };
         const state = data.state === 'reconnected' ? 'connected' : data.state === 'incompatible' ? 'incompatible' : data.state === 'pin-mismatch' ? 'pin-mismatch' : 'disconnected';
+        if(state!=='connected')machineBrowsers?.disconnect(machineId);
         machineStates.set(machineId, { state, message: data.message ?? data.reason }); broadcastMachines();
       }
     });

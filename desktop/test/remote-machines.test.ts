@@ -1,3 +1,4 @@
+import './loopback-proxy.test.js';
 import './machine-watcher.test.js';
 import assert from 'node:assert/strict';
 import { test, before, after } from 'node:test';

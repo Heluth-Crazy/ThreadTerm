@@ -301,7 +301,7 @@ const QA = [
   'codex-stream', 'codex-transcript', 'command-presets', 'electron-harness-isolation', 'electron-lock', 'file-drag', 'file-references', 'file-workspace-fixtures',
   'icon-generator', 'icon-stability', 'inbox-visibility', 'mcp-smoke', 'native-browser', 'oc1-visual-fixtures', 'oc2-opencode-fixture',
   'oc2-opencode-harness', 'oc2-opencode-options-regression', 'oc2-opencode-visual-fixture', 'opencode-reconnect-ordering',
-  'opencode-retry', 'palette-sessions', 'pane-geometry', 'review-comments', 'selected-commit-selection',
+  'opencode-retry', 'palette-sessions', 'pane-geometry', 'remote-machine-browser', 'remote-preview-address', 'review-comments', 'selected-commit-selection',
   'send-latency-breakdown', 'session-activity', 'session-ordering', 'session-state', 'terminal-file-links', 'token-speed',
   'usage-card', 'workbench-graph', 'workbench-helpers', 'workspace-layout', 'workspace-tabs',
 ];

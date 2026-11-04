@@ -17,6 +17,7 @@ export interface BrowserState { tabId:string; url:string; title:string; loading:
 export type BrowserCommand =
  | BrowserShareCommand
  | BrowserStopAgentOperationCommand
+ | {type:'open';url:string}
  | {type:'show';tabId:string;url:string;frameName:string;bounds:BrowserBounds;devtools?:BrowserBounds;radius?:number}
  | {type:'bounds';tabId:string;bounds:BrowserBounds;devtools?:BrowserBounds;radius?:number}
  | {type:'state'|'hide'|'close'|'back'|'forward'|'reload'|'stop'|'focus';tabId:string}
@@ -30,7 +31,7 @@ export type BrowserCommand =
  | {type:'preferences';patch?:Partial<BrowserPreferences>}
  | {type:'clearData'}
  | {type:'download';id:string;action:'open'|'show'};
-export type BrowserEvent = {type:'state';state:BrowserState}|{type:'popup';openerId:string;tabId:string;url:string}|{type:'shortcut';phase?:'keydown'|'keyup';tabId:string;key:string;code:string;control:boolean;meta:boolean;shift:boolean;alt:boolean};
+export type BrowserEvent = {type:'open';url:string}|{type:'state';state:BrowserState}|{type:'popup';openerId:string;tabId:string;url:string}|{type:'shortcut';phase?:'keydown'|'keyup';tabId:string;key:string;code:string;control:boolean;meta:boolean;shift:boolean;alt:boolean};
 export interface BrowserBridge { browserCommand(command:BrowserCommand):Promise<BrowserState|BrowserPreferences|void>; onBrowserEvent(listener:(event:BrowserEvent)=>void):()=>void }
 
 export function isBrowserShareCommand(value:unknown):value is BrowserShareCommand {

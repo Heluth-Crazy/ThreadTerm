@@ -16,7 +16,7 @@ import { faviconRequestCurrent, fetchFavicon, settleFavicon } from './favicon.js
 
 type DevtoolsPanel = 'console'|'network'|'elements';
 type Devtools = { view:WebContentsView; bounds?:BrowserBounds; ready:boolean; panel?:DevtoolsPanel; inspectMode:boolean };
-type Tab = { id:string; owner:WebContents; window:BrowserWindow; url:string; title:string; frameName:string; view?:WebContentsView; bounds?:BrowserBounds; radius:number; devtools?:Devtools; devtoolsWanted:boolean; devtoolsStopped?:number; devtoolsBounds?:BrowserBounds; devtoolsSnapshot?:string; contextPoint?:{x:number;y:number}; visible:boolean; shownAt:number; hiddenAt?:number; loading:boolean; documentGeneration:number; navigationEpoch:number; viewGeneration:number; navigation:BrowserState['navigation']; issue?:string; snapshot?:string; zoom:number; find?:BrowserState['find']; findRequestId?:number; origin?:string; favicon?:string; faviconRequest?:number; faviconAbort?:AbortController; downloads:Map<string,string>; leases:number; download?:{id:string;name:string}; notice?:string; gestureUntil:number; occlusionGeneration:number; contextSequence:number; console:ReturnType<typeof createConsoleRing>; consoleCounts:{errors:number;warnings:number}; consoleUrl?:string; consoleStatus:'pending'|'committed'|'failed'; handoffs:Map<string,{path:string;epoch:number;generation:number;url:string}> };
+type Tab = { preparing?:Promise<void>; partition:string; id:string; owner:WebContents; window:BrowserWindow; url:string; title:string; frameName:string; view?:WebContentsView; bounds?:BrowserBounds; radius:number; devtools?:Devtools; devtoolsWanted:boolean; devtoolsStopped?:number; devtoolsBounds?:BrowserBounds; devtoolsSnapshot?:string; contextPoint?:{x:number;y:number}; visible:boolean; shownAt:number; hiddenAt?:number; loading:boolean; documentGeneration:number; navigationEpoch:number; viewGeneration:number; navigation:BrowserState['navigation']; issue?:string; snapshot?:string; zoom:number; find?:BrowserState['find']; findRequestId?:number; origin?:string; favicon?:string; faviconRequest?:number; faviconAbort?:AbortController; downloads:Map<string,string>; leases:number; download?:{id:string;name:string}; notice?:string; gestureUntil:number; occlusionGeneration:number; contextSequence:number; console:ReturnType<typeof createConsoleRing>; consoleCounts:{errors:number;warnings:number}; consoleUrl?:string; consoleStatus:'pending'|'committed'|'failed'; handoffs:Map<string,{path:string;epoch:number;generation:number;url:string}> };
 const tabs = new Map<string, Tab>();
 const faviconCache = new Map<string,string>();
 const FAVICON_CACHE_LIMIT=256;
@@ -30,7 +30,10 @@ let preferences: BrowserPreferences = { ...defaultBrowserPreferences };
 let devServerOffers=true;
 let hiddenTimer: ReturnType<typeof setInterval> | undefined;
 let profile: Electron.Session | undefined;
-const browserProfile = (): Electron.Session => profile ??= session.fromPartition('persist:threadterm-browser');
+const browserProfile = (partition='persist:threadterm-browser'): Electron.Session => partition==='persist:threadterm-browser' ? profile ??= session.fromPartition(partition) : session.fromPartition(partition);
+const configuredProfiles = new WeakSet<Electron.Session>();
+type MachineBrowserOptions = { partitionFor:(owner:WebContents)=>string; prepare:(event:IpcMainInvokeEvent)=>Promise<void>; released:(partition:string)=>void; windowFor:(owner:WebContents)=>BrowserWindow };
+let machineBrowserOptions: MachineBrowserOptions | undefined;
 
 function validBounds(value: unknown): value is BrowserBounds { return !!value && typeof value === 'object' && ['x','y','width','height'].every(key => Number.isFinite((value as Record<string,unknown>)[key])) && (value as BrowserBounds).width >= 0 && (value as BrowserBounds).height >= 0; }
 function validFrameName(value: unknown): value is string { return typeof value === 'string' && /^tt-preview-[a-z0-9-]{8,64}$/.test(value); }
@@ -39,17 +42,18 @@ function emit(tab: Tab): void { if (!tab.owner.isDestroyed()) tab.owner.send('th
 function setIssue(tab: Tab, issue?: string): void { tab.issue=issue; emit(tab); }
 function pageOrigin(url: string): string | undefined { try { const parsed=new URL(url); return /^https?:$/.test(parsed.protocol) || parsed.protocol==='blob:'&&/^https?:/.test(parsed.origin) ? parsed.origin : undefined; } catch { return undefined; } }
 async function updateFavicon(tab:Tab,wc:WebContents,candidates:string[]):Promise<void> {
-  tab.faviconAbort?.abort();const controller=new AbortController();tab.faviconAbort=controller;const epoch=tab.navigationEpoch,origin=pageOrigin(tab.url),request=tab.faviconRequest=(tab.faviconRequest??0)+1;
+  tab.faviconAbort?.abort();const controller=new AbortController();tab.faviconAbort=controller;const epoch=tab.navigationEpoch,origin=pageOrigin(tab.url),cacheKey=tab.partition==='persist:threadterm-browser'?origin:`${tab.partition}:${origin}`,request=tab.faviconRequest=(tab.faviconRequest??0)+1;
   const current=()=>!controller.signal.aborted&&tabs.get(tab.id)===tab&&tab.view?.webContents===wc&&!wc.isDestroyed()&&tab.navigationEpoch===epoch&&faviconRequestCurrent(tab.faviconRequest,request);
-  try { if(!origin)return;const cached=faviconCache.get(origin);if(cached&&current()){tab.favicon=cached;emit(tab);return;}await settleFavicon(candidates,candidate=>fetchFavicon(candidate,(target,options)=>browserProfile().fetch(target,options),bytes=>nativeImage.createFromBuffer(bytes),current,controller.signal),current,favicon=>{const victim=faviconCache.keys().next().value;if(!faviconCache.has(origin)&&faviconCache.size>=FAVICON_CACHE_LIMIT&&victim)faviconCache.delete(victim);faviconCache.set(origin,favicon);tab.favicon=favicon;emit(tab);}); }
+  try { if(!origin)return;const cached=faviconCache.get(cacheKey!);if(cached&&current()){tab.favicon=cached;emit(tab);return;}await settleFavicon(candidates,candidate=>fetchFavicon(candidate,(target,options)=>browserProfile(tab.partition).fetch(target,options),bytes=>nativeImage.createFromBuffer(bytes),current,controller.signal),current,favicon=>{const victim=faviconCache.keys().next().value;if(!faviconCache.has(cacheKey!)&&faviconCache.size>=FAVICON_CACHE_LIMIT&&victim)faviconCache.delete(victim);faviconCache.set(cacheKey!,favicon);tab.favicon=favicon;emit(tab);}); }
   finally { if(tab.faviconAbort===controller)tab.faviconAbort=undefined; }
 }
 function allowedFor(tab:Tab, url:string):boolean { const appOrigin=pageOrigin(tab.owner.getURL()), candidate=pageOrigin(url); return allowedTopLevelUrl(url,tab.origin) && !(appOrigin && candidate === appOrigin); }
 function preferencePath():string { return join(app.getPath('userData'),'browser-preferences.json'); }
 function loadPreferences():void { try { const value=JSON.parse(readFileSync(preferencePath(),'utf8')) as Partial<BrowserPreferences>&{devServerOffers?:unknown}; if(Number.isInteger(value.unloadAfterMinutes)&&value.unloadAfterMinutes!>=0&&value.unloadAfterMinutes!<=1440&&(value.linkTarget==='builtin'||value.linkTarget==='system')) preferences={unloadAfterMinutes:value.unloadAfterMinutes!,linkTarget:value.linkTarget}; if(typeof value.devServerOffers==='boolean')devServerOffers=value.devServerOffers; } catch { /* First run or corrupt browser-only preferences: use safe defaults. */ } }
 function savePreferences():void { const file=preferencePath(), temporary=`${file}.${randomUUID()}.tmp`; mkdirSync(join(app.getPath('userData')),{recursive:true}); writeFileSync(temporary,JSON.stringify({...preferences,devServerOffers}),'utf8'); renameSync(temporary,file); }
-function configureProfile(): void {
-  const browser = browserProfile();
+function configureProfile(browser = browserProfile()): void {
+  if(configuredProfiles.has(browser))return;
+  configuredProfiles.add(browser);
   browser.setPermissionRequestHandler((_wc, _permission, done) => done(false));
   browser.setPermissionCheckHandler(() => false);
   browser.setCertificateVerifyProc((_request, done) => done(-3)); // Chromium's normal verification; never bypass
@@ -64,7 +68,7 @@ function configureProfile(): void {
   });
 }
 function makeView(tab: Tab): WebContentsView {
-  const view=new WebContentsView({ webPreferences:{ sandbox:true, contextIsolation:true, nodeIntegration:false, webSecurity:true, preload:undefined, partition:'persist:threadterm-browser' } });
+  const view=new WebContentsView({ webPreferences:{ sandbox:true, contextIsolation:true, nodeIntegration:false, webSecurity:true, preload:undefined, partition:tab.partition } });
   tab.view=view;tab.viewGeneration=++nativeViewGeneration;
   const wc=view.webContents;
   wc.on('will-attach-webview', event => event.preventDefault());
@@ -205,7 +209,7 @@ async function occlude(tab:Tab):Promise<void> {
 }
 function show(tab:Tab,bounds:BrowserBounds,devtoolsBounds?:BrowserBounds,radius?:number):void { const capture=!tab.visible||!tab.view; tab.radius=radius??tab.radius;tab.bounds=bounds;setDevtoolsBounds(tab,devtoolsBounds); tab.visible=true; tab.hiddenAt=undefined; tab.shownAt=Date.now(); tab.leases=ownerOccluded.get(tab.owner)?1:0; if (!tab.view){makeView(tab);if(tab.devtoolsWanted)openDevtools(tab);} applyViewRadius(tab);if (!tab.leases) { tab.snapshot=undefined;tab.devtoolsSnapshot=undefined; attach(tab); } else if(capture)void occlude(tab); trimLive(); emit(tab); }
 function hide(tab:Tab):void { tab.occlusionGeneration++; tab.snapshot=undefined;tab.devtoolsSnapshot=undefined; tab.visible=false;tab.hiddenAt=Date.now();detach(tab);scheduleHidden();emit(tab); }
-function close(tab:Tab):void { tab.devtoolsWanted=false;destroyView(tab);agentControllers.get(tab.owner)?.invalidate(tab.id,'Browser tab was closed.',true); tabs.delete(tab.id);scheduleHidden(); }
+function close(tab:Tab):void { tab.devtoolsWanted=false;destroyView(tab);agentControllers.get(tab.owner)?.invalidate(tab.id,'Browser tab was closed.',true); tabs.delete(tab.id);if(![...tabs.values()].some(other=>other.partition===tab.partition))machineBrowserOptions?.released(tab.partition);scheduleHidden(); }
 function tabFor(event:IpcMainInvokeEvent,id:unknown):Tab { if(typeof id!=='string') throw new Error('Invalid browser tab'); const tab=tabs.get(id); if(!tab || tab.owner!==event.sender) throw new Error('Unknown browser tab'); return tab; }
 function agentControllerFor(event:IpcMainInvokeEvent):BrowserAgentController {
   const owner=event.sender,existing=agentControllers.get(owner);if(existing)return existing;
@@ -244,7 +248,8 @@ async function saveMarkup(tab:Tab,command:Extract<BrowserHandoffCommand,{type:'s
 export function lookupNativePage(sender: WebContents, frameName: string): WebContents | undefined { const tab=[...tabs.values()].find(value=>value.owner===sender&&value.frameName===frameName); return tab?.view?.webContents; }
 let appViewFor: ((owner: WebContents) => Electron.View | undefined) | undefined;
 function appView(tab: Tab): Electron.View { return appViewFor?.(tab.owner) ?? tab.window.contentView; }
-export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)=>void, runtimeFor?:(event:IpcMainInvokeEvent)=>BrowserAgentRuntime, contentViewFor?: (owner: WebContents) => Electron.View | undefined):void {
+export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)=>void, runtimeFor?:(event:IpcMainInvokeEvent)=>BrowserAgentRuntime, contentViewFor?: (owner: WebContents) => Electron.View | undefined, machineOptions?: MachineBrowserOptions):void {
+  machineBrowserOptions=machineOptions;
   appViewFor = contentViewFor;
   runtimeForBrowser=runtimeFor;
   loadPreferences();
@@ -262,10 +267,34 @@ export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)
   ipcMain.handle('threadterm:browser-command', async (event, value:unknown) => {
     assertTrustedRenderer(event); const command=value as BrowserCommand; if(!command || typeof command!=='object'||typeof command.type!=='string') throw new Error('Invalid browser command');
     if(command.type==='preferences'){ if(command.patch){ const next=command.patch; if(next.unloadAfterMinutes!==undefined && (!Number.isInteger(next.unloadAfterMinutes)||next.unloadAfterMinutes<0||next.unloadAfterMinutes>24*60)) throw new Error('Invalid unload setting'); if(next.linkTarget!==undefined&&next.linkTarget!=='builtin'&&next.linkTarget!=='system') throw new Error('Invalid link target'); preferences={...preferences,...next}; savePreferences(); scheduleHidden(); } return preferences; }
-    if(command.type==='clearData'){ await Promise.all([...agentControllers.values()].map(controller=>controller.stopAll('Sharing stopped — browsing data was cleared.')));const browser=browserProfile(); await browser.clearStorageData(); await browser.clearCache(); return; }
+    if(command.type==='open'){if(!machineBrowserOptions||machineBrowserOptions.partitionFor(event.sender)==='persist:threadterm-browser')throw new Error('Machine browser opening requires a remote view');const normalized=normalizeBrowserUrl(command.url);if(!normalized.url)throw new Error(normalized.issue);event.sender.send('threadterm:browser-event',{type:'open',url:normalized.url} satisfies BrowserEvent);return;}
+    if(command.type==='clearData'){ const partition=machineBrowserOptions?.partitionFor(event.sender)??'persist:threadterm-browser';await Promise.all([...agentControllers].filter(([owner])=>(machineBrowserOptions?.partitionFor(owner)??'persist:threadterm-browser')===partition).map(([,controller])=>controller.stopAll('Sharing stopped — browsing data was cleared.')));const browser=browserProfile(partition); await browser.clearStorageData(); await browser.clearCache(); return; }
     if(command.type==='download'){ if(typeof command.id!=='string'||!['open','show'].includes(command.action))throw new Error('Invalid download action'); for(const tab of tabs.values()) if(tab.owner===event.sender){ const path=tab.downloads.get(command.id); if(path) command.action==='open' ? void shell.openPath(path) : shell.showItemInFolder(path); } return; }
     if(command.type==='occlusion'){if(typeof command.active!=='boolean')throw new Error('Invalid occlusion command');ownerOccluded.set(event.sender,command.active);const captures:Promise<void>[]=[];for(const tab of tabs.values())if(tab.owner===event.sender){const wasOccluded=tab.leases;tab.leases=command.active?1:0;if(tab.leases){if(!wasOccluded)captures.push(occlude(tab));}else{tab.occlusionGeneration++;tab.snapshot=undefined;tab.devtoolsSnapshot=undefined;if(tab.visible)attach(tab);emit(tab);}}await Promise.all(captures);return;}
-    if(command.type==='show'){ if((command.radius!==undefined&&(!Number.isFinite(command.radius)||command.radius<0||command.radius>32))||!validBounds(command.bounds)||(command.devtools!==undefined&&!validBounds(command.devtools))||typeof command.url!=='string'||!validFrameName(command.frameName)||typeof command.tabId!=='string'||!command.tabId||command.tabId.length>128) throw new Error('Invalid browser view'); let tab=tabs.get(command.tabId); if(tab&&tab.owner!==event.sender) throw new Error('Unknown browser tab'); if(!tab){const normalized=normalizeBrowserUrl(command.url);if(!normalized.url) throw new Error(normalized.issue);const window=BrowserWindow.fromWebContents(event.sender);if(!window)throw new Error('Browser window is unavailable');tab={id:command.tabId,owner:event.sender,window,url:normalized.url,title:'',frameName:command.frameName,radius:command.radius??0,devtoolsWanted:false,visible:false,shownAt:Date.now(),loading:false,documentGeneration:0,navigationEpoch:0,viewGeneration:0,navigation:'pending',zoom:1,downloads:new Map(),leases:0,gestureUntil:0,occlusionGeneration:0,contextSequence:0,console:createConsoleRing(),consoleCounts:{errors:0,warnings:0},consoleStatus:'pending',handoffs:new Map()};if(!allowedFor(tab,normalized.url))throw new Error('Blocked app address.');tabs.set(tab.id,tab);} if(tab.frameName!==command.frameName){nativePageClosed(tab.owner,tab.frameName);tab.frameName=command.frameName;if(tab.view)nativePageRegistered(tab.owner,tab.frameName,tab.view.webContents,()=>tab!.bounds);} show(tab,command.bounds,command.devtools,command.radius); return state(tab); }
+    if(command.type==='show'){
+      if((command.radius!==undefined&&(!Number.isFinite(command.radius)||command.radius<0||command.radius>32))||!validBounds(command.bounds)||(command.devtools!==undefined&&!validBounds(command.devtools))||typeof command.url!=='string'||!validFrameName(command.frameName)||typeof command.tabId!=='string'||!command.tabId||command.tabId.length>128)throw new Error('Invalid browser view');
+      let tab=tabs.get(command.tabId);
+      if(tab&&tab.owner!==event.sender)throw new Error('Unknown browser tab');
+      if(!tab){
+        const normalized=normalizeBrowserUrl(command.url);if(!normalized.url)throw new Error(normalized.issue);
+        const partition=machineBrowserOptions?.partitionFor(event.sender)??'persist:threadterm-browser';
+        const window=machineBrowserOptions?.windowFor(event.sender)??BrowserWindow.fromWebContents(event.sender);if(!window)throw new Error('Browser window is unavailable');
+        tab={partition,id:command.tabId,owner:event.sender,window,url:normalized.url,title:'',frameName:command.frameName,radius:command.radius??0,devtoolsWanted:false,visible:false,shownAt:Date.now(),loading:false,documentGeneration:0,navigationEpoch:0,viewGeneration:0,navigation:'pending',zoom:1,downloads:new Map(),leases:0,gestureUntil:0,occlusionGeneration:0,contextSequence:0,console:createConsoleRing(),consoleCounts:{errors:0,warnings:0},consoleStatus:'pending',handoffs:new Map()};
+        if(!allowedFor(tab,normalized.url))throw new Error('Blocked app address.');
+        // Reserve ownership before proxy setup yields. Closing the old panel during
+        // Open as tab must not tear down this new tab's machine proxy.
+        tabs.set(tab.id,tab);
+        if(partition!=='persist:threadterm-browser')tab.preparing=machineBrowserOptions?.prepare(event);
+      }
+      if(tab.preparing){
+        try{await tab.preparing;}catch(error){if(tabs.get(tab.id)===tab)close(tab);throw error;}
+        finally{tab.preparing=undefined;}
+        if(event.sender.isDestroyed()||tabs.get(tab.id)!==tab)throw new Error('Browser owner was closed');
+        configureProfile(browserProfile(tab.partition));
+      }
+      if(tab.frameName!==command.frameName){nativePageClosed(tab.owner,tab.frameName);tab.frameName=command.frameName;if(tab.view)nativePageRegistered(tab.owner,tab.frameName,tab.view.webContents,()=>tab!.bounds);}
+      show(tab,command.bounds,command.devtools,command.radius);return state(tab);
+    }
     const tab=tabFor(event,(command as {tabId?:unknown}).tabId);
     if(command.type==='stopAgentOperation'){
       if(!isBrowserStopAgentOperationCommand(command))throw new Error('Invalid browser operation stop command');
@@ -291,4 +320,9 @@ export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)
     const wc=tab.view?.webContents;if(!wc)return state(tab);
     if(command.type==='back'){if(wc.navigationHistory.canGoBack())wc.navigationHistory.goBack();} else if(command.type==='forward'){if(wc.navigationHistory.canGoForward())wc.navigationHistory.goForward();} else if(command.type==='reload'){wc.reload();} else if(command.type==='stop'){wc.stop();tab.loading=false;tab.navigation='failed';emit(tab);} else if(command.type==='focus'){if(tab.window.isFocused())wc.focus();} else if(command.type==='navigate'){const normalized=normalizeBrowserUrl(command.url);if(!normalized.url||!allowedFor(tab,normalized.url)){agentControllers.get(tab.owner)?.navigationStarted(tab.id,normalized.url??command.url);setIssue(tab,normalized.issue??'Blocked app address.');}else {tab.issue=undefined;void wc.loadURL(normalized.url).catch(error=>{if(tab.view?.webContents===wc&&error.code!=='ERR_ABORTED')setIssue(tab,`Page failed to load: ${String(error)}`);});}} else if(command.type==='find'){if(typeof command.text!=='string'||command.text.length>10000)throw new Error('Invalid find text');tab.findRequestId=undefined;tab.find={activeMatchOrdinal:0,matches:0};if(command.text)tab.findRequestId=wc.findInPage(command.text,{forward:command.forward,findNext:!command.findNext});else{wc.stopFindInPage('clearSelection');emit(tab);}} else if(command.type==='stopFind'){tab.findRequestId=undefined;wc.stopFindInPage('clearSelection');tab.find=undefined;emit(tab);} else if(command.type==='zoom'){if(!Number.isFinite(command.factor))throw new Error('Invalid zoom');const factor=Math.min(3,Math.max(.25,command.factor));tab.zoom=factor;wc.setZoomFactor(factor);emit(tab);} else throw new Error('Unsupported browser command'); return state(tab);
   });
+}
+
+export async function clearBrowserPartition(partition:string):Promise<void> {
+  for(const tab of [...tabs.values()])if(tab.partition===partition)close(tab);
+  const browser=browserProfile(partition);await browser.closeAllConnections();await browser.clearStorageData();await browser.clearCache();
 }

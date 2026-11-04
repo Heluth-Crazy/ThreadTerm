@@ -13,22 +13,26 @@ import { buildQaApp } from './lib/qa-app.mjs';
 import { connectPeer } from './pipe-client.mjs';
 
 const treeProbe = process.env.THREADTERM_QA_MACHINE_TREE === '1';
+const browserProbe = process.env.THREADTERM_QA_MACHINE_BROWSER === '1';
 const filesProbe = process.env.THREADTERM_QA_MACHINE_FILES === '1';
 const root = resolve(import.meta.dirname, '..');
 const qaTemp = /[\\/]tt-qa-temp$/i.test(tmpdir()) ? tmpdir() : join(tmpdir(), 'tt-qa-temp');
 await mkdir(qaTemp, { recursive: true });
 process.env.TEMP = qaTemp; process.env.TMP = qaTemp;
 const scratch = await mkdtemp(join(qaTemp, 'remote-basic-'));
-const out = join(root, filesProbe ? 'qa/results/remote-machine-files' : treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
+const out = join(root, browserProbe ? 'qa/results/remote-machine-browser' : filesProbe ? 'qa/results/remote-machine-files' : treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
 await mkdir(out, { recursive: true });
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), 'Build and copy the QA runtime first');
 const bin = join(scratch, 'provider-bin'), hostWork = join(scratch, 'host-project'), clientWork = join(scratch, 'client-project'), control = join(scratch, 'control');
 for (const directory of [bin, hostWork, clientWork, control]) await mkdir(directory);
 await writeFile(join(control, 'connect-delay-ms'), '0');
-const fake = join(root, treeProbe ? 'qa/fixtures/fake-codex-machine-tree.cjs' : 'qa/fixtures/fake-codex-connect-transition.cjs');
+const browserScenarios = browserProbe ? await import('./remote-machine-browser-scenarios.mjs') : undefined;
+const browserFixtures = await browserScenarios?.setupRemoteBrowserProbe(scratch);
+const fake = join(root, browserProbe ? 'qa/fixtures/browser-agent-reads/codex.cjs' : treeProbe ? 'qa/fixtures/fake-codex-machine-tree.cjs' : 'qa/fixtures/fake-codex-connect-transition.cjs');
 await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${fake}" %*\r\n`);
-const report = { passed: false, checks: [], errors: [], cleanup: [], scratch };
+const report = { passed: false, checks: [], errors: [], cleanup: [], scratch, ...(browserProbe?{acceptancePassed:false,limitations:[],blockedChecks:[]}: {}) };
+const note = (message, blocked=false) => { if(browserProbe){report.limitations.push(message);if(blocked)report.blockedChecks.push(message);}console.log(`NOTE ${message}`); };
 const pass = message => { report.checks.push(message); console.log(`PASS ${message}`); };
 const delay = ms => new Promise(done => setTimeout(done, ms));
 async function until(check, label, timeout = 30000) {
@@ -43,6 +47,7 @@ function environment(kind) {
     THREADTERM_V3_DATA: join(scratch, kind, 'data'), THREADTERM_V3_USER_DATA: join(scratch, kind, 'profile'), THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-remote-${kind}-${randomUUID()}`,
     THREADTERM_V3_RUNTIME: runtime, THREADTERM_QA_REMOTE_BIND: '127.0.0.1', THREADTERM_QA_PROVIDER_BIN: bin,
     THREADTERM_QA_TRANSITION_CONTROL: control, THREADTERM_QA_TRANSITION_LOG: join(scratch, `${kind}-provider.jsonl`), THREADTERM_QA_TRANSITION_CWD: kind === 'host' ? hostWork : clientWork });
+  if(browserProbe){env.THREADTERM_QA_BROWSER_EVENTS=join(scratch,`${kind}-browser-events.jsonl`);env.THREADTERM_QA_BROWSER_CWD=kind==='host'?hostWork:clientWork;env.THREADTERM_QA_BROWSER_URL=`http://localhost:${browserFixtures.port}`;if(kind==='host')env.THREADTERM_QA_TUNNEL_PORT_MAP=browserFixtures.portMap;}
   return env;
 }
 const hostEnv = environment('host'), clientEnv = environment('client');
@@ -51,6 +56,7 @@ if (filesProbe) {
   await writeFile(clientLog, 'CLIENT LOG CONTENT\n' + 'x'.repeat(2 * 1024 * 1024));
   clientEnv.THREADTERM_V3_ATTACH_FILES_QA = clientLog;
 }
+let browserReceipt;
 let host, hostPeer, app, hostApp, built, releaseLock, localPage, remotePage, attentionSession;
 const rpc = (page, method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 try {
@@ -186,13 +192,14 @@ try {
   await until(() => chat.locator('textarea').isEnabled(), 'remote Chat ready', 45000);
   await chat.locator('textarea').fill('Reply from the host.');
   await chat.locator('button[type=submit]').click();
-  await chat.getByText('TRANSITION-SAVED-ANSWER', { exact: true }).waitFor({ timeout: 30000 });
+  if(browserProbe)await chat.getByText(/^BROWSER_QA_RESULT /).waitFor({timeout:30000});else await chat.getByText('TRANSITION-SAVED-ANSWER', { exact: true }).waitFor({ timeout: 30000 });
   await remotePage.screenshot({ path: join(out, 'remote-chat.png') });
   pass('a Chat turn sent through peer TLS displays the fake host provider’s reply');
   if (filesProbe) {
     const { runRemoteFilesProbe } = await import('./remote-machine-files-scenarios.mjs');
     await runRemoteFilesProbe({ app, remotePage, localPage, rpc, until, pass, hostPeer, hostEnv, clientEnv, hostProject, session, hostWork, clientWork, scratch, out });
   }
+  if(browserProbe)browserReceipt=await browserScenarios.runRemoteBrowserProbe({app,remotePage,localPage,rpc,until,pass,hostPeer,hostProject,session,hostWork,scratch,out,machine,note,fixtures:browserFixtures});
   const childPromise = app.waitForEvent('window', { predicate: page => page !== localPage && page !== remotePage, timeout: 15000 });
   await remotePage.evaluate(sessionId => window.threadterm.openWindow({ sessionId }), session.id);
   const child = await childPromise;
@@ -240,10 +247,12 @@ try {
   else assert.equal(await chat.locator('textarea').isDisabled(), true);
   await remotePage.screenshot({ path: join(out, 'remote-disconnected.png') });
   pass('host Remove disconnects the live view and disables Chat input');
+  await browserReceipt?.afterRevoke();
   await remotePage.locator('.machine-row').filter({ hasText: 'This PC' }).click();
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()), 'ThreadTerm');
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.filter(view => view.getVisible()).length), 1);
   pass('switching back retains the local view and shows exactly one machine');
+  await browserReceipt?.afterLocalSwitch();
   const finalLocal = await rpc(localPage, 'runtime.snapshot');
   await rpc(localPage, 'settings.update', { patch: { remoteMachines: { enabled: false } }, expectedRevision: finalLocal.settings.revision, operationId: randomUUID() });
   await until(async () => !(await localPage.evaluate(() => window.threadterm.machineList())).enabled, 'preview disabled');
@@ -252,11 +261,13 @@ try {
   assert.equal(await localPage.locator('.machine-row').count(), 0);
   pass('turning off the preview closes remote views and hides machine rows');
   report.passed = true;
+  if(browserProbe)report.acceptancePassed=report.blockedChecks.length===0;
 } catch (error) {
   report.errors.push(error instanceof Error ? error.stack : String(error));
   await (remotePage ?? localPage)?.screenshot({ path: join(out, 'failure.png') }).catch(() => {});
   process.exitCode = 1;
 } finally {
+  await browserFixtures?.cleanup();
   if (hostApp) { await hostApp.evaluate(({ app }) => app.exit(0)).catch(() => {}); await hostApp.close().catch(() => {}); }
   if (localPage) await rpc(localPage, 'runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
   if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); }

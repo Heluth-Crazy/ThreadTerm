@@ -11,7 +11,8 @@ export async function dismissBrowserNotifications(page){
 export async function nativeBrowserContents(app){
  return app.evaluate(({BrowserWindow,webContents,session})=>{
   const profile=session.fromPartition('persist:threadterm-browser');
-  return webContents.getAllWebContents().filter(contents=>!contents.isDestroyed()&&contents.session===profile).map(contents=>({id:contents.id,url:contents.getURL(),windowId:BrowserWindow.getAllWindows().find(window=>window.contentView.children.some(view=>view.webContents===contents))?.id}));
+  const contains=(view,contents)=>view.getVisible?.()!==false&&(view.webContents===contents||(view.children??[]).some(child=>contains(child,contents)));
+  return webContents.getAllWebContents().filter(contents=>!contents.isDestroyed()&&contents.session===profile).map(contents=>({id:contents.id,url:contents.getURL(),windowId:BrowserWindow.getAllWindows().find(window=>contains(window.contentView,contents))?.id}));
  });
 }
 
@@ -32,7 +33,8 @@ export async function attachedNativeBrowserPages(app,rendererPage){
 async function operate(app,identity,operation,args={}){
  return app.evaluate(async({BrowserWindow,webContents},{identity,operation,args})=>{
   const window=BrowserWindow.fromId(identity.windowId),contents=webContents.fromId(identity.id);
-  if(!contents||contents.isDestroyed()||!window?.contentView.children.some(view=>view.webContents===contents))throw Error(`Native contents ${identity.id} is no longer attached to window ${identity.windowId}`);
+  const contains=(view,contents)=>view.getVisible?.()!==false&&(view.webContents===contents||(view.children??[]).some(child=>contains(child,contents)));
+  if(!contents||contents.isDestroyed()||(!window||!contains(window.contentView,contents)))throw Error(`Native contents ${identity.id} is no longer attached to window ${identity.windowId}`);
   if(contents.getURL()!==identity.url)throw Error(`Native contents ${identity.id} navigated; select it again`);
   if(operation==='capture')return (await contents.capturePage()).toPNG().toString('base64');
   const box=async selector=>contents.executeJavaScript(`(()=>{const element=document.querySelector(${JSON.stringify(selector)});if(!element)return null;const rect=element.getBoundingClientRect(),style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.visibility!=='hidden'&&style.display!=='none'?{x:rect.x,y:rect.y,width:rect.width,height:rect.height}:null;})()`);

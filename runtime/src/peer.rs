@@ -11,6 +11,7 @@ use tokio::sync::{watch, Semaphore};
 pub(crate) const ALPN: &[u8] = b"threadterm-peer/1";
 const CONTROL_CONNECTIONS: usize = 16;
 const DEPENDENT_CONNECTIONS: usize = 32;
+const TUNNEL_CONNECTIONS: usize = 64;
 /// Credential and gate checks hit SQLite at most this often per device, so a
 /// busy remote terminal costs no database work per frame. Revoke still fences
 /// immediately through the in-memory group table.
@@ -50,6 +51,7 @@ pub(crate) struct ConnectionGroups {
     controls: Arc<Semaphore>,
     dependents: Arc<Semaphore>,
     handshakes: Arc<Semaphore>,
+    tunnels: Arc<Semaphore>,
     #[cfg(test)]
     pub(crate) credential_bytes: std::sync::atomic::AtomicUsize,
 }
@@ -62,6 +64,7 @@ impl Default for ConnectionGroups {
             controls: Arc::new(Semaphore::new(CONTROL_CONNECTIONS)),
             dependents: Arc::new(Semaphore::new(DEPENDENT_CONNECTIONS)),
             handshakes: Arc::new(Semaphore::new(32)),
+            tunnels: Arc::new(Semaphore::new(TUNNEL_CONNECTIONS)),
             #[cfg(test)]
             credential_bytes: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -271,10 +274,17 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
         .get("channel")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("channel required"))?;
-    if !matches!(channel, "control" | "output" | "browser") {
+    if !matches!(channel, "control" | "output" | "browser" | "tunnel") {
         bail!("unsupported peer channel");
     }
-    let pool = if channel == "control" {
+    let target = if channel == "tunnel" {
+        Some(crate::tunnel::target(&auth)?)
+    } else {
+        None
+    };
+    let pool = if channel == "tunnel" {
+        &remote.peers.tunnels
+    } else if channel == "control" {
         &remote.peers.controls
     } else {
         &remote.peers.dependents
@@ -341,6 +351,19 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
     drop(handshake_permit);
     let result = {
         let connection = async {
+            // Target establishment is cancellable by the same group/gate/shutdown
+            // select as forwarding. Never acknowledge a failed target connection.
+            let mut target_stream = if let Some(target) = target {
+                match crate::tunnel::connect(target).await {
+                    Ok(socket) => Some(socket),
+                    Err(error) => {
+                        write_json(&mut stream, &json!({"kind":"tunnel_failed", "code":crate::tunnel::failure_code(&error)})).await?;
+                        return Ok(());
+                    }
+                }
+            } else {
+                None
+            };
             write_json(
                 &mut stream,
                 &json!({"kind":"authenticated", "protocol":PROTOCOL_VERSION,
@@ -356,6 +379,10 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
                 }
                 "browser" => {
                     crate::transport::serve_browser(stream, Arc::clone(&service), principal).await
+                }
+                "tunnel" => {
+                    tokio::io::copy_bidirectional(&mut stream, target_stream.as_mut().expect("tunnel target")).await?;
+                    Ok(())
                 }
                 _ => unreachable!(),
             }
