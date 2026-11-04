@@ -37,7 +37,7 @@ fn schema_empty_first_creation_has_no_upgrade_data_to_back_up() {
     drop(Database::open(&path).unwrap());
     assert!(backups(root.path()).is_empty());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "3");
+    assert_eq!(value(&conn, "schema.version"), "4");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
 }
@@ -66,7 +66,43 @@ fn schema_migration_three_creates_review_draft_tables_and_reopens() {
     drop(conn);
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "3");
+    assert_eq!(value(&conn, "schema.version"), "4");
+}
+
+#[test]
+fn schema_migration_four_preserves_legacy_phone_credentials() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("phone-v3.sqlite");
+    drop(Database::open(&path).unwrap());
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE device_pairings; DROP TABLE paired_devices;
+            CREATE TABLE device_pairings (id TEXT PRIMARY KEY, secret_hash BLOB NOT NULL,
+                permission TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                failed_attempts INTEGER NOT NULL DEFAULT 0, consumed_at TEXT);
+            CREATE TABLE paired_devices (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                token_hash BLOB NOT NULL UNIQUE, permission TEXT NOT NULL, created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT);
+            INSERT INTO paired_devices VALUES ('phone','Phone',X'1234','readonly',
+                '2026-11-01T00:00:00Z','2026-11-02T00:00:00Z',NULL,NULL);
+            INSERT INTO device_pairings VALUES ('offer',X'5678','fullcontrol',
+                '2026-11-01T00:00:00Z','2026-11-01T00:05:00Z',0,NULL);
+            UPDATE metadata SET value='3' WHERE key IN ('schema.version','schema.minReader');")
+            .unwrap();
+    }
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(value(&conn, "schema.version"), "4");
+    let device: (String, Vec<u8>, Option<String>) = conn.query_row(
+        "SELECT profile,token_hash,last_address FROM paired_devices WHERE id='phone'", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(device, ("phone".into(), vec![0x12, 0x34], None));
+    let offer: String = conn.query_row("SELECT profile FROM device_pairings WHERE id='offer'", [], |row| row.get(0)).unwrap();
+    assert_eq!(offer, "phone");
+    drop(conn);
+    drop(Database::open(&path).unwrap());
+    assert!(backups(root.path()).is_empty(), "additive migration needs no backup");
 }
 
 #[test]
@@ -90,10 +126,10 @@ fn schema_old_copy_is_backed_up_verified_and_migrated_only_once() {
         "Daily"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "3");
-    assert_eq!(value(&conn, "schema.minReader"), "3");
+    assert_eq!(value(&conn, "schema.version"), "4");
+    assert_eq!(value(&conn, "schema.minReader"), "4");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
-    assert_eq!(history.as_array().unwrap().len(), 3);
+    assert_eq!(history.as_array().unwrap().len(), 4);
     assert_eq!(history[0]["version"], 1);
     assert!(history[0]["appliedAt"].as_str().is_some());
     assert_eq!(history[0]["appVersion"], crate::RUNTIME_VERSION);
@@ -138,7 +174,7 @@ fn schema_unversioned_database_without_presets_upgrades_without_a_backup() {
         "nothing unrecoverable to back up"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "3");
+    assert_eq!(value(&conn, "schema.version"), "4");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
     assert!(conn.prepare("SELECT * FROM usage_facts").is_err());

@@ -1727,6 +1727,9 @@
         "permission": {
           "$ref": "#/definitions/DevicePermission"
         },
+        "profile": {
+          "$ref": "#/definitions/DeviceProfile"
+        },
         "expiresAt": {
           "type": "string"
         },
@@ -1742,6 +1745,7 @@
         "code",
         "qrPayload",
         "permission",
+        "profile",
         "expiresAt",
         "serverUrl",
         "tlsFingerprint"
@@ -1754,6 +1758,14 @@
         "readonly",
         "fullcontrol"
       ]
+    },
+    "DeviceProfile": {
+      "type": "string",
+      "enum": [
+        "phone",
+        "desktop"
+      ],
+      "description": "The trust profile selected by the host when a pairing offer is created."
     },
     "RequestResult<\"device.pairing.cancel\">": {
       "type": "null"
@@ -1776,6 +1788,9 @@
         "permission": {
           "$ref": "#/definitions/DevicePermission"
         },
+        "profile": {
+          "$ref": "#/definitions/DeviceProfile"
+        },
         "createdAt": {
           "type": "string"
         },
@@ -1793,6 +1808,7 @@
         "id",
         "name",
         "permission",
+        "profile",
         "createdAt",
         "expiresAt"
       ],
@@ -3613,6 +3629,18 @@
         },
         "terminalIcons": {
           "$ref": "#/definitions/TerminalIconSettings"
+        },
+        "remoteMachines": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

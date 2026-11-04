@@ -48,7 +48,7 @@ pub struct RuntimeService {
     retry_gate: Mutex<()>,
     settings_apply_gate: Mutex<()>,
     plugin_gate: Mutex<()>,
-    remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
+    pub(crate) remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
     delegations: Arc<crate::delegation::Delegations>,
     chat_queues: Arc<crate::chat_queue::ChatQueues>,
     pub(crate) previews: Arc<crate::preview::Previews>,
@@ -967,12 +967,28 @@ impl RuntimeService {
     }
 
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
+        let providers = Arc::new(Providers::with_plugins(
+            &config.data_dir,
+            &db.settings_value().unwrap_or_else(|_| json!({})),
+        ));
+        Self::with_providers(config, db, providers)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_providers(
+        config: RuntimeConfig,
+        db: Arc<Database>,
+        adapters: Vec<Arc<dyn crate::providers::ProviderAdapter>>,
+    ) -> Self {
+        Self::with_providers(config, db, Arc::new(Providers::for_test(adapters)))
+    }
+
+    fn with_providers(config: RuntimeConfig, db: Arc<Database>, providers: Arc<Providers>) -> Self {
         crate::code_review::forget_provider_options(&db);
         crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
         crate::group_chat::initialize(&db).expect("initialize group chats");
         let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
         let output = Arc::new(OutputStore::default());
-        let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
         crate::group_chat::kick(&db, &providers, &chat_queues);
         let retirement_db = Arc::downgrade(&db);
         providers.set_retirement_projector(Arc::new(move |event| {
@@ -1146,6 +1162,11 @@ impl RuntimeService {
             previews,
             browser_tools,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_provider_events(&self) -> crate::provider_events::Sender {
+        self.providers.test_event_sender()
     }
     #[cfg(test)]
     fn browser_test_tools(db: &Arc<Database>) -> Arc<crate::browser_tools::BrowserTools> {

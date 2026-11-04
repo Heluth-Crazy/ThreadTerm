@@ -1571,6 +1571,11 @@ impl Providers {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_event_sender(&self) -> ProviderEventSender {
+        self.events.clone()
+    }
+
     /// Takes the sole reliable projection receiver. Broadcast subscribers are
     /// observation taps and may lag without affecting this queue.
     pub(crate) fn take_projection_events(&self) -> Option<ProjectionReceiver> {

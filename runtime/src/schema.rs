@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const MAIN_VERSION: u32 = 3;
+pub(crate) const MAIN_VERSION: u32 = 4;
 pub(crate) const LEDGER_VERSION: u32 = 1;
 const HISTORY_LIMIT: usize = 16;
 
@@ -158,7 +158,63 @@ const MAIN_MIGRATIONS: &[Migration] = &[Migration {
         )?;
         Ok(())
     },
-}];
+}, Migration {
+        // Desktop peer credentials are an additive extension of the existing
+        // phone-device tables. Legacy rows remain phone credentials.
+        version: 4,
+        min_reader: 4,
+        destructive: false,
+        needs_backup: |_| Ok(false),
+        apply: |tx| {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS device_pairings (
+                id TEXT PRIMARY KEY,
+                secret_hash BLOB NOT NULL,
+                permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+                profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
+                created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                failed_attempts INTEGER NOT NULL DEFAULT 0, consumed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS paired_devices (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash BLOB NOT NULL UNIQUE,
+                permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+                profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
+                created_at TEXT NOT NULL, expires_at TEXT NOT NULL, last_seen_at TEXT,
+                last_address TEXT, revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS paired_devices_expiry ON paired_devices(expires_at);
+            CREATE INDEX IF NOT EXISTS device_pairings_expiry ON device_pairings(expires_at);",
+            )?;
+            for (table, column, definition) in [
+                (
+                    "device_pairings",
+                    "profile",
+                    "TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop'))",
+                ),
+                (
+                    "paired_devices",
+                    "profile",
+                    "TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop'))",
+                ),
+                ("paired_devices", "last_address", "TEXT"),
+            ] {
+                let mut statement = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+                let exists = statement
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .iter()
+                    .any(|existing| existing == column);
+                if !exists {
+                    tx.execute(
+                        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                        [],
+                    )?;
+                }
+            }
+            Ok(())
+        },
+    },
+];
 
 pub(crate) struct UpgradeBackup {
     path: Option<PathBuf>,

@@ -849,6 +849,9 @@
         "permission": {
           "$ref": "#/definitions/DevicePermission"
         },
+        "profile": {
+          "$ref": "#/definitions/DeviceProfile"
+        },
         "operationId": {
           "type": "string"
         }
@@ -865,6 +868,14 @@
         "readonly",
         "fullcontrol"
       ]
+    },
+    "DeviceProfile": {
+      "type": "string",
+      "enum": [
+        "phone",
+        "desktop"
+      ],
+      "description": "The trust profile selected by the host when a pairing offer is created."
     },
     "RequestParams<\"device.pairing.cancel\">": {
       "type": "object",

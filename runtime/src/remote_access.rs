@@ -1,11 +1,11 @@
-//! Disabled-by-default HTTPS gateway for paired terminal devices.
+//! Disabled-by-default TLS listener for paired phones and desktop peers.
 //!
-//! The gateway owns a separate, closed dispatcher. It never forwards a
-//! caller-supplied method directly to the local control dispatcher.
+//! HTTP retains its closed phone dispatcher. Peer ALPN enters the shared
+//! framed transport through the peer authority guard.
 use crate::{
     config::RuntimeConfig,
     db::Database,
-    devices::{DeviceManager, DevicePermission},
+    devices::{DeviceManager, DevicePermission, DeviceProfile},
     domain::RpcRequest,
     service::RuntimeService,
 };
@@ -92,7 +92,8 @@ struct ListenerState {
 
 pub struct RemoteAccess {
     service: Weak<RuntimeService>,
-    devices: DeviceManager,
+    pub(crate) devices: DeviceManager,
+    pub(crate) peers: crate::peer::ConnectionGroups,
     db: Arc<Database>,
     data_dir: PathBuf,
     // Loaded lazily: the TLS identity is optional and never created while
@@ -118,6 +119,7 @@ impl RemoteAccess {
         let this = Arc::new(Self {
             service,
             devices,
+            peers: crate::peer::ConnectionGroups::default(),
             db,
             data_dir: config.data_dir,
             identity: RwLock::new(None),
@@ -175,8 +177,9 @@ impl RemoteAccess {
                     .url
                     .as_deref()
                     .ok_or_else(|| anyhow!("remote_access_disabled"))?;
-                serde_json::to_value(self.devices.create_pairing(
+                serde_json::to_value(self.devices.create_pairing_with_profile(
                     request.permission,
+                    request.profile,
                     &request.operation_id,
                     server_url,
                     &status.tls_fingerprint,
@@ -218,6 +221,7 @@ impl RemoteAccess {
                     .map_err(|_| anyhow!("remote access gate poisoned"))?;
                 self.devices
                     .revoke(&request.device_id, &request.operation_id)?;
+                self.peers.revoke(&request.device_id, &self.db)?;
                 Value::Null
             }
             _ => return Ok(None),
@@ -279,7 +283,20 @@ impl RemoteAccess {
             .unwrap_or(false)
     }
 
-    fn is_generation_enabled(&self, generation: u64) -> bool {
+    pub(crate) fn runtime(&self) -> Option<Arc<RuntimeService>> {
+        self.service.upgrade()
+    }
+
+    pub(crate) fn peer_enabled(&self, generation: u64) -> bool {
+        self.is_generation_enabled(generation)
+            && self.devices.remote_machines_enabled().unwrap_or(false)
+    }
+
+    pub(crate) fn record_peer_address(&self, device_id: &str, address: &str) -> Result<()> {
+        self.devices.record_peer_address(device_id, address)
+    }
+
+    pub(crate) fn is_generation_enabled(&self, generation: u64) -> bool {
         self.state
             .lock()
             .map(|state| state.enabled && state.generation == generation)
@@ -358,7 +375,12 @@ impl RemoteAccess {
         };
         state.identity_error = None;
         let requested_port = preference.port.unwrap_or(0);
-        let std_listener = match StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, requested_port)) {
+        // Test listeners must never trigger a Windows Firewall prompt.
+        #[cfg(test)]
+        let bind_ip = Ipv4Addr::LOCALHOST;
+        #[cfg(not(test))]
+        let bind_ip = Ipv4Addr::UNSPECIFIED;
+        let std_listener = match StdTcpListener::bind((bind_ip, requested_port)) {
             Ok(listener) => listener,
             Err(error) => {
                 let message = if requested_port == 0 {
@@ -392,33 +414,60 @@ impl RemoteAccess {
         let weak = Arc::downgrade(self);
         let acceptor = TlsAcceptor::from(Arc::clone(&certificate.config));
         let task = tokio::spawn(async move {
+            // Handshakes are short-lived and have their own bound. Once ALPN
+            // is known, HTTP/pairing and peer control/dependents use separate
+            // budgets so long-lived data streams cannot consume their slots.
+            let handshakes = Arc::new(Semaphore::new(MAX_CONNECTIONS));
             let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
             let mut tasks = JoinSet::new();
             let mut listener_error = None;
+            let mut cleanup = tokio::time::interval(Duration::from_secs(60));
             loop {
                 let accepted = tokio::select! {
                     _ = &mut cancelled => break,
                     accepted = listener.accept() => accepted,
                     _ = tasks.join_next(), if !tasks.is_empty() => continue,
+                    _ = cleanup.tick() => {
+                        if let Some(remote) = weak.upgrade() {
+                            let _ = remote.devices.cleanup_expired_desktops();
+                        }
+                        continue;
+                    }
                 };
-                let (stream, _peer) = match accepted {
+                let (stream, peer) = match accepted {
                     Ok(value) => value,
                     Err(error) => {
                         listener_error = Some(format!("Remote HTTPS listener stopped: {error}"));
                         break;
                     }
                 };
-                let Ok(permit) = Arc::clone(&connections).try_acquire_owned() else {
+                let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else {
                     drop(stream);
                     continue;
                 };
                 let acceptor = acceptor.clone();
                 let connection_weak = weak.clone();
+                let connections = Arc::clone(&connections);
                 tasks.spawn(async move {
-                    let _permit = permit;
                     let Ok(Ok(tls)) = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await else {
                         return;
                     };
+                    drop(permit);
+                    if tls.get_ref().1.alpn_protocol() == Some(crate::peer::ALPN) {
+                        // Peer streams idle for hours; a client that slept or lost its
+                        // network must not keep holding its slot and group.
+                        let _ = socket2::SockRef::from(tls.get_ref().0).set_tcp_keepalive(
+                            &socket2::TcpKeepalive::new()
+                                .with_time(Duration::from_secs(30))
+                                .with_interval(Duration::from_secs(10)),
+                        );
+                        #[cfg(windows)]
+                        if let Some(remote) = connection_weak.upgrade() {
+                            let _ = crate::peer::accept(tls, remote, generation, peer).await;
+                        }
+                        return;
+                    }
+                    let Ok(_permit) = connections.try_acquire_owned() else { return };
                     let request_weak = connection_weak.clone();
                     let service = service_fn(move |request| {
                         let weak = request_weak.clone();
@@ -818,6 +867,8 @@ struct OperationOnly {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreatePairing {
+    #[serde(default)]
+    profile: DeviceProfile,
     permission: DevicePermission,
     operation_id: String,
 }
@@ -1089,10 +1140,11 @@ fn load_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
     let key = rustls_pemfile::private_key(&mut key_reader)
         .with_context(|| format!("reading {}", key_path.display()))?
         .ok_or_else(|| anyhow!("remote TLS private key is empty"))?;
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certificates, key)
         .context("loading remote TLS identity")?;
+    config.alpn_protocols = vec![crate::peer::ALPN.to_vec(), b"http/1.1".to_vec()];
     Ok(CertificateMaterial {
         config: Arc::new(config),
         fingerprint,
@@ -1443,6 +1495,7 @@ mod tests {
         Arc::new(RemoteAccess {
             service: Weak::new(),
             devices: DeviceManager::new(Arc::clone(&db)).unwrap(),
+            peers: crate::peer::ConnectionGroups::default(),
             db,
             data_dir: data_dir.to_owned(),
             identity: RwLock::new(Some(Arc::new(
@@ -1737,7 +1790,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn occupied_persisted_port_disables_remote_without_failing_runtime() {
         let directory = tempdir().unwrap();
-        let occupied = StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let occupied = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = occupied.local_addr().unwrap().port();
         let config = RuntimeConfig {
             data_dir: directory.path().to_owned(),

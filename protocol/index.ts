@@ -6,8 +6,8 @@ export interface BrowserEvalApprovalRead {
  tabId:string; origin:string; expiresAtUnixMs:number; settingsGeneration:string; status:'pending';
 }
 export const PROTOCOL_VERSION = 1 as const;
-/** Semantic contract includes Chat Code Review RPCs and session-backed subagent transcripts. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 18 as const;
+/** Semantic contract includes remote-machine peer handshakes and device profiles. Framing/HMAC still use PROTOCOL_VERSION. */
+export const PROTOCOL_CONTRACT = 19 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Largest answer the runtime writes for one request. A bigger answer is a typed
  * `response_too_large` error for that request; the connection stays open. */
@@ -211,7 +211,7 @@ export interface TerminalIconRule { id:string; match:string; /** A built-in mark
 /** A user's icon: only ever drawn as an <img> data URL (png, svg+xml, webp, jpeg or gif), at most about 64 KB. */
 export interface TerminalIconImage { id:string; name:string; src:string }
 export interface TerminalIconSettings { rules:TerminalIconRule[]; images:TerminalIconImage[] }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; [key:string]:unknown }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export type ExternalFileSource = 'dialog'|'drop'|'link'|'recent';
@@ -437,9 +437,19 @@ export interface ChatApprovalData {
 }
 export interface RuntimeError { code:string; message:string; details?:unknown }
 export type DevicePermission = 'readonly'|'fullcontrol';
+/** The trust profile selected by the host when a pairing offer is created. */
+export type DeviceProfile = 'phone'|'desktop';
 export interface RemoteAccessStatus { enabled:boolean; url?:string; port?:number; tlsFingerprint:string; error?:string; identityError?:string }
-export interface PairingOffer { id:string; code:string; qrPayload:string; permission:DevicePermission; expiresAt:string; serverUrl:string; tlsFingerprint:string }
-export interface PairedDevice { id:string; name:string; permission:DevicePermission; createdAt:string; expiresAt:string; lastSeenAt?:string; revokedAt?:string }
+export interface PairingOffer { id:string; code:string; qrPayload:string; permission:DevicePermission; profile:DeviceProfile; expiresAt:string; serverUrl:string; tlsFingerprint:string }
+export interface PairedDevice { id:string; name:string; permission:DevicePermission; profile:DeviceProfile; createdAt:string; expiresAt:string; lastSeenAt?:string; revokedAt?:string }
+/** Raw-TLS peer channels; `tunnel` is reserved for a later slice. */
+export type PeerChannel = 'control'|'output'|'browser'|'tunnel';
+export interface PeerChallenge { kind:'challenge'; protocol:1; contract:number; nonce:string; version:string }
+export interface PeerAuth { kind:'auth'; protocol:number; contract:number; nonce:string; channel:PeerChannel; clientId:string; credential:string; epoch:string|null; port?:number; loopback?:'127.0.0.1'|'::1' }
+export interface PeerAuthenticated { kind:'authenticated'; protocol:1; contract:number; principal:string; epoch:string; version?:string }
+/** `protocol`/`contract`/`version` are the sender's values; received fields name the rejected peer values. */
+export interface PeerIncompatible { kind:'incompatible'; code:'protocol_incompatible'; protocol:1; contract:number; version:string; receivedProtocol?:number; receivedContract?:number; receivedVersion?:string }
+export type PeerHandshakeFrame = PeerChallenge|PeerAuth|PeerAuthenticated|PeerIncompatible;
 export interface DataRelocationStatus { frozen:boolean; sourceRoot:string; targetRoot?:string }
 export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; activationToken:string; includes?:string[] }
 export interface RuntimeEvent<E extends string=string,D=unknown> { v:1; event:E; epoch:string; seq:number; data:D }
@@ -840,7 +850,7 @@ export interface RequestMap {
  'device.enable': [{operationId:string},RemoteAccessStatus];
  'device.disable': [{operationId:string},RemoteAccessStatus];
  'device.identity.reset': [{operationId:string},RemoteAccessStatus];
- 'device.pairing.create': [{permission:DevicePermission;operationId:string},PairingOffer];
+ 'device.pairing.create': [{permission:DevicePermission;profile?:DeviceProfile;operationId:string},PairingOffer];
  'device.pairing.cancel': [{pairingId:string;operationId:string},null];
  'device.list': [{},PairedDevice[]];
  'device.rename': [{deviceId:string;name:string;operationId:string},PairedDevice];
@@ -1326,6 +1336,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='filesystem.external.open'&&params.sessionId!==undefined&&(typeof params.sessionId!=='string'||params.sessionId==='')) throw new Error('Invalid sessionId');
  if(m==='device.pairing.create'&&!['readonly','fullcontrol'].includes(String(params.permission))) throw new Error('Invalid device permission');
+ if(m==='device.pairing.create'&&params.profile!==undefined&&!['phone','desktop'].includes(String(params.profile))) throw new Error('Invalid device profile');
  if(m==='catalog.visibility.update') {
   if(!['project','worktree','session'].includes(String(params.kind))) throw new Error('Invalid catalog kind');
   if(!['active','archived','removed'].includes(String(params.visibility))) throw new Error('Invalid catalog visibility');

@@ -80,6 +80,8 @@ impl BootstrapGate {
             "--exact",
             "bootstrap::tests::bootstrap_helper",
             "--nocapture",
+            // Keep libtest progress prefixes out of the child's PTY output.
+            "--quiet",
         ]);
         command.cwd(cwd);
         command.env(GATE_ENV, &self.name);
@@ -113,6 +115,8 @@ impl BootstrapGate {
             "--exact",
             "bootstrap::tests::bootstrap_helper",
             "--nocapture",
+            // A single-threaded harness otherwise prefixes the first provider JSON line.
+            "--quiet",
         ]);
         command.current_dir(cwd).env(GATE_ENV, &self.name).env(
             COMMAND_ENV,
