@@ -388,9 +388,11 @@ if (!fast) {
   if (!cargo) fail('cargo is required for the full gate; install Rust (rustup) or run npm run check:fast');
   if (!workingTree) notes.push('rust tests always run on the working tree of runtime/');
   for (const note of notes) console.log(`     ${note}`);
-  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', '2', '--', '--test-threads=2'];
+  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${process.env.RUST_TEST_THREADS || '2'}`];
   for (const skip of skips) rustArgs.push('--skip', skip);
-  run('rust tests', repo, cargo, rustArgs, 3600000, rustEnv);
+  // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
+  // The explicit --test-threads argument above still enforces the caller's concurrency limit.
+  run('rust tests', repo, cargo, rustArgs, 3600000, { ...rustEnv, RUST_TEST_THREADS: undefined });
 }
 
 // --- summary ------------------------------------------------------------------------------------------------------

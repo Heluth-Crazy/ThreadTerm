@@ -26,6 +26,8 @@ import { sameCommentVersion, type CommentVersion } from "../reviewComments";
 import { GitMergeControls } from "./GitMergeControls";
 import { SurfaceDialog } from "./SurfaceDialog";
 import { FilePreview } from "./FilePreview";
+import { LargeFileView } from "./LargeFileView";
+import { isLargeFileError } from "../largeFileWindow";
 import "./file-workspace.css";
 import "./file-bar.css";
 import { FileBarActions, FileBreadcrumb } from "./FileBarActions";
@@ -159,6 +161,7 @@ function FileWorkspaceInstance({
   const gitWorkbenchHost=useRef(crypto.randomUUID());
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [document, setDocument] = useState<FileDocument>();
+  const [largeFile, setLargeFile] = useState<{ path: string; externalId?: string; key: number }>();
   const [image, setImage] = useState<{ mime: string; data: string }>();
   const [text, setText] = useState("");
   const [resolvedNotice, setResolvedNotice] = useState<string>();
@@ -379,6 +382,7 @@ function FileWorkspaceInstance({
     ignoreDraft = false,
   ) {
     const ticket = ++generation.current;
+    let resolvedExternalId = externalId;
     const source = loaded.current;
     const changingFile = Boolean(source && source.path !== path);
     setFileNavigation(changingFile);
@@ -386,6 +390,7 @@ function FileWorkspaceInstance({
     const canApply = () => !changingFile || (loaded.current === source && currentText.current === source?.content);
     try {
       const externalRead = async (id: string, registeredPath: string, image: boolean, recovered = false): Promise<FileDocument | { mime: string; data: string }> => {
+        resolvedExternalId = id;
         try {
           const value = image
             ? await request("filesystem.external.image", { id })
@@ -428,6 +433,7 @@ function FileWorkspaceInstance({
         };
         loaded.current = imageDocument;
         base.current = "image";
+        setLargeFile(undefined);
         setDocument(imageDocument);
         setImage(asset);
         setText("");
@@ -450,6 +456,7 @@ function FileWorkspaceInstance({
       const saved = ignoreDraft || value.diffOnly ? undefined : drafts.current.get(path);
       loaded.current = value;
       base.current = saved?.baseFingerprint ?? value.fingerprint;
+      setLargeFile(undefined);
       setDocument(value);
       setImage(undefined);
       setText(saved?.content ?? value.content);
@@ -473,7 +480,28 @@ function FileWorkspaceInstance({
       return true;
     } catch (error) {
       if (mounted.current && ticket === generation.current) {
+        if (canApply() && isLargeFileError(error)) {
+          // Partial contents never enter FileDocument, drafts, CodeMirror, diff or blame.
+          loaded.current = undefined;
+          base.current = "";
+          currentText.current = "";
+          setText("");
+          setDocument(undefined);
+          setImage(undefined);
+          setDiff(undefined);
+          setGitBaseText(null);
+          gutterBase.current = undefined;
+          setBlame(undefined);
+          setBlameOn(false);
+          setView("file");
+          setLargeFile({ path: externalPath.current ?? path, externalId: resolvedExternalId, key: ticket });
+          setOpenPaths(paths => paths.includes(path) ? paths : [...paths, path]);
+          setIssue(undefined);
+          onDocumentChange?.({ path, dirty: false });
+          return true;
+        }
         if (external) { setDocument(undefined); setImage(undefined); }
+        setLargeFile(undefined);
         setIssue(external ? { externalError: error } : message(error));
       }
       return false;
@@ -539,7 +567,7 @@ function FileWorkspaceInstance({
       setInternalView(controlledView);
   }, [controlledView, internalView]);
   useEffect(() => {
-    if (!initialPath || initialPath === document?.path) return;
+    if (!initialPath || initialPath === (document?.path ?? largeFile?.path)) return;
     if (dirty) {
       setPending({ path: initialPath, view });
       return;
@@ -730,7 +758,7 @@ function FileWorkspaceInstance({
     void open(path, nextView);
   };
   const closeOpenTabs = (kind: "current" | "others" | "all") => {
-    const active = document?.path;
+    const active = document?.path ?? largeFile?.path;
     const remaining =
       kind === "all"
         ? []
@@ -745,6 +773,7 @@ function FileWorkspaceInstance({
     }
     if (kind === "all" || kind === "current") {
       loaded.current = undefined;
+      setLargeFile(undefined);
       setDocument(undefined);
       setImage(undefined);
       setText("");
@@ -752,7 +781,7 @@ function FileWorkspaceInstance({
     }
   };
   const requestClose = (kind: "current" | "others" | "all") => {
-    if (!document || (kind === "others" && openPaths.length < 2)) return;
+    if ((!document && !largeFile) || (kind === "others" && openPaths.length < 2)) return;
     if (dirty) {
       setPending({ view, close: kind });
       return;
@@ -848,12 +877,14 @@ function FileWorkspaceInstance({
       setOpenPaths((paths) =>
         paths.map((path) => (coveredBy(path, from) ? to + path.slice(from.length) : path)),
       );
-      if (document && coveredBy(document.path, from))
-        void open(to + document.path.slice(from.length), view === "preview" ? "file" : view, true);
+      const path = document?.path ?? largeFile?.path;
+      if (path && coveredBy(path, from))
+        void open(to + path.slice(from.length), largeFile ? "file" : view === "preview" ? "file" : view, true);
     },
     deleted: (path) => {
       setOpenPaths((paths) => paths.filter((candidate) => !coveredBy(candidate, path)));
-      if (document && coveredBy(document.path, path)) closeOpenTabs("current");
+      const activePath = document?.path ?? largeFile?.path;
+      if (activePath && coveredBy(activePath, path)) closeOpenTabs("current");
     },
   };
   // Index text for the editor's change gutter (null when untracked or not a repository).
@@ -969,7 +1000,7 @@ function FileWorkspaceInstance({
   const activePreviewFile = previewNavigation?.files.find(
     (file) => file.id === previewNavigation.activeId,
   );
-  const embeddedPath = document?.path ?? activePreviewFile?.path ?? initialPath;
+  const embeddedPath = document?.path ?? largeFile?.path ?? activePreviewFile?.path ?? initialPath;
   const previewLabel = (file: { id: string; path: string; kind: View }) =>
     `${file.path.split(/[\\/]/).join(" › ")}${
       file.kind === "diff" ? ` · ${copy.diff}` : file.kind === "preview" ? ` · ${copy.preview}` : ""
@@ -1104,7 +1135,29 @@ function FileWorkspaceInstance({
         </aside>
       )}
       <div className="editor-area">
-        {document ? (
+        {largeFile ? (
+          <>
+            <div className="tt-editor-tabs file-view-tabs file-workspace-bar">
+              {external ? <ExternalFileBoundary path={largeFile.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen(value => !value)} onCopy={() => void navigator.clipboard.writeText(largeFile.path)} onReload={() => void open(largeFile.path, "file", true)} /> : embedded && previewNavigation ? embeddedNavigation() : <FileBreadcrumb path={largeFile.path} />}
+              {!embedded && !external && openPaths.length > 1 && <Select className="embedded-file-navigation" value={largeFile.path} aria-label={zh ? "切换文件预览" : "Switch file preview"} onChange={event => choose(event.target.value, "file")}>{openPaths.map(path => <option key={path} value={path}>{path}</option>)}</Select>}
+              {!external && <span className="ws-chip">{copy.readOnly}</span>}
+              <span className="grow" />
+              <FileBarActions zh={zh} items={[
+                { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(largeFile.path) },
+                { id: 'file-reload', label: copy.reload, onSelect: () => open(largeFile.path, 'file', true) },
+                ...(!embedded ? [
+                  ...(!external ? [{ id: 'file-tools', label: zh ? '文件与 Git' : 'Files & Git', onSelect: () => setToolsOpen(value => !value) }] : []),
+                  { id: 'file-close', label: zh ? '关闭当前' : 'Close current', onSelect: () => requestClose('current') },
+                  ...(openPaths.length > 1 ? [{ id: 'file-close-others', label: zh ? '关闭其他' : 'Close others', onSelect: () => requestClose('others') }] : []),
+                  { id: 'file-close-all', label: zh ? '关闭全部文件' : 'Close all files', onSelect: () => requestClose('all') },
+                ] : []),
+              ]} />
+              {embeddedClose()}
+            </div>
+            <LargeFileView key={largeFile.key} {...scope} path={largeFile.path} externalId={largeFile.externalId} zh={zh} active={active}
+              onReload={() => void open(largeFile.path, "file", true)} />
+          </>
+        ) : document ? (
           <>
             {view !== "diff" && (
               <div className={`tt-editor-tabs file-view-tabs file-workspace-bar${external ? " external-file-toolbar" : ""}`}>
