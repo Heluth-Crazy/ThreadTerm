@@ -33,6 +33,7 @@ lines.on('line', (line) => {
   record(method, params);
   if (method === 'initialize') return result(id, { capabilities: {} });
   if (method === 'thread/start' || method === 'thread/resume' || method === 'thread/read') return result(id, threadResponse());
+  if (method === 'thread/inject_items') return result(id, {});
   if (method === 'model/list') return result(id, { data: [
     { id: 'qa-model-a', displayName: 'QA Model A', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
     { id: 'qa-model-b', displayName: 'QA Model B', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
