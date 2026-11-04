@@ -1367,3 +1367,55 @@ async fn tunnel_saturation_preserves_all_other_peer_channels_and_phone_alpn() {
     assert!(!String::from_utf8_lossy(&bytes).contains("authenticated"));
     assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tailscale_policy_drains_peer_and_phone_and_reports_live_membership() {
+    let fixture = Fixture::new();
+    let (status, paired) = fixture.desktop().await;
+    let port = status["port"].as_u64().unwrap() as u16;
+    let device = paired["device"]["id"].as_str().unwrap();
+    assert_eq!(fixture.rpc("device.list", json!({}))[0]["connected"], false);
+    let (mut control, _) = peer(fixture.root.path(), port, paired["token"].as_str().unwrap(), "control", &uuid::Uuid::new_v4().to_string(), Value::Null).await;
+    assert_eq!(fixture.rpc("device.list", json!({}))[0]["connected"], true);
+    let denied = control_rpc(&mut control, "policy-denied", "device.tailscaleOnly.set", json!({"enabled":true,"operationId":"peer-policy"})).await;
+    assert_eq!(denied["error"]["code"], "peer_forbidden");
+    // An idle HTTP/phone TLS connection is also owned by the same listener.
+    let mut phone = tls(fixture.root.path(), port, b"http/1.1").await;
+    phone.write_all(b"POST /v1/rpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") { header.push(phone.read_u8().await.unwrap()); }
+    let started = std::time::Instant::now();
+    let enabled = fixture.rpc("device.tailscaleOnly.set", json!({"enabled":true,"operationId":"local-policy"}));
+    assert_eq!(enabled["tailscaleOnly"], true);
+    assert_closed(&mut control).await;
+    assert_closed(&mut phone).await;
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(!fixture.service.remote.get().unwrap().peers.connected(device));
+    let mut refused = TcpStream::connect(("127.0.0.1",port)).await.unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(2), refused.read_u8()).await.unwrap().is_err());
+    fixture.rpc("device.tailscaleOnly.set", json!({"enabled":false,"operationId":"local-policy-off"}));
+    let (mut again, auth) = peer(fixture.root.path(), port, paired["token"].as_str().unwrap(), "control", &uuid::Uuid::new_v4().to_string(), Value::Null).await;
+    assert_eq!(auth["kind"], "authenticated");
+    drop(again.shutdown().await);
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn debug_contract_override_is_advertised_before_authentication() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { std::env::remove_var("THREADTERM_QA_PEER_CONTRACT"); } }
+    std::env::remove_var("THREADTERM_QA_PEER_CONTRACT");
+    assert_eq!(crate::peer::advertised_contract(), PROTOCOL_CONTRACT);
+    let fixture = Fixture::new();
+    let status = fixture.enable();
+    std::env::set_var("THREADTERM_QA_PEER_CONTRACT", "987");
+    let _reset = Reset;
+    assert_eq!(crate::peer::advertised_contract(), 987);
+    let mut stream = tls(fixture.root.path(), status["port"].as_u64().unwrap() as u16, crate::peer::ALPN).await;
+    let challenge = read_frame(&mut stream).await;
+    assert_eq!(challenge["contract"], 987);
+    write_frame(&mut stream, &json!({"kind":"auth","protocol":1,"contract":PROTOCOL_CONTRACT})).await;
+    let incompatible = read_frame(&mut stream).await;
+    assert_eq!(incompatible["kind"], "incompatible");
+    assert_eq!(incompatible["contract"], 987);
+}

@@ -5,6 +5,7 @@ import type { DevicePermission, PairedDevice, PairingOffer, RemoteAccessStatus }
 import { operationId, request, subscribeEvents } from "../bridge";
 import type { Locale } from "../i18n";
 import { SurfaceDialog } from "./SurfaceDialog";
+import { TailscaleOnlySetting } from "./TailscaleOnlySetting";
 import { SettingsSwitch } from "./SettingsControls";
 import { RemoteIdentityRecovery } from "./RemoteIdentityRecovery";
 import { useVisibleTicker } from "../visibleTicker";
@@ -83,6 +84,7 @@ export function DeviceSettings({ language, active = true }: Props) {
   return <section className="device-settings" aria-label={text("桌面移动连接", "Desktop mobile access")}>
     <h3>{text("桌面移动连接", "Desktop mobile access")}</h3>
     <SettingsSwitch checked={status?.enabled ?? false} disabled={busy || !status} onChange={setEnabled}>{text("启用移动访问", "Enable mobile access")}</SettingsSwitch>
+    <TailscaleOnlySetting zh={zh} active={active} />
     {!status && !issue && <p role="status">{text("正在加载连接状态…", "Loading connection status…")}</p>}
     <p className="pair-code">{status?.enabled ? offer ? <>{text("配对码", "Pairing code")}: <strong>{offer.code}</strong> · {pairingActive ? `${text("到期时间", "Expires at")} ${time(offer.expiresAt, language)}` : text("已过期", "Expired")} <button className="btn btn-sm" disabled={busy} onClick={() => run(() => replacePairing())}>{text("续期", "Renew")}</button> <button className="btn btn-sm btn-danger" disabled={busy || !pairingActive} onClick={expirePairing}>{text("立即使配对码过期", "Expire pairing code")}</button></> : <button className="btn btn-sm" disabled={busy} onClick={() => run(() => replacePairing())}>{text("创建 5 分钟配对码", "Create a 5-minute pairing code")}</button> : text("启用后生成二维码和短期配对码。", "Enable access to generate a QR code and short-lived pairing code.")}</p>
     {status?.enabled && <>

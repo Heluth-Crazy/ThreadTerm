@@ -4,6 +4,7 @@ import type { PairedDevice, PairingOffer, Settings } from '@threadterm/protocol'
 import { operationId, request, subscribeEvents } from '../bridge';
 import { devicesForProfile, machineBridge, useMachines } from '../machines';
 import { machineStateLabel } from './MachineRows';
+import { TailscaleOnlySetting } from './TailscaleOnlySetting';
 import { SettingsSwitch } from './SettingsControls';
 import { useVisibleTicker } from '../visibleTicker';
 
@@ -39,6 +40,7 @@ export function MachineSettings({ settings, zh, update }: { settings: Settings; 
     <SettingsSwitch checked={enabled} disabled={busy} onChange={value => run(() => update({ remoteMachines: { enabled: value } }))}>{label('Enable Computers preview', '启用电脑连接预览')}</SettingsSwitch>
     {!enabled && <p className="hint">{label('Use this PC from another ThreadTerm computer, or use another computer from here.', '让另一台装有 ThreadTerm 的电脑使用本机，或从这里使用另一台电脑。')}</p>}
     {enabled && <>
+      <TailscaleOnlySetting zh={zh} />
       <h4>{label('Add another computer', '让另一台电脑连接')}</h4>
       <p className="hint">{label('A paired computer can use everything on this PC, as you. Share this offer only with a computer you trust.', '已配对电脑可以以你的身份使用本机的全部功能。请仅向你信任的电脑分享此配对信息。')}</p>
       <button type="button" className="btn" disabled={busy} onClick={() => run(async () => {

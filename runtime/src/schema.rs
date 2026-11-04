@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const MAIN_VERSION: u32 = 4;
+pub(crate) const MAIN_VERSION: u32 = 5;
 pub(crate) const LEDGER_VERSION: u32 = 1;
 const HISTORY_LIMIT: usize = 16;
 
@@ -210,6 +210,22 @@ const MAIN_MIGRATIONS: &[Migration] = &[Migration {
                         [],
                     )?;
                 }
+            }
+            Ok(())
+        },
+    }, Migration {
+        version: 5,
+        min_reader: 5,
+        destructive: false,
+        needs_backup: |_| Ok(false),
+        apply: |tx| {
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS remote_access_state (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), enabled INTEGER NOT NULL,
+                port INTEGER, last_error TEXT);")?;
+            let mut statement = tx.prepare("PRAGMA table_info(remote_access_state)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            if !columns.iter().any(|column| column == "tailscale_only") {
+                tx.execute_batch("ALTER TABLE remote_access_state ADD COLUMN tailscale_only INTEGER NOT NULL DEFAULT 0 CHECK(tailscale_only IN (0,1));")?;
             }
             Ok(())
         },

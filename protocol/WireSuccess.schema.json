@@ -1678,6 +1678,9 @@
         "enabled": {
           "type": "boolean"
         },
+        "tailscaleOnly": {
+          "type": "boolean"
+        },
         "url": {
           "type": "string"
         },
@@ -1696,11 +1699,15 @@
       },
       "required": [
         "enabled",
+        "tailscaleOnly",
         "tlsFingerprint"
       ],
       "additionalProperties": false
     },
     "RequestResult<\"device.enable\">": {
+      "$ref": "#/definitions/RemoteAccessStatus"
+    },
+    "RequestResult<\"device.tailscaleOnly.set\">": {
       "$ref": "#/definitions/RemoteAccessStatus"
     },
     "RequestResult<\"device.disable\">": {
@@ -1779,6 +1786,9 @@
     "PairedDevice": {
       "type": "object",
       "properties": {
+        "connected": {
+          "type": "boolean"
+        },
         "id": {
           "type": "string"
         },
@@ -11198,6 +11208,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22device.enable%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.tailscaleOnly.set"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22device.tailscaleOnly.set%22%3E"
         }
       },
       "required": [

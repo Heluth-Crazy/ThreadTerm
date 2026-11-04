@@ -240,3 +240,31 @@ test('watch profile opens only control, refuses output/browser/leases and reconn
     assert.notEqual(f.auth[0].clientId, f.auth[1].clientId);
   } finally { t.mock.timers.reset(); await f.close(); }
 });
+
+test('pairing a changed identity replaces only the matched stale address and preserves its presentation', () => {
+  const path = join(scratch,'repair-machines.json'), registry = new MachineRegistry(path,secureStorage);
+  const original = registry.add({name:'My office',color:'#123456',endpoint:'https://127.0.0.1:1234',pin},'old-secret');
+  const other = registry.add({name:'Other',color:'#654321',endpoint:'https://127.0.0.1:4321',pin},'other-secret');
+  const repaired = registry.add({name:'New offer name',color:'#ffffff',endpoint:'https://127.0.0.1:1234/',pin:'AB'.repeat(32)},'new-secret',new Set([original.id]));
+  assert.equal(repaired.id,original.id); assert.equal(repaired.name,'My office'); assert.equal(repaired.color,'#123456');
+  assert.equal(registry.list().length,3); assert.equal(registry.profile(original.id).pin,'AB'.repeat(32)); assert.equal(registry.profile(original.id).credential(),'new-secret');
+  assert.equal(registry.profile(other.id).credential(),'other-secret');
+  const added = registry.add({name:'Ordinary',color:'#ffffff',endpoint:'https://127.0.0.1:1234',pin},'ordinary-secret');
+  assert.notEqual(added.id,original.id); assert.equal(registry.list().length,4);
+  assert.equal(new MachineRegistry(path,secureStorage).profile(original.id).credential(),'new-secret');
+});
+
+test('version mismatch stops retries until explicit selection requests one new attempt; pin mismatch remains fenced', async () => {
+  const client = new RuntimeClient({profile:{kind:'peer',endpoint:'https://127.0.0.1:1234',pin:'AB'.repeat(32),credential:()=> 'secret'}});
+  const internal = client as unknown as { connectAndAuthenticate(): Promise<void>; incompatible?: Error; connecting?: Promise<void> };
+  let attempts = 0;
+  internal.connectAndAuthenticate = async () => { attempts++; throw new PeerTransportError('incompatible','Version mismatch'); };
+  try {
+    await assert.rejects(client.request('runtime.health',{}), /Version mismatch/);
+    await new Promise(done=>setTimeout(done,450)); assert.equal(attempts,1);
+    client.retryPeerConnection(); client.retryPeerConnection();
+    await new Promise(done=>setTimeout(done,450)); assert.equal(attempts,2);
+    internal.incompatible = new PeerTransportError('pin-mismatch','Pair again');
+    client.retryPeerConnection(); await new Promise(done=>setTimeout(done,50)); assert.equal(attempts,2);
+  } finally { client.dispose(); }
+});

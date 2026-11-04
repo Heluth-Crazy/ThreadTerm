@@ -58,6 +58,7 @@ const LISTENER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAccessStatus {
+    pub tailscale_only: bool,
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -70,6 +71,24 @@ pub struct RemoteAccessStatus {
     // is unusable; Devices settings offers an explicit reset for that case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity_error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TailscaleOnly { enabled: bool, operation_id: String }
+
+fn source_allowed(address: IpAddr, tailscale_only: bool) -> bool {
+    if !tailscale_only { return true; }
+    match address {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 100 && (64..=127).contains(&octets[1])
+        }
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(ip) => source_allowed(IpAddr::V4(ip), true),
+            None => ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        },
+    }
 }
 
 struct CertificateMaterial {
@@ -154,6 +173,22 @@ impl RemoteAccess {
                 }
                 serde_json::to_value(self.status()?)?
             }
+            "device.tailscaleOnly.set" => {
+                let request: TailscaleOnly = parse(params)?;
+                if !self.devices.operation_completed(&request.operation_id)? {
+                    let preference = self.devices.remote_access_preference()?;
+                    if preference.tailscale_only != request.enabled {
+                        // One listener owns every phone and peer socket. Drain it
+                        // completely before applying the new admission policy.
+                        self.stop_listener_inner(None)?;
+                        self.devices.set_tailscale_only(request.enabled, &request.operation_id)?;
+                        if preference.enabled { self.start_listener()?; }
+                    } else {
+                        self.devices.complete_marker(&request.operation_id, "device.tailscaleOnly.set")?;
+                    }
+                }
+                serde_json::to_value(self.status()?)?
+            }
             "device.disable" => {
                 let request: OperationOnly = parse(params)?;
                 if !self.devices.operation_completed(&request.operation_id)? {
@@ -193,7 +228,13 @@ impl RemoteAccess {
             }
             "device.list" => {
                 parse::<Empty>(params)?;
-                serde_json::to_value(self.devices.list()?)?
+                let mut devices = self.devices.list()?;
+                for device in &mut devices {
+                    if device.profile == DeviceProfile::Desktop {
+                        device.connected = Some(self.peers.connected(&device.id));
+                    }
+                }
+                serde_json::to_value(devices)?
             }
             "device.rename" => {
                 let request: RenameDevice = parse(params)?;
@@ -236,6 +277,7 @@ impl RemoteAccess {
             .map_err(|_| anyhow!("remote access state lock poisoned"))?;
         Ok(RemoteAccessStatus {
             enabled: state.enabled,
+            tailscale_only: self.devices.remote_access_preference()?.tailscale_only,
             url: state.url.clone(),
             port: state.port,
             tls_fingerprint: self.fingerprint(),
@@ -418,6 +460,7 @@ impl RemoteAccess {
         state.generation = state.generation.wrapping_add(1);
         let generation = state.generation;
         let weak = Arc::downgrade(self);
+        let tailscale_only = preference.tailscale_only;
         let acceptor = TlsAcceptor::from(Arc::clone(&certificate.config));
         let task = tokio::spawn(async move {
             // Handshakes are short-lived and have their own bound. Once ALPN
@@ -447,6 +490,10 @@ impl RemoteAccess {
                         break;
                     }
                 };
+                if !source_allowed(peer.ip(), tailscale_only) {
+                    drop(stream);
+                    continue;
+                }
                 let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else {
                     drop(stream);
                     continue;
@@ -1414,6 +1461,7 @@ mod tests {
             "group.archive",
             "history.list",
             "device.identity.reset",
+            "device.tailscaleOnly.set",
             "device.list",
             "device.pairing.cancel",
             "device.rename",
@@ -2113,5 +2161,41 @@ mod tests {
         let status = response.status().as_u16();
         let body = response.json().await.unwrap();
         (status, body)
+    }
+}
+
+#[cfg(test)]
+mod hosting_tests {
+    use super::*;
+    #[test]
+    fn source_policy_covers_boundaries_mapped_ipv6_and_loopback() {
+        for (address, allowed) in [
+            ("100.64.0.0",true),("100.127.255.255",true),("100.63.255.255",false),("100.128.0.0",false),
+            ("fd7a:115c:a1e0::",true),("fd7a:115c:a1e0:ffff::1",true),("fd7a:115c:a1df::1",false),("fd7a:115c:a1e1::1",false),
+            ("::ffff:100.64.0.1",true),("::ffff:100.127.255.255",true),("::ffff:100.128.0.0",false),
+            ("127.0.0.1",false),("::1",false),("::ffff:127.0.0.1",false),("192.168.1.1",false),("8.8.8.8",false),
+        ] {
+            let ip = address.parse().unwrap();
+            assert_eq!(source_allowed(ip,true),allowed,"{address}");
+            assert!(source_allowed(ip,false),"disabled: {address}");
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn policy_status_persists_while_disabled_and_on_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite3")).unwrap());
+        let config = RuntimeConfig {
+            data_dir: root.path().into(), database_path: root.path().join("runtime.sqlite3"),
+            credential_path: root.path().join("runtime.credential"), pipe_base: r"\\.\pipe\hosting-test".into(),
+        };
+        let remote = RemoteAccess::new(Weak::new(), Arc::clone(&db), config.clone()).unwrap();
+        assert!(!remote.status().unwrap().tailscale_only);
+        let params = json!({"enabled":true,"operationId":"persist-policy"});
+        assert_eq!(remote.dispatch("device.tailscaleOnly.set", &params).unwrap().unwrap()["tailscaleOnly"],true);
+        remote.dispatch("device.tailscaleOnly.set", &params).unwrap();
+        drop(remote);
+        let reopened = RemoteAccess::new(Weak::new(), db, config).unwrap();
+        assert!(reopened.status().unwrap().tailscale_only);
+        assert!(!reopened.status().unwrap().enabled);
     }
 }

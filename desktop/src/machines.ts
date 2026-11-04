@@ -33,10 +33,12 @@ export class MachineRegistry {
   assertEncryptionAvailable(): void {
     if (!this.storage.isEncryptionAvailable()) throw new Error('Cannot add a computer: encrypted credential storage is unavailable. Enable your operating system’s secure storage and try again.');
   }
-  add(input: { name: string; color: string; endpoint: string; pin: string }, credential: string): MachineInfo {
+  add(input: { name: string; color: string; endpoint: string; pin: string }, credential: string, changedIdentityIds: ReadonlySet<string> = new Set()): MachineInfo {
     this.assertEncryptionAvailable(); this.validate(input);
+    const stale = this.entries.find(entry => changedIdentityIds.has(entry.id) && peerEndpoint(entry.endpoint).href === peerEndpoint(input.endpoint).href);
     const entry: StoredMachine = { ...input, name: input.name.trim(), pin: normalizePin(input.pin), id: randomUUID(), encryptedCredential: this.storage.encryptString(credential).toString('base64') };
-    const next = [...this.entries, entry]; this.save(next); this.entries = next;
+    if (stale) { entry.id = stale.id; entry.name = stale.name; entry.color = stale.color; }
+    const next = stale ? this.entries.map(item => item.id === stale.id ? entry : item) : [...this.entries, entry]; this.save(next); this.entries = next;
     return { id: entry.id, name: entry.name, color: entry.color, state: 'disconnected' };
   }
   profile(id: string) {

@@ -33,7 +33,13 @@ export function MachineProvider({ children }: { children: ReactNode }) {
   }, [bridge]);
   return <MachineContext.Provider value={snapshot}><MachineTreeContext.Provider value={tree}>{children}</MachineTreeContext.Provider></MachineContext.Provider>;
 }
-export const useMachines = () => useContext(MachineContext);
+/** Sidebar and current-machine failure alerts must observe the same watcher state. */
+export function machineSnapshotWithTree(snapshot: MachineSnapshot, tree: MachineTreeFeed): MachineSnapshot {
+  if (!snapshot.enabled) return snapshot;
+  const watched = new Map(tree.machines.map(row => [row.machine.id, row.machine]));
+  return { ...snapshot, machines: snapshot.machines.map(machine => ({ ...machine, ...watched.get(machine.id) })) };
+}
+export const useMachines = () => machineSnapshotWithTree(useContext(MachineContext), useContext(MachineTreeContext));
 export function isHostSettingsPage(tab: string): boolean { return ['data', 'mobile', 'computers'].includes(tab); }
 /** Computers stays visible on This PC while the preview is off: its switch lives there. */
 export function settingsPageVisible(tab: string, remote: boolean): boolean {

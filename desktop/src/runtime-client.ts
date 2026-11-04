@@ -729,6 +729,13 @@ export class RuntimeClient {
     this.pending.clear();
   }
 
+  /** Sidebar selection is the explicit retry for a stopped version-mismatch connection. */
+  retryPeerConnection(): void {
+    if (this.options.profile?.kind !== 'peer' || !this.incompatible || this.incompatible instanceof PeerTransportError && this.incompatible.code === 'pin-mismatch') return;
+    this.incompatible = undefined;
+    void this.ensureConnected().catch(() => {});
+  }
+
   setSuspended(suspended: boolean): void {
     this.suspended = suspended;
     if (suspended) this.peerHeartbeat.stop();

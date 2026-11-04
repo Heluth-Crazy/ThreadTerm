@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server.edge';
 import type { PairedDevice } from '@threadterm/protocol';
-import { devicesForProfile, settingsPageVisible } from './machines';
+import { devicesForProfile, settingsPageVisible, machineSnapshotWithTree } from './machines';
 import { MachineRowsView } from './components/MachineRows';
 import { machineTreeKey } from './machineTypes';
 import type { MachineSnapshot, MachineTreeFeed } from './machineTypes';
@@ -80,4 +80,17 @@ test('shared machine, project and branch expansion applies in every view and inc
   feed.expanded[machineTreeKey('office', 'project', 'remote-project')] = false;
   assert.doesNotMatch(render(), />main</);
   assert.notEqual(machineTreeKey('local', 'session', 'same'), machineTreeKey('office', 'session', 'same'));
+});
+
+test('current-machine alerts follow the watcher failure state even when the machine-list snapshot arrived earlier', () => {
+  const {snapshot,feed}=treeFixture();
+  snapshot.machines[1].state='disconnected';
+  feed.machines[1].machine={...feed.machines[1].machine};
+  for(const state of ['incompatible','pin-mismatch'] as const) {
+    feed.machines[1].machine.state=state;feed.machines[1].machine.message=state==='incompatible'?'desktop 1; computer 2. Update one so they match.':'Identity changed. Pair again.';
+    const merged=machineSnapshotWithTree(snapshot,feed);
+    assert.equal(merged.machines[1].state,state);assert.equal(merged.machines[1].message,feed.machines[1].machine.message);
+    assert.deepEqual(merged.machines[0],snapshot.machines[0]);assert.equal(snapshot.machines[1].state,'disconnected');
+  }
+  snapshot.enabled=false;assert.equal(machineSnapshotWithTree(snapshot,feed),snapshot);
 });

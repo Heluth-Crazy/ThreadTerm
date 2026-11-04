@@ -21,6 +21,7 @@ const VALIDATION_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const DENIED_METHODS: &[&str] = &[
     "device.status",
     "device.enable",
+    "device.tailscaleOnly.set",
     "device.disable",
     "device.identity.reset",
     "device.pairing.create",
@@ -72,6 +73,10 @@ impl Default for ConnectionGroups {
 }
 
 impl ConnectionGroups {
+    pub(crate) fn connected(&self, device: &str) -> bool {
+        self.groups.lock().map(|groups| groups.keys().any(|(id, _)| id == device)).unwrap_or(false)
+    }
+
     fn contains(&self, device: &str, client: &str) -> bool {
         self.groups
             .lock()
@@ -197,6 +202,15 @@ pub(crate) fn guard(
         .map_err(|_| failure("peer_revoked", "Peer credential is no longer valid"))
 }
 
+/// Test-only version skew. Release binaries contain no environment override.
+pub(crate) fn advertised_contract() -> u32 {
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("THREADTERM_QA_PEER_CONTRACT") {
+        if let Ok(contract) = value.parse() { return contract; }
+    }
+    crate::PROTOCOL_CONTRACT
+}
+
 #[cfg(windows)]
 pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     mut stream: T,
@@ -206,7 +220,7 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
 ) -> Result<()> {
     use crate::{
         transport::{read_json, write_json},
-        PROTOCOL_CONTRACT, PROTOCOL_VERSION, RUNTIME_VERSION,
+        PROTOCOL_VERSION, RUNTIME_VERSION,
     };
     use base64::Engine;
     use rand::RngCore;
@@ -222,13 +236,14 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
     let service = remote
         .runtime()
         .ok_or_else(|| anyhow!("runtime unavailable"))?;
+    let contract = advertised_contract();
     let mut nonce = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut nonce);
     let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
     write_json(
         &mut stream,
         &json!({"kind":"challenge", "protocol":PROTOCOL_VERSION,
-        "contract":PROTOCOL_CONTRACT, "nonce":nonce, "version":RUNTIME_VERSION}),
+        "contract":contract, "nonce":nonce, "version":RUNTIME_VERSION}),
     )
     .await?;
     let auth = timeout(Duration::from_secs(10), read_json(&mut stream)).await??;
@@ -244,10 +259,10 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
         bail!("authentication required");
     }
     if auth.get("protocol").and_then(Value::as_u64) != Some(PROTOCOL_VERSION as u64)
-        || auth.get("contract").and_then(Value::as_u64) != Some(PROTOCOL_CONTRACT as u64)
+        || auth.get("contract").and_then(Value::as_u64) != Some(contract as u64)
     {
         let mut incompatible = json!({"kind":"incompatible", "code":"protocol_incompatible",
-            "protocol":PROTOCOL_VERSION, "contract":PROTOCOL_CONTRACT, "version":RUNTIME_VERSION});
+            "protocol":PROTOCOL_VERSION, "contract":contract, "version":RUNTIME_VERSION});
         for (source, target) in [
             ("protocol", "receivedProtocol"),
             ("contract", "receivedContract"),
@@ -367,7 +382,7 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
             write_json(
                 &mut stream,
                 &json!({"kind":"authenticated", "protocol":PROTOCOL_VERSION,
-            "contract":PROTOCOL_CONTRACT, "principal":principal, "epoch":epoch}),
+            "contract":contract, "principal":principal, "epoch":epoch}),
             )
             .await?;
             match channel {

@@ -819,6 +819,22 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"device.tailscaleOnly.set\">": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"device.disable\">": {
       "type": "object",
       "properties": {
@@ -6949,6 +6965,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22device.enable%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.tailscaleOnly.set"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.tailscaleOnly.set%22%3E"
         }
       },
       "required": [

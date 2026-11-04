@@ -33,3 +33,5 @@
 .machine-group > .project-catalog { margin-left:10px; }
 .machine-add { margin-top:6px; width:100%; }
 .remote-project-catalog .sess-row:hover .badge { visibility:visible; }
+
+.machine-settings .tailscale-only-setting .setting-switch { flex-direction: row; }

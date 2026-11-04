@@ -92,6 +92,9 @@ impl FromStr for DevicePermission {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PairedDevice {
+    /// Live control-group membership, populated only by device.list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connected: Option<bool>,
     pub id: String,
     pub name: String,
     pub permission: DevicePermission,
@@ -134,6 +137,7 @@ pub struct AuthenticatedDevice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAccessPreference {
+    pub tailscale_only: bool,
     pub enabled: bool,
     pub port: Option<u16>,
     pub last_error: Option<String>,
@@ -233,14 +237,15 @@ impl DeviceManager {
 
     pub fn remote_access_preference(&self) -> Result<RemoteAccessPreference> {
         self.db.transaction(|tx| {
-            let (enabled, port, last_error) = tx.query_row(
-                "SELECT enabled,port,last_error FROM remote_access_state WHERE singleton=1",
+            let (enabled, port, last_error, tailscale_only) = tx.query_row(
+                "SELECT enabled,port,last_error,tailscale_only FROM remote_access_state WHERE singleton=1",
                 [],
                 |row| {
                     Ok((
                         row.get::<_, bool>(0)?,
                         row.get::<_, Option<i64>>(1)?,
                         row.get::<_, Option<String>>(2)?,
+                        row.get::<_, bool>(3)?,
                     ))
                 },
             )?;
@@ -249,10 +254,18 @@ impl DeviceManager {
                 .transpose()
                 .map_err(|_| anyhow::anyhow!("invalid stored remote port"))?;
             Ok(RemoteAccessPreference {
+                tailscale_only,
                 enabled,
                 port,
                 last_error,
             })
+        })
+    }
+
+    pub fn set_tailscale_only(&self, enabled: bool, operation_id: &str) -> Result<()> {
+        self.db.transaction(|tx| {
+            tx.execute("UPDATE remote_access_state SET tailscale_only=? WHERE singleton=1", [enabled])?;
+            complete_operation(tx, operation_id, "device.tailscaleOnly.set", &Value::Null)
         })
     }
 
@@ -467,6 +480,7 @@ impl DeviceManager {
             rand::thread_rng().fill_bytes(&mut token_bytes);
             let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes);
             let device = PairedDevice {
+                connected: None,
                 id: Uuid::new_v4().to_string(),
                 name: name.to_owned(),
                 permission,
@@ -668,6 +682,7 @@ impl DeviceManager {
                     revoked_at,
                 ) = row?;
                 Ok(PairedDevice {
+                    connected: None,
                     id,
                     name,
                     permission: DevicePermission::from_str(&permission)?,
@@ -963,6 +978,7 @@ fn paired_device(tx: &Transaction<'_>, device_id: &str) -> Result<Option<PairedD
     row.map(
         |(id, name, permission, profile, created_at, expires_at, last_seen_at, revoked_at)| {
             Ok(PairedDevice {
+                connected: None,
                 id,
                 name,
                 permission: DevicePermission::from_str(&permission)?,

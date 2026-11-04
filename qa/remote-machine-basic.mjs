@@ -12,6 +12,7 @@ import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { buildQaApp } from './lib/qa-app.mjs';
 import { connectPeer } from './pipe-client.mjs';
 
+const hostingProbe = process.env.THREADTERM_QA_MACHINE_HOSTING === '1';
 const treeProbe = process.env.THREADTERM_QA_MACHINE_TREE === '1';
 const browserProbe = process.env.THREADTERM_QA_MACHINE_BROWSER === '1';
 const signInProbe = process.env.THREADTERM_QA_MACHINE_SIGN_IN === '1';
@@ -21,7 +22,7 @@ const qaTemp = /[\\/]tt-qa-temp$/i.test(tmpdir()) ? tmpdir() : join(tmpdir(), 't
 await mkdir(qaTemp, { recursive: true });
 process.env.TEMP = qaTemp; process.env.TMP = qaTemp;
 const scratch = await mkdtemp(join(qaTemp, 'remote-basic-'));
-const out = join(root, signInProbe ? 'qa/results/remote-machine-sign-in' : browserProbe ? 'qa/results/remote-machine-browser' : filesProbe ? 'qa/results/remote-machine-files' : treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
+const out = join(root, hostingProbe ? 'qa/results/remote-machine-hosting' : signInProbe ? 'qa/results/remote-machine-sign-in' : browserProbe ? 'qa/results/remote-machine-browser' : filesProbe ? 'qa/results/remote-machine-files' : treeProbe ? 'qa/results/remote-machine-tree' : 'qa/results/remote-machine-basic');
 await mkdir(out, { recursive: true });
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 assert.ok(existsSync(runtime), 'Build and copy the QA runtime first');
@@ -32,7 +33,7 @@ const browserScenarios = browserProbe ? await import('./remote-machine-browser-s
 const browserFixtures = await browserScenarios?.setupRemoteBrowserProbe(scratch);
 const signInScenarios = signInProbe ? await import('./remote-machine-sign-in-scenarios.mjs') : undefined;
 const signInFixtures = await signInScenarios?.setupRemoteSignInProbe(scratch);
-const fake = join(root, signInProbe ? 'qa/fixtures/fake-codex-sign-in.cjs' : browserProbe ? 'qa/fixtures/browser-agent-reads/codex.cjs' : treeProbe ? 'qa/fixtures/fake-codex-machine-tree.cjs' : 'qa/fixtures/fake-codex-connect-transition.cjs');
+const fake = join(root, hostingProbe ? 'qa/fixtures/fake-codex-hosting.cjs' : signInProbe ? 'qa/fixtures/fake-codex-sign-in.cjs' : browserProbe ? 'qa/fixtures/browser-agent-reads/codex.cjs' : treeProbe ? 'qa/fixtures/fake-codex-machine-tree.cjs' : 'qa/fixtures/fake-codex-connect-transition.cjs');
 await writeFile(join(bin, 'codex.cmd'), `@"${process.execPath}" "${fake}" %*\r\n`);
 const report = { passed: false, checks: [], errors: [], cleanup: [], scratch, ...(browserProbe?{acceptancePassed:false,limitations:[],blockedChecks:[]}: {}) };
 const note = (message, blocked=false) => { if(signInProbe)(report.notes ??= []).push(message);if(browserProbe){report.limitations.push(message);if(blocked)report.blockedChecks.push(message);}console.log(`NOTE ${message}`); };
@@ -63,15 +64,19 @@ if (filesProbe) {
 let browserReceipt;
 let host, hostPeer, app, hostApp, built, releaseLock, localPage, remotePage, attentionSession;
 const rpc = (page, method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
+const hosting = hostingProbe ? new (await import('./remote-machine-hosting-scenarios.mjs')).HostingProbe({ scratch, runtime, hostEnv, environment, rpc, until, pass, out, report }) : undefined;
 try {
-  host = spawn(runtime, [], { env: hostEnv, windowsHide: true, stdio: 'ignore' });
+  if (hosting) {
+    built = await buildQaApp(); releaseLock = await acquireElectronQaLock();
+    await hosting.startA(built);
+  } else host = spawn(runtime, [], { env: hostEnv, windowsHide: true, stdio: 'ignore' });
   await until(async () => {
     let candidate;
     try {
       candidate = await connectPeer(`${hostEnv.THREADTERM_V3_PIPE}-control`);
       const secret = (await readFile(join(hostEnv.THREADTERM_V3_DATA, 'runtime.credential'), 'utf8')).trim();
       await candidate.auth(secret); hostPeer = candidate; return true;
-    } catch { candidate?.close(); if (host.exitCode !== null) throw new Error('Isolated host runtime exited'); return false; }
+    } catch { candidate?.close(); if (host && host.exitCode !== null) throw new Error('Isolated host runtime exited'); return false; }
   }, 'host admin pipe');
   const hostSnapshot = await hostPeer.request('runtime.snapshot');
   await hostPeer.request('settings.update', { patch: { remoteMachines: { enabled: true }, language: 'en', theme: 'dark', themeSelection: 'dark', notifications: { native: false } }, expectedRevision: hostSnapshot.settings.revision, operationId: randomUUID() });
@@ -81,7 +86,7 @@ try {
   assert.equal(new URL(offer.serverUrl).hostname, '127.0.0.1', 'debug QA binding advertises the reachable loopback endpoint');
   pass('second runtime uses isolated data/pipe, loopback binding and a desktop offer');
 
-  built = await buildQaApp(); releaseLock = await acquireElectronQaLock();
+  if (!built) { built = await buildQaApp(); releaseLock = await acquireElectronQaLock(); }
   app = await electron.launch({ args: [built.appDir], env: clientEnv, timeout: 30000 });
   localPage = await app.firstWindow();
   await localPage.waitForFunction(() => !!window.threadterm);
@@ -191,9 +196,16 @@ try {
 
   const session = await rpc(remotePage, 'session.create', { projectId: hostProject.id, cwd: hostWork, provider: 'codex', mode: 'chat', title: 'Remote Chat', operationId: randomUUID() });
   await rpc(remotePage, 'session.present', { sessionId: session.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
-  const chat = remotePage.getByTestId(`session-chat-${session.id}`);
+  let chat = remotePage.getByTestId(`session-chat-${session.id}`);
   await chat.locator('textarea').waitFor();
-  await until(() => chat.locator('textarea').isEnabled(), 'remote Chat ready', 45000);
+  await until(async () => {
+    if (await chat.locator('textarea').isEnabled()) return true;
+    if (hosting) {
+      const take = chat.getByRole('button', { name: /^(Take control|Reclaim control)$/ });
+      if (await take.isVisible().catch(() => false) && await take.isEnabled()) await take.click();
+    }
+    return false;
+  }, 'remote Chat ready', 45000);
   await chat.locator('textarea').fill('Reply from the host.');
   await chat.locator('button[type=submit]').click();
   if(browserProbe)await chat.getByText(/^BROWSER_QA_RESULT /).waitFor({timeout:30000});else await chat.getByText('TRANSITION-SAVED-ANSWER', { exact: true }).waitFor({ timeout: 30000 });
@@ -245,7 +257,11 @@ try {
     await chat.locator('textarea').waitFor();
     await delay(400);
   }
-  const paired = (await hostPeer.request('device.list')).find(item => item.profile === 'desktop' && item.name === 'Office-PC'); assert.ok(paired);
+  if (hosting) {
+    ({ hostPeer, remotePage } = await hosting.run({ app, localPage, remotePage, hostPeer, machine, session, hostProject }));
+    chat = remotePage.getByTestId(`session-chat-${session.id}`);
+  }
+  const paired = (await hostPeer.request('device.list')).find(item => item.profile === 'desktop' && (hosting ? !item.revokedAt : item.name === 'Office-PC')); assert.ok(paired);
   await hostPeer.request('device.revoke', { deviceId: paired.id, operationId: randomUUID() });
   await until(async () => (await remotePage.evaluate(() => window.threadterm.machineList())).machines.find(item => item.id === machine.id)?.state === 'disconnected', 'revoke disconnect state');
   if (treeProbe) await until(async () => (await chat.locator('textarea').count()) ? await chat.locator('textarea').isDisabled() : await remotePage.getByRole('heading', { name: 'Runtime unavailable', exact: true }).count() > 0, 'revoked view cannot accept input');
@@ -268,10 +284,17 @@ try {
   report.passed = true;
   if(browserProbe)report.acceptancePassed=report.blockedChecks.length===0;
 } catch (error) {
+  if (hosting) {
+    for (const [kind, env] of [['host', hostEnv], ['client', clientEnv]]) {
+      await writeFile(join(out, `${kind}-provider-failure.jsonl`), await readFile(env.THREADTERM_QA_TRANSITION_LOG).catch(() => '')).catch(() => {});
+    }
+  }
+  console.error(error);
   report.errors.push(error instanceof Error ? error.stack : String(error));
   await (remotePage ?? localPage)?.screenshot({ path: join(out, 'failure.png') }).catch(() => {});
   process.exitCode = 1;
 } finally {
+  await hosting?.cleanup().catch(error => report.cleanup.push(String(error)));
   await browserFixtures?.cleanup();
   await signInFixtures?.cleanup().catch(error=>report.cleanup.push(String(error)));
   if (hostApp) { await hostApp.evaluate(({ app }) => app.exit(0)).catch(() => {}); await hostApp.close().catch(() => {}); }

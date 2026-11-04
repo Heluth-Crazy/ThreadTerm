@@ -43,3 +43,35 @@ Remote request execution takes the runtime relocation gate before the remote act
 ## Validation
 
 Runtime unit tests cover expiry boundaries, five-attempt invalidation, atomic one-time use, digest-only storage, fixed token lifetime, revoke behavior, metadata redaction, and the allowlist matrix. Identity recovery tests plant a missing half pair, a corrupt PEM pair and an unreadable key, then prove that startup, health and a terminal session still work and that enabling reports the actionable error; the reset test proves that only an explicit reset replaces the identity, invalidates tokens and open offers, and lets a new device pair. The HTTPS integration test trusts only the generated test certificate, pairs read-only and full-control devices through the listener, proves read-only control denial, creates a real shell PTY, claims and renews its lease, sends input, reads captured output, releases the lease, revokes the device, and verifies the same token receives `401 Unauthorized`.
+
+## Desktop computers (Computers preview)
+
+Desktop computers use the full ThreadTerm protocol over pinned TLS, on the same listener and port as phones. The phone HTTPS permissions and lifetime above are unchanged. Computers remains a preview behind Settings → Computers → **Enable Computers preview**, off by default. Use it on Windows PCs on your LAN or Tailscale network; there is no discovery, relay, or start-at-login feature.
+
+To pair, enable the preview on both PCs. On the PC that will run the work, choose **Create pairing offer** in Settings → Computers. On the other PC, paste its pairing text into **Add a computer**, check that both PCs show the same check code, then choose a name and color. Offers expire after five minutes and work once. The client checks the pinned certificate before sending credentials. The saved credential is encrypted with operating-system secure storage; pairing is unavailable if that storage is unavailable. Desktop credentials expire after 30 days without use. A newly issued credential that never connects is removed after ten minutes.
+
+A paired computer is trusted to act as you: Chat, terminals, Run, files, Search, Git/worktrees, Browser, usage, and the host's ordinary settings all run against that PC. It cannot administer paired devices or remote access, change the Tailscale-only option, shut down the runtime, back up/relocate data, or invoke internal QA administration. Pair only computers you trust. Host administration pages are hidden in remote views. Files attached from the client are uploaded to the host; exports are saved on the client. In the machine's panel browser, localhost reaches that host. Public sites use the client's network.
+
+Each computer has its own sidebar group. Select its session to work there, or open it in another window. Settings → Computers on the host lists allowed desktop computers; **Remove** revokes that credential, closes its connections and ends its terminal control within two seconds. Programs already running on the host continue. Removing an entry on the client only removes that client's saved connection.
+
+### Tailscale-only access
+
+**Only accept devices on my Tailscale network** is one shared host switch on This PC's Settings → Computers and Settings → Phones. It applies to computers and phones alike. When enabled, the listener accepts only Tailscale source addresses (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`, including IPv4-mapped IPv6 forms); loopback is refused. Changing the option restarts the listener and closes existing connections, including phones, within two seconds. Allowed clients reconnect. The preference survives runtime restarts. Only the host's local administration surface can change it (`device.tailscaleOnly.set {enabled, operationId}`); `device.status` reports `tailscaleOnly`.
+
+### Quitting a host and returning later
+
+With Computers enabled, a running runtime and at least one unrevoked paired desktop computer, both tray Quit and the window's Quit action always ask, even with no active sessions. The heading names computers with live connections, or says **Other computers can use this PC**. Choose:
+
+- **Quit, keep running** (default): Electron exits, while the detached runtime and sessions continue. Other computers can keep working. The next desktop launch attaches to the same runtime and session list.
+- **Stop everything**: perform the usual runtime shutdown and stop its jobs, then exit Electron.
+- **Cancel** (Escape): stay open.
+
+With no paired desktop, with Computers off, or with no runtime running, the existing quit dialog and shutdown rules apply. Closing a window still follows the existing tray behavior. Runtime exit, Windows logout and reboot end running sessions; this feature does not start ThreadTerm at login.
+
+### Connection and identity failures
+
+A dropped connection shows reconnecting/disconnected state. Existing work keeps running on the host, and requests with uncertain outcomes are never sent again automatically. A host runtime crash reconnects after that runtime restarts on the same data and port. The Chat turn that was in progress is marked **Turn interrupted**, as on any runtime restart; a new Chat turn is an explicit new action.
+
+A version mismatch shows both versions/contracts and asks you to update one so they match. That connection stops retrying; after updating/restarting, select the computer again in the sidebar to retry. Other computers and This PC remain usable.
+
+If the certificate changes, the view says the computer's identity changed and requires pairing again. An explicit **Reset remote identity** on the host replaces its certificate and revokes every paired device. Pair that address again to replace the stale changed-identity entry while retaining its machine id, local name and color. A matching address without a changed-identity state retains the ordinary add-computer behavior.

@@ -19,7 +19,7 @@ import { MachineBrowserProfiles, machineBrowserPartition } from './machineBrowse
 import { externalLinkOpensInPanel } from './loopbackProxy.js';
 import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } from './chatMarkdownExport.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
-import { quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
+import { hostingQuitContext, hostingQuitChoice, hostingQuitOptions, hostingQuitQaChoice, quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
 import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
 import { qaAttachPathsOverride, readAttachFiles, uploadAttachFile, validAttachPath, MAX_ATTACH_FILES } from './attachFiles.js';
 import { readHostPageShot, reviewShotSession } from './remoteFiles.js';
@@ -457,7 +457,22 @@ function registerIpc(): void {
     pendingPairings.delete(event.sender.id); clearTimeout(pending.timer);
     const credential = await pairOnPinnedConnection(pending.socket, pending.descriptor, name.trim());
     if (!remoteMachinesEnabled || event.sender.isDestroyed()) throw new Error('Pairing cancelled');
-    const entry = machines.add({ name, color, endpoint: pending.descriptor.serverUrl, pin: pending.descriptor.tlsFingerprint }, credential);
+    const changed = new Set(machineTree.feed().machines.filter(row => row.machine.state === 'pin-mismatch').map(row => row.machine.id));
+    for (const [id, state] of machineStates) if (state.state === 'pin-mismatch') changed.add(id);
+    const entry = machines.add({ name, color, endpoint: pending.descriptor.serverUrl, pin: pending.descriptor.tlsFingerprint }, credential, changed);
+    if (changed.has(entry.id)) {
+      machineTree.remove(entry.id); machineStates.delete(entry.id);
+      for (const [key, client] of windowRuntimes) if (machineBindings.get(key).machineId === entry.id) { client.dispose(); windowRuntimes.delete(key); }
+      for (const [windowId, views] of machineViews) {
+        const removed = views.remove(entry.id);
+        if (removed) {
+          const owner = BrowserWindow.fromId(windowId); owner?.contentView.removeChildView(removed);
+          if (removed instanceof WebContentsView && !removed.webContents.isDestroyed()) removed.webContents.close();
+        }
+      }
+      for (const window of BrowserWindow.getAllWindows()) if (machineBindings.get(window.webContents.id).machineId === entry.id) window.destroy();
+      machineBrowsers?.release(machineBrowserPartition(entry.id));
+    }
     syncMachineWatchers(); broadcastMachines();
     return entry;
   });
@@ -947,23 +962,38 @@ async function requestQuit(): Promise<void> {
     const runtimeRunning = await runtimePipeIsOpen();
     let active = runtimeRunning;
     let zh = false;
-    const confirm = async () => {
+    let hosting: ReturnType<typeof hostingQuitContext>;
+    const inspect = async (client: RuntimeClient) => {
+      hosting = hostingQuitContext(true, remoteMachinesEnabled);
+      try {
+        const snapshot = await client.request('runtime.snapshot', {});
+        zh = notificationLocale(snapshot.settings) === 'zh-CN';
+        active = snapshot.sessions.some(session => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
+        const enabled = !!(snapshot.settings.remoteMachines as { enabled?: boolean } | undefined)?.enabled;
+        hosting = hostingQuitContext(true, enabled);
+        if (enabled) hosting = hostingQuitContext(true, true, await client.request('device.list', {}));
+      } catch { /* Unknown live host state still requires confirmation. */ }
+    };
+    const confirm = async (preapproved = false) => {
+      if (hosting) {
+        const qa = hostingQuitQaChoice(app.isPackaged, process.env);
+        if (qa) return qa;
+        const options = hostingQuitOptions(zh, nativeImage.createFromDataURL(applicationIconPng), hosting);
+        const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+        return hostingQuitChoice(result.response);
+      }
+      if (preapproved && quitConfirmationPreapproved(process.env)) return 'stop';
       const options = quitConfirmationOptions(zh, nativeImage.createFromDataURL(applicationIconPng));
       const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
-      return result.response === 1;
+      return result.response === 1 ? 'stop' : 'cancel';
     };
     if (runtimeRunning) {
       const inspectionClient = new RuntimeClient({ autoLaunch: false });
-      try {
-        const snapshot = await inspectionClient.request('runtime.snapshot', {});
-        zh = notificationLocale(snapshot.settings) === 'zh-CN';
-        active = snapshot.sessions.some(session => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
-      }
-      catch { /* Unknown state still requires confirmation; keep the English fallback. */ }
-      finally { inspectionClient.dispose(); }
+      try { await inspect(inspectionClient); } finally { inspectionClient.dispose(); }
     }
-    const confirmed = active && (quitConfirmationPreapproved(process.env) || await confirm());
-    if (active && !confirmed) return;
+    const confirmed = active || !!hosting;
+    let choice = confirmed ? await confirm(true) : 'stop';
+    if (choice === 'cancel') return;
     stoppingRuntime = true;
     // Stop every ordinary client's reconnect/auto-launch before asking the
     // daemon to exit. A dedicated no-launch client owns the final handshake.
@@ -984,19 +1014,16 @@ async function requestQuit(): Promise<void> {
       await waitForPendingRuntimeStartup(Math.max(1, settleDeadline - Date.now()));
       const runtimeReady = await runtimePipeIsOpen();
       if (runtimeReady && !confirmed) {
-        let lateActive = true;
-        try {
-          const snapshot = await shutdownClient.request('runtime.snapshot', {});
-          zh = notificationLocale(snapshot.settings) === 'zh-CN';
-          lateActive = snapshot.sessions.some(session => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
-        } catch { /* Unknown late state requires confirmation as well. */ }
-        if (lateActive && !await confirm()) {
+        active = true;
+        await inspect(shutdownClient);
+        if (active || hosting) choice = await confirm();
+        if (choice === 'cancel') {
           stoppingRuntime = false;
           for (const client of ordinaryClients) client.setSuspended(false);
           return;
         }
       }
-      if (runtimeReady) {
+      if (runtimeReady && choice === 'stop') {
         try { await shutdownClient.request('runtime.shutdown', { operationId: randomUUID() }); }
         finally { shutdownClient.dispose(); }
         const deadline = Date.now() + 12_000;
@@ -1089,6 +1116,11 @@ function applyMachinesGate(enabled: boolean): void {
 function showMachine(owner: BrowserWindow | undefined, id: string, sessionId?: string): void {
   if (!owner || owner.isDestroyed()) { showMainWindow(); owner = mainWindow; }
   if (!owner || !machineViews.has(owner.id)) return;
+  const state = machineTree.feed().machines.find(row => row.machine.id === id)?.machine.state ?? machineStates.get(id)?.state;
+  if (id !== 'local' && state === 'incompatible') {
+    machineTree.remove(id); syncMachineWatchers();
+    for (const [key, client] of windowRuntimes) if (machineBindings.get(key).machineId === id) client.retryPeerConnection();
+  }
   if (sessionId) pendingMachineSession.set(id, sessionId);
   const view = machineViews.get(owner.id)!.show(id);
   pendingMachineSession.delete(id);

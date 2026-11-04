@@ -2112,6 +2112,24 @@ impl Database {
             Ok(())
         })
     }
+    /// After a runtime stop, the Chat turn that was streaming has no outcome: settle it
+    /// as interrupted, once, so its partial reply stops reading as streaming. Nothing is
+    /// sent to the provider. Runs after `mark_live_sessions_interrupted`.
+    pub fn settle_interrupted_chat_turns(&self) -> Result<()> {
+        let turns = self.transaction(|tx| {
+            let mut statement = tx.prepare("SELECT a.session_id,a.turn_id FROM session_activity a JOIN sessions s ON s.id=a.session_id
+                WHERE s.mode='chat' AND s.read_only=0 AND a.reason='runtime_interrupted' AND a.turn_id IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM chat_items i WHERE i.session_id=a.session_id AND i.turn_id=a.turn_id
+                    AND json_extract(i.data,'$.turnStatus') IN ('completed','failed','interrupted','unknown'))")?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })?;
+        for (session, turn) in turns {
+            self.record_provider_event(&session, Some(&turn), "chat.turn.completed", &json!({"status":"interrupted","reason":"runtime_interrupted"}))?;
+        }
+        Ok(())
+    }
     pub fn lease(&self, session_id: &str) -> Result<Option<(String, i64, String)>> {
         let conn = self
             .connection
@@ -5102,6 +5120,36 @@ pub(crate) fn browser_eval_context_tx(
         settings_revision,
         enabled: settings.get("browserEvalEnabled").and_then(Value::as_bool) == Some(true),
     })
+}
+
+#[cfg(test)]
+mod interrupted_turn_tests {
+    use super::*;
+
+    #[test]
+    fn startup_settles_only_the_unfinished_chat_turn_once() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("runtime.sqlite3")).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        let create = |op: &str| db.create_session(CreateSession { project_id: None, title: None, provider: "codex", mode: "chat", native_id: None, operation_id: op }).unwrap();
+        let held = create("held");
+        db.record_provider_event(&held.id, Some("held-turn"), "message.user", &json!({"text":"held work"})).unwrap();
+        db.bind_chat_activity_turn(&held.id, "held-turn", "held-turn").unwrap();
+        db.record_provider_event(&held.id, Some("held-turn"), "chat.delta", &json!({"part":{"type":"text","text":"partial"}})).unwrap();
+        let completed = create("completed");
+        db.record_provider_event(&completed.id, Some("done-turn"), "message.user", &json!({"text":"done"})).unwrap();
+        db.bind_chat_activity_turn(&completed.id, "done-turn", "done-turn").unwrap();
+        db.record_provider_event(&completed.id, Some("done-turn"), "chat.turn.completed", &json!({})).unwrap();
+        db.mark_live_sessions_interrupted().unwrap();
+        let settled = db.chat_items(&completed.id).unwrap();
+        db.settle_interrupted_chat_turns().unwrap();
+        let recovered = db.chat_items(&held.id).unwrap();
+        assert!(recovered.iter().any(|item| item.turn_status == Some(crate::domain::NativeTurnStatus::Interrupted)));
+        assert!(recovered.iter().flat_map(|item| &item.parts).all(|part| part["status"] != "streaming"));
+        assert_eq!(db.chat_items(&completed.id).unwrap(), settled, "completed turn unchanged");
+        db.settle_interrupted_chat_turns().unwrap();
+        assert_eq!(db.chat_items(&held.id).unwrap(), recovered, "settling is idempotent");
+    }
 }
 
 #[cfg(test)]

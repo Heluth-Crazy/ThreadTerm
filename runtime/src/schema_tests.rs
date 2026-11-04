@@ -37,7 +37,7 @@ fn schema_empty_first_creation_has_no_upgrade_data_to_back_up() {
     drop(Database::open(&path).unwrap());
     assert!(backups(root.path()).is_empty());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "4");
+    assert_eq!(value(&conn, "schema.version"), "5");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
 }
@@ -66,7 +66,7 @@ fn schema_migration_three_creates_review_draft_tables_and_reopens() {
     drop(conn);
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "4");
+    assert_eq!(value(&conn, "schema.version"), "5");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn schema_migration_four_preserves_legacy_phone_credentials() {
     }
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "4");
+    assert_eq!(value(&conn, "schema.version"), "5");
     let device: (String, Vec<u8>, Option<String>) = conn.query_row(
         "SELECT profile,token_hash,last_address FROM paired_devices WHERE id='phone'", [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -126,10 +126,10 @@ fn schema_old_copy_is_backed_up_verified_and_migrated_only_once() {
         "Daily"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "4");
-    assert_eq!(value(&conn, "schema.minReader"), "4");
+    assert_eq!(value(&conn, "schema.version"), "5");
+    assert_eq!(value(&conn, "schema.minReader"), "5");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
-    assert_eq!(history.as_array().unwrap().len(), 4);
+    assert_eq!(history.as_array().unwrap().len(), 5);
     assert_eq!(history[0]["version"], 1);
     assert!(history[0]["appliedAt"].as_str().is_some());
     assert_eq!(history[0]["appVersion"], crate::RUNTIME_VERSION);
@@ -174,7 +174,7 @@ fn schema_unversioned_database_without_presets_upgrades_without_a_backup() {
         "nothing unrecoverable to back up"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "4");
+    assert_eq!(value(&conn, "schema.version"), "5");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
     assert!(conn.prepare("SELECT * FROM usage_facts").is_err());
@@ -489,4 +489,22 @@ fn schema_first_reader_stamps_an_existing_unversioned_ledger() {
             .unwrap(),
         "keep"
     );
+}
+
+#[test]
+fn schema_migration_five_preserves_listener_preferences_and_defaults_policy_off() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("remote-v4.sqlite");
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("DROP TABLE remote_access_state;
+        CREATE TABLE remote_access_state(singleton INTEGER PRIMARY KEY, enabled INTEGER NOT NULL, port INTEGER, last_error TEXT);
+        INSERT INTO remote_access_state VALUES(1,1,12345,'retained');
+        UPDATE metadata SET value='4' WHERE key IN ('schema.version','schema.minReader');").unwrap();
+    drop(conn);
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    let row: (bool,u16,String,bool) = conn.query_row("SELECT enabled,port,last_error,tailscale_only FROM remote_access_state", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
+    assert_eq!(row,(true,12345,"retained".into(),false));
+    assert_eq!(value(&conn,"schema.version"),"5");
 }
