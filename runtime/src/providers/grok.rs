@@ -1549,6 +1549,18 @@ impl ChatSession for GrokChat {
         self.process.is_alive()
     }
 
+    fn validate_send(&self, text: &str) -> Result<(), ProviderError> {
+        if parse_slash(text.trim()).is_some_and(|(name, _)| {
+            matches!(name.to_ascii_lowercase().as_str(), "status" | "info" | "session-info" | "context")
+        }) && self.active_turn.lock()
+            .map_err(|_| ProviderError::new("provider_internal", "Grok turn lock poisoned"))?
+            .is_some()
+        {
+            return Err(ProviderError::new("turn_in_progress", "Grok session already has an active turn"));
+        }
+        Ok(())
+    }
+
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(operation_id)?;
         if let Some(result) = self.dispatch_slash(text, operation_id)? {
@@ -5430,6 +5442,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         assert!(!frames.iter().any(|row| row["method"] == "session/prompt"));
         *active_turn.lock().unwrap() = Some("native-turn".into());
         for command in ["/status", "/info", "/status unexpected"] {
+            assert_eq!(chat.validate_send(command).unwrap_err().code, "turn_in_progress");
             assert_eq!(chat.send(command, "busy-command").unwrap_err().code, "turn_in_progress");
             assert!(received.try_recv().is_err());
             assert_eq!(active_turn.lock().unwrap().as_deref(), Some("native-turn"));

@@ -77,13 +77,13 @@ try {
   report.checks.push('real ChatView connected through isolated runtime to fake Grok');
 
   await send('/status');
-  await waitStatus(session.id, '/status', 'Grok QA');
+  await waitStatus(session.id, '/status', 'Grok session status');
   assert.equal((await requests()).filter(row => row.method === '_x.ai/session/info').length, 1);
   assert.equal((await requests()).some(row => row.method === 'session/prompt'), false);
   report.checks.push('/status renders a result and settles activity without a model turn');
 
   await send('/info');
-  await waitStatus(session.id, '/info', 'Grok QA');
+  await waitStatus(session.id, '/info', 'Grok session status');
   await send('/status bad');
   await waitStatus(session.id, '/status bad', 'does not accept arguments');
   assert.equal((await requests()).filter(row => row.method === '_x.ai/session/info').length, 2);
