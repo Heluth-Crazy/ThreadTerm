@@ -3586,6 +3586,28 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"filesystem.external.readWindow\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "offset": {
+          "type": "number"
+        },
+        "maxBytes": {
+          "type": "number"
+        },
+        "changeToken": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "offset"
+      ]
+    },
     "RequestParams<\"filesystem.external.image\">": {
       "type": "object",
       "properties": {
@@ -3633,6 +3655,35 @@
         }
       },
       "required": [
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"filesystem.readWindow\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "offset": {
+          "type": "number"
+        },
+        "maxBytes": {
+          "type": "number"
+        },
+        "changeToken": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "offset",
         "path",
         "projectId"
       ]
@@ -10104,6 +10155,32 @@
         },
         "method": {
           "type": "string",
+          "const": "filesystem.external.readWindow"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.readWindow%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "filesystem.external.image"
         },
         "params": {
@@ -10186,6 +10263,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22filesystem.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.readWindow"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.readWindow%22%3E"
         }
       },
       "required": [

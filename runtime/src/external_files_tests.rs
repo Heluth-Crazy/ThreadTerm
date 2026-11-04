@@ -569,3 +569,17 @@ fn unc_and_drive_display_forms_do_not_change_operational_paths() {
         assert!(!file["path"].as_str().unwrap().starts_with(r"\\?\"));
     }
 }
+
+#[test]
+fn window_reads_stay_registered_bounded_and_version_fenced() {
+    let f = Fixture::new();
+    let path = f.file("window.txt", "line\r\n".repeat(100_000).as_bytes());
+    let file = f.open(&path);
+    let id = file["id"].as_str().unwrap();
+    let first = call(&f, "readWindow", json!({"id":id,"offset":0,"maxBytes":4096}));
+    assert!(first["content"].as_str().unwrap().len() <= 4096);
+    assert!(first["end"].as_u64().unwrap() > 0);
+    fails(&f, "readWindow", json!({"id":"unknown","offset":0}), "external_file_unknown");
+    fs::write(&path, "changed").unwrap();
+    fails(&f, "readWindow", json!({"id":id,"offset":0,"changeToken":first["changeToken"]}), "file_changed");
+}

@@ -1,0 +1,12 @@
+.large-file-view{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--editor);color:var(--text)}
+.large-file-toolbar{display:flex;align-items:center;gap:5px;min-height:36px;padding:4px 8px;flex-shrink:0;overflow-x:auto;border-bottom:1px solid var(--border);white-space:nowrap;font-size:12px}
+.large-file-toolbar .btn{flex-shrink:0;min-height:28px;padding:0 7px}
+.large-file-toolbar .large-file-nav{flex:0 0 28px;width:28px;height:28px;padding:0}
+.large-file-readonly{color:var(--muted);font-size:12px}
+.large-file-jump{display:flex;align-items:center;gap:2px}
+.large-file-jump input{width:62px;min-height:28px;padding:2px 4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px}
+.large-file-position{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-variant-numeric:tabular-nums}
+.large-file-content{display:block;flex:1;width:100%;min-height:0;resize:none;box-sizing:border-box;border:0;border-radius:0;padding:12px;background:var(--editor);color:var(--text);font:13px/1.5 var(--mono);overflow:auto;white-space:pre;tab-size:4}
+.large-file-content:focus-visible,.large-file-toolbar :is(button,input):focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
+.large-file-clipped{padding:3px 12px;color:var(--muted);background:var(--soft);font-size:12px}
+@container file-surface (max-width:620px){.large-file-readonly{display:none}.large-file-toolbar{gap:3px;padding-inline:5px}}

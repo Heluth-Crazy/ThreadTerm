@@ -7277,6 +7277,46 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"filesystem.external.readWindow\">": {
+      "$ref": "#/definitions/LargeFileWindow"
+    },
+    "LargeFileWindow": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "start": {
+          "type": "number"
+        },
+        "end": {
+          "type": "number"
+        },
+        "size": {
+          "type": "number"
+        },
+        "changeToken": {
+          "type": "string"
+        },
+        "startsMidLine": {
+          "type": "boolean"
+        },
+        "endsMidLine": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "content",
+        "start",
+        "end",
+        "size",
+        "changeToken",
+        "startsMidLine",
+        "endsMidLine"
+      ],
+      "additionalProperties": false,
+      "description": "A bounded read-only text window. `start` and `end` are byte offsets in the file."
+    },
     "RequestResult<\"filesystem.external.image\">": {
       "type": "object",
       "properties": {
@@ -7356,6 +7396,9 @@
     },
     "RequestResult<\"filesystem.read\">": {
       "$ref": "#/definitions/FileDocument"
+    },
+    "RequestResult<\"filesystem.readWindow\">": {
+      "$ref": "#/definitions/LargeFileWindow"
     },
     "RequestResult<\"filesystem.image\">": {
       "type": "object",
@@ -14244,6 +14287,32 @@
         },
         "method": {
           "type": "string",
+          "const": "filesystem.external.readWindow"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.readWindow%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "filesystem.external.image"
         },
         "result": {
@@ -14326,6 +14395,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22filesystem.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.readWindow"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.readWindow%22%3E"
         }
       },
       "required": [
