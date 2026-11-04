@@ -52,3 +52,41 @@ the index in sync with file changes). In PowerShell/cmd run `codegraph <command>
 
 Before committing: `npm run check:fast -- --working-tree`; before packaging or after runtime changes: `npm run check`.
 
+Exception for stacked feature branches that are not merged yet:
+- **Each commit:** run the Rust tests of the modules you changed (`cargo test --lib <module>`).
+- **Once, before merging into `main`:** run the full `npm run check`, including all Rust tests, on the top of the
+  stack. It sets its own `-j 2 --test-threads=2`.
+
+## Rust builds (this PC is short on memory)
+
+- Build settings:
+  - set `CARGO_BUILD_JOBS=1` and `CARGO_PROFILE_DEV_DEBUG=line-tables-only` in the environment;
+  - run tests single-threaded with `-- --test-threads=1`, not by exporting `RUST_TEST_THREADS`. Test helpers that
+    start the test binary inherit that variable, and on `main` it breaks some bootstrap, provider and PTY tests;
+  - run one build or test command at a time;
+  - start a Rust build or an Electron probe only with at least 8 GB of free memory, otherwise wait.
+- Batch the Rust work:
+  - write all of a task's runtime code and its tests first;
+  - then run `cargo test --lib <module>` once per changed module;
+  - build the runtime once with `cargo build --bin threadterm-v3-runtime` and copy it to `runtime/target-qa/debug/`
+    for the probes;
+  - the TypeScript work after that needs no Rust compile.
+- Compile again only when a fix touches Rust code. Work without runtime changes compiles no Rust.
+
+## When a problem cannot be pinpointed, widen the scope
+
+A problem is **pinpointed** when you can name its cause, a focused test or trace reproduces it, and the fix makes
+that reproduction pass. An intermittent failure is not pinpointed.
+
+Until then, do not retry at the same scope or guess a fix. Move to the next level, and record the level you reached
+in the task's validation notes.
+
+| Level | Investigation | Tests |
+|---|---|---|
+| 1 | The changed function and the failing test. | That one test. |
+| 2 | Its callers and callees: `codegraph impact <symbol> -d 2`, `codegraph callees <symbol>`. | The module's tests: `cargo test --lib <module>` and the component's test files. |
+| 3 | The flow across layers: `codegraph explore`, the TS ↔ Rust boundary and string-dispatched methods. Compare with `main`. | The tests `codegraph affected` lists, `npm run check:fast -- --working-tree` and the related Electron probes. Run the same check on `main` to rule out a failure that already exists there. |
+| 4 | The whole product. | The full `cargo test --lib`, `npm run check` and the probes that pass on `main`. |
+
+Widening the scope comes before the build batching above: compile again whenever the next level needs it.
+
