@@ -11,6 +11,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectPeer } from './pipe-client.mjs';
+import { terminalText } from './lib/terminal-text.mjs';
 
 const executable = process.env.THREADTERM_V3_RUNTIME_BIN;
 assert.ok(executable, 'Set THREADTERM_V3_RUNTIME_BIN to the built worktree runtime executable');
@@ -23,7 +24,6 @@ const peers = [];
 let daemon;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const textWithoutAnsi = value => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
 
 function runtimeEnvironment() {
   const excluded = new Set(['path', 'threadterm_qa_provider_bin', 'threadterm_v3_data', 'threadterm_v3_user_data', 'threadterm_v3_pipe']);
@@ -69,7 +69,7 @@ async function waitForExit(child, timeoutMs = 10_000) {
   ]);
 }
 
-async function outputUntil(peer, sessionId, expression, message) {
+async function outputUntil(peer, sessionId, expression, message, geometry) {
   let cursor = 0;
   let output = '';
   const deadline = Date.now() + 30_000;
@@ -79,10 +79,10 @@ async function outputUntil(peer, sessionId, expression, message) {
     if (page.nextCursor > cursor) {
       output += Buffer.from(page.data, 'base64').toString('utf8');
       cursor = page.nextCursor;
-      if (expression.test(textWithoutAnsi(output))) return output;
+      if (expression.test(await terminalText(output, geometry))) return output;
     } else await delay(75);
   }
-  throw Error(`${message}\n${textWithoutAnsi(output).slice(-2000)}`);
+  throw Error(`${message}\n${(await terminalText(output, geometry)).slice(-2000)}`);
 }
 
 async function runPowerShellCommand(peer, sessionId, marker) {
@@ -97,7 +97,7 @@ async function runPowerShellCommand(peer, sessionId, marker) {
   } finally {
     await peer.request('session.release', { sessionId, leaseEpoch }).catch(() => {});
   }
-  await outputUntil(peer, sessionId, new RegExp(`^${marker}$`, 'm'), 'PowerShell command did not run');
+  await outputUntil(peer, sessionId, new RegExp(`^${marker}$`, 'm'), 'PowerShell command did not run', { cols: 160, rows: 30 });
 }
 
 async function setDefaultShell(peer, defaultShell) {
@@ -118,7 +118,7 @@ try {
     cwd: project, title: 'Default shell QA', provider: 'shell', mode: 'terminal', operationId: randomUUID(),
   });
   const originalOutput = await outputUntil(peer, original.id, /^PS .*>/m, 'Shell terminal did not start Windows PowerShell');
-  assert.doesNotMatch(textWithoutAnsi(originalOutput), /Microsoft Windows \[Version/i, 'Shell terminal did not fall back to cmd.exe');
+  assert.doesNotMatch(await terminalText(originalOutput), /Microsoft Windows \[Version/i, 'Shell terminal did not fall back to cmd.exe');
   const originalConfig = await peer.request('session.config.read', { sessionId: original.id });
   assert.equal(originalConfig.executable, 'powershell.exe', 'the resolved PowerShell executable is stored with the session launch');
   assert.ok(originalConfig.args.includes('-NoLogo'), 'stored PowerShell launch suppresses the banner');
@@ -136,7 +136,7 @@ try {
 
   const rerun = await peer.request('session.rerun', { sessionId: original.id, operationId: randomUUID() });
   const rerunOutput = await outputUntil(peer, rerun.id, /^PS .*>/m, 'rerun did not keep the original PowerShell launch');
-  assert.doesNotMatch(textWithoutAnsi(rerunOutput), /Microsoft Windows \[Version/i, 'rerun incorrectly used the new cmd preference');
+  assert.doesNotMatch(await terminalText(rerunOutput), /Microsoft Windows \[Version/i, 'rerun incorrectly used the new cmd preference');
   const rerunConfig = await peer.request('session.config.read', { sessionId: rerun.id });
   assert.equal(rerunConfig.executable, 'powershell.exe', 'rerun keeps the stored executable');
   await runPowerShellCommand(peer, rerun.id, 'DEFAULT-SHELL-RERUN');

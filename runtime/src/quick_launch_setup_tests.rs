@@ -534,8 +534,10 @@ fn a_service_dependency_waits_for_its_allocated_listener_before_starting_the_tar
         "command":"$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,${port});$l.Start();Start-Sleep -Seconds 120",
         "shell":"powershell","cwd":"","kind":"service","env":[],"operationId":"service-dependency-listener"
     }),"service-dependency-listener")).unwrap();
+    // Keep the output handle open after creation: file existence alone must not
+    // authorize removal while the target is still running.
     let target = runtime.dispatch("setup-test",setup_rpc("quickLaunch.save",json!({
-        "projectId":project,"name":"after listener","command":"Set-Content -LiteralPath 'service-dependency-target.txt' -Value ready",
+        "projectId":project,"name":"after listener","command":"$f=[System.IO.File]::Open('service-dependency-target.txt',[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read);try{$b=[System.Text.Encoding]::UTF8.GetBytes('ready');$f.Write($b,0,$b.Length);$f.Flush();Start-Sleep -Seconds 2}finally{$f.Dispose()}",
         "shell":"powershell","cwd":"","kind":"task","env":[],"dependsOn":[listener["id"]],"operationId":"service-dependency-target"
     }),"service-dependency-target")).unwrap();
     let started = runtime.dispatch("setup-test",setup_rpc("quickLaunch.run",json!({
@@ -550,6 +552,20 @@ fn a_service_dependency_waits_for_its_allocated_listener_before_starting_the_tar
         thread::sleep(Duration::from_millis(20));
     }
     assert!(root.path().join("service-dependency-target.txt").exists());
+    // A dependency sequence completes when its target is admitted. Observe the
+    // exact writer's exit before removing its output and exercising restart.
+    let target_session = completed["sessionIds"][1].as_str().unwrap();
+    let deadline = Instant::now()+Duration::from_secs(10);
+    loop {
+        let session = db.session_by_id(target_session).unwrap().unwrap();
+        if session.status == "exited" {
+            assert_eq!(session.exit_code,Some(0));
+            break;
+        }
+        assert!(Instant::now()<deadline,"target did not exit before output cleanup");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(std::fs::read_to_string(root.path().join("service-dependency-target.txt")).unwrap(),"ready");
     runtime.dispatch("setup-test",setup_rpc("session.stop",json!({
         "sessionId":started["session"]["id"],"operationId":"service-dependency-stop","force":true
     }),"service-dependency-stop")).unwrap();

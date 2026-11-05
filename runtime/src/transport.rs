@@ -294,7 +294,9 @@ fn request_lane(method: &str) -> Lane {
         | "git.compare.diff"
         | "filesystem.list"
         | "filesystem.read"
+        | "filesystem.readWindow"
         | "filesystem.external.read"
+        | "filesystem.external.readWindow"
         | "filesystem.external.image"
         | "filesystem.external.list"
         | "filesystem.files"
@@ -1242,7 +1244,9 @@ mod decoder_tests {
             "git.compare.diff",
             "review.changes",
             "filesystem.search",
+            "filesystem.readWindow",
             "filesystem.external.read",
+            "filesystem.external.readWindow",
             "filesystem.external.image",
             "filesystem.external.list",
             "usage.query",

@@ -11,7 +11,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     fs,
-    io::{ErrorKind, Read, Write},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, OnceLock},
@@ -19,6 +19,9 @@ use std::{
 };
 
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
+/// The text payload is deliberately well below the 6 MiB response budget, including JSON escaping.
+pub const MAX_FILE_WINDOW_BYTES: usize = 256 * 1024;
+const FILE_WINDOW_LOOKAROUND_BYTES: u64 = 8 * 1024;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_FILE_REFERENCE_PATH_BYTES: usize = 16 * 1024;
 const MAX_FILE_REFERENCE_POSITION: u32 = 1_000_000;
@@ -59,6 +62,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         method,
         "filesystem.list"
             | "filesystem.read"
+            | "filesystem.readWindow"
             | "filesystem.image"
             | "filesystem.write"
             | "draft.list"
@@ -140,6 +144,18 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
     // commit the result (F10): a slow hook never freezes unrelated persistence.
     if matches!(method, CREATE_WORKTREE | REMOVE_WORKTREE) {
         return Ok(Some(mutate_worktree(db, method, object)?));
+    }
+    // A window may require a disk seek; only root lookup belongs in the short DB transaction.
+    if method == "filesystem.readWindow" {
+        let project_id = object.get("projectId").and_then(Value::as_str).ok_or_else(|| anyhow!("invalid_request"))?;
+        let worktree_path = object.get("worktreePath").and_then(Value::as_str);
+        let root = db.transaction(|tx| root_for(tx, project_id, worktree_path))?;
+        let path = object.get("path").and_then(Value::as_str).ok_or_else(|| anyhow!("invalid_path"))?;
+        let offset = object.get("offset").and_then(Value::as_u64).ok_or_else(|| anyhow!("invalid_request"))?;
+        let max_bytes = object.get("maxBytes").map(|value| value.as_u64().ok_or_else(|| anyhow!("invalid_request"))).transpose()?;
+        let change_token = object.get("changeToken").map(|value| value.as_str().ok_or_else(|| anyhow!("invalid_request"))).transpose()?;
+        let window = read_window_document(&root, path, offset, max_bytes, change_token)?;
+        return Ok(Some(json!({"content":window.content,"start":window.start,"end":window.end,"size":window.size,"changeToken":window.change_token,"startsMidLine":window.starts_mid_line,"endsMidLine":window.ends_mid_line})));
     }
     let result = db.transaction(|tx| {
         let project_id = object.get("projectId").and_then(Value::as_str);
@@ -226,6 +242,7 @@ fn closest_project_roots(closest: &[(String, PathBuf, String)]) -> Vec<(String, 
     } else {
         project_matches
     }
+
 }
 
 /// Resolves an existing cwd to its closest registered project/worktree root.
@@ -273,7 +290,7 @@ pub fn resolve_file_reference(
 /// With `source_search`, `path` is a package-relative JVM source file
 /// (`com/example/Foo.java`) that is found by searching the session's source
 /// roots instead of the launch cwd. The found file then takes exactly the same
-/// canonicalise, containment, kind and size checks as a literal path.
+/// canonicalise, containment, kind and image-size checks as a literal path.
 pub fn resolve_file_reference_with_source_search(
     db: &Database,
     session_id: &str,
@@ -332,9 +349,7 @@ pub fn resolve_file_reference_with_source_search(
         }
         "image"
     } else {
-        if metadata.len() > MAX_DOCUMENT_BYTES as u64 {
-            return Err(anyhow!("file_too_large"));
-        }
+        // Resolution locates the file; content readers enforce their own budgets.
         "text"
     };
 
@@ -1949,16 +1964,136 @@ pub(crate) fn image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 pub fn read_document(root: &Path, relative: &str) -> Result<(String, String)> {
     let path = scoped_path(root, relative, true)?;
-    let metadata = fs::metadata(&path)?;
-    if metadata.len() as usize > MAX_DOCUMENT_BYTES {
-        return Err(anyhow!("file_too_large"));
-    }
-    let bytes = fs::read(&path)?;
+    // Bound the actual read as well as the initial file identity: a file can grow
+    // after metadata is observed, and preview reads must never load that growth whole.
+    let file = fs::File::open(&path)?;
+    if file.metadata()?.len() > MAX_DOCUMENT_BYTES as u64 { return Err(anyhow!("file_too_large")); }
+    let mut bytes = Vec::with_capacity(MAX_DOCUMENT_BYTES + 1);
+    file.take((MAX_DOCUMENT_BYTES + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_DOCUMENT_BYTES { return Err(anyhow!("file_too_large")); }
     if bytes.contains(&0) {
         return Err(anyhow!("binary_file"));
     }
     let content = String::from_utf8(bytes).map_err(|_| anyhow!("binary_file"))?;
     Ok((fingerprint(content.as_bytes()), content))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct FileWindow {
+    pub content: String,
+    pub start: u64,
+    pub end: u64,
+    pub size: u64,
+    pub change_token: String,
+    pub starts_mid_line: bool,
+    pub ends_mid_line: bool,
+}
+
+pub fn read_window_document(root: &Path, relative: &str, offset: u64, max_bytes: Option<u64>, expected_change_token: Option<&str>) -> Result<FileWindow> {
+    let path = scoped_path(root, relative, true).map_err(|error| {
+        if error.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == ErrorKind::NotFound) { anyhow!("file_not_found") } else { error }
+    })?;
+    read_window_path(&path, offset, max_bytes, expected_change_token)
+}
+
+/// Reads one text window through an already-authorized path. Callers own scoping;
+/// this function provides bounded I/O and a size/mtime version fence.
+pub fn read_window_path(path: &Path, offset: u64, max_bytes: Option<u64>, expected_change_token: Option<&str>) -> Result<FileWindow> {
+    let limit = max_bytes.unwrap_or(MAX_FILE_WINDOW_BYTES as u64);
+    if limit < 4 { return Err(anyhow!("invalid_request")); }
+    let limit = limit.min(MAX_FILE_WINDOW_BYTES as u64);
+    let mut file = fs::File::open(path).map_err(window_io_error)?;
+    let before = file.metadata().map_err(window_io_error)?;
+    if !before.is_file() { return Err(anyhow!("file_not_file")); }
+    let token = file_change_token(&before)?;
+    if expected_change_token.is_some_and(|expected| expected != token) { return Err(anyhow!("file_changed")); }
+    let size = before.len();
+    if offset >= size {
+        return Ok(FileWindow { content: String::new(), start: size, end: size, size, change_token: token, starts_mid_line: false, ends_mid_line: false });
+    }
+    let requested = offset.min(size);
+    let read_start = requested.saturating_sub(FILE_WINDOW_LOOKAROUND_BYTES);
+    let payload_end = requested.saturating_add(limit).min(size);
+    // Four bytes are enough to recognize a trailing UTF-8 scalar or CRLF without
+    // adding any bytes to the returned content.
+    let read_end = payload_end.saturating_add(4).min(size);
+    let mut bytes = vec![0; (read_end - read_start) as usize];
+    file.seek(SeekFrom::Start(read_start)).map_err(window_io_error)?;
+    file.read_exact(&mut bytes).map_err(window_io_error)?;
+
+    let requested_index = (requested - read_start) as usize;
+    let file_end_index = (size - read_start) as usize;
+    let line_start = bytes[..requested_index].iter().rposition(|byte| *byte == b'\n').map(|index| index + 1);
+    let mut start_index = line_start.unwrap_or(requested_index);
+    // A short caller limit must still advance past its requested offset. The normal
+    // 256 KiB path has an 8 KiB lookaround, so retaining a preceding line is safe.
+    if requested_index.saturating_sub(start_index) > limit as usize / 2 { start_index = requested_index; }
+    advance_past_split_utf8_scalar(&bytes, &mut start_index)?;
+    if start_index > 0 && start_index < bytes.len() && bytes[start_index - 1] == b'\r' && bytes[start_index] == b'\n' { start_index -= 1; }
+    let tail_request = requested.saturating_add(limit) >= size;
+    let (mut start_index, mut end_index, mut line_end) = if tail_request {
+        // Never move a sequential next request forward: that would skip text. For
+        // an explicit End jump use the final bounded fragment if its prior line
+        // boundary is outside the last-window budget.
+        let floor = file_end_index.saturating_sub(limit as usize);
+        (start_index.max(floor), file_end_index, None)
+    } else {
+        let desired_end = start_index.saturating_add(limit as usize).min(bytes.len());
+        let line_end = bytes[start_index..desired_end].iter().rposition(|byte| *byte == b'\n').map(|index| start_index + index + 1);
+        (start_index, line_end.unwrap_or(desired_end), line_end)
+    };
+    advance_past_split_utf8_scalar(&bytes, &mut start_index)?;
+    if start_index > 0 && start_index < bytes.len() && bytes[start_index - 1] == b'\r' && bytes[start_index] == b'\n' {
+        if end_index.saturating_sub(start_index) >= limit as usize { start_index += 1; } else { start_index -= 1; }
+    }
+    if end_index < bytes.len() && end_index > start_index && bytes[end_index - 1] == b'\r' && bytes[end_index] == b'\n' { end_index -= 1; }
+    let content_bytes = match std::str::from_utf8(&bytes[start_index..end_index]) {
+        Ok(content) => content,
+        Err(error) if error.error_len().is_none() && read_start + (end_index as u64) < size => {
+            end_index = start_index + error.valid_up_to();
+            std::str::from_utf8(&bytes[start_index..end_index]).expect("valid UTF-8 prefix")
+        }
+        Err(_) => return Err(anyhow!("binary_file")),
+    };
+    if content_bytes.as_bytes().contains(&0) { return Err(anyhow!("binary_file")); }
+    let content = content_bytes.to_owned();
+    let start = read_start + start_index as u64;
+    let end = read_start + end_index as u64;
+    if file_change_token(&fs::metadata(path).map_err(window_io_error)?)? != token { return Err(anyhow!("file_changed")); }
+    line_end = line_end.filter(|line_end| *line_end == end_index);
+    let starts_mid_line = start > 0 && (start_index == 0 || bytes[start_index - 1] != b'\n');
+    Ok(FileWindow { content, start, end, size, change_token: token, starts_mid_line, ends_mid_line: end < size && line_end.is_none() })
+}
+
+fn file_change_token(metadata: &fs::Metadata) -> Result<String> {
+    let modified = metadata.modified()?.duration_since(std::time::UNIX_EPOCH).map_err(|_| anyhow!("file_unavailable"))?;
+    Ok(format!("{}:{}:{}", metadata.len(), modified.as_secs(), modified.subsec_nanos()))
+}
+
+fn window_io_error(error: std::io::Error) -> anyhow::Error {
+    anyhow!(match error.kind() {
+        ErrorKind::NotFound => "file_not_found",
+        ErrorKind::UnexpectedEof => "file_changed",
+        _ => "file_unavailable",
+    })
+}
+
+/// If a requested byte falls inside a valid scalar, advance to its next boundary.
+/// A stray continuation byte is binary data; never silently skip it.
+fn advance_past_split_utf8_scalar(bytes: &[u8], start: &mut usize) -> Result<()> {
+    if *start >= bytes.len() || bytes[*start] & 0b1100_0000 != 0b1000_0000 { return Ok(()); }
+    let mut leader = *start;
+    while leader > 0 && bytes[leader] & 0b1100_0000 == 0b1000_0000 { leader -= 1; }
+    let width = match bytes.get(leader).copied() {
+        Some(0b1100_0000..=0b1101_1111) => 2,
+        Some(0b1110_0000..=0b1110_1111) => 3,
+        Some(0b1111_0000..=0b1111_0111) => 4,
+        _ => return Err(anyhow!("binary_file")),
+    };
+    let end = leader.saturating_add(width);
+    if end <= *start || end > bytes.len() || std::str::from_utf8(&bytes[leader..end]).is_err() { return Err(anyhow!("binary_file")); }
+    *start = end;
+    Ok(())
 }
 
 pub fn write_document(
@@ -2364,6 +2499,7 @@ mod tests {
         fs::write(root.join("中文 空格.md"), "# hello").unwrap();
         fs::write(root.join("page.html"), "<p>source only</p>").unwrap();
         fs::write(root.join("vector.svg"), "<svg/>").unwrap();
+        fs::write(root.join("large.txt"), vec![b'x'; MAX_DOCUMENT_BYTES + 1]).unwrap();
         fs::write(root.join("pixel.png"), b"\x89PNG\r\n\x1a\nfixture").unwrap();
         fs::write(root.join("extensionless"), b"GIF89afixture").unwrap();
         let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
@@ -2396,12 +2532,13 @@ mod tests {
                 ["kind"],
             "image"
         );
-        for path in ["../page.html", "../vector.svg"] {
+        for path in ["../page.html", "../vector.svg", "../large.txt"] {
             assert_eq!(
                 resolve_file_reference(&db, &session.id, path, None, None).unwrap()["kind"],
                 "text"
             );
         }
+        assert_eq!(read_document(&root, "large.txt").unwrap_err().to_string(), "file_too_large");
         let column_only =
             resolve_file_reference(&db, &session.id, "../page.html", None, Some(6)).unwrap();
         assert!(column_only.get("line").is_none());
@@ -4852,5 +4989,56 @@ mod tests {
                 ["path"],
             "src/main/java/com/example/Hello.java"
         );
+    }
+
+    #[test]
+    fn file_windows_preserve_utf8_crlf_and_reconstruct_successive_pages() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = (0..20_000).map(|index| format!("{index}: €\r\n")).collect::<String>() + &"€".repeat(3_000);
+        let path = temp.path().join("utf8.txt");
+        fs::write(&path, &source).unwrap();
+        let mut offset = 0;
+        let mut rebuilt = String::new();
+        let mut token = None;
+        while offset < source.len() as u64 {
+            let window = read_window_path(&path, offset, Some(4 * 1024), token.as_deref()).unwrap();
+            assert!(window.end > offset, "window must advance at {offset}");
+            assert!(window.content.len() <= 4 * 1024);
+            token = Some(window.change_token);
+            rebuilt.push_str(&window.content);
+            offset = window.end;
+        }
+        assert_eq!(rebuilt, source);
+    }
+
+    #[test]
+    fn file_window_handles_long_lines_eof_binary_changes_and_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("long.txt");
+        fs::write(&path, "x".repeat(MAX_FILE_WINDOW_BYTES * 2)).unwrap();
+        let first = read_window_path(&path, 0, None, None).unwrap();
+        assert!(first.ends_mid_line);
+        assert_eq!(first.content.len(), MAX_FILE_WINDOW_BYTES);
+        let last = read_window_path(&path, first.size - MAX_FILE_WINDOW_BYTES as u64, None, Some(&first.change_token)).unwrap();
+        assert_eq!(last.end, last.size);
+        assert!(last.starts_mid_line);
+        assert_eq!(read_window_path(&path, last.size + 1, None, Some(&last.change_token)).unwrap().content, "");
+        fs::write(&path, "changed").unwrap();
+        assert_eq!(read_window_path(&path, 0, None, Some(&first.change_token)).unwrap_err().to_string(), "file_changed");
+        fs::write(&path, "same-size").unwrap();
+        fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(100)).unwrap();
+        let mtime_token = read_window_path(&path, 0, None, None).unwrap().change_token;
+        fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(101)).unwrap();
+        assert_eq!(read_window_path(&path, 0, None, Some(&mtime_token)).unwrap_err().to_string(), "file_changed");
+        fs::write(&path, b"ok\0bad").unwrap();
+        assert_eq!(read_window_path(&path, 0, None, None).unwrap_err().to_string(), "binary_file");
+        for invalid in [b"\x80text".as_slice(), b"line\n\x80text".as_slice(), b"\x80\x80\x80".as_slice(), b"text\xE2\x82".as_slice()] {
+            fs::write(&path, invalid).unwrap();
+            assert_eq!(read_window_path(&path, 0, None, None).unwrap_err().to_string(), "binary_file");
+        }
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(temp.path().join("outside.txt"), "outside").unwrap();
+        assert_eq!(read_window_document(&workspace, "../outside.txt", 0, None, None).unwrap_err().to_string(), "invalid_path");
     }
 }

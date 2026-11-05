@@ -201,7 +201,8 @@ impl Sink {
             return;
         }
         self.keys.insert(candidate.key.clone());
-        let tool = command_tool(&candidate.command);
+        let tool = command_tool(&candidate.command)
+            .filter(|tool| !shell_builtin(detected_shell(), tool));
         let directory = if candidate.cwd.is_empty() {
             self.root.clone()
         } else {
@@ -1121,6 +1122,19 @@ fn var<'a>(vars: &'a [(OsString, OsString)], name: &str) -> Option<&'a OsString>
     vars.iter()
         .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case(name))
         .map(|(_, value)| value)
+}
+
+/// Detected Windows commands run through cmd.exe: its internal commands do not
+/// have PATH executables. Keep this separate from executable discovery (Python
+/// runner selection, for example, must still find a real file).
+fn shell_builtin(shell: &str, tool: &str) -> bool {
+    shell == "cmd" && matches!(tool.to_ascii_lowercase().as_str(),
+        "assoc" | "break" | "call" | "cd" | "chdir" | "cls" | "color" | "copy"
+        | "date" | "del" | "dir" | "echo" | "endlocal" | "erase" | "exit" | "for"
+        | "ftype" | "goto" | "if" | "md" | "mkdir" | "mklink" | "move" | "path"
+        | "pause" | "popd" | "prompt" | "pushd" | "rd" | "rem" | "ren" | "rename"
+        | "rmdir" | "set" | "setlocal" | "shift" | "start" | "time" | "title"
+        | "type" | "ver" | "verify" | "vol")
 }
 
 fn command_tool(command: &str) -> Option<&str> {

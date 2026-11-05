@@ -391,8 +391,12 @@ const isEnded = (session: Session) => Boolean(session.readOnly) || session.statu
 // Option classification and labels moved to ../composerOptions (C2).
 type DraftWriter = ReturnType<typeof createDraftWriter>;
 type ControlToken = { epoch: number; check: () => Promise<void>; release: () => void; valid: boolean };
-type ChatLifecycle = { sessionId: string; writer?: DraftWriter; control?: ControlToken; flushOnExit?: Promise<void> };
+type ChatLifecycle = { sessionId: string; writer?: DraftWriter; control?: ControlToken; flushOnExit?: Promise<void>; submittingDraft?: string };
 type FirstResponseWait = { token: string; sessionUpdatedAt: string; turnId?: string };
+// A replacement view waits for an in-flight accepted-send settlement before it
+// reads the durable draft, so it cannot render a value that the prior view is
+// about to conditionally clear.
+const pendingDraftSettlements = new Map<string, Promise<void>>();
 
 function hasVisibleAssistantResponse(items: ChatItem[], turnId: string): boolean {
   return items.some(item => item.role === "assistant" && item.turnId === turnId && item.parts.some(shouldRenderPart));
@@ -577,10 +581,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   function persistCompose(value:string,_epoch:number) {
     if (!writer.current) return Promise.reject(new Error('Draft is not loaded'));
-    return writer.current.write(composerDraftValue(value)).then(() => {
+    return writer.current.write(composerDraftValue(value)).then(saved => {
       if (currentText.current === value) {
         try { localStorage.removeItem(recoveryKey); } catch { /* Runtime copy is durable. */ }
       }
+      return saved;
     });
   }
   function submissionSnapshot(value: string): ComposerSnapshot {
@@ -804,7 +809,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       else setItems(current => upsertChatItem(current, data.item!));
     });
     // Reading does not require the write lease: other windows remain viewers.
-    void request('chat.draft.read',{sessionId:session.id}).then(draft=>{
+    const pendingDraftSettlement = pendingDraftSettlements.get(session.id);
+    void (pendingDraftSettlement ?? Promise.resolve()).then(() => request('chat.draft.read',{sessionId:session.id})).then(draft=>{
       if(disposed)return;draftRevision.current=draft.revision;lastSaved.current=draft.text;draftReady.current=true;initializeWriter(draft,sessionLifecycle);setDraftLoaded(true);
       const v2 = decodeForkDraftV2(draft.text);
       const v1 = v2 ? undefined : decodeCopiedConversationDraft(draft.text);
@@ -868,10 +874,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       const control = sessionLifecycle.control;
       const draftWriter = sessionLifecycle.writer;
       const value = currentText.current;
-      if (draftReady.current && control?.valid && draftWriter) {
-        sessionLifecycle.flushOnExit = draftWriter.write(composerDraftValue(value)).then(() => {
+      // The submitted value is already durable. Requeueing it behind an
+      // in-flight clear would restore the accepted text after that clear.
+      if (draftReady.current && control?.valid && draftWriter && composerDraftValue(value) !== sessionLifecycle.submittingDraft) {
+        const flush = draftWriter.write(composerDraftValue(value)).then(() => {
           try { if (localStorage.getItem(recoveryKey) === value) localStorage.removeItem(recoveryKey); } catch { /* The runtime copy is durable. */ }
         }).catch(() => undefined);
+        const pending = sessionLifecycle.flushOnExit;
+        sessionLifecycle.flushOnExit = pending ? Promise.all([pending, flush]).then(() => undefined) : flush;
       }
       if (lifecycle.current === sessionLifecycle) { lifecycle.current = undefined; discoverHistoryRef.current = () => undefined; loadEarlierRef.current = () => undefined; }
     };
@@ -1108,23 +1118,47 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     setBusy(true);setError(undefined);
     let accepted = false;
     try{
-      await persistCompose(text,epoch);
+      const submittedDraft = await persistCompose(text,epoch);
       if (lifecycle.current !== submittingLifecycle) return;
-      const sent = await request('chat.send',{sessionId:session.id,text:value,...(images.length ? {images} : {}),operationId:token,leaseEpoch:epoch});
+      const submittingWriter = submittingLifecycle?.writer;
+      if (!submittingWriter) throw new Error('Draft is not loaded');
+      submittingLifecycle.submittingDraft = submittedDraft.text;
+      const sentAndCleared = request('chat.send',{sessionId:session.id,text:value,...(images.length ? {images} : {}),operationId:token,leaseEpoch:epoch}).then(async sent => {
+        accepted = true;
+        return {sent, cleared: await submittingWriter.writeIfUnchanged(submittedDraft, '')};
+      });
+      // Keep the lease alive until an unmounted view conditionally clears its
+      // acknowledged submission; the runtime request itself is time-bounded.
+      submittingLifecycle.flushOnExit = sentAndCleared.then(() => undefined, () => undefined);
+      const settlement = submittingLifecycle.flushOnExit;
+      pendingDraftSettlements.set(session.id, settlement);
+      void settlement.then(
+        () => { if (pendingDraftSettlements.get(session.id) === settlement) pendingDraftSettlements.delete(session.id); },
+        () => { if (pendingDraftSettlements.get(session.id) === settlement) pendingDraftSettlements.delete(session.id); },
+      );
+      const {sent, cleared} = await sentAndCleared;
       if (lifecycle.current !== submittingLifecycle) return;
-      accepted = true;
       setSubmissionPreview(undefined);
-      clearMentions(); composerGeneration.current += 1;
       if (firstResponseWaitRef.current?.token === token) {
         const pending = { token, sessionUpdatedAt: session.updatedAt, turnId: sent.turnId };
         firstResponseWaitRef.current = pending;
         setFirstResponseWait(pending);
         if (hasVisibleAssistantResponse(itemsRef.current, sent.turnId)) clearFirstResponseWait(token);
       }
-      changeText('');
-      setImages([]); context.clear();
-      try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted message is already durable. */ }
-      await persistCompose('',epoch);
+      const submittedTextStillVisible = currentText.current === text;
+      // Do not erase an edit that arrived while the send was in flight. Its
+      // writer update advances the revision, so the conditional clear above
+      // also leaves the durable newer draft untouched.
+      if (submittedTextStillVisible) {
+        clearMentions(); composerGeneration.current += 1;
+        changeText('');
+        setImages([]); context.clear();
+        try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted message is already durable. */ }
+      }
+      if (!cleared && submittedTextStillVisible) {
+        setDraftFailed(true);
+        setDraftNotice(copy('Draft changed in another view', '草稿已在其他视图中更改'));
+      }
     }catch(caught){
       if (lifecycle.current === submittingLifecycle) {
         setSubmissionPreview(undefined);
@@ -1138,7 +1172,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         }
       }
     }
-    finally{if (lifecycle.current === submittingLifecycle) setBusy(false);}
+    finally{
+      if (submittingLifecycle) submittingLifecycle.submittingDraft = undefined;
+      if (lifecycle.current === submittingLifecycle) setBusy(false);
+    }
   }
   function updateImages(next: string[]) {
     try {

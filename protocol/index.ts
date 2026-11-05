@@ -1030,10 +1030,12 @@ export interface RequestMap {
  'filesystem.resolve': [{sessionId:string}&FileReference,ResolvedFileReference];
  'filesystem.external.open': [{path:string;source:ExternalFileSource;sessionId?:string},ExternalFileOpenResult];
  'filesystem.external.read': [{id:string},FileDocument];
+ 'filesystem.external.readWindow': [{id:string}&LargeFileWindowRequest,LargeFileWindow];
  'filesystem.external.image': [{id:string},{mime:'image/png'|'image/jpeg'|'image/gif'|'image/webp';data:string}];
  'filesystem.external.list': [{},{files:Array<ExternalFile&{exists:boolean}>}];
  'filesystem.external.forget': [{id:string;operationId:string},null];
  'filesystem.read': [FileScope&{path:string},FileDocument];
+ 'filesystem.readWindow': [FileScope&{path:string}&LargeFileWindowRequest,LargeFileWindow];
  'filesystem.image': [FileScope&{path:string},{mime:'image/png'|'image/jpeg'|'image/gif'|'image/webp';data:string}];
  'filesystem.write': [FileScope&{path:string;content:string;expectedFingerprint:string;operationId:string},FileDocument];
  'draft.list': [FileScope,Draft[]];
@@ -1196,6 +1198,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 // `validateRequest` accept the additive methods without rebuilding that list.
 (METHODS as unknown as string[]).unshift(
  'filesystem.browse','filesystem.preview.read','attachment.upload','attachment.read',
+ 'filesystem.external.readWindow','filesystem.readWindow',
  'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
@@ -1216,7 +1219,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'preview.ack':['sessionId','attachmentId','requestId','previewId','documentId'],'preview.observe':['sessionId','attachmentId','requestId','previewId','documentId'],'preview.close':['sessionId','attachmentId','previewId'],
  'filesystem.resolve':['sessionId','path'],
  'filesystem.external.open':['path','source'],
- 'filesystem.external.read':['id'],'filesystem.external.image':['id'],'filesystem.external.forget':['id','operationId'],
+ 'filesystem.external.read':['id'],'filesystem.external.readWindow':['id'],'filesystem.external.image':['id'],'filesystem.external.forget':['id','operationId'],
  'session.launch.read':['sessionId'],
  'catalog.visibility.update':['kind','id','visibility','operationId'],
  'session.resume':['sessionId','operationId'],
@@ -1247,7 +1250,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'chat.fork':['sessionId','operationId'],
  'chat.options':['sessionId'],'chat.backgroundTasks.list':['sessionId'],'chat.backgroundTask.stop':['sessionId','taskId','operationId'],'chat.option.set':['sessionId','optionId','value','operationId'],
  'chat.connection':['sessionId'],'chat.context.read':['sessionId'],'chat.connect':['sessionId','operationId'],
- 'filesystem.list':['projectId'], 'filesystem.read':['projectId','path'],
+ 'filesystem.list':['projectId'], 'filesystem.read':['projectId','path'], 'filesystem.readWindow':['projectId','path'],
  'filesystem.write':['projectId','path','expectedFingerprint','operationId'],
  'draft.list':['projectId'],'draft.put':['projectId','path','baseFingerprint','operationId'],
  'draft.delete':['id','operationId'],'git.status':['projectId'],'git.diff':['projectId','path'],
@@ -1291,6 +1294,10 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m==='device.tailscaleOnly.set'&&typeof params.enabled!=='boolean') throw new Error('Invalid Tailscale-only option');
  if(m==='session.claim'&&params.takeover!==undefined&&typeof params.takeover!=='boolean') throw new Error('Invalid takeover');
  if(m==='runtime.events.filter'&&(params.preset!=='tree'||Object.keys(params).length!==1)) throw new Error('Invalid event filter preset');
+ if(m==='filesystem.readWindow'||m==='filesystem.external.readWindow') {
+  const allowed=m==='filesystem.readWindow'?['projectId','worktreePath','path','offset','maxBytes','changeToken']:['id','offset','maxBytes','changeToken'];
+  if(Object.keys(params).some(key=>!allowed.includes(key))||!Number.isSafeInteger(params.offset)||Number(params.offset)<0||params.maxBytes!==undefined&&(!Number.isSafeInteger(params.maxBytes)||Number(params.maxBytes)<4||Number(params.maxBytes)>256*1024)||params.changeToken!==undefined&&(typeof params.changeToken!=='string'||!params.changeToken||params.changeToken.length>128)) throw new Error('Invalid file window request');
+ }
  if((m==='git.undo'||m==='git.undo.list')&&Object.keys(params).some(key=>!['projectId','worktreePath',...(m==='git.undo'?['id','operationId']:[])].includes(key))) throw new Error('Invalid undo request');
  if(['git.history.plan','git.cherryPick','git.revert','git.reset'].includes(m)&&!/^[a-fA-F0-9]{7,64}$/.test(String(params.hash))) throw new Error('Invalid commit hash');
  if(m==='git.revert'&&params.mainline!==undefined&&(!Number.isSafeInteger(params.mainline)||Number(params.mainline)<1)) throw new Error('Invalid mainline parent');
@@ -1735,6 +1742,10 @@ declare global { interface Window { threadterm:ThreadTermBridge } }
 export interface FileScope { projectId:string; worktreePath?:string }
 export interface FileEntry { name:string; path:string; kind:'file'|'directory'|'symlink'; size?:number }
 export interface FileDocument { path:string; content:string; fingerprint:string; readonly:boolean; size:number; modifiedAt:string }
+/** A bounded read-only text window. `start` and `end` are byte offsets in the file. */
+export interface LargeFileWindow { content:string; start:number; end:number; size:number; changeToken:string; startsMidLine:boolean; endsMidLine:boolean }
+/** The opaque token fences navigation against a file changed after the first window. */
+export interface LargeFileWindowRequest { offset:number; maxBytes?:number; changeToken?:string }
 export interface Draft { id:string; projectId:string; worktreePath?:string; path:string; content:string; baseFingerprint:string; revision:number; updatedAt:string }
 export interface GitChange { path:string; originalPath?:string; indexStatus:string; worktreeStatus:string; untracked:boolean }
 export type GitHeadSnapshot = {kind:'branch';oid:string;target:string}|{kind:'detached';oid:string}|{kind:'unborn';target:string};

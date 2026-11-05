@@ -19,6 +19,9 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "external_file_unknown",
     "external_file_unavailable",
     "file_too_large",
+    "file_changed",
+    "file_not_found",
+    "file_unavailable",
     "binary_file",
     "image_too_large",
     "unsupported_image",
@@ -47,6 +50,7 @@ pub(crate) fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Op
         method,
         "filesystem.external.open"
             | "filesystem.external.read"
+            | "filesystem.external.readWindow"
             | "filesystem.external.image"
             | "filesystem.external.list"
             | "filesystem.external.forget"
@@ -60,6 +64,7 @@ pub(crate) fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Op
         "filesystem.external.open" => &["path", "source", "sessionId"],
         "filesystem.external.list" => &[],
         "filesystem.external.forget" => &["id", "operationId"],
+        "filesystem.external.readWindow" => &["id", "offset", "maxBytes", "changeToken"],
         _ => &["id"],
     };
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -90,6 +95,13 @@ pub(crate) fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Op
             open(db, string("path")?, source, session)?
         }
         "filesystem.external.read" => read(db, string("id")?, false)?,
+        "filesystem.external.readWindow" => read_window(
+            db,
+            string("id")?,
+            object.get("offset").and_then(Value::as_u64).ok_or_else(|| anyhow!("invalid_request"))?,
+            object.get("maxBytes").map(|value| value.as_u64().ok_or_else(|| anyhow!("invalid_request"))).transpose()?,
+            object.get("changeToken").map(|value| value.as_str().ok_or_else(|| anyhow!("invalid_request"))).transpose()?,
+        )?,
         "filesystem.external.image" => read(db, string("id")?, true)?,
         "filesystem.external.list" => list(db)?,
         "filesystem.external.forget" => {
@@ -322,6 +334,20 @@ fn read(db: &Database, id: &str, image: bool) -> Result<Value> {
         json!({"path":display_path(&canonical)?,"fingerprint":workspace::fingerprint(content.as_bytes()),
         "content":content,"readonly":true,"size":metadata.len(),"modifiedAt":modified(&metadata)?}),
     )
+}
+
+fn read_window(db: &Database, id: &str, offset: u64, max_bytes: Option<u64>, change_token: Option<&str>) -> Result<Value> {
+    let path = lookup(db, id)?;
+    let (canonical, _) = canonical_file(Path::new(&path))?;
+    let window = workspace::read_window_path(&canonical, offset, max_bytes, change_token).map_err(|error| {
+        match error.to_string().as_str() {
+            "file_not_file" => anyhow!("external_file_not_file"),
+            "file_not_found" => anyhow!("external_file_not_found"),
+            "file_unavailable" => anyhow!("external_file_unavailable"),
+            _ => error,
+        }
+    })?;
+    Ok(json!({"content":window.content,"start":window.start,"end":window.end,"size":window.size,"changeToken":window.change_token,"startsMidLine":window.starts_mid_line,"endsMidLine":window.ends_mid_line}))
 }
 
 fn list(db: &Database) -> Result<Value> {

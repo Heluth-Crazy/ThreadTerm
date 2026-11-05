@@ -28,3 +28,9 @@ test('a binary diff opens its readonly binary surface without reading a text doc
   assert.equal(value.readonly, true);
   assert.equal(value.content, '');
 });
+
+test('large files bypass Git fallback so the bounded viewer can handle them', async () => {
+  for (const error of [Error('file_too_large'), { code: 'file_too_large', message: 'oversize' }]) {
+    await assert.rejects(readDiffDocument('large.txt', async () => { throw error; }, async () => { assert.fail('must not request full Git diff for a large file'); }), value => value === error);
+  }
+});

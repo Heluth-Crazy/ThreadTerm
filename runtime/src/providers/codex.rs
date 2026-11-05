@@ -1547,6 +1547,16 @@ impl CodexChat {
                 Ok(Some(self.setting_command(name, args, operation_id)))
             }
             "status" | "usage" => {
+                emit_scoped(
+                    &self.events,
+                    "codex",
+                    &self.session_id,
+                    Some(&self.native_id),
+                    Some(operation_id),
+                    "chat.turn.started",
+                    json!({"command":name}),
+                    Some(&self.worker_token),
+                );
                 // Emit the cached report first, then refresh account/quota
                 // data. Each callback replaces this same chat item so a
                 // freshly opened session never persists a half-loaded auth
@@ -1587,6 +1597,18 @@ impl CodexChat {
                     &self.cwd,
                     &self.ui,
                     &self.active_turn,
+                );
+                // The cached report completes this local command. Later account
+                // callbacks only replace its item; they must not settle a newer turn.
+                emit_scoped(
+                    &self.events,
+                    "codex",
+                    &self.session_id,
+                    Some(&self.native_id),
+                    Some(operation_id),
+                    "chat.turn.completed",
+                    json!({"command":name}),
+                    Some(&self.worker_token),
                 );
                 schedule_codex_status_reads(&self.process, &self.ui, Some(refresh));
                 Ok(Some(json!({"turnId":operation_id})))
@@ -3863,6 +3885,14 @@ fn emit_codex_child_notification(
             };
             ("chat.subagent.item", data)
         }
+        "error" if params.get("willRetry").and_then(Value::as_bool) == Some(true) => (
+            "chat.subagent.item",
+            json!({"item":{
+                "id":format!("{thread_id}:reconnect:{}", params.get("turnId").and_then(Value::as_str).unwrap_or("unknown")),
+                "role":"assistant","parts":[{"type":"thinking","text":params.pointer("/error/message")
+                    .and_then(Value::as_str).unwrap_or("Reconnecting…")}]
+            }}),
+        ),
         "error" => (
             "chat.subagent.item",
             json!({"item":{
@@ -5262,6 +5292,36 @@ mod tests {
     }
 
     #[test]
+    fn recoverable_child_errors_are_informational_and_do_not_fail_the_parent() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        replay.drain();
+        for attempt in 1..=2 {
+            replay.emit("error", json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn",
+                "willRetry":true,"error":{"message":format!("Reconnecting... {attempt}/5")}}));
+            let events = replay.drain();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].kind, "chat.subagent.item");
+            assert_eq!(events[0].data["key"], SUBAGENT_CHILD);
+            assert_eq!(events[0].data["item"]["id"], format!("{SUBAGENT_CHILD}:reconnect:child-turn"));
+            assert_eq!(events[0].data["item"]["parts"][0]["type"], "thinking");
+            assert_eq!(events[0].data["item"]["parts"][0]["text"], format!("Reconnecting... {attempt}/5"));
+            assert_eq!(events[0].worker_token.as_deref(), Some("subagent-worker"));
+            replay.stop_target();
+        }
+        replay.emit("turn/completed", json!({"threadId":SUBAGENT_CHILD,
+            "turn":{"id":"child-turn","status":"completed"}}));
+        assert_eq!(replay.drain()[0].data["info"]["status"], "completed");
+        replay.stop_target();
+        replay.emit("error", json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn",
+            "willRetry":false,"error":{"message":"child failed"}}));
+        let error = replay.drain();
+        assert_eq!(error[0].data["item"]["parts"][0]["type"], "error");
+        assert_eq!(error[0].data["item"]["parts"][0]["text"], "child failed");
+        replay.stop_target();
+    }
+
+    #[test]
     fn recoverable_root_error_keeps_the_active_turn_for_retry_and_completion() {
         let mut replay = CodexSubagentReplay::new();
         replay.drain();
@@ -6401,31 +6461,41 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 ]
             );
         }
-        assert_eq!(
-            chat.send("/status", "status-turn").unwrap()["turnId"],
-            "status-turn"
-        );
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut status_items = 0;
-        while status_items < 3 && Instant::now() < deadline {
-            match received.try_recv() {
-                Ok(event) => {
-                    assert_eq!(event.worker_token.as_deref(), Some("qa-worker-token"));
-                    if event.kind == "chat.item" && event.turn_id.as_deref() == Some("status-turn")
-                    {
-                        status_items += 1;
+        for (command, turn) in [("/status", "status-turn"), ("/usage", "usage-turn")] {
+            assert_eq!(chat.send(command, turn).unwrap()["turnId"], turn);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut status_items = 0;
+            let mut status_lifecycle = Vec::new();
+            while status_items < 3 && Instant::now() < deadline {
+                match received.try_recv() {
+                    Ok(event) => {
+                        assert_eq!(event.worker_token.as_deref(), Some("qa-worker-token"));
+                        if event.turn_id.as_deref() == Some(turn)
+                            && event.kind.starts_with("chat.turn.")
+                        {
+                            status_lifecycle.push(event.kind.clone());
+                        }
+                        if event.kind == "chat.item" && event.turn_id.as_deref() == Some(turn)
+                        {
+                            status_items += 1;
+                        }
                     }
+                    Err(broadcast::error::TryRecvError::Empty) => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    other => panic!("scoped /status callback failed: {other:?}"),
                 }
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                other => panic!("scoped /status callback failed: {other:?}"),
             }
+            assert_eq!(
+                status_items, 3,
+                "cached status and both async account callbacks"
+            );
+            assert_eq!(
+                status_lifecycle,
+                vec!["chat.turn.started", "chat.turn.completed"],
+                "status must settle exactly once before async refreshes"
+            );
         }
-        assert_eq!(
-            status_items, 3,
-            "cached status and both async account callbacks"
-        );
         let before = std::fs::read_to_string(&log).unwrap();
         let image = vec!["data:image/png;base64,cG5n".to_owned()];
         for (command, _) in CODEX_SLASH_COMMANDS {

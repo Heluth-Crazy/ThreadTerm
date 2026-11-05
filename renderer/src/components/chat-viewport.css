@@ -5,8 +5,9 @@
 .chat-back-to-bottom { position:absolute; z-index:5; bottom:12px; right:12px; box-shadow:var(--shadow); }
 .btn.chat-back-to-bottom { width:32px; height:32px; padding:0; gap:0; justify-content:center; border-radius:999px; }
 .chat-back-to-bottom > .ico { transform:rotate(180deg); }
-/* Reserve room so the overlay never covers the last card's content or actions. */
-.chat-view .chat-log-shell:has(.chat-back-to-bottom) .v3-chat-log { padding-bottom:52px; padding-right:52px; }
+/* Horizontal clearance is permanent in the base transcript rule. Only reserve
+   extra vertical space while the overlay is visible. */
+.chat-view .chat-log-shell:has(.chat-back-to-bottom) .v3-chat-log { padding-bottom:52px; }
 .chat-log-shell .v3-chat-log:focus-visible { outline:2px solid var(--border); outline-offset:-2px; }
 /* One row above the oldest loaded message: the status row, or the control that
    pages back when the wheel alone cannot reach the rest of the transcript. */

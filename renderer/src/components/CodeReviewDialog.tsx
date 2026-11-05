@@ -48,6 +48,7 @@ export function CodeReviewDialog({ session, leaseEpoch, initialFocus = "", copy,
   const [options, setOptions] = useState<Options>();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>();
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [provider, setProvider] = useState<string>(prefs.provider ?? "");
   const [model, setModel] = useState<string>(prefs.model ?? "");
   const [thinking, setThinking] = useState<string>("");
@@ -61,6 +62,13 @@ export function CodeReviewDialog({ session, leaseEpoch, initialFocus = "", copy,
     let live = true;
     setLoading(true);
     setLoadError(undefined);
+    setOptions(undefined);
+    const timer = window.setTimeout(() => {
+      if (!live) return;
+      live = false;
+      setLoading(false);
+      setLoadError("review_options_timeout");
+    }, 15_000);
     void request("codeReview.options", { sessionId: session.id })
       .then((result) => {
         if (!live) return;
@@ -80,10 +88,11 @@ export function CodeReviewDialog({ session, leaseEpoch, initialFocus = "", copy,
         if (live) setLoadError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
+        window.clearTimeout(timer);
         if (live) setLoading(false);
       });
-    return () => { live = false; };
-  }, [session.id, session.provider, prefs.provider, prefs.model, prefs.scopeKind]);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [session.id, session.provider, prefs.provider, prefs.model, prefs.scopeKind, loadAttempt]);
 
   const selected = options?.providers.find((row) => row.id === provider);
   const modelChoices = selected?.model?.choices ?? [];
@@ -152,7 +161,12 @@ export function CodeReviewDialog({ session, leaseEpoch, initialFocus = "", copy,
     </>}
   >
     {loading && <p className="code-review-loading" role="status">{copy("Loading options…", "正在加载选项…")}</p>}
-    {loadError && <p className="surface-error" role="alert">{loadError}</p>}
+    {loadError && <>
+      <p className="surface-error" role="alert">{loadError === "review_options_timeout"
+        ? copy("Loading review options is taking longer than expected. Retry, or close this dialog and try again later.", "加载审查选项耗时超出预期。请重试，或关闭此对话框稍后再试。")
+        : loadError}</p>
+      <button type="button" className="btn" onClick={() => setLoadAttempt(value => value + 1)}>{copy("Retry", "重试")}</button>
+    </>}
     {!loading && options && <>
       {active && <div className="code-review-active" data-testid="code-review-active">
         <p>{copy("A review is already running in this chat.", "此聊天已有正在进行的代码审查。")}</p>

@@ -63,9 +63,13 @@ const sessions = [
 ];
 const listeners = new Set();
 let sequence = 1, activeScenario = 'running', sent = [];
+window.qaOptionsMode = 'normal';
+window.qaOptionsPending = [];
 window.threadterm = {
   onEvent(cb){ listeners.add(cb); return () => listeners.delete(cb); },
   async request(method, params){
+    if(method==='codeReview.options' && window.qaOptionsMode === 'pending') return new Promise(resolve => window.qaOptionsPending.push(resolve));
+    if(method==='codeReview.options' && window.qaOptionsMode === 'error') throw Error('Options unavailable');
     if(method==='chat.snapshot') return {items:cards[params.sessionId] || cards[activeScenario] || [], revision:1};
     if(method==='chat.draft.read') return {text:'',revision:0};
     if(method==='chat.draft.write') return {text:params.text??'',revision:1};
@@ -180,6 +184,39 @@ try {
   await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
   await shot('01-dialog-dark.png');
   report.checks.push('dialog loads options, disables unavailable provider, shows cost hint');
+
+  // Exercise the reported wait with the production dialog and an unresolved RPC.
+  await render('running');
+  await page.evaluate(() => { window.qaOptionsMode = 'pending'; });
+  await render('dialog');
+  await page.getByRole('alert').waitFor({ state: 'visible', timeout: 20_000 });
+  assert.match(await page.getByRole('alert').textContent(), /taking longer than expected/i);
+  assert.equal(await page.getByTestId('code-review-start').isDisabled(), true);
+  await shot('01-options-timeout-dark.png');
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await page.waitForFunction(() => window.qaOptionsPending.length === 2);
+  await page.evaluate(async () => {
+    window.qaOptionsMode = 'normal';
+    const options = await window.threadterm.request('codeReview.options', {sessionId:'parent'});
+    window.qaOptionsPending.shift()(options);
+  });
+  await page.waitForTimeout(100);
+  assert.equal(await page.getByTestId('code-review-model').count(), 0, 'obsolete response cannot populate the retry');
+  await page.evaluate(async () => window.qaOptionsPending.shift()(await window.threadterm.request('codeReview.options', {sessionId:'parent'})));
+  await page.getByTestId('code-review-model').waitFor({ state: 'visible' });
+  assert.equal(await page.getByTestId('code-review-start').isEnabled(), true);
+  assert.equal(await page.getByRole('alert').count(), 0);
+  report.checks.push('pending options time out within 20 seconds; retry succeeds and ignores obsolete response');
+
+  await render('running');
+  await page.evaluate(() => { window.qaOptionsMode = 'error'; });
+  await render('dialog');
+  await page.getByRole('alert').waitFor({ state: 'visible' });
+  assert.match(await page.getByRole('alert').textContent(), /Options unavailable/);
+  await page.evaluate(() => { window.qaOptionsMode = 'normal'; });
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await page.getByTestId('code-review-model').waitFor({ state: 'visible' });
+  report.checks.push('rejected options request offers a successful explicit retry');
 
   await render('running');
   const running = page.locator('.chat-subagent-card.is-code-review');

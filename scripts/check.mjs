@@ -302,7 +302,7 @@ const QA = [
   'icon-generator', 'icon-stability', 'inbox-visibility', 'mcp-smoke', 'native-browser', 'oc1-visual-fixtures', 'oc2-opencode-fixture',
   'oc2-opencode-harness', 'oc2-opencode-options-regression', 'oc2-opencode-visual-fixture', 'opencode-reconnect-ordering',
   'opencode-retry', 'palette-sessions', 'pane-geometry', 'remote-machine-browser', 'remote-preview-address', 'review-comments', 'selected-commit-selection',
-  'send-latency-breakdown', 'session-activity', 'session-ordering', 'session-state', 'terminal-file-links', 'token-speed',
+  'send-latency-breakdown', 'session-activity', 'session-ordering', 'session-state', 'terminal-file-links', 'terminal-text', 'lib/desktop1', 'token-speed',
   'usage-card', 'workbench-graph', 'workbench-helpers', 'workspace-layout', 'workspace-tabs',
 ];
 run('qa unit tests', root, process.execPath, ['--test', '--test-timeout=180000', ...QA.map(name => join('qa', `${name}.test.mjs`))], 900000);
@@ -388,9 +388,11 @@ if (!fast) {
   if (!cargo) fail('cargo is required for the full gate; install Rust (rustup) or run npm run check:fast');
   if (!workingTree) notes.push('rust tests always run on the working tree of runtime/');
   for (const note of notes) console.log(`     ${note}`);
-  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', '2', '--', '--test-threads=2'];
+  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${process.env.RUST_TEST_THREADS || '2'}`];
   for (const skip of skips) rustArgs.push('--skip', skip);
-  run('rust tests', repo, cargo, rustArgs, 3600000, rustEnv);
+  // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
+  // The explicit --test-threads argument above still enforces the caller's concurrency limit.
+  run('rust tests', repo, cargo, rustArgs, 3600000, { ...rustEnv, RUST_TEST_THREADS: undefined });
 }
 
 // --- summary ------------------------------------------------------------------------------------------------------

@@ -94,6 +94,12 @@ test('external files have a small read-only registration contract',()=>{
  validateResult('filesystem.external.open',{inWorkspace:{projectId:'project',path:'src/main.ts'}});
  validateRequest('filesystem.external.read',{id:opened.id});
  validateResult('filesystem.external.read',{path:opened.path,content:'notes',fingerprint:'a'.repeat(64),readonly:true,size:5,modifiedAt:opened.modifiedAt});
+ const window={content:'notes\r\n',start:0,end:7,size:12,changeToken:'12:1:2',startsMidLine:false,endsMidLine:false};
+ validateRequest('filesystem.external.readWindow',{id:opened.id,offset:0,maxBytes:4096});
+ validateRequest('filesystem.readWindow',{projectId:'project',path:'notes.md',offset:7,changeToken:window.changeToken});
+ validateResult('filesystem.external.readWindow',window);
+ validateResult('filesystem.readWindow',window);
+ for(const params of [{id:opened.id},{id:opened.id,offset:-1},{id:opened.id,offset:1.5},{id:opened.id,offset:0,maxBytes:3},{id:opened.id,offset:0,maxBytes:256*1024+1},{id:opened.id,offset:0,changeToken:''},{id:opened.id,offset:0,extra:true}])assert.throws(()=>validateRequest('filesystem.external.readWindow',params));
  validateRequest('filesystem.external.image',{id:opened.id});
  validateResult('filesystem.external.image',{mime:'image/png',data:'AA=='});
  validateRequest('filesystem.external.list',{});

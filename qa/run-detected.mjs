@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {existsSync, statSync} from 'node:fs';
+import {existsSync, readFileSync, statSync} from 'node:fs';
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, isAbsolute, join, resolve} from 'node:path';
@@ -88,7 +88,7 @@ try {
   await writeFile(join(work, 'server.mjs'), server);
   await writeFile(join(work, 'package.json'), JSON.stringify({name: 'run-detected-fixture', private: true, scripts: {dev: 'node server.mjs', build: 'node -e "process.exit(0)"'}}, null, 2));
   await writeFile(join(work, 'Makefile'), 'build:\n\t@echo make build\n\n# comment\ntest:\n\t@echo make test\n');
-  await writeFile(join(work, 'Procfile'), 'missing: tt-qa-definitely-missing-tool --serve\n');
+  await writeFile(join(work, 'Procfile'), 'builtin: echo BUILTIN_OK>builtin-result.txt\nmissing: tt-qa-definitely-missing-tool --serve\n');
   git('init'); git('config', 'user.email', 'qa@threadterm.invalid'); git('config', 'user.name', 'Run detected QA');
   git('add', '.'); git('commit', '-m', 'fixture');
 
@@ -140,6 +140,15 @@ createRoot(document.getElementById('root')).render(<Probe/>);`;
   assert.ok(await detectedRow('make:Makefile:build').count(), 'Makefile build target is detected');
   assert.ok(await detectedRow('node:package.json:build').count(), 'the non-service build script is detected too');
   check('The Run view omits empty sections and groups available package.json and Makefile entries densely');
+
+  // A cmd internal command has no executable on PATH, but is still a runnable row.
+  const builtinRow = detectedRow('procfile:Procfile:builtin');
+  await builtinRow.waitFor();
+  await builtinRow.getByRole('button', {name: 'Run builtin', exact: true}).click();
+  const builtinSession = await until(async () => (await snapshot()).sessions.find(session => session.run?.commandId === 'detected:procfile:Procfile:builtin' && session.status === 'exited'), 'cmd builtin task completed');
+  assert.equal(builtinSession.exitCode, 0);
+  assert.equal(readFileSync(join(work, 'builtin-result.txt'), 'utf8').trim(), 'BUILTIN_OK');
+  check('A detected cmd builtin is actionable and executes through the real shell');
 
   // Missing tools are in the compact expandable footer, never an actionable row.
   const unavailable = page.getByTestId('run-unavailable');
