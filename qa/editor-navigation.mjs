@@ -1,0 +1,54 @@
+// Isolated real-Electron coverage for FileWorkspace navigation gestures.  The bridge is intentionally fake:
+// runtime/service lifecycle and installed language servers have their own QA; this asserts renderer fencing/wiring.
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+import { electron } from './lib/desktop1.mjs';
+import { acquireElectronQaLock } from './lib/electron-lock.mjs';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const root = resolve(import.meta.dirname, '..');
+const scratch = await mkdtemp(join(tmpdir(), 'tt-editor-navigation-'));
+const out = join(root, 'qa/results/editor-navigation');
+const source = `
+import React from 'react'; import {createRoot} from 'react-dom/client';
+import {FileWorkspace} from './renderer/src/components/FileWorkspace'; import {I18nProvider} from './renderer/src/i18n'; import './renderer/src/styles.css';
+const files={'source.ts':'export const sourceSymbol = targetSymbol;\\n','target.ts':'export const targetSymbol = 1;\\n'};const calls=[];let resolveDefinition;
+window.qa={calls,files,delayNextDefinition:false,reset:()=>{calls.splice(0);},resolveDefinition:()=>resolveDefinition?.()};
+window.threadterm={platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},onEvent:()=>()=>{},onPageContextMenu:()=>()=>{},openExternal:async()=>{},request:async(method,params={})=>{calls.push({method,params});
+if(method==='filesystem.list')return Object.keys(files).map(path=>({path,name:path,kind:'file'})); if(method==='filesystem.read'){const content=files[params.path];if(content===undefined)throw Error('missing '+params.path);return{path:params.path,content,fingerprint:params.path+'-1',readonly:false,size:content.length,modifiedAt:'now'};} if(method==='git.status')return{branch:'fixture',changes:[],ahead:0,behind:0};if(method==='git.diff')return{path:params.path,oldText:files[params.path]??'',newText:files[params.path]??'',binary:false,fingerprint:params.path+'-1'};if(method==='draft.list')return[];if(method==='draft.put')return{...params,id:'draft-'+params.path,revision:1};if(['draft.delete','filesystem.write'].includes(method))return{};
+if(method==='editorNavigation.configuration')return{enabled:true,tools:{},detected:[]};if(method==='editorNavigation.prepare')return{contextId:'ctx',state:'ready'};if(method==='editorNavigation.status')return{contextId:'ctx',state:'ready'};if(method==='editorNavigation.sync')return{accepted:true};if(method==='editorNavigation.definition'){const result={targets:[{path:'target.ts',line:1,column:14,name:'targetSymbol'}],truncated:false};if(!window.qa.delayNextDefinition)return result;window.qa.delayNextDefinition=false;return new Promise(resolve=>{resolveDefinition=()=>resolve(result)});}if(method==='editorNavigation.documentSymbols')return{symbols:[{name:'sourceSymbol',kind:12,path:'source.ts',line:1,column:14},{name:'targetSymbol',kind:12,path:'source.ts',line:1,column:29}],truncated:false};if(method==='editorNavigation.cancel'||method==='editorNavigation.release')return{accepted:true};throw Error('unexpected '+method);}};
+function Fixture(){const[view,setView]=React.useState('file');window.qa.showDiff=()=>setView('diff');return <I18nProvider locale='en'><main className='fixture'><section id='source'><FileWorkspace key={view} projectId='p' worktreePath='D:/fixture' rootPath='D:/fixture' initialPath='source.ts' initialView={view} editorId='qa-source'/></section><section id='target'><FileWorkspace projectId='p' worktreePath='D:/fixture' rootPath='D:/fixture' initialPath='target.ts' initialView='file' editorId='qa-target'/></section></main></I18nProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);
+`;
+let app, release;
+try {
+  release = await acquireElectronQaLock();
+  await mkdir(out, { recursive: true });
+  await build({ stdin:{contents:source,resolveDir:root,sourcefile:'editor-navigation-fixture.tsx',loader:'tsx'},bundle:true,platform:'browser',format:'iife',jsx:'automatic',outdir:scratch,entryNames:'qa',loader:{'.css':'css','.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl'},logLevel:'error' });
+  await writeFile(join(scratch,'index.html'), '<link rel="stylesheet" href="qa.css"><style>html,body,#root,.fixture{margin:0;width:100%;height:100%}.fixture{display:flex;gap:8px}.fixture>section{flex:1;min-width:0;min-height:0}</style><div id="root"></div><script src="qa.js"></script>');
+  await writeFile(join(scratch,'main.cjs'), `const{app,BrowserWindow}=require('electron');app.whenReady().then(()=>new BrowserWindow({show:false,width:1100,height:700,webPreferences:{contextIsolation:true}}).loadFile(${JSON.stringify(join(scratch,'index.html'))}));`);
+  app=await electron.launch({args:[join(scratch,'main.cjs')],timeout:60_000}); const page=await app.firstWindow({timeout:30_000}); page.setDefaultTimeout(10_000); const errors=[]; page.on('pageerror',error=>errors.push(error.message)); page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
+  const editor=page.locator('#source .cm-content[contenteditable=true]'), targetEditor=page.locator('#target .cm-content[contenteditable=true]'); await editor.waitFor({state:'attached'}).catch(async error=>{await page.screenshot({path:join(out,'failure.png')}).catch(()=>{});throw new Error(`${error.message}\n${errors.join('\n')}`);}); await targetEditor.waitFor({state:'attached'});
+  const methods=()=>page.evaluate(()=>window.qa.calls.map(call=>call.method));
+  assert.equal((await methods()).filter(method=>method==='editorNavigation.prepare').length,0,'mount and caret setup never prepare a language service');
+  await editor.click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('// SOURCE_DIRTY'); await page.keyboard.press('F12'); await page.waitForFunction(()=>document.querySelector('.cm-content')?.textContent?.includes('targetSymbol')&&!document.querySelector('.cm-content')?.textContent?.includes('sourceSymbol')&&window.qa.calls.some(call=>call.method==='editorNavigation.definition')).catch(async error=>{await page.screenshot({path:join(out,'failure.png')});const state=await page.evaluate(()=>({calls:window.qa.calls,text:document.querySelector('.cm-content')?.textContent}));throw new Error(`${error.message}\n${JSON.stringify(state)}`);});
+  for (const method of ['editorNavigation.prepare','editorNavigation.sync','editorNavigation.definition']) assert.ok((await methods()).includes(method),`F12 requests ${method}`);
+  assert.ok(await page.evaluate(()=>window.qa.calls.some(call=>call.method==='editorNavigation.sync'&&call.params.documents.some(document=>document.path==='source.ts'&&document.content.includes('SOURCE_DIRTY')))),'definition sync includes the dirty source buffer');
+  await page.keyboard.press('Control+Alt+ArrowLeft'); await page.waitForFunction(()=>document.querySelector('.cm-content')?.textContent?.includes('sourceSymbol'));
+  await page.keyboard.press('Control+z'); assert.equal((await editor.textContent()).includes('SOURCE_DIRTY'),false,'back navigation preserves source undo history');
+  await editor.click(); await page.keyboard.press('Control+b'); await page.waitForFunction(()=>window.qa.calls.filter(call=>call.method==='editorNavigation.definition').length>=2);
+  await page.keyboard.press('Control+F12'); await page.getByRole('dialog').waitFor(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter'); await page.getByRole('dialog').waitFor({state:'detached'});
+  assert.ok((await methods()).includes('editorNavigation.documentSymbols'),'Ctrl+F12 opens current-file symbols');
+  await page.evaluate(()=>window.qa.reset()); const point=await editor.evaluate(element=>{const view=element.cmView?.view??element.parentElement?.cmView?.view;const rect=view.coordsAtPos(14);return{x:rect.left+1,y:(rect.top+rect.bottom)/2};}); await page.keyboard.down('Control'); await page.mouse.click(point.x,point.y); await page.keyboard.up('Control'); await page.waitForFunction(()=>window.qa.calls.some(call=>call.method==='editorNavigation.definition'));
+  assert.ok((await methods()).includes('editorNavigation.definition'),'Ctrl+click invokes definition exactly through the focused source surface');
+  await page.waitForFunction(()=>document.querySelector('#source .cm-content')?.textContent?.includes('targetSymbol')&&!document.querySelector('#source .cm-content')?.textContent?.includes('sourceSymbol')); await page.keyboard.press('Control+Alt+ArrowLeft'); await page.waitForFunction(()=>document.querySelector('#source .cm-content')?.textContent?.includes('sourceSymbol'));
+  await page.evaluate(()=>window.qa.reset()); await targetEditor.click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('// TARGET_DIRTY'); await editor.click(); await page.keyboard.press('F12'); await page.waitForFunction(()=>window.qa.calls.some(call=>call.method==='editorNavigation.sync'));
+  assert.ok(await page.evaluate(()=>window.qa.calls.some(call=>call.method==='editorNavigation.sync'&&call.params.documents.some(document=>document.path==='target.ts'&&document.content.includes('TARGET_DIRTY')))),'definition sync includes the immediately dirty target buffer before draft debounce');
+  await page.keyboard.press('Control+Alt+ArrowLeft'); await page.waitForFunction(()=>document.querySelector('#source .cm-content')?.textContent?.includes('sourceSymbol'));
+  await page.evaluate(()=>{window.qa.reset();window.qa.delayNextDefinition=true;}); await editor.click(); await page.keyboard.press('F12'); await page.waitForFunction(()=>window.qa.calls.some(call=>call.method==='editorNavigation.definition')); await page.keyboard.insertText('// STALE'); await page.evaluate(()=>window.qa.resolveDefinition()); await page.waitForTimeout(80);
+  assert.ok(await page.evaluate(()=>window.qa.calls.some(call=>call.method==='editorNavigation.cancel')),'typing cancels an in-flight definition'); assert.ok((await editor.textContent()).includes('STALE'),'late definition never navigates away from a newer source edit');
+  await page.evaluate(()=>{window.qa.reset();window.qa.showDiff();}); const diff=page.locator('#source .tt-diff-shell .cm-content').last(); await diff.waitFor({state:'attached'}); await diff.click(); await page.keyboard.press('F12'); await page.keyboard.press('Control+b'); await page.waitForTimeout(80); assert.equal((await methods()).includes('editorNavigation.definition'),false,'diff editors never capture semantic navigation shortcuts');
+  await page.screenshot({path:join(out,'navigation.png'),animations:'disabled'});
+  console.log('editor navigation: PASS (lazy prepare, F12/Ctrl+B/Ctrl-click, symbols and history)');
+} finally { if(app){await app.evaluate(({app})=>app.exit(0)).catch(()=>{});await app.close().catch(()=>{});} await release?.(); await rm(scratch,{recursive:true,force:true}); }

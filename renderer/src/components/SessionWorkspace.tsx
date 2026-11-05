@@ -320,7 +320,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   const key=crypto.randomUUID();setFocusTarget({paneId:target.paneId,tabId:target.tab.id,key});
   if(next.line||next.column)setFileReveal({tabId:target.tab.id,line:next.line??1,column:next.column,key});
  };
- const openPaneFile=(file:Parameters<typeof openScopedFile>[0])=>void openScopedFile({...file,kind:file.kind==='file'&&(file.assetKind==='image'||/\.(md|png|jpe?g|gif|webp)$/i.test(file.path))?'preview':file.kind}).catch(fail);
+ const openPaneFile=(file:Parameters<typeof openScopedFile>[0]&{navigation?:boolean})=>openScopedFile({...file,kind:!file.navigation&&file.kind==='file'&&(file.assetKind==='image'||/\.(md|png|jpe?g|gif|webp)$/i.test(file.path))?'preview':file.kind}).catch(error=>{fail(error);throw error;});
  const externalOwner=data.sessions.find(candidate=>candidate.id===previewSessionId)??session;
  const externalDisabledReason=externalOwner.mode!=='chat'?(zh?'请从聊天会话打开工作区外的文件。':'Open outside files from a Chat session.'):!data.projects.some(candidate=>candidate.id===externalOwner.projectId)?externalFileError({code:'file_reference_project_missing'},zh):undefined;
  const openOutside=async(paths:readonly string[],source:ExternalFileSource,ownerId=previewSessionId,position?:{line?:number;column?:number})=>{
@@ -587,6 +587,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  };
  useEffect(()=>{
   const key=(event:KeyboardEvent)=>{
+   if(event.defaultPrevented)return;
    // Ctrl+F5 / Shift+F5 / Ctrl+Shift+F5 act on this worktree's current configuration from any side bar view.
    const run=runKeyCommand(event);
    if(run){event.preventDefault();const scope=workbenchScopeRef.current,runScope=scope&&{projectId:scope.projectId,root:scope.rootPath};if(run.current==='run'&&runScope&&!currentRunEntry(runScope,latestData.current.sessions,runCurrentConfigs.get(runScope)))setQuickPickSignal(value=>(value??0)+1);else performRunCommand(run);return;}

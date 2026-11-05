@@ -781,7 +781,7 @@ test('session documents pin relative paths inside the worktree and list exact ro
  assert.throws(()=>validateRequest('session.documents.pin',{sessionId:'s',path:'docs/plan.md'}),/Invalid operationId|protocol schema/);
  validateResult('session.documents.list',[{path:'docs/plan.md',title:'Checkout plan',pinnedAt:'t'},{path:'notes.txt',pinnedAt:'t',missing:true}]);
  assert.throws(()=>validateResult('session.documents.pin',[{path:'docs/plan.md',pinnedAt:'t',size:3}]));
- assert.equal(PROTOCOL_CONTRACT,19);
+ assert.equal(PROTOCOL_CONTRACT,20);
 });
 
 test('preview presentation is attachment-scoped and requires a persisted tab acknowledgement',()=>{
@@ -1193,4 +1193,39 @@ test('tree event filter accepts only the server-owned preset and terminal takeov
  validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window', takeover: true });
  validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window' });
  assert.throws(() => validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window', takeover: 'yes' }));
+});
+
+test('editor navigation wire contracts bound scoped snapshots and semantic results', () => {
+ const tools={typescript:'',rust:'C:/tools/rust-analyzer.exe'};
+ validateRequest('editorNavigation.configuration',{});
+ validateRequest('editorNavigation.configure',{enabled:true,tools});
+ validateRequest('editorNavigation.prepare',{projectId:'project',bufferGroup:'editor-1',language:'typescript'});
+ validateRequest('editorNavigation.sync',{contextId:'context',documents:[{path:'src/index.ts',content:'export const x = 1;',version:0}]});
+ validateRequest('editorNavigation.definition',{contextId:'context',path:'src/index.ts',version:0,line:1,column:1,requestId:'definition-1'});
+ validateRequest('editorNavigation.documentSymbols',{contextId:'context',path:'src/index.ts',version:0,requestId:'symbols-1'});
+ validateRequest('editorNavigation.cancel',{contextId:'context',requestId:'definition-1'});
+ validateRequest('editorNavigation.release',{contextId:'context'});
+ validateResult('editorNavigation.configuration',{enabled:true,tools,detected:[{id:'typescript',available:true,path:'C:/tools/tsserver.exe'}]});
+ validateResult('editorNavigation.status',{contextId:'context',state:'ready'});
+ validateResult('editorNavigation.definition',{targets:[{path:'src/index.ts',line:1,column:1,name:'x'}],truncated:false});
+ validateResult('editorNavigation.documentSymbols',{symbols:[{name:'x',kind:13,path:'src/index.ts',line:1,column:14}],truncated:false});
+ for(const request of [
+  ['editorNavigation.prepare',{projectId:'project',bufferGroup:'editor',language:'go'}],
+  ['editorNavigation.sync',{contextId:'context',documents:[{path:'../escape.ts',content:'x',version:0}]}],
+  ['editorNavigation.definition',{contextId:'context',path:'src/index.ts',version:-1,line:1,column:1,requestId:'r'}],
+  ['editorNavigation.configure',{enabled:true,tools:{typescript:'x',extra:'y'}}],
+ ]) assert.throws(()=>validateRequest(...request));
+ assert.throws(()=>validateResult('editorNavigation.definition',{targets:[{path:'../escape.ts',line:1,column:1}],truncated:false}));
+ assert.throws(()=>validateResult('editorNavigation.documentSymbols',{symbols:Array.from({length:2001},()=>({name:'x',kind:1,path:'src/index.ts',line:1,column:1})),truncated:false}));
+});
+
+test('editor navigation accepts absolute worktree selectors while documents remain relative', () => {
+ const prepare={projectId:'project',bufferGroup:'editor-1',language:'typescript'};
+ for(const worktreePath of ['C:/repo/worktree','C:\\repo\\worktree','\\\\server\\share\\repo','\\\\?\\C:\\repo','/home/user/repo']) {
+  assert.doesNotThrow(()=>validateRequest('editorNavigation.prepare',{...prepare,worktreePath}));
+  assert.throws(()=>validateRequest('editorNavigation.sync',{contextId:'context',documents:[{path:worktreePath,content:'',version:1}]}));
+ }
+ for(const worktreePath of ['', 'C:/repo\0bad', 'C:/repo\nbad', '界'.repeat(1366)]) {
+  assert.throws(()=>validateRequest('editorNavigation.prepare',{...prepare,worktreePath}));
+ }
 });

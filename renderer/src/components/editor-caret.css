@@ -1,0 +1,3 @@
+/* Native input caret, CodeMirror-drawn cursor and drag/drop cursor share one resolved, contrast-safe colour. */
+:is(.tt-editor-shell, .tt-diff-shell, .merge-editor) .cm-content { caret-color: var(--tt-editor-caret, currentColor); }
+:is(.tt-editor-shell, .tt-diff-shell, .merge-editor) .cm-editor :is(.cm-cursor, .cm-dropCursor) { border-left-color: var(--tt-editor-caret, currentColor) !important; }

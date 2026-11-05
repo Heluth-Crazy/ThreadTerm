@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn registry_contract_rejects_contract_two() {
-        assert_eq!(PROTOCOL_CONTRACT, 19);
+        assert_eq!(PROTOCOL_CONTRACT, 20);
         assert!(
             require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Runtime)
                 .is_err()
@@ -108,11 +108,11 @@ mod tests {
 
     #[test]
     fn fork_feedback_contract_rejects_the_previous_contract() {
-        assert_eq!(PROTOCOL_CONTRACT, 19);
+        assert_eq!(PROTOCOL_CONTRACT, 20);
         for role in [ContractRole::Runtime, ContractRole::Desktop] {
             let reason =
                 incompatible_reason(&json!({"protocol": 1, "contract": 12}), role).unwrap();
-            assert!(reason.contains("19"));
+            assert!(reason.contains(&PROTOCOL_CONTRACT.to_string()));
             assert!(reason.contains("were not stopped") || reason.contains("left running"));
             assert!(require_peer_contract(&json!({"protocol": 1, "contract": 12}), role).is_err());
         }
@@ -125,7 +125,12 @@ mod tests {
             assert!(require_peer_contract(&json!({"protocol":1,"contract":14}), role).is_err());
             assert!(require_peer_contract(&json!({"protocol":1,"contract":17}), role).is_err());
             assert!(require_peer_contract(&json!({"protocol":1,"contract":18}), role).is_err());
-            assert!(require_peer_contract(&json!({"protocol":1,"contract":19}), role).is_ok());
+            assert!(require_peer_contract(&json!({"protocol":1,"contract":19}), role).is_err());
+            assert!(require_peer_contract(
+                &json!({"protocol":1,"contract":PROTOCOL_CONTRACT}),
+                role
+            )
+            .is_ok());
         }
     }
 

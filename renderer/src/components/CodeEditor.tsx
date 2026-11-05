@@ -1,5 +1,5 @@
 import { autocompletion, completeAnyWord, type CompletionSource } from "@codemirror/autocomplete";
-import { history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { history, historyField, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { foldGutter, indentOnInput, language as languageFacet, syntaxTree } from "@codemirror/language";
 import type { Chunk } from "@codemirror/merge";
 import { buildGitHunks, canUseGitHunks } from "../workbench/gutterHunk";
@@ -36,6 +36,8 @@ import type { GitBlame } from "@threadterm/protocol";
 import { useEffect, useRef, useState } from "react";
 import { editorHighlight, loadLanguage } from "../workbench/languages";
 import { EditorSelectionActions, type SelectionActionPosition, type SelectionActions } from './EditorSelectionActions';
+import { installEditorCaretPresentation } from './editorCaret';
+import './editor-caret.css';
 import './editor-selection-actions.css';
 
 // Grammars with their own completion (TS/JS, Python, Go, CSS, HTML, SQL…) keep it alone.
@@ -276,6 +278,7 @@ export function CodeEditor({
   onSave,
   reveal,
   resetKey,
+  preserveHistory = false,
   gitBaseText,
   gitHunkActions,
   blame,
@@ -293,6 +296,8 @@ export function CodeEditor({
   onSave: () => void;
   reveal?: { path: string; line: number; column?: number; key: string };
   resetKey?: number;
+  /** Bounded, instance-local undo/selection retention while a standalone file view changes paths. */
+  preserveHistory?: boolean;
   /** Index text for the change gutter; null/undefined hides it (untracked or non-Git). */
   gitBaseText?: string | null;
   gitHunkActions?: GitHunkActions;
@@ -309,6 +314,9 @@ export function CodeEditor({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | undefined>(undefined);
+  const retainedStates = useRef(new Map<string, { json: ReturnType<EditorState['toJSON']>; content: string; scrollTop: number; size: number }>());
+  const retainedReset = useRef(resetKey);
+  if (retainedReset.current !== resetKey) { retainedReset.current = resetKey; retainedStates.current.clear(); }
   const hunkActions=useRef(gitHunkActions);hunkActions.current=gitHunkActions;
   const popup=useRef<ReturnType<typeof gitHunkPopup>|undefined>(undefined);
   const changed = useRef(onChange);
@@ -330,13 +338,15 @@ export function CodeEditor({
     language: new Compartment(),
     base: new Compartment(),
     blame: new Compartment(),
+    access: new Compartment(),
   });
   const textFormat = useRef<{separator: EditorLineSeparator; emitted?: string}>({separator: dominantLineSeparator(value)});
   const zh = globalThis.document.documentElement.lang === "zh-CN";
   useEffect(() => {
     if (!host.current) return;
+    const detachCaretPresentation = installEditorCaretPresentation(host.current);
     setSelectionAction(undefined);
-    const { language, base, blame: blameSlot } = compartments.current;
+    const { language, base, blame: blameSlot, access } = compartments.current;
     textFormat.current = {separator: dominantLineSeparator(value)};
     const comments = Boolean(selected.current || actions.current);
     const reportSelection = (editor:EditorView) => {
@@ -355,9 +365,7 @@ export function CodeEditor({
     const enabled=(editor:EditorView)=>{if(conflictDoc!==editor.state.doc){conflictDoc=editor.state.doc;const conflicts=conflictBlocks(conflictDoc.toString());hasConflicts=conflicts.blocks.length>0||conflicts.unparseable;}return canUseGitHunks(editor.state.facet(EditorState.readOnly),Boolean(hunkActions.current?.conflicted),hasConflicts);};
     const hunks=gitHunkPopup(editor=>{const value=editor.state.field(lineChanges);if(editor.state.facet(gitBase)===null)return {base:'',doc:editor.state.doc,chunks:[]};return value.base!==null&&value.base===editor.state.facet(gitBase)&&value.doc===editor.state.doc?{base:value.base,doc:value.doc,chunks:value.chunks}:undefined;},hunkActions,enabled,zh);
     popup.current=hunks;
-    const state = EditorState.create({
-      doc: value,
-      extensions: [
+    const extensions: Extension = [
         blameSlot.of([]),
         lineNumbers(),
         gitGutter,
@@ -371,9 +379,7 @@ export function CodeEditor({
         language.of([]),
         editorHighlight,
         ...(comments ? [commentMarks,EditorView.updateListener.of(update=>{if((update.selectionSet||update.focusChanged||update.docChanged)&&update.view.hasFocus)reportSelection(update.view);})] : []),
-        readOnly ? [] : completion,
-        EditorState.readOnly.of(readOnly),
-        EditorView.editable.of(comments || !readOnly),
+        access.of([readOnly ? [] : completion, EditorState.readOnly.of(readOnly), EditorView.editable.of(comments || !readOnly)]),
         EditorView.domEventHandlers({
           contextmenu(event, editor) {
             const at = editor.posAtCoords({ x: event.clientX, y: event.clientY });
@@ -388,7 +394,7 @@ export function CodeEditor({
             selected.current?.(selection);
             const hasSelection = current.from !== current.to;
             const selectedText = editor.state.sliceDoc(current.from, current.to);
-            contextMenu.current?.({ x: event.clientX, y: event.clientY, selection, hasSelection, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(selectedText), cut: async () => { if (!readOnly && hasSelection) { await navigator.clipboard.writeText(selectedText); editor.dispatch({ changes: { from: current.from, to: current.to, insert: '' } }); } }, paste: async () => { if (!readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: current.from, to: current.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) });
+            contextMenu.current?.({ x: event.clientX, y: event.clientY, selection, hasSelection, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(selectedText), cut: async () => { if (!editor.state.readOnly && hasSelection) { await navigator.clipboard.writeText(selectedText); editor.dispatch({ changes: { from: current.from, to: current.to, insert: '' } }); } }, paste: async () => { if (!editor.state.readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: current.from, to: current.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) });
             return Boolean(contextMenu.current);
           },
         }),
@@ -455,7 +461,7 @@ export function CodeEditor({
               return true;
             },
           },
-          { key: "Shift-F10", run: (editor) => { const range = editor.state.selection.main; const first = editor.state.doc.lineAt(range.from); let last = editor.state.doc.lineAt(range.to); if (range.to > range.from && range.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1); const selection = { startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) }; const point = editor.coordsAtPos(range.head); contextMenu.current?.({ x: point?.left ?? editor.contentDOM.getBoundingClientRect().left, y: point?.bottom ?? editor.contentDOM.getBoundingClientRect().bottom, selection, hasSelection: range.from !== range.to, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(editor.state.sliceDoc(range.from, range.to)), cut: async () => { if (!readOnly && range.from !== range.to) { const text = editor.state.sliceDoc(range.from, range.to); await navigator.clipboard.writeText(text); editor.dispatch({ changes: { from: range.from, to: range.to, insert: '' } }); } }, paste: async () => { if (!readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: range.from, to: range.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) }); return Boolean(contextMenu.current); }, preventDefault: true },
+          { key: "Shift-F10", run: (editor) => { const range = editor.state.selection.main; const first = editor.state.doc.lineAt(range.from); let last = editor.state.doc.lineAt(range.to); if (range.to > range.from && range.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1); const selection = { startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) }; const point = editor.coordsAtPos(range.head); contextMenu.current?.({ x: point?.left ?? editor.contentDOM.getBoundingClientRect().left, y: point?.bottom ?? editor.contentDOM.getBoundingClientRect().bottom, selection, hasSelection: range.from !== range.to, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(editor.state.sliceDoc(range.from, range.to)), cut: async () => { if (!editor.state.readOnly && range.from !== range.to) { const text = editor.state.sliceDoc(range.from, range.to); await navigator.clipboard.writeText(text); editor.dispatch({ changes: { from: range.from, to: range.to, insert: '' } }); } }, paste: async () => { if (!editor.state.readOnly) { const text = await navigator.clipboard.readText(); editor.dispatch({ changes: { from: range.from, to: range.to, insert: text } }); } }, selectAll: () => editor.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, editor.state.doc.length)]) }) }); return Boolean(contextMenu.current); }, preventDefault: true },
           { key: "ContextMenu", run: (editor) => { editor.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true })); return true; }, preventDefault: true },
         ]),
         Prec.lowest(keymap.of([
@@ -469,18 +475,38 @@ export function CodeEditor({
             changed.current(serialized);
           }
         }),
-      ],
-    });
+      ];
+    const saved = preserveHistory ? retainedStates.current.get(path) : undefined;
+    const restore = saved?.content === normalizeEditorText(value);
+    const state = restore ? EditorState.fromJSON(saved!.json, { extensions }, { history: historyField }) : EditorState.create({ doc: value, extensions });
     const editor = new EditorView({ state, parent: host.current });
     view.current = editor;
     if(!readOnly){editor.contentDOM.setAttribute('aria-keyshortcuts','F7 Shift+F7 Alt+F7');editor.dom.querySelector('.cm-git-gutter')?.setAttribute('title',zh?'查看更改 (Alt+F7) · 上一处/下一处 (Shift+F7/F7)':'Review change (Alt+F7) · Previous/next (Shift+F7/F7)');}
     const detachLanguage = attachLanguage(editor, language, path);
+    if (restore) requestAnimationFrame(() => { if (editor.dom.isConnected) editor.scrollDOM.scrollTop = saved!.scrollTop; });
     return () => {
+      if (preserveHistory && retainedReset.current === resetKey) {
+        const json = editor.state.toJSON({ history: historyField });
+        const size = JSON.stringify(json).length * 2;
+        retainedStates.current.delete(path);
+        if (size <= 8 * 1024 * 1024) retainedStates.current.set(path, { json, content: editor.state.doc.toString(), scrollTop: editor.scrollDOM.scrollTop, size });
+        let total = [...retainedStates.current.values()].reduce((sum, entry) => sum + entry.size, 0);
+        while (retainedStates.current.size > 20 || total > 8 * 1024 * 1024) {
+          const oldest = retainedStates.current.keys().next().value!;
+          total -= retainedStates.current.get(oldest)!.size; retainedStates.current.delete(oldest);
+        }
+      }
+      detachCaretPresentation();
       detachLanguage();
       editor.destroy();
       if (view.current === editor) view.current = undefined;
     };
-  }, [path, readOnly, resetKey]);
+  }, [path, resetKey, preserveHistory]);
+  useEffect(() => {
+    const current = view.current;
+    if (!current) return;
+    current.dispatch({ effects: compartments.current.access.reconfigure([readOnly ? [] : completion, EditorState.readOnly.of(readOnly), EditorView.editable.of(Boolean(selected.current || actions.current) || !readOnly)]) });
+  }, [readOnly, path, resetKey]);
   useEffect(() => {
     const current = view.current;
     if (!current) return;

@@ -1,6 +1,255 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "RequestResult<\"editorNavigation.configuration\">": {
+      "$ref": "#/definitions/EditorNavigationConfiguration"
+    },
+    "EditorNavigationConfiguration": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "tools": {
+          "$ref": "#/definitions/EditorNavigationTools"
+        },
+        "detected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EditorNavigationDetectedTool"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "tools",
+        "detected"
+      ],
+      "additionalProperties": false
+    },
+    "EditorNavigationTools": {
+      "type": "object",
+      "properties": {
+        "typescript": {
+          "type": "string"
+        },
+        "rust": {
+          "type": "string"
+        },
+        "python": {
+          "type": "string"
+        },
+        "java": {
+          "type": "string"
+        },
+        "jdtls": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EditorNavigationDetectedTool": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/EditorNavigationToolId"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "available"
+      ],
+      "additionalProperties": false
+    },
+    "EditorNavigationToolId": {
+      "type": "string",
+      "enum": [
+        "typescript",
+        "rust",
+        "python",
+        "java",
+        "jdtls"
+      ]
+    },
+    "RequestResult<\"editorNavigation.configure\">": {
+      "$ref": "#/definitions/EditorNavigationConfiguration"
+    },
+    "RequestResult<\"editorNavigation.prepare\">": {
+      "$ref": "#/definitions/EditorNavigationStatus"
+    },
+    "EditorNavigationStatus": {
+      "type": "object",
+      "properties": {
+        "contextId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "preparing",
+            "ready",
+            "failed"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contextId",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"editorNavigation.status\">": {
+      "$ref": "#/definitions/EditorNavigationStatus"
+    },
+    "RequestResult<\"editorNavigation.sync\">": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"editorNavigation.definition\">": {
+      "type": "object",
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EditorNavigationTarget"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "targets",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "EditorNavigationTarget": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "number"
+        },
+        "column": {
+          "type": "number"
+        },
+        "endLine": {
+          "type": "number"
+        },
+        "endColumn": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "column"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"editorNavigation.documentSymbols\">": {
+      "type": "object",
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EditorNavigationSymbol"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "symbols",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "EditorNavigationSymbol": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "number"
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "number"
+        },
+        "column": {
+          "type": "number"
+        },
+        "container": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "path",
+        "line",
+        "column"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"editorNavigation.cancel\">": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"editorNavigation.release\">": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"usage.ledger.summary\">": {
       "$ref": "#/definitions/UsageLedgerSummary"
     },
@@ -10663,6 +10912,240 @@
     }
   },
   "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.configuration"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.configuration%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.configure"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.configure%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.prepare"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.prepare%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.status"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.sync"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.sync%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.definition"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.definition%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.documentSymbols"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.documentSymbols%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.cancel"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "editorNavigation.release"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22editorNavigation.release%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
     {
       "type": "object",
       "properties": {

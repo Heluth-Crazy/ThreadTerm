@@ -53,6 +53,8 @@ pub struct RuntimeService {
     chat_queues: Arc<crate::chat_queue::ChatQueues>,
     pub(crate) previews: Arc<crate::preview::Previews>,
     pub(crate) browser_tools: Arc<crate::browser_tools::BrowserTools>,
+    desktop_files: crate::desktop_files::DesktopFiles,
+    pub(crate) editor_navigation: Arc<crate::editor_navigation::EditorNavigation>,
 }
 
 /// Opens a session's provider Chat. Shared by `chat.connect` (after the
@@ -1058,6 +1060,7 @@ impl RuntimeService {
                 })
             }),
         ));
+        let editor_navigation = Arc::new(crate::editor_navigation::EditorNavigation::new(&config.data_dir));
         providers.set_tool_server_resolver(crate::group_chat::tool_server_resolver(Arc::clone(&db), crate::preview::tool_server_resolver(
             Arc::clone(&db),
             Arc::clone(&delegations),
@@ -1162,6 +1165,8 @@ impl RuntimeService {
             chat_queues,
             previews,
             browser_tools,
+            desktop_files: crate::desktop_files::DesktopFiles::default(),
+            editor_navigation,
         }
     }
 
@@ -1207,6 +1212,9 @@ impl RuntimeService {
         let _ = crate::retry_scheduler::finish(&self.db, &attempt.id, success);
     }
     pub fn shutdown(&self) {
+        // Fence navigation start/wait/idle work before the general shutdown
+        // threads begin terminating managed children.
+        self.editor_navigation.shutdown();
         let db = self.db.clone();
         let config = self.config.clone();
         let deferred = self.deferred_launch.clone();
@@ -1315,6 +1323,42 @@ impl RuntimeService {
         principal: &str,
         request: RpcRequest,
     ) -> std::result::Result<Value, RpcError> {
+        // Navigation uses its own bounded admission/context locks and can wait
+        // for managed LSP I/O.  Keep it outside the relocation/ordered path so
+        // it cannot stall terminal traffic or hold a global gate while waiting.
+        if request.method.starts_with("editorNavigation.") {
+            if request.v != 1 {
+                return Err(error("unsupported_version", "only protocol version 1 is supported"));
+            }
+            if self.shutdown_pending.load(Ordering::Acquire) {
+                return Err(error("runtime_stopping", "Runtime is shutting down"));
+            }
+            // Configuration persists under the runtime data directory. Once the
+            // manager's detection path is cached/quick, retain the relocation
+            // read fence across that small write so a relocation cannot copy an
+            // obsolete configuration. Prepare writes no data, but does not
+            // admit a new server while relocation is pending.
+            let relocation_checked = matches!(
+                request.method.as_str(),
+                "editorNavigation.configure" | "editorNavigation.prepare"
+            );
+            let _navigation_gate = if relocation_checked {
+                Some(self.relocation_gate.read().map_err(|_| error("runtime_error", "relocation lock poisoned"))?)
+            } else {
+                None
+            };
+            if relocation_checked
+                && crate::settings_services::relocation_blocks(&self.config, &request.method)
+                    .map_err(|failure| error("runtime_error", &failure.to_string()))?
+            {
+                return Err(error("relocation_pending", "data relocation is awaiting activation or cancellation"));
+            }
+            return self
+                .editor_navigation
+                .dispatch(&self.db, principal, &request.method, &request.params)
+                .map_err(editor_navigation_rpc_error)?
+                .ok_or_else(|| error("unknown_method", "unknown_method"));
+        }
         if request.method == "browser.tool.cancel" {
             if request.v != 1 { return Err(error("unsupported_version", "only protocol version 1 is supported")); }
             return self.browser_tools.cancel(request.params).map_err(browser_rpc_error);
@@ -1372,19 +1416,41 @@ impl RuntimeService {
             return tools.execute_run(&self.providers, &self.pty, run)
                 .map_err(|failure| map_error(&failure.to_string()));
         }
-        let exclusive = matches!(
+        let local_file_lifecycle = matches!(
             request.method.as_str(),
             "data.relocation.prepare"
-                | "data.relocation.cancel"
+                | "project.remove"
                 | "worktree.relocate"
                 | "worktree.remove"
-                | "session.resume"
+                | "runtime.shutdown"
         );
+        let public_file_mutation = matches!(
+            request.method.as_str(),
+            "filesystem.write"
+                | "filesystem.create"
+                | "filesystem.rename"
+                | "filesystem.delete"
+        );
+        let exclusive = local_file_lifecycle
+            || public_file_mutation
+            || matches!(
+                request.method.as_str(),
+                "data.relocation.cancel" | "session.resume"
+            );
         if exclusive {
             let _gate = self
                 .relocation_gate
                 .write()
                 .map_err(|_| error("runtime_error", "relocation lock poisoned"))?;
+            if local_file_lifecycle {
+                self.desktop_files
+                    .require_idle(&self.db)
+                    .map_err(|failure| error("desktop_files_busy", &failure.to_string()))?;
+            } else if public_file_mutation {
+                self.desktop_files
+                    .require_no_writer(&self.db)
+                    .map_err(|failure| error("desktop_files_busy", &failure.to_string()))?;
+            }
             self.dispatch_under_gate(principal, request)
         } else {
             let _gate = self
@@ -1430,6 +1496,25 @@ impl RuntimeService {
                 "relocation_pending",
                 "data relocation is awaiting activation or cancellation",
             ));
+        }
+        if request.method.starts_with("desktop.files.") {
+            return self
+                .desktop_files
+                .dispatch(&self.db, principal, &request.method, &request.params)
+                .map_err(|failure| {
+                    let message = failure.to_string();
+                    let code = crate::desktop_files::ERROR_CODES
+                        .iter()
+                        .copied()
+                        .find(|code| {
+                            message == *code
+                                || message
+                                    .strip_prefix(code)
+                                    .is_some_and(|suffix| suffix.starts_with(':'))
+                        })
+                        .unwrap_or("runtime_error");
+                    error(code, &message)
+                });
         }
         let retry_mutation = matches!(
             request.method.as_str(),
@@ -3351,6 +3436,15 @@ fn map_error(message: &str) -> RpcError {
     }
     failure
 }
+
+fn editor_navigation_rpc_error(failure: anyhow::Error) -> RpcError {
+    let message = failure.to_string();
+    let (code, detail) = message.split_once(':').unwrap_or((&message, &message));
+    if code.starts_with("navigation_") {
+        return error(code, detail.trim());
+    }
+    error("editor_navigation_unavailable", &message)
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectAdd {
@@ -4201,6 +4295,446 @@ mod tests {
             },
             db,
         )
+    }
+
+    #[test]
+    fn local_file_read_access_blocks_every_destructive_lifecycle_before_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let project_root = root.path().join("project");
+        std::fs::create_dir(&project_root).unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let mut service = test_service(root.path(), Arc::clone(&db));
+        service.desktop_files = crate::desktop_files::DesktopFiles::with_live_process_for_test(7);
+        let project = db
+            .add_project(
+                project_root.to_str().unwrap(),
+                Some("Project"),
+                "barrier-project-add",
+            )
+            .unwrap();
+        let access_id = uuid::Uuid::new_v4().to_string();
+        service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "barrier-access-begin".into(),
+                    method: "desktop.files.access.begin".into(),
+                    params: json!({"accessId":access_id,"pid":42,"write":false}),
+                },
+            )
+            .unwrap();
+
+        let lifecycle = [
+            (
+                "project.remove",
+                json!({"id":project.id,"operationId":"barrier-project-remove"}),
+                "barrier-project-remove",
+            ),
+            (
+                "worktree.remove",
+                json!({"id":"missing-worktree","operationId":"barrier-worktree-remove"}),
+                "barrier-worktree-remove",
+            ),
+            (
+                "worktree.relocate",
+                json!({
+                    "id":"missing-worktree",
+                    "path":root.path().join("relocated-worktree").to_string_lossy(),
+                    "operationId":"barrier-worktree-relocate",
+                }),
+                "barrier-worktree-relocate",
+            ),
+            (
+                "data.relocation.prepare",
+                json!({
+                    "targetPath":root.path().join("relocated-data").to_string_lossy(),
+                    "operationId":"barrier-data-relocate",
+                }),
+                "barrier-data-relocate",
+            ),
+            (
+                "runtime.shutdown",
+                json!({"operationId":"barrier-shutdown"}),
+                "barrier-shutdown",
+            ),
+        ];
+        for (method, params, operation_id) in lifecycle {
+            let failure = service
+                .dispatch(
+                    "desktop",
+                    RpcRequest {
+                        v: 1,
+                        id: format!("request-{operation_id}"),
+                        method: method.into(),
+                        params,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(failure.code, "desktop_files_busy", "{method}: {failure:?}");
+            assert_eq!(db.operation(operation_id).unwrap(), None, "{method}");
+            let request_bound: bool = db
+                .transaction(|tx| {
+                    Ok(tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM operation_requests WHERE id=?)",
+                        [operation_id],
+                        |row| row.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert!(!request_bound, "{method}");
+        }
+        assert!(!service.shutdown_pending.load(Ordering::Acquire));
+        let context = service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "barrier-context".into(),
+                    method: "desktop.files.context".into(),
+                    params: json!({"kind":"workspace","projectId":project.id}),
+                },
+            )
+            .unwrap();
+        assert_eq!(context["rootPath"], project_root.to_string_lossy().as_ref());
+
+        service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "barrier-access-release".into(),
+                    method: "desktop.files.access.release".into(),
+                    params: json!({"accessId":access_id}),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .dispatch(
+                    "desktop",
+                    RpcRequest {
+                        v: 1,
+                        id: "barrier-project-remove-retry".into(),
+                        method: "project.remove".into(),
+                        params: json!({
+                            "id":project.id,
+                            "operationId":"barrier-project-remove-retry",
+                        }),
+                    },
+                )
+                .unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn main_write_lease_blocks_every_public_file_mutation_before_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let project_root = root.path().join("project");
+        std::fs::create_dir(&project_root).unwrap();
+        std::fs::write(project_root.join("write.txt"), "original").unwrap();
+        std::fs::write(project_root.join("rename.txt"), "rename").unwrap();
+        std::fs::write(project_root.join("delete.txt"), "delete").unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let mut service = test_service(root.path(), Arc::clone(&db));
+        service.desktop_files =
+            crate::desktop_files::DesktopFiles::with_live_process_for_test(7);
+        let project = db
+            .add_project(
+                project_root.to_str().unwrap(),
+                Some("Project"),
+                "writer-project-add",
+            )
+            .unwrap();
+        let access_id = uuid::Uuid::new_v4().to_string();
+        service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "writer-access-begin".into(),
+                    method: "desktop.files.access.begin".into(),
+                    params: json!({"accessId":access_id,"pid":42,"write":true}),
+                },
+            )
+            .unwrap();
+
+        let mutations = [
+            (
+                "filesystem.write",
+                json!({
+                    "projectId":project.id,
+                    "path":"write.txt",
+                    "content":"blocked",
+                    "expectedFingerprint":crate::workspace_services::fingerprint(b"original"),
+                    "operationId":"writer-block-write",
+                }),
+                "writer-block-write",
+            ),
+            (
+                "filesystem.create",
+                json!({
+                    "projectId":project.id,
+                    "path":"created.txt",
+                    "kind":"file",
+                    "operationId":"writer-block-create",
+                }),
+                "writer-block-create",
+            ),
+            (
+                "filesystem.rename",
+                json!({
+                    "projectId":project.id,
+                    "path":"rename.txt",
+                    "newPath":"renamed.txt",
+                    "operationId":"writer-block-rename",
+                }),
+                "writer-block-rename",
+            ),
+            (
+                "filesystem.delete",
+                json!({
+                    "projectId":project.id,
+                    "path":"delete.txt",
+                    "permanent":true,
+                    "operationId":"writer-block-delete",
+                }),
+                "writer-block-delete",
+            ),
+        ];
+        for (method, params, operation_id) in mutations {
+            let failure = service
+                .dispatch(
+                    "desktop",
+                    RpcRequest {
+                        v: 1,
+                        id: format!("request-{operation_id}"),
+                        method: method.into(),
+                        params,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(failure.code, "desktop_files_busy", "{method}: {failure:?}");
+            assert_eq!(db.operation(operation_id).unwrap(), None, "{method}");
+            let request_bound: bool = db
+                .transaction(|tx| {
+                    Ok(tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM operation_requests WHERE id=?)",
+                        [operation_id],
+                        |row| row.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert!(!request_bound, "{method}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("write.txt")).unwrap(),
+            "original"
+        );
+        assert!(!project_root.join("created.txt").exists());
+        assert!(project_root.join("rename.txt").exists());
+        assert!(!project_root.join("renamed.txt").exists());
+        assert!(project_root.join("delete.txt").exists());
+
+        service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "writer-access-release".into(),
+                    method: "desktop.files.access.release".into(),
+                    params: json!({"accessId":access_id}),
+                },
+            )
+            .unwrap();
+        service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "writer-write-after-release".into(),
+                    method: "filesystem.write".into(),
+                    params: json!({
+                        "projectId":project.id,
+                        "path":"write.txt",
+                        "content":"allowed",
+                        "expectedFingerprint":crate::workspace_services::fingerprint(b"original"),
+                        "operationId":"writer-write-after-release",
+                    }),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("write.txt")).unwrap(),
+            "allowed"
+        );
+    }
+
+    #[test]
+    fn public_file_mutation_gate_orders_a_waiting_main_writer_after_the_effect() {
+        let root = tempfile::tempdir().unwrap();
+        let project_root = root.path().join("project");
+        std::fs::create_dir(&project_root).unwrap();
+        std::fs::write(project_root.join("ordered.txt"), "before").unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let mut service = test_service(root.path(), Arc::clone(&db));
+        service.desktop_files = crate::desktop_files::DesktopFiles::with_live_process_for_test(7);
+        let project = db
+            .add_project(
+                project_root.to_str().unwrap(),
+                Some("Project"),
+                "ordered-project-add",
+            )
+            .unwrap();
+        let service = Arc::new(service);
+
+        let public_gate = service.relocation_gate.write().unwrap();
+        service.desktop_files.require_no_writer(&db).unwrap();
+        let waiting_service = Arc::clone(&service);
+        let waiting_access = uuid::Uuid::new_v4().to_string();
+        let thread_access = waiting_access.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let waiting_begin = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = waiting_service.dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "ordered-access-begin".into(),
+                    method: "desktop.files.access.begin".into(),
+                    params: json!({"accessId":thread_access,"pid":42,"write":true}),
+                },
+            );
+            finished_tx.send(()).unwrap();
+            result
+        });
+        started_rx.recv().unwrap();
+        assert!(finished_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+
+        service
+            .dispatch_under_gate(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "ordered-public-write".into(),
+                    method: "filesystem.write".into(),
+                    params: json!({
+                        "projectId":project.id,
+                        "path":"ordered.txt",
+                        "content":"public first",
+                        "expectedFingerprint":crate::workspace_services::fingerprint(b"before"),
+                        "operationId":"ordered-public-write",
+                    }),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("ordered.txt")).unwrap(),
+            "public first"
+        );
+        drop(public_gate);
+
+        assert_eq!(
+            waiting_begin.join().unwrap().unwrap(),
+            json!({"accessId":waiting_access})
+        );
+        service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "ordered-access-release".into(),
+                    method: "desktop.files.access.release".into(),
+                    params: json!({"accessId":waiting_access}),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn exclusive_lifecycle_gate_makes_waiting_begin_revalidate_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let project_root = root.path().join("project");
+        std::fs::create_dir(&project_root).unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        let mut service = test_service(root.path(), Arc::clone(&db));
+        service.desktop_files =
+            crate::desktop_files::DesktopFiles::with_live_process_for_test(7);
+        let service = Arc::new(service);
+        let project = db
+            .add_project(
+                project_root.to_str().unwrap(),
+                Some("Project"),
+                "ordering-project-add",
+            )
+            .unwrap();
+
+        let lifecycle_gate = service.relocation_gate.write().unwrap();
+        let waiting_service = Arc::clone(&service);
+        let waiting_project = project.id.clone();
+        let waiting_access = uuid::Uuid::new_v4().to_string();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let waiting_begin = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            waiting_service.dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "ordering-access-begin".into(),
+                    method: "desktop.files.access.begin".into(),
+                    params: json!({"accessId":waiting_access,"pid":42,"write":true}),
+                },
+            )?;
+            let result = waiting_service.dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "ordering-begin".into(),
+                    method: "desktop.files.mutation.begin".into(),
+                    params: json!({
+                        "accessId":waiting_access,
+                        "method":"filesystem.write",
+                        "params":{
+                            "projectId":waiting_project,
+                            "path":"README.md",
+                            "content":"body",
+                            "expectedFingerprint":"0".repeat(64),
+                            "operationId":"ordering-file-write",
+                        }
+                    }),
+                },
+            );
+            waiting_service
+                .dispatch(
+                    "desktop",
+                    RpcRequest {
+                        v: 1,
+                        id: "ordering-access-release".into(),
+                        method: "desktop.files.access.release".into(),
+                        params: json!({"accessId":waiting_access}),
+                    },
+                )
+                .unwrap();
+            result
+        });
+        started_rx.recv().unwrap();
+
+        // Simulate the lifecycle handler's authority mutation while its
+        // exclusive gate is held. The waiting begin must validate only after
+        // this change, never against the stale project row.
+        db.remove_project(&project.id, "ordering-project-remove")
+            .unwrap();
+        drop(lifecycle_gate);
+
+        let failure = waiting_begin.join().unwrap().unwrap_err();
+        assert_eq!(failure.code, "project_missing");
+        assert!(!db
+            .external_operation_pending("ordering-file-write")
+            .unwrap());
     }
 
     fn pi_session(db: &Database, cwd: &std::path::Path, operation_id: &str) -> crate::domain::Session {

@@ -70,7 +70,7 @@ type Props = {
   onFileReference?:(sessionId:string,reference:FileReference)=>void;
   focusTarget?:WorkspaceTabTarget & {key:string};
   fileReveal?:{tabId:string;line:number;column?:number;key:string};
-  onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string})=>void;
+  onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string;line?:number;column?:number;navigation?:boolean})=>void|Promise<void>;
   /** Project root for a session without its own worktree; scopes the Chat Open-diff action. */
   projectPath?:string;
   onWebClosed?:(tabId:string)=>void;
@@ -404,7 +404,7 @@ function Pane({
   onOpenSessionFiles:(owner:string)=>void;
   onFileReference?:(sessionId:string,reference:FileReference)=>void;
   fileReveal?:{tabId:string;line:number;column?:number;key:string};
-  onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string})=>void;
+  onOpenPath?:(file:{projectId:string;worktreePath?:string;path:string;kind:'file'|'diff'|'preview';assetKind?:'text'|'image';ownerSessionId?:string;line?:number;column?:number;navigation?:boolean})=>void|Promise<void>;
   projectPath?:string;
   prepareBrowserShare?:(tabId:string)=>Promise<BrowserShareWorkspace>;
   onWebNavigation?:(tabId:string,observation:{navigation:'pending'|'load_observed'|'failed';url?:string;title?:string;documentGeneration?:number})=>void;
@@ -543,7 +543,7 @@ function Pane({
       sessionDocuments={!item.externalId && workbench?.sessionDocuments && item.projectId === workbench.sessionDocuments.projectId && sameCanonicalScope(item.worktreePath ?? workbench.sessionDocuments.projectRoot, workbench.sessionDocuments.rootPath) ? workbench.sessionDocuments : undefined}
       reveal={fileReveal?.tabId===item.id?fileReveal:undefined}
       embedded
-      onOpenPath={item.externalId?undefined:onOpenPath?(path,kind)=>onOpenPath({projectId:item.projectId,worktreePath:item.worktreePath,path,kind,assetKind:path===item.path?item.assetKind:undefined,ownerSessionId:item.ownerSessionId}):undefined}
+      onOpenPath={item.externalId?undefined:onOpenPath?(path,kind,position)=>onOpenPath({projectId:item.projectId,worktreePath:item.worktreePath,path,kind,assetKind:path===item.path?item.assetKind:undefined,ownerSessionId:item.ownerSessionId,...position}):undefined}
     />
   ) : null}
     </div></SessionSurfaceContext.Provider>;

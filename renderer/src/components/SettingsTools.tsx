@@ -7,6 +7,7 @@ import { presentationRequest } from "../presentation";
 import { displayPath, sameCanonicalScope } from "../projectScope";
 import { FileWorkspace } from "./FileWorkspace";
 import { Icon } from "./PrototypeIcon";
+import { LocalFileAccessSettings } from "./LocalFileAccessSettings";
 import { ProviderSettingsPanel } from "./ProviderSettingsPanel";
 import { SurfaceDialog } from "./SurfaceDialog";
 import "./settings-tools.css";
@@ -149,6 +150,7 @@ export function SettingsTools({ data, onSaved, focusAccounts = false }: Props) {
     <div className="settings-tools-heading"><h3>{copy.title}</h3><Select aria-label={copy.project} title={displayPath(project?.path)||copy.selectProject} value={projectId} onChange={event=>selectProject(event.target.value)} disabled={Boolean(busy)}><option value="">{copy.selectProject}</option>{data.projects.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</Select></div><p>{copy.toolsHint}</p>
     <div className="tool-row"><span><b>{copy.explorerTitle}</b><small>{copy.explorerHint}</small></span><button className="btn" type="button" disabled={!project || Boolean(busy)} onClick={openExplorer}><Icon name="folder" />{busy === "explorer" ? copy.opening : copy.openExplorer}</button></div>
     <div className="tool-row"><span><b>{copy.gitTitle}</b><small>{copy.gitHint}</small></span><button className="btn" type="button" disabled={!project || Boolean(busy)} onClick={openGit}><Icon name="branch" />{busy === "git" ? copy.checking : copy.openGit}</button></div>
+    <LocalFileAccessSettings zh={zh} />
     
     <div className="setting-divider" />
     <section className="settings-tool-lifecycle" aria-labelledby="tool-lifecycle-title"><h4 id="tool-lifecycle-title">{copy.lifecycleTitle}</h4><p>{copy.lifecycleHint}</p>

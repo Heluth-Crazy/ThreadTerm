@@ -1,0 +1,11 @@
+.editor-navigation-status { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:6px 10px; font-size:12px; color:var(--muted); background:var(--soft); border-bottom:1px solid var(--border); }
+.editor-navigation-status > span { flex:1; min-width:180px; overflow-wrap:anywhere; }
+.editor-navigation-search { width:100%; margin-bottom:8px; }
+.editor-navigation-targets { max-height:320px; overflow:auto; display:flex; flex-direction:column; gap:2px; }
+.editor-navigation-targets > button { display:flex; flex-direction:column; align-items:flex-start; text-align:left; gap:3px; padding:9px 10px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--text); cursor:pointer; }
+.editor-navigation-targets > button[aria-selected="true"] { background:var(--primary-tint); border-color:var(--primary); }
+.editor-navigation-targets small { color:var(--muted); overflow-wrap:anywhere; }
+.editor-navigation-settings { display:flex; flex-direction:column; gap:14px; }
+.editor-navigation-settings > label:not(:first-child) { display:flex; flex-direction:column; gap:5px; }
+.editor-navigation-settings input[type="text"] { width:100%; }
+.editor-navigation-settings small { color:var(--muted); overflow-wrap:anywhere; }
