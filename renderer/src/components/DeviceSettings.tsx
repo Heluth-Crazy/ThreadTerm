@@ -10,6 +10,7 @@ import { SettingsSwitch } from "./SettingsControls";
 import { RemoteIdentityRecovery } from "./RemoteIdentityRecovery";
 import { useVisibleTicker } from "../visibleTicker";
 import { devicesForProfile } from '../machines';
+import { userErrorText } from "../runtimeError";
 
 type Props = { language: Locale; active?: boolean };
 export function DeviceSettings({ language, active = true }: Props) {
@@ -28,7 +29,7 @@ export function DeviceSettings({ language, active = true }: Props) {
     if (list.status === "fulfilled") setDevices(devicesForProfile(list.value, 'phone'));
     setNow(Date.now());
     const failure = [access, list].find(result => result.status === "rejected");
-    if (failure?.status === "rejected") setIssue(errorText(failure.reason));
+    if (failure?.status === "rejected") setIssue(errorText(failure.reason, zh));
   }, []);
   // Load on open, then follow device events. An inactive tab keeps its state
   // (a pairing code survives a tab switch) but starts no request or timer.
@@ -43,12 +44,12 @@ export function DeviceSettings({ language, active = true }: Props) {
   }, [active, refresh]);
   useEffect(() => {
     let current = true; setQr("");
-    if (offer && Date.parse(offer.expiresAt) > Date.now()) void QRCode.toDataURL(offer.qrPayload, { width: 196, margin: 2, errorCorrectionLevel: "M", color: { dark: "#111111", light: "#ffffff" } }).then(value => { if (current) setQr(value); }).catch(error => { if (current) setIssue(errorText(error)); });
+    if (offer && Date.parse(offer.expiresAt) > Date.now()) void QRCode.toDataURL(offer.qrPayload, { width: 196, margin: 2, errorCorrectionLevel: "M", color: { dark: "#111111", light: "#ffffff" } }).then(value => { if (current) setQr(value); }).catch(error => { if (current) setIssue(errorText(error, zh)); });
     return () => { current = false; };
   }, [offer]);
   const run = (action: () => Promise<void>) => {
     if (locked.current) return; locked.current = true; generation.current++; setBusy(true); setIssue(undefined); setNotice(undefined);
-    void action().catch(error => { if (alive.current) setIssue(errorText(error)); }).finally(() => { locked.current = false; if (alive.current) setBusy(false); });
+    void action().catch(error => { if (alive.current) setIssue(errorText(error, zh)); }).finally(() => { locked.current = false; if (alive.current) setBusy(false); });
   };
   const pairingActive = !!offer && Date.parse(offer.expiresAt) > now;
   // A pairing code is the only thing here that changes by itself; the clock
@@ -106,5 +107,5 @@ export function DeviceSettings({ language, active = true }: Props) {
     {confirmingReset && <SurfaceDialog title={text("重置远程身份", "Reset remote identity")} icon="panel" size="sm" onClose={() => { if (!busy) setConfirmingReset(false); }} footer={<><button className="btn" disabled={busy} onClick={() => setConfirmingReset(false)}>{text("取消", "Cancel")}</button><button className="btn btn-danger" disabled={busy} onClick={resetIdentity}>{text("重置", "Reset")}</button></>}><p>{text("将生成新的证书和密钥。所有已配对设备会立即失效，需要重新配对。", "A new certificate and key will be generated. Every paired device is revoked and must pair again.")}</p>{issue && <p className="surface-error" role="alert">{issue}</p>}</SurfaceDialog>}
   </section>;
 }
-function errorText(error: unknown) { return error instanceof Error ? error.message : String(error); }
+function errorText(error: unknown, zh: boolean) { return userErrorText(error, zh ? "操作未完成。" : "That didn’t work.", zh); }
 function time(value: string, locale: Locale) { const date = new Date(value); return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "short" }).format(date) : "—"; }

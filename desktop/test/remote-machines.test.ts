@@ -12,7 +12,7 @@ import { PROTOCOL_VERSION, PROTOCOL_CONTRACT } from '@threadterm/protocol';
 import { MachineRegistry } from '../src/machines.js';
 import { MachineBindings, MachineViews } from '../src/machineViews.js';
 import { createAppSessionPreparer } from '../src/appSession.js';
-import { connectPinned, parsePairDescriptor, pairOnPinnedConnection, PeerHeartbeat, PeerTransportError } from '../src/peer-transport.js';
+import { connectPinned, pairingConnectError, parsePairDescriptor, pairOnPinnedConnection, PeerHeartbeat, PeerTransportError } from '../src/peer-transport.js';
 import { RuntimeClient } from '../src/runtime-client.js';
 
 const scratch = mkdtempSync(join(tmpdir(), 'tt-machine-test-'));
@@ -86,6 +86,17 @@ for (const failure of ['pin', 'alpn', 'alpn-alert']) test(`${failure} mismatch s
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(f.bytes, 0);
   } finally { await f.close(); }
+});
+test('a pairing check that reaches nothing names the address; a computer that answered wrongly keeps its error', async () => {
+  const f = await serverFixture();
+  const endpoint = f.endpoint;
+  await f.close();
+  const refused = await connectPinned(endpoint, pin, 'http/1.1').then(() => undefined, error => pairingConnectError(error, endpoint));
+  assert.equal((refused as Error).message, `computer_unreachable: ${new URL(endpoint).host}`);
+  const timedOut = pairingConnectError(Object.assign(new Error('Computer connection timed out'), { code: 'ETIMEDOUT' }), 'https://100.101.102.103:57107');
+  assert.equal((timedOut as Error).message, 'computer_unreachable: 100.101.102.103:57107');
+  const mismatch = new PeerTransportError('pin-mismatch', 'changed');
+  assert.equal(pairingConnectError(mismatch, endpoint), mismatch);
 });
 test('pairing POST uses the checked HTTP ALPN socket and retains the desktop credential in main', async () => {
   let request = '';

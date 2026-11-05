@@ -36,7 +36,7 @@ import { MachineTreeStore, type WatchNotice } from './machineWatcher.js';
 import { MachineRegistry } from './machines.js';
 import { MachineBindings, MachineViews } from './machineViews.js';
 import { createAppSessionPreparer } from './appSession.js';
-import { certificateCheckCode, connectPinned, pairOnPinnedConnection, parsePairDescriptor, type PairDescriptor } from './peer-transport.js';
+import { certificateCheckCode, connectPinned, pairingConnectError, pairOnPinnedConnection, parsePairDescriptor, type PairDescriptor } from './peer-transport.js';
 import type { MachineInfo, MachineSnapshot } from '../../renderer/src/machineTypes.js';
 import type { TLSSocket } from 'node:tls';
 
@@ -440,7 +440,7 @@ function registerIpc(): void {
     if (typeof text !== 'string') throw new Error('Paste a ThreadTerm pairing offer');
     cancelPendingPairing(event.sender.id);
     const descriptor = parsePairDescriptor(text);
-    const socket = await connectPinned(descriptor.serverUrl, descriptor.tlsFingerprint, 'http/1.1');
+    const socket = await connectPinned(descriptor.serverUrl, descriptor.tlsFingerprint, 'http/1.1').catch(error => { throw pairingConnectError(error, descriptor.serverUrl); });
     if (event.sender.isDestroyed() || !remoteMachinesEnabled) { socket.destroy(); throw new Error('Pairing cancelled'); }
     cancelPendingPairing(event.sender.id);
     const timer = setTimeout(() => cancelPendingPairing(event.sender.id), 60000);

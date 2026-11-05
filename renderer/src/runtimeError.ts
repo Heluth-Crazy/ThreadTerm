@@ -8,6 +8,7 @@ const CODE_TEXT: Record<string, [string, string]> = {
   outbox_history_pruned: ['Older event history was removed. Refreshing the session snapshot.', '较早的事件记录已清理，正在刷新会话快照。'],
   response_too_large: ['This part of the conversation is too large to load at once.', '此部分对话过大，无法一次加载。'],
   schema_too_new: ['This database was upgraded by a newer ThreadTerm. Update the app or restore a backup.', '此数据库已由较新的 ThreadTerm 升级。请更新应用或恢复备份。'],
+  tailscale_not_connected: ['Tailscale is not connected on this PC. Start Tailscale and sign in, or turn off “Only accept devices on my Tailscale network” to pair on the same local network.', '本机未连接 Tailscale。请启动并登录 Tailscale，或关闭“仅接受我的 Tailscale 网络中的设备”，在同一局域网内配对。'],
   schema_backup_failed: ['ThreadTerm could not back up the database before upgrading it. Check free disk space and folder permissions, then try again.', 'ThreadTerm 无法在升级数据库前创建备份。请检查磁盘空间和文件夹权限，然后重试。'],
 };
 
@@ -19,4 +20,15 @@ export function userErrorText(caught: unknown, fallback: string, zh: boolean): s
   if (known) return known[zh ? 1 : 0];
   const message = runtimeText(runtimeErrorText(caught) ?? '', zh).trim();
   return message || fallback;
+}
+
+/** Settings → Computers: a pairing check names the address it could not reach (`computer_unreachable: host:port`). */
+export function pairingErrorText(caught: unknown, zh: boolean): string {
+  const unreachable = /^computer_unreachable: (\S+)/.exec(runtimeErrorText(caught) ?? '');
+  if (unreachable) {
+    return zh
+      ? `无法连接到 ${unreachable[1]}。请确认那台电脑上的 ThreadTerm 已打开，并且两台电脑在同一网络或同一个 Tailscale 网络中。`
+      : `Couldn’t reach ${unreachable[1]}. Make sure ThreadTerm is open on that computer and both computers are on the same network or the same Tailscale network.`;
+  }
+  return userErrorText(caught, zh ? '操作未完成。' : 'That didn’t work.', zh);
 }

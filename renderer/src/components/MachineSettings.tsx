@@ -7,6 +7,7 @@ import { machineStateLabel } from './MachineRows';
 import { TailscaleOnlySetting } from './TailscaleOnlySetting';
 import { SettingsSwitch } from './SettingsControls';
 import { useVisibleTicker } from '../visibleTicker';
+import { pairingErrorText } from '../runtimeError';
 
 export function MachineSettings({ settings, zh, update }: { settings: Settings; zh: boolean; update: (patch: Record<string, unknown>) => Promise<void> }) {
   const enabled = !!(settings.remoteMachines as { enabled?: boolean } | undefined)?.enabled;
@@ -33,7 +34,7 @@ export function MachineSettings({ settings, zh, update }: { settings: Settings; 
   const run = (action: () => Promise<void>) => {
     if (locked.current) return;
     locked.current = true; setBusy(true); setIssue(undefined); setNotice(undefined);
-    void action().catch(error => { if (alive.current) setIssue(error instanceof Error ? error.message : String(error)); }).finally(() => { locked.current = false; if (alive.current) setBusy(false); });
+    void action().catch(error => { if (alive.current) setIssue(pairingErrorText(error, zh)); }).finally(() => { locked.current = false; if (alive.current) setBusy(false); });
   };
   return <section className="machine-settings" aria-label={label('Computers', '电脑')}>
     <h3>{label('Computers', '电脑')} <small>{label('Preview', '预览')}</small></h3>

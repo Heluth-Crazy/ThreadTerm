@@ -77,18 +77,22 @@ pub struct RemoteAccessStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TailscaleOnly { enabled: bool, operation_id: String }
 
-fn source_allowed(address: IpAddr, tailscale_only: bool) -> bool {
-    if !tailscale_only { return true; }
+/// Tailscale hands out 100.64.0.0/10 and fd7a:115c:a1e0::/48.
+fn is_tailscale(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(ip) => {
             let octets = ip.octets();
             octets[0] == 100 && (64..=127).contains(&octets[1])
         }
         IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
-            Some(ip) => source_allowed(IpAddr::V4(ip), true),
+            Some(ip) => is_tailscale(IpAddr::V4(ip)),
             None => ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
         },
     }
+}
+
+fn source_allowed(address: IpAddr, tailscale_only: bool) -> bool {
+    !tailscale_only || is_tailscale(address)
 }
 
 struct CertificateMaterial {
@@ -102,6 +106,8 @@ struct ListenerState {
     generation: u64,
     port: Option<u16>,
     url: Option<String>,
+    // Test and QA listeners bind loopback; their offers keep the loopback URL.
+    loopback: bool,
     cancel: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
     running_generation: Option<u64>,
@@ -208,15 +214,12 @@ impl RemoteAccess {
             "device.pairing.create" => {
                 let request: CreatePairing = parse(params)?;
                 let status = self.status()?;
-                let server_url = status
-                    .url
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("remote_access_disabled"))?;
+                let server_url = self.pairing_url(status.tailscale_only)?;
                 serde_json::to_value(self.devices.create_pairing_with_profile(
                     request.permission,
                     request.profile,
                     &request.operation_id,
-                    server_url,
+                    &server_url,
                     &status.tls_fingerprint,
                 )?)?
             }
@@ -284,6 +287,25 @@ impl RemoteAccess {
             error: state.error.clone(),
             identity_error: state.identity_error.clone(),
         })
+    }
+
+    /// The address a new offer carries, read when the offer is made rather than when the listener started:
+    /// Tailscale or a Wi-Fi network may have come up since.
+    fn pairing_url(&self, tailscale_only: bool) -> Result<String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("remote access state lock poisoned"))?;
+        let (Some(url), Some(port)) = (state.url.as_ref().filter(|_| state.enabled), state.port) else {
+            bail!("remote_access_disabled");
+        };
+        if state.loopback {
+            return Ok(url.clone());
+        }
+        let Some(ip) = advertised_ip(tailscale_only) else {
+            bail!("tailscale_not_connected: Tailscale is not connected on this PC");
+        };
+        Ok(format!("https://{ip}:{port}"))
     }
 
     fn fingerprint(&self) -> String {
@@ -452,7 +474,15 @@ impl RemoteAccess {
             .set_nonblocking(true)
             .context("making remote HTTPS listener nonblocking")?;
         let port = std_listener.local_addr()?.port();
-        let ip = if bind_ip.is_loopback() { IpAddr::V4(bind_ip) } else { lan_ipv4() };
+        let loopback = bind_ip.is_loopback();
+        // Shown in Phones settings. Offers re-read the address when they are made (`pairing_url`).
+        let ip = if loopback {
+            bind_ip
+        } else {
+            advertised_ip(preference.tailscale_only)
+                .or_else(|| advertised_ip(false))
+                .unwrap_or(Ipv4Addr::LOCALHOST)
+        };
         let url = format!("https://{ip}:{port}");
         let listener =
             TcpListener::from_std(std_listener).context("registering remote HTTPS listener")?;
@@ -551,6 +581,7 @@ impl RemoteAccess {
         state.enabled = true;
         state.port = Some(port);
         state.url = Some(url);
+        state.loopback = loopback;
         state.error = None;
         state.cancel = Some(cancel);
         state.task = Some(task);
@@ -1273,31 +1304,123 @@ fn fingerprint(der: &[u8]) -> String {
         .join(":")
 }
 
-fn lan_ipv4() -> IpAddr {
-    if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
-        if let Some(ip) = interfaces
-            .iter()
-            .map(|(_, ip)| *ip)
-            .find(|ip| matches!(ip, IpAddr::V4(value) if value.is_private() && !value.is_loopback()))
-            .or_else(|| {
-                interfaces
-                    .iter()
-                    .map(|(_, ip)| *ip)
-                    .find(|ip| matches!(ip, IpAddr::V4(value) if !value.is_loopback() && !value.is_unspecified()))
-            })
-        {
-            return ip;
-        }
+/// One IPv4 address of this PC, as far as choosing what a pairing offer advertises goes.
+#[derive(Clone, Copy, Debug)]
+struct AdapterAddress {
+    ip: Ipv4Addr,
+    /// On an Ethernet or Wi-Fi adapter with a default gateway: the PC's real network connection. Proxy and VPN
+    /// tunnels (sing-box, Clash, WireGuard) and host-only adapters (VMware, Hyper-V) are not, and their
+    /// addresses mean nothing on another computer.
+    routed_lan: bool,
+}
+
+/// What a pairing offer tells the other device to dial. With Tailscale-only on, only this PC's Tailscale
+/// address gets past the listener. Otherwise the real LAN connection comes first, then Tailscale, then any
+/// private address.
+fn choose_advertised_ip(addresses: &[AdapterAddress], tailscale_only: bool) -> Option<Ipv4Addr> {
+    let usable = |ip: &Ipv4Addr| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local();
+    let ips = || addresses.iter().map(|address| address.ip).filter(usable);
+    let tailscale = ips().find(|ip| is_tailscale(IpAddr::V4(*ip)));
+    if tailscale_only {
+        return tailscale;
     }
-    UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .and_then(|socket| {
+    let routed = || addresses.iter().filter(|address| address.routed_lan).map(|address| address.ip).filter(usable);
+    routed()
+        .find(Ipv4Addr::is_private)
+        .or_else(|| routed().next())
+        .or(tailscale)
+        .or_else(|| ips().find(Ipv4Addr::is_private))
+        .or_else(|| ips().next())
+}
+
+fn advertised_ip(tailscale_only: bool) -> Option<Ipv4Addr> {
+    choose_advertised_ip(&adapter_addresses(), tailscale_only).or_else(|| {
+        // No adapter list at all: ask the routing table which address reaches the internet.
+        let routed = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).and_then(|socket| {
             socket.connect((Ipv4Addr::new(192, 0, 2, 1), 80))?;
             socket.local_addr()
+        });
+        match routed.map(|address| address.ip()) {
+            Ok(IpAddr::V4(ip)) if !tailscale_only && !ip.is_unspecified() => Some(ip),
+            _ => None,
+        }
+    })
+}
+
+/// Every IPv4 address of an adapter that is up, with whether that adapter is a routed LAN connection.
+#[cfg(windows)]
+fn adapter_addresses() -> Vec<AdapterAddress> {
+    use windows_sys::Win32::{
+        Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR},
+        NetworkManagement::{
+            IpHelper::{
+                GetAdaptersAddresses, GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+                GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+            },
+            Ndis::IfOperStatusUp,
+        },
+        Networking::WinSock::{AF_INET, SOCKADDR_IN},
+    };
+    // IF_TYPE_ETHERNET_CSMACD and IF_TYPE_IEEE80211. Tunnels report IF_TYPE_PROP_VIRTUAL (53) or IF_TYPE_TUNNEL.
+    const ETHERNET: u32 = 6;
+    const WIFI: u32 = 71;
+    let flags = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    let mut size = 16 * 1024u32;
+    // u64 elements keep the buffer aligned for the structs the API writes into it.
+    let mut buffer = Vec::<u64>::new();
+    let mut filled = false;
+    for _ in 0..3 {
+        buffer = vec![0; (size as usize).div_ceil(8)];
+        let status = unsafe {
+            GetAdaptersAddresses(u32::from(AF_INET), flags, core::ptr::null(), buffer.as_mut_ptr().cast(), &raw mut size)
+        };
+        filled = status == NO_ERROR;
+        if status != ERROR_BUFFER_OVERFLOW {
+            break;
+        }
+    }
+    if !filled {
+        return local_addresses();
+    }
+    let mut addresses = Vec::new();
+    let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+    // SAFETY: after NO_ERROR the buffer holds a linked list whose pointers all point into the buffer.
+    while let Some(entry) = unsafe { adapter.as_ref() } {
+        if entry.OperStatus == IfOperStatusUp {
+            let routed_lan = matches!(entry.IfType, ETHERNET | WIFI) && !entry.FirstGatewayAddress.is_null();
+            let mut unicast = entry.FirstUnicastAddress;
+            while let Some(address) = unsafe { unicast.as_ref() } {
+                let sockaddr = address.Address.lpSockaddr;
+                if !sockaddr.is_null() && unsafe { (*sockaddr).sa_family } == AF_INET {
+                    let raw = unsafe { sockaddr.cast::<SOCKADDR_IN>().read_unaligned().sin_addr.S_un.S_addr };
+                    addresses.push(AdapterAddress { ip: Ipv4Addr::from(raw.to_ne_bytes()), routed_lan });
+                }
+                unicast = address.Next;
+            }
+        }
+        adapter = entry.Next;
+    }
+    addresses
+}
+
+#[cfg(not(windows))]
+fn adapter_addresses() -> Vec<AdapterAddress> {
+    local_addresses()
+}
+
+/// Interface addresses without adapter details; none of them counts as a routed LAN connection.
+fn local_addresses() -> Vec<AdapterAddress> {
+    local_ip_address::list_afinet_netifas()
+        .map(|interfaces| {
+            interfaces
+                .into_iter()
+                .filter_map(|(_, ip)| match ip {
+                    IpAddr::V4(ip) => Some(AdapterAddress { ip, routed_lan: false }),
+                    IpAddr::V6(_) => None,
+                })
+                .collect()
         })
-        .map(|address| address.ip())
-        .ok()
-        .filter(|ip| ip.is_ipv4() && !ip.is_unspecified())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .unwrap_or_default()
 }
 
 fn certificate_names() -> Vec<String> {
@@ -1312,9 +1435,10 @@ fn certificate_names() -> Vec<String> {
             }
         }
     }
-    let selected = lan_ipv4().to_string();
-    if !names.contains(&selected) {
-        names.push(selected);
+    if let Some(selected) = advertised_ip(false).map(|ip| ip.to_string()) {
+        if !names.contains(&selected) {
+            names.push(selected);
+        }
     }
     names
 }
@@ -2179,6 +2303,46 @@ mod hosting_tests {
             assert_eq!(source_allowed(ip,true),allowed,"{address}");
             assert!(source_allowed(ip,false),"disabled: {address}");
         }
+    }
+    fn adapter(ip: &str, routed_lan: bool) -> AdapterAddress {
+        AdapterAddress { ip: ip.parse().unwrap(), routed_lan }
+    }
+    #[test]
+    fn offers_skip_proxy_tunnels_and_host_only_adapters_and_need_tailscale_when_tailscale_only() {
+        // A real home PC, in Windows enumeration order: VMware host-only, the sing-box TUN (it has a gateway but
+        // is no Ethernet/Wi-Fi adapter), Wi-Fi, VMware NAT. Older builds advertised the TUN's 172.18.0.1.
+        let mut home = vec![
+            adapter("192.168.70.1", false), adapter("172.18.0.1", false), adapter("127.0.0.1", false),
+            adapter("192.168.1.82", true), adapter("192.168.80.1", false),
+        ];
+        assert_eq!(choose_advertised_ip(&home, false), Some(Ipv4Addr::new(192, 168, 1, 82)));
+        assert_eq!(choose_advertised_ip(&home, true), None, "Tailscale-only without Tailscale has nothing to offer");
+        home.insert(0, adapter("100.101.102.103", false));
+        assert_eq!(choose_advertised_ip(&home, true), Some(Ipv4Addr::new(100, 101, 102, 103)));
+        assert_eq!(choose_advertised_ip(&home, false), Some(Ipv4Addr::new(192, 168, 1, 82)), "the LAN still comes first");
+        // Without adapter details (other platforms, or the API failed): Tailscale, then any private address.
+        let plain = [adapter("169.254.3.4", false), adapter("10.0.0.5", false), adapter("100.64.0.9", false)];
+        assert_eq!(choose_advertised_ip(&plain, false), Some(Ipv4Addr::new(100, 64, 0, 9)));
+        assert_eq!(choose_advertised_ip(&plain[..2], false), Some(Ipv4Addr::new(10, 0, 0, 5)));
+        assert_eq!(choose_advertised_ip(&[adapter("127.0.0.1", false), adapter("169.254.3.4", false)], false), None);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_adapter_list_reads_addresses_in_network_order() {
+        let addresses = adapter_addresses();
+        assert!(addresses.iter().any(|address| address.ip == Ipv4Addr::LOCALHOST && !address.routed_lan), "{addresses:?}");
+    }
+    #[test]
+    fn offers_need_a_running_listener() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite3")).unwrap());
+        let config = RuntimeConfig {
+            data_dir: root.path().into(), database_path: root.path().join("runtime.sqlite3"),
+            credential_path: root.path().join("runtime.credential"), pipe_base: r"\\.\pipe\offer-test".into(),
+        };
+        let remote = RemoteAccess::new(Weak::new(), db, config).unwrap();
+        let error = remote.pairing_url(false).unwrap_err();
+        assert_eq!(error.to_string(), "remote_access_disabled");
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn policy_status_persists_while_disabled_and_on_reopen() {

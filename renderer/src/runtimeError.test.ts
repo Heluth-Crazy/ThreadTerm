@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { userErrorText } from './runtimeError';
+import { pairingErrorText, userErrorText } from './runtimeError';
 
 // The exact rejection text produced by `ipcRenderer.invoke` in the real app: only the message survives.
 const ipcWrapped = (message: string) => new Error(`Error invoking remote method 'threadterm:request': RuntimeRequestError: ${message}`);
@@ -27,4 +27,13 @@ test('an unknown error shows its own sentence in one language, never the wrapper
   assert.equal(userErrorText(new Error('The group changed. / 群聊已更新。'), 'fallback', false), 'The group changed.');
   assert.equal(userErrorText(undefined, 'Could not load history.', false), 'Could not load history.', 'a missing message keeps the caller copy');
   assert.equal(userErrorText(new Error('   '), 'Could not load history.', false), 'Could not load history.');
+});
+test('pairing failures read as sentences: the address that could not be reached, and Tailscale missing on this PC', () => {
+  const unreachable = new Error("Error invoking remote method 'threadterm:machine-prepare': Error: computer_unreachable: 172.18.0.1:57107");
+  assert.match(pairingErrorText(unreachable, false), /^Couldn’t reach 172\.18\.0\.1:57107\. Make sure ThreadTerm is open/);
+  assert.match(pairingErrorText(unreachable, true), /^无法连接到 172\.18\.0\.1:57107。/);
+  const tailscale = new Error("Error invoking remote method 'threadterm:request': RuntimeRequestError: tailscale_not_connected: Tailscale is not connected on this PC");
+  assert.match(pairingErrorText(tailscale, false), /^Tailscale is not connected on this PC\. Start Tailscale and sign in, or turn off/);
+  assert.match(pairingErrorText(tailscale, true), /^本机未连接 Tailscale。/);
+  assert.equal(pairingErrorText(new Error("Error invoking remote method 'threadterm:machine-prepare': Error: Pairing cancelled"), false), 'Pairing cancelled');
 });

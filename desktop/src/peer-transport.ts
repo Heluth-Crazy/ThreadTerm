@@ -48,7 +48,7 @@ export function connectPinned(endpoint: string, pin: string, alpn = 'threadterm-
   const url = peerEndpoint(endpoint), expected = normalizePin(pin);
   return new Promise((resolve, reject) => {
     const socket = tls.connect({ host: url.hostname.replace(/^\[|\]$/g, ''), port: Number(url.port || 443), rejectUnauthorized: false, ALPNProtocols: [alpn] });
-    const timer = setTimeout(() => fail(new Error('Computer connection timed out')), 10000);
+    const timer = setTimeout(() => fail(Object.assign(new Error('Computer connection timed out'), { code: 'ETIMEDOUT' })), 10000);
     const fail = (error: Error) => {
       clearTimeout(timer); socket.destroy();
       reject(/no application protocol/i.test(error.message) ? new PeerTransportError('alpn-mismatch', 'The computer did not negotiate the required connection protocol. Update one so they match.') : error);
@@ -66,6 +66,13 @@ export function connectPinned(endpoint: string, pin: string, alpn = 'threadterm-
       } catch (error) { fail(error instanceof Error ? error : new Error('Certificate check failed')); }
     });
   });
+}
+/** Socket failures that mean nothing answered at the offer's address from this computer. */
+const UNREACHABLE = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'ENOTFOUND']);
+/** A pairing check that never reached the other computer, as a code the Settings page explains with the address. */
+export function pairingConnectError(error: unknown, endpoint: string): unknown {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  return code && UNREACHABLE.has(code) ? new Error(`computer_unreachable: ${peerEndpoint(endpoint).host}`) : error;
 }
 export interface PeerFrames {
   write(payload: Buffer): void;
