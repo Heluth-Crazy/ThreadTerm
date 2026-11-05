@@ -67,7 +67,8 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
  const module={exports:{}};
  const compiled=ts.transpileModule(readFileSync('renderer/src/components/WebPreview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  vm.runInNewContext(compiled,{require,module,exports:module.exports,requestAnimationFrame:callback=>frames.push(callback),ResizeObserver:class{observe(){}},addEventListener(){}});
- const render=(visible=true)=>{stateIndex=0;refIndex=0;effects.length=0;const tree=module.exports.WebPreview({tabId:'tab-a',url:'https://example.test/',visible,zh:false});placeholder=tree.props.children.flat().find(child=>child?.props?.className==='tt-browser-view').props;return placeholder['data-native-ready'];};
+ let tree;
+ const render=(visible=true,activeSessionId='a')=>{stateIndex=0;refIndex=0;effects.length=0;tree=module.exports.WebPreview({tabId:'tab-a',url:'https://example.test/',visible,zh:false,activeSessionId,prepareBrowserShare:async()=>({id:'workspace',revision:1,sessionId:activeSessionId})});placeholder=tree.props.children.flat().find(child=>child?.props?.className==='tt-browser-view').props;return placeholder['data-native-ready'];};
  assert.equal(render(),undefined);effects.find(effect=>String(effect).includes('onBrowserEvent'))();
  const state={tabId:'tab-a',url:'https://example.test/',title:'',loading:true,canGoBack:false,canGoForward:false,zoom:1,navigation:'pending',documentGeneration:0};
  listener({type:'state',state:{...state,tabId:'other-tab'}});assert.equal(render(),undefined,'another tab cannot establish readiness');
@@ -83,4 +84,19 @@ test('WebPreview gates creation and snapshot readiness, and ignores an obsolete 
  finishShow(state);await Promise.resolve();await Promise.resolve();render();
  assert.equal([placeholder.children].flat().find(child=>child?.type==='img').props.src,'data:image/png;base64,bmV3','a delayed show reply cannot erase the published snapshot');
  listener({type:'state',state:{...state,unloaded:true}});assert.equal(render(),undefined);
+ listener({type:'state',state:{...state,loading:false,navigation:'failed',issue:'ERR_CONNECTION_REFUSED'}});
+ render();
+ const failure=tree.props.children.flat().find(child=>child?.props?.role==='alert');
+ assert.match(JSON.stringify(failure),/Read and Control require a loaded page/);
+ assert.match(JSON.stringify(failure),/enter its address again/);
+ listener({type:'state',state:{...state,loading:false,navigation:'load_observed'}});
+ render();
+ assert.equal(tree.props.children.flat().some(child=>child?.props?.role==='alert'),false);
+ listener({type:'state',state:{...state,loading:false,navigation:'load_observed',sharing:{level:'control',status:'idle',controlSessionIds:['a'],worktreeRead:false,controlAvailable:true,grantEpoch:3,viewGeneration:1,navigationEpoch:1,reading:false}}});
+ for(const [session,level] of [['a','control'],['b','off'],['a','control']]){
+  render(true,session);
+  const status=tree.props.children.flat().find(child=>child?.props?.['data-level']);
+  assert.equal(status.props['data-level'],level);
+ }
+ assert.equal(commands.some(command=>command.type==='share'),false);
 });

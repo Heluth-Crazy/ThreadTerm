@@ -27,7 +27,8 @@ export interface BrowserAgentControllerHost {
   navigate?(sourceTabId: string, url: string): Promise<{ sharingRevoked: boolean }>;
   readonly electronVersion?: string;
 }
-type SharedTab = { epoch: number; intent: number; level: 'off' | 'read' | 'control'; status: 'idle' | 'sharing' | 'stopping'; pendingLevel?: 'read' | 'control'; origin?: string; reason?: string; registration?: BrowserRegistration; attachment?: BrowserAttachment; workspace?: Workspace; viewId: string; refs: BrowserAgentSnapshotRefs; preparing?: Promise<void> };
+type Binding = { registration: BrowserRegistration; attachment: BrowserAttachment; workspace: Workspace; origin: string; refs: BrowserAgentSnapshotRefs; grants: BrowserAgentGrants; sessionId?: string };
+type SharedTab = { epoch: number; intent: number; level: 'off' | 'read' | 'control'; status: 'idle' | 'sharing' | 'stopping'; pendingLevel?: 'read' | 'control'; pendingSessionId?: string; origin?: string; reason?: string; registration?: BrowserRegistration; attachment?: BrowserAttachment; workspace?: Workspace; viewId: string; refs: BrowserAgentSnapshotRefs; preparing?: Promise<void>; controls: Map<string, Binding> };
 type Operation = { kind: 'read' | 'action'; key: string; request: BrowserExecution; sequence: bigint; fingerprint: string; controller: AbortController; fences: (BrowserAgentReadFence | BrowserAgentControlFence)[]; nativePending?: boolean; dispatched?: boolean; navigating?: boolean; navigationRelease?: { registration?: BrowserRegistration; attachment?: BrowserAttachment }; title?: string; state: 'queued' | 'running' | 'done'; terminalPhase?: 'failed' | 'cancelled'; admittedAtUnixMs: number; finishedAtUnixMs?: number; result?: BrowserMcpResult | BrowserTabListResult | BrowserActionReceipt; timer?: ReturnType<typeof setTimeout>; bytes: number };
 type EvalPreparation = { key: string; request: BrowserEvalPreparation; fingerprint: string; controller: AbortController; nativeFence: BrowserAgentControlFence; title: string; fence?: BrowserEvalFence };
 type EvalOperation = { kind: 'eval'; key: string; request: BrowserEvalExecution; fingerprint: string; preparation: EvalPreparation; controller: AbortController; state: 'queued' | 'running' | 'done'; nativePending: boolean; monotonicDeadline: number; result?: BrowserEvalReceipt; timer?: ReturnType<typeof setTimeout> };
@@ -42,6 +43,7 @@ const errorResult = (code: string, message: string): BrowserMcpResult => ({ isEr
 export class BrowserAgentController {
   private readonly tabs = new Map<string, SharedTab>();
   private readonly grants = new BrowserAgentGrants();
+  private readonly bindings = new Map<string, Binding>();
   private readonly operations = new Map<string, Operation>();
   private readonly lanes = new Map<string, Lane>();
   private readonly retired = new Map<string, bigint>();
@@ -69,8 +71,10 @@ export class BrowserAgentController {
 
   state(sourceTabId: string): BrowserSharingState {
     const record = this.tabs.get(sourceTabId), tab = this.host.getTab(sourceTabId);
-    return { level: record?.level ?? 'off', status: record?.status ?? 'idle', grantEpoch: record?.epoch ?? 0, viewGeneration: tab?.document.viewGeneration ?? 0, navigationEpoch: tab?.document.navigationEpoch ?? 0,
-      ...(record?.origin ? { origin: record.origin } : {}), ...(record?.reason ? { reason: record.reason } : {}), controlAvailable: this.controlCapable(), operations: this.ordinaryActivity(sourceTabId), reading: [...this.operations.values()].some(op => op.kind === 'read' && op.state === 'running' && op.request.targets.some(target => target.sourceTabId === sourceTabId)) };
+    const control = record?.controls.values().next().value as Binding | undefined;
+    return { level: control ? 'control' : record?.level === 'read' ? 'read' : 'off', status: record?.status ?? 'idle', grantEpoch: record?.epoch ?? 0, viewGeneration: tab?.document.viewGeneration ?? 0, navigationEpoch: tab?.document.navigationEpoch ?? 0,
+      ...(record?.controls.size ? { controlSessionIds: [...record.controls.keys()] } : {}), ...(record?.level === 'read' ? { worktreeRead: true } : {}),
+      ...(control?.origin ?? record?.origin ? { origin: control?.origin ?? record?.origin } : {}), ...(record?.reason ? { reason: record.reason } : {}), controlAvailable: this.controlCapable(), operations: this.ordinaryActivity(sourceTabId), reading: [...this.operations.values()].some(op => op.kind === 'read' && op.state === 'running' && op.request.targets.some(target => target.sourceTabId === sourceTabId)) };
   }
 
   async share(command: BrowserShareCommand): Promise<void> {
@@ -78,9 +82,38 @@ export class BrowserAgentController {
     const tab = this.host.getTab(command.tabId);
     if (!tab) throw new BrowserAgentError('browser_tab_not_found', 'Browser tab is unavailable.');
     let record = this.tabs.get(command.tabId);
-    if (!record) { record = { epoch: 0, intent: 0, level: 'off', status: 'idle', viewId: randomUUID(), refs: new BrowserAgentSnapshotRefs() }; this.tabs.set(command.tabId, record); }
-    if (command.level === 'off') { await this.revoke(command.tabId, 'Browser sharing turned off.'); return; }
-    if (command.level === 'read' && record.status === 'sharing' && record.pendingLevel === 'control') {
+    if (!record) { record = { epoch: 0, intent: 0, level: 'off', status: 'idle', viewId: randomUUID(), refs: new BrowserAgentSnapshotRefs(), controls: new Map() }; this.tabs.set(command.tabId, record); }
+    if (command.level === 'off') {
+      const sessionId = (command as { sessionId?: unknown }).sessionId;
+      if (typeof sessionId === 'string') {
+        const cancelPending = record.status === 'sharing' && (record.pendingLevel === 'read' || record.pendingSessionId === sessionId);
+        if (cancelPending) {
+          record.intent++; record.status = 'idle'; record.pendingLevel = undefined; record.pendingSessionId = undefined;
+        }
+        const binding = record.controls.get(sessionId);
+        const { registration, attachment } = record;
+        if (!cancelPending && !binding && !registration && !attachment) return;
+        record.controls.delete(sessionId);
+        record.registration = undefined; record.attachment = undefined; record.workspace = undefined;
+        record.level = 'off'; record.origin = undefined; record.epoch++;
+        this.grants.unregister(command.tabId, 'Browser sharing turned off.');
+        const released = this.releaseBinding(binding);
+        this.host.changed(command.tabId);
+        await Promise.all([released, this.release(registration, attachment)]);
+        return;
+      }
+      if ((command as { preserveControl?: unknown }).preserveControl === true && record.status === 'idle' && record.controls.size) return;
+      if ((command as { preserveControl?: unknown }).preserveControl === true && record.status === 'sharing' && record.pendingLevel === 'control') {
+        record.intent++; record.status = 'idle'; record.pendingLevel = undefined; record.pendingSessionId = undefined;
+        const registration = record.registration, attachment = record.attachment;
+        record.registration = undefined; record.attachment = undefined; record.workspace = undefined; record.level = 'off'; record.origin = undefined;
+        this.grants.unregister(command.tabId, 'Browser sharing turned off.'); await this.release(registration, attachment); record.epoch++; this.host.changed(command.tabId); return;
+      }
+      await this.revoke(command.tabId, 'Browser sharing turned off.'); return;
+    }
+    if (command.level === 'control') { await this.shareControl(command as Exclude<BrowserShareCommand, { level: 'off' }> & { level: 'control' }, record, tab); return; }
+    const readSessionId = (command.workspace as { sessionId?: unknown }).sessionId;
+    if (record.status === 'sharing' && record.pendingLevel === 'control' && record.pendingSessionId === readSessionId) {
       const expected = command.expected;
       const stopping = this.revoke(command.tabId, 'Browser control was cancelled.'), revokedIntent = record.intent;
       await stopping;
@@ -91,15 +124,15 @@ export class BrowserAgentController {
       }
       return;
     }
-    if (command.level === 'read' && record.level === 'control') {
+    if (record.level === 'control') {
       record.intent++; record.epoch++; record.level = 'read'; record.status = 'idle'; record.reason = undefined;
       this.grants.downgradeToRead(command.tabId); this.cancelTab(command.tabId, 'Browser control was downgraded.'); this.host.changed(command.tabId); return;
     }
-    if (command.level === 'control' && !this.controlCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser control is unavailable on this native view.');
     const current = this.state(command.tabId), expected = command.expected;
     if (record.status !== 'idle' || current.grantEpoch !== expected.grantEpoch || current.viewGeneration !== expected.viewGeneration || current.navigationEpoch !== expected.navigationEpoch || tab.document.documentGeneration !== expected.documentGeneration) throw new BrowserAgentError('browser_stale_ref', 'The browser page changed before sharing was updated.');
     const origin = browserAgentOrigin(tab.document.url);
     if (!tab.document.available || !tab.document.loaded || !origin || origin === tab.document.appOrigin) throw new BrowserAgentError('browser_unavailable', 'Only a loaded supported browser page can be shared.');
+    const controlToDowngrade = typeof readSessionId === 'string' ? record.controls.get(readSessionId) : undefined;
     const intent = ++record.intent;
     const previousRegistration = record.registration, previousAttachment = record.attachment;
     if (previousRegistration || previousAttachment) {
@@ -128,9 +161,9 @@ export class BrowserAgentController {
       if (!isBrowserRegistration(registered) || !sameAttachment(attachment, registered) || registered.sourceTabId !== command.tabId) throw new BrowserAgentError('browser_unavailable', 'Browser tab registration was not confirmed.');
       registration = registered; const latest = check();
       const installed = this.grants.register(registration);
-      if (command.level === 'control' && !this.controlCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser control capability changed.');
       this.grants.setShare(command.tabId, command.level, { ...expected, grantEpoch: installed.grantEpoch }, latest.document);
       record.registration = registration; record.attachment = attachment; record.workspace = workspace; record.level = command.level; record.origin = origin; record.epoch++; record.status = 'idle';
+      if (controlToDowngrade) { record.controls.delete(controlToDowngrade.sessionId!); await this.releaseBinding(controlToDowngrade); }
       this.host.changed(command.tabId);
     } catch (error) {
       await this.release(registration, attachment).catch(() => undefined);
@@ -139,12 +172,54 @@ export class BrowserAgentController {
     } finally { if (record.intent === intent) record.pendingLevel = undefined; prepared(); }
   }
 
+  private async shareControl(command: Exclude<BrowserShareCommand, { level: 'off' }> & { level: 'control' }, record: SharedTab, tab: BrowserAgentNativeTab): Promise<void> {
+    const sessionId = (command.workspace as { sessionId?: unknown }).sessionId;
+    if (typeof sessionId !== 'string' || !sessionId) throw new BrowserAgentError('browser_invalid_arguments', 'Browser control requires its approving conversation.');
+    if (!this.controlCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser control is unavailable on this native view.');
+    const expected = command.expected, current = this.state(command.tabId);
+    if (record.status !== 'idle' || current.grantEpoch !== expected.grantEpoch || current.viewGeneration !== expected.viewGeneration || current.navigationEpoch !== expected.navigationEpoch || tab.document.documentGeneration !== expected.documentGeneration) throw new BrowserAgentError('browser_stale_ref', 'The browser page changed before sharing was updated.');
+    const origin = browserAgentOrigin(tab.document.url);
+    if (!tab.document.available || !tab.document.loaded || !origin || origin === tab.document.appOrigin) throw new BrowserAgentError('browser_unavailable', 'Read and Control require a loaded supported browser page. Start or reconnect the page service, then reload and try again.');
+    const intent = ++record.intent;
+    record.status = 'sharing'; record.pendingLevel = 'control'; record.pendingSessionId = sessionId; record.reason = undefined; this.host.changed(command.tabId);
+    let attachment: BrowserAttachment | undefined, registration: BrowserRegistration | undefined;
+    const check = (): BrowserAgentNativeTab => {
+      const latest = this.host.getTab(command.tabId);
+      if (this.disposed || this.tabs.get(command.tabId) !== record || record.intent !== intent || !latest || latest.contents !== tab.contents || !latest.document.loaded || latest.document.documentGeneration !== expected.documentGeneration || latest.document.navigationEpoch !== expected.navigationEpoch || latest.document.viewGeneration !== expected.viewGeneration || browserAgentOrigin(latest.document.url) !== origin) throw new BrowserAgentError('browser_stale_ref', 'The browser page changed before Control was enabled.');
+      return latest;
+    };
+    try {
+      const previous = record.controls.get(sessionId);
+      if (previous) { record.controls.delete(sessionId); await this.releaseBinding(previous); }
+      check();
+      const snapshot = await this.runtime.snapshot(); check();
+      const workspace = snapshot.workspaces.find(value => value.id === command.workspace.id);
+      if (!workspace || workspace.revision !== command.workspace.revision || !workspace.projectId || !layoutHas(workspace.layout, command.tabId)) throw new BrowserAgentError('browser_unavailable', 'Save this browser tab in its current project workspace before sharing.');
+      const attached = await this.runtime.browserRequest('browser.attach', { viewId: record.viewId, workspaceId: workspace.id, workspaceRevision: workspace.revision, viewGeneration: tab.document.viewGeneration, controlSessionId: sessionId });
+      if (!isBrowserAttachment(attached) || attached.viewGeneration !== expected.viewGeneration) throw new BrowserAgentError('browser_unavailable', 'Browser attachment was not confirmed.');
+      attachment = attached; check();
+      const registered = await this.runtime.browserRequest('browser.registerTab', { attachmentId: attached.attachmentId, attachmentGeneration: attached.attachmentGeneration, sourceTabId: command.tabId, workspaceRevision: workspace.revision });
+      if (!isBrowserRegistration(registered) || !sameAttachment(attached, registered) || registered.sourceTabId !== command.tabId) throw new BrowserAgentError('browser_unavailable', 'Browser tab registration was not confirmed.');
+      registration = registered; check();
+      const grants = new BrowserAgentGrants(), installed = grants.register(registration);
+      grants.setShare(command.tabId, 'control', { ...expected, grantEpoch: installed.grantEpoch }, check().document);
+      const binding: Binding = { registration, attachment, workspace, origin, refs: new BrowserAgentSnapshotRefs(), grants, sessionId };
+      record.controls.set(sessionId, binding); this.bindings.set(registration.tabId, binding);
+      record.epoch++; record.status = 'idle'; this.host.changed(command.tabId);
+    } catch (error) {
+      await this.release(registration, attachment).catch(() => undefined);
+      if (record.intent === intent) { record.status = 'idle'; record.reason = 'Browser control could not be enabled.'; this.host.changed(command.tabId); }
+      throw error;
+    } finally { if (record.intent === intent) { record.pendingLevel = undefined; record.pendingSessionId = undefined; } }
+  }
+
   navigationStarted(sourceTabId: string, url: string): void {
     const record = this.tabs.get(sourceTabId);
     if (!record) return;
     record.intent++;
-    if (record.status === 'sharing' || record.level !== 'off' && browserAgentOrigin(url) !== record.origin) { void this.revoke(sourceTabId, 'Sharing stopped — the page moved to another site.', true).catch(() => undefined); return; }
+    if (record.status === 'sharing' || record.level !== 'off' && browserAgentOrigin(url) !== record.origin || [...record.controls.values()].some(binding => browserAgentOrigin(url) !== binding.origin)) { void this.revoke(sourceTabId, 'Sharing stopped — the page moved to another site.', true).catch(() => undefined); return; }
     this.grants.navigationStarted(sourceTabId, url); record.refs.reset(); record.epoch++;
+    for (const binding of record.controls.values()) binding.grants.navigationStarted(sourceTabId, url);
     this.cancelTab(sourceTabId, 'The browser page changed.', true); this.host.changed(sourceTabId);
   }
 
@@ -158,6 +233,8 @@ export class BrowserAgentController {
   clear(reason: string): void {
     this.bindingRefresh++;
     for (const [id, record] of this.tabs) {
+      for (const binding of record.controls.values()) void this.releaseBinding(binding).catch(() => undefined);
+      record.controls.clear();
       record.intent++; record.epoch++; record.level = 'off'; record.status = 'idle'; record.pendingLevel = undefined; record.origin = undefined; record.reason = reason; record.registration = undefined; record.attachment = undefined; record.workspace = undefined; record.refs.reset();
       this.cancelTab(id, reason); this.host.changed(id);
     }
@@ -186,15 +263,24 @@ export class BrowserAgentController {
     if (!record) return;
     const registration = record.registration, attachment = record.attachment, preparing = record.preparing, intent = ++record.intent;
     const navigation = preserveNavigation ? [...this.operations.values()].find(op => op.kind === 'action' && op.navigating && op.dispatched && op.state !== 'done' && op.request.targets.some(target => target.sourceTabId === sourceTabId)) : undefined;
-    if (navigation && (registration || attachment)) { navigation.navigationRelease ??= { registration, attachment }; this.navigationReleases.add(navigation.navigationRelease); }
+    const heldControl = navigation ? this.bindingFor(navigation.request.targets[0]) : undefined;
+    const controls = [...record.controls.values()]; record.controls.clear();
+    for (const binding of controls) { this.bindings.delete(binding.registration.tabId); binding.grants.unregister(binding.registration.sourceTabId, reason); }
+    if (navigation && !heldControl && (registration || attachment)) { navigation.navigationRelease ??= { registration, attachment }; this.navigationReleases.add(navigation.navigationRelease); }
+    if (navigation && heldControl) { navigation.navigationRelease ??= { registration: heldControl.registration, attachment: heldControl.attachment }; this.navigationReleases.add(navigation.navigationRelease); }
     record.level = 'off'; record.origin = undefined; record.epoch++; record.status = 'stopping'; record.pendingLevel = undefined; record.reason = reason; record.registration = undefined; record.attachment = undefined; record.workspace = undefined; record.refs.reset();
     this.grants.unregister(sourceTabId, reason); this.cancelTab(sourceTabId, reason, preserveNavigation); this.host.changed(sourceTabId);
     try {
       if (!navigation) {
         await this.release(registration, attachment);
+        await Promise.all(controls.map(binding => this.release(binding.registration, binding.attachment)));
         for (const operation of this.operations.values()) if (operation.navigationRelease && operation.request.targets.some(target => target.sourceTabId === sourceTabId)) {
           const held = operation.navigationRelease; operation.navigationRelease = undefined; await this.releaseNavigation(held);
         }
+      } else {
+        const releases = controls.filter(binding => binding !== heldControl).map(binding => this.release(binding.registration, binding.attachment));
+        if (heldControl) releases.push(this.release(registration, attachment));
+        await Promise.all(releases);
       }
       await preparing;
     }
@@ -205,18 +291,24 @@ export class BrowserAgentController {
     try { if (registration) await this.runtime.browserRequest('browser.unregisterTab', { attachmentId: registration.attachmentId, attachmentGeneration: registration.attachmentGeneration, tabId: registration.tabId }); }
     finally { if (attachment) { try { await this.runtime.browserRequest('browser.detach', { attachmentId: attachment.attachmentId, attachmentGeneration: attachment.attachmentGeneration }); } finally { this.retired.delete(attachment.attachmentId); } } }
   }
+  private async releaseBinding(binding?: Binding): Promise<void> {
+    if (!binding) return;
+    this.bindings.delete(binding.registration.tabId);
+    binding.grants.unregister(binding.registration.sourceTabId, 'Browser sharing turned off.');
+    await this.release(binding.registration, binding.attachment);
+  }
 
   private async refreshBindings(): Promise<void> {
     const generation = ++this.bindingRefresh;
-    const bound = [...this.tabs].filter(([, record]) => record.level !== 'off' && record.workspace);
+    const bound = [...this.tabs].filter(([, record]) => record.level !== 'off' && record.workspace || record.controls.size);
     if (!bound.length) return;
     try {
       const snapshot = await this.runtime.snapshot();
       if (generation !== this.bindingRefresh || this.disposed) return;
       for (const [id, record] of bound) {
-        if (this.tabs.get(id) !== record || !record.workspace) continue;
-        const workspace = snapshot.workspaces.find(value => value.id === record.workspace!.id);
-        if (!workspace || workspace.projectId !== record.workspace.projectId || workspace.worktreePath !== record.workspace.worktreePath || !layoutHas(workspace.layout, id)) this.invalidate(id, 'Sharing stopped — the workspace changed.');
+        if (this.tabs.get(id) !== record) continue;
+        const bindings = [...record.controls.values(), ...(record.registration && record.attachment && record.workspace && record.origin ? [{ registration: record.registration, attachment: record.attachment, workspace: record.workspace, origin: record.origin, refs: record.refs, grants: this.grants }] : [])];
+        if (bindings.some(binding => { const workspace = snapshot.workspaces.find(value => value.id === binding.workspace.id); return !workspace || workspace.projectId !== binding.workspace.projectId || workspace.worktreePath !== binding.workspace.worktreePath || !layoutHas(workspace.layout, id); })) this.invalidate(id, 'Sharing stopped — the workspace changed.');
       }
     } catch { if (generation === this.bindingRefresh) void this.stopAll('Browser workspace validation is unavailable.').catch(() => undefined); }
   }
@@ -229,7 +321,7 @@ export class BrowserAgentController {
       if (evaluation && sameAttachment(evaluation.request, request) && evaluation.request.workerGeneration === request.workerGeneration) { this.cancelEval(evaluation); return; }
       if (preparation && sameAttachment(preparation.request, request) && preparation.request.workerGeneration === request.workerGeneration) { this.cancelPreparation(preparation); return; }
       if (existing && sameAttachment(existing.request, request) && existing.request.workerGeneration === request.workerGeneration) this.cancel(existing, 'Browser read was cancelled.');
-      else if ([...this.tabs.values()].some(tab => tab.attachment && sameAttachment(tab.attachment, request))) this.retire(request.attachmentId, request.operationId, request.runtimeEpoch);
+      else if ([...this.bindings.values()].some(binding => sameAttachment(binding.attachment, request)) || [...this.tabs.values()].some(tab => tab.attachment && sameAttachment(tab.attachment, request))) this.retire(request.attachmentId, request.operationId, request.runtimeEpoch);
       return;
     }
     if (frame.method === 'browser.eval.prepare') { void this.prepareEval(frame.params); return; }
@@ -245,15 +337,15 @@ export class BrowserAgentController {
       }
       return;
     }
-    if (![...this.tabs.values()].some(tab => tab.attachment && sameAttachment(tab.attachment, execution))) return;
+    if (![...this.bindings.values()].some(binding => sameAttachment(binding.attachment, execution)) && ![...this.tabs.values()].some(tab => tab.attachment && sameAttachment(tab.attachment, execution))) return;
     if (sequence <= (this.retired.get(execution.attachmentId) ?? 0n)) { void this.reply(execution, isBrowserActionTool(execution.tool) ? { outcome: 'failed', code: 'browser_unavailable' } : errorResult('browser_receipt_expired', 'The browser operation receipt expired and will not be replayed.')); return; }
     const operation: Operation = { kind: isBrowserActionTool(execution.tool) ? 'action' : 'read', key, request: execution, sequence, fingerprint, controller: new AbortController(), fences: [], state: 'queued', admittedAtUnixMs: Date.now(), bytes: 0 };
     try {
       if (operation.kind === 'action' && !this.actionCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser actions are unavailable on this native view.');
       this.assertTargets(execution);
-      operation.fences = execution.targets.map(target => operation.kind === 'action'
-        ? this.grants.captureControl(target.sourceTabId, this.requireTab(target.sourceTabId).document)
-        : this.grants.captureRead(target.sourceTabId, this.requireTab(target.sourceTabId).document));
+      operation.fences = execution.targets.map(target => { const binding = this.bindingFor(target); if (!binding) throw new BrowserAgentError('browser_grant_required', 'Browser sharing changed.'); return operation.kind === 'action'
+        ? binding.grants.captureControl(target.sourceTabId, this.requireTab(target.sourceTabId).document)
+        : binding.grants.captureRead(target.sourceTabId, this.requireTab(target.sourceTabId).document); });
       if (execution.tool !== 'browser_list_tabs') operation.title = clipBrowserAgentText(this.requireTab(execution.targets[0].sourceTabId).title, 512);
       this.operations.set(key, operation);
       operation.timer = setTimeout(() => this.cancel(operation, 'Browser read deadline expired.', 'browser_deadline'), Math.max(1, execution.deadlineUnixMs - Date.now()));
@@ -267,8 +359,8 @@ export class BrowserAgentController {
   private assertTargets(request: BrowserExecution): void {
     if (this.disposed || Date.now() >= request.deadlineUnixMs || request.deadlineUnixMs > Date.now() + 10_100) throw new BrowserAgentError('browser_deadline', 'Browser read deadline expired.');
     for (const target of request.targets) {
-      const record = this.tabs.get(target.sourceTabId);
-      if (!record?.registration || record.level === 'off' || !sameRegistration(record.registration, target) || !sameAttachment(target, request)) throw new BrowserAgentError('browser_grant_required', 'Browser sharing changed.');
+      const binding = this.bindingFor(target);
+      if (!binding || !sameAttachment(target, request)) throw new BrowserAgentError('browser_grant_required', 'Browser sharing changed.');
     }
   }
   private assertOperation(operation: Operation): void {
@@ -277,14 +369,22 @@ export class BrowserAgentController {
     if (operation.kind === 'action' && !this.actionCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser action capability changed.');
     if (operation.kind === 'action' && operation.request.targets.some(target => this.host.canControl?.(target.sourceTabId) === false)) throw new BrowserAgentError('browser_unavailable', 'The shared browser page is not visible.');
     for (const fence of operation.fences) {
-      if (fence.level === 'control') this.grants.assertControl(fence, this.requireTab(fence.registration.sourceTabId).document);
-      else this.grants.assertRead(fence, this.requireTab(fence.registration.sourceTabId).document);
+      const binding = this.bindingFor(fence.registration); if (!binding) throw new BrowserAgentError('browser_grant_required', 'Browser sharing changed.');
+      if (fence.level === 'control') binding.grants.assertControl(fence, this.requireTab(fence.registration.sourceTabId).document);
+      else binding.grants.assertRead(fence, this.requireTab(fence.registration.sourceTabId).document);
     }
   }
   private requireTab(id: string): BrowserAgentNativeTab & { title: string } {
     const tab = this.host.getTab(id);
     if (!tab) throw new BrowserAgentError('browser_unavailable', 'The shared browser view is unavailable.');
     return tab;
+  }
+  private bindingFor(target: BrowserRegistration): Binding | undefined {
+    const indexed = this.bindings.get(target.tabId);
+    if (indexed && sameRegistration(indexed.registration, target)) return indexed;
+    const record = this.tabs.get(target.sourceTabId);
+    if (record?.registration && record.attachment && record.workspace && record.origin && sameRegistration(record.registration, target)) return { registration: record.registration, attachment: record.attachment, workspace: record.workspace, origin: record.origin, refs: record.refs, grants: this.grants };
+    return undefined;
   }
 
   private async execute(operation: Operation): Promise<void> {
@@ -294,12 +394,12 @@ export class BrowserAgentController {
     try {
       this.assertOperation(operation);
       if (operation.kind === 'action') {
-        const target = request.targets[0], record = this.tabs.get(target.sourceTabId)!, fence = operation.fences[0] as BrowserAgentControlFence;
+        const target = request.targets[0], binding = this.bindingFor(target)!, fence = operation.fences[0] as BrowserAgentControlFence;
         this.actions ??= new BrowserAgentActions({ electronVersion: this.host.electronVersion ?? process.versions.electron ?? '', available: () => this.actionCapable() });
         const source = { title: operation.title ?? '', url: fence.url, origin: fence.origin };
         const ticket = this.actions.execute(request, { fence, source, signal: operation.controller.signal,
           getTab: () => this.host.getTab(target.sourceTabId),
-          resolveRef: ref => record.refs.resolve({ ...fence, level: 'read' }, ref),
+          resolveRef: ref => binding.refs.resolve({ ...fence, level: 'read' }, ref),
           assertAuthorized: () => this.assertOperation(operation),
           beforeDispatch: async () => {
             this.assertOperation(operation);
@@ -319,9 +419,9 @@ export class BrowserAgentController {
       if (request.tool === 'browser_list_tabs') {
         const result: BrowserTabListResult = { tabs: [], truncated: false };
         for (const target of request.targets) {
-          const record = this.tabs.get(target.sourceTabId), tab = this.host.getTab(target.sourceTabId);
-          if (!record?.registration || record.level === 'off' || !tab || !sameRegistration(record.registration, target)) continue;
-          const summary = { tabId: target.tabId, title: clipBrowserAgentText(tab.title, 512), url: clipBrowserAgentText(tab.document.url, 8192), origin: clipBrowserAgentText(record.origin!, 4096), shareLevel: record.level };
+          const binding = this.bindingFor(target), tab = this.host.getTab(target.sourceTabId);
+          if (!binding || !tab) continue;
+          const summary = { tabId: target.tabId, title: clipBrowserAgentText(tab.title, 512), url: clipBrowserAgentText(tab.document.url, 8192), origin: clipBrowserAgentText(binding.origin, 4096), shareLevel: (binding.sessionId ? 'control' : 'read') as 'control' | 'read' };
           if (result.tabs.length >= 256 || Buffer.byteLength(JSON.stringify({ ...result, tabs: [...result.tabs, summary] }), 'utf8') > 60 * 1024 - 128) { result.truncated = true; break; }
           result.tabs.push(summary);
         }
@@ -329,8 +429,8 @@ export class BrowserAgentController {
         this.finish(operation, result);
       } else {
         if (request.tool !== 'browser_snapshot' && request.tool !== 'browser_screenshot' && request.tool !== 'browser_console_messages') throw new BrowserAgentError('browser_unavailable', 'This browser action is unavailable.');
-        const target = request.targets[0], record = this.tabs.get(target.sourceTabId)!;
-        const result = await readBrowserAgentTool(this.grants, record.refs, { fence: operation.fences[0] as BrowserAgentReadFence, signal: operation.controller.signal, deadline: request.deadlineUnixMs, getTab: () => this.host.getTab(target.sourceTabId), assertAuthorized: () => this.assertOperation(operation) }, request.tool, request.arguments.level as 'error' | 'warning' | 'info' | 'debug' | 'log' | undefined);
+        const target = request.targets[0], binding = this.bindingFor(target)!;
+        const result = await readBrowserAgentTool(binding.grants, binding.refs, { fence: operation.fences[0] as BrowserAgentReadFence, signal: operation.controller.signal, deadline: request.deadlineUnixMs, getTab: () => this.host.getTab(target.sourceTabId), assertAuthorized: () => this.assertOperation(operation) }, request.tool, request.arguments.level as 'error' | 'warning' | 'info' | 'debug' | 'log' | undefined);
         this.assertOperation(operation);
         const data = result as Record<string, unknown>;
         data.provenance = { ...(data.provenance as object), ...this.provenance(operation, 'completed') };
@@ -384,11 +484,11 @@ export class BrowserAgentController {
   }
 
   private assertPreparation(preparation: EvalPreparation): void {
-    const request = preparation.request, id = preparation.nativeFence.registration.sourceTabId, record = this.tabs.get(id);
+    const request = preparation.request, id = preparation.nativeFence.registration.sourceTabId, binding = this.bindingFor(request.target);
     if (this.disposed || !this.evalCapable()) throw new BrowserAgentEvalError('browser_eval_unavailable');
     if (preparation.controller.signal.aborted) throw new BrowserAgentEvalError('browser_cancelled');
-    if (!record?.registration || record.level !== 'control' || !sameRegistration(record.registration, request.target) || !sameAttachment(request, request.target)) throw new BrowserAgentEvalError('browser_control_required');
-    try { this.grants.assertControl(preparation.nativeFence, this.requireTab(id).document); }
+    if (!binding?.sessionId || !sameAttachment(request, request.target)) throw new BrowserAgentEvalError('browser_control_required');
+    try { binding.grants.assertControl(preparation.nativeFence, this.requireTab(id).document); }
     catch { throw new BrowserAgentEvalError('browser_stale_ref'); }
   }
 
@@ -399,8 +499,8 @@ export class BrowserAgentController {
   }
 
   private async prepareEval(request: BrowserEvalPreparation): Promise<void> {
-    const key = `${request.attachmentId}\0${request.attachmentGeneration}\0${request.operationId}`, record = this.tabs.get(request.target.sourceTabId);
-    if (!record?.registration || !sameRegistration(record.registration, request.target) || !sameAttachment(request, request.target)) return;
+    const key = `${request.attachmentId}\0${request.attachmentGeneration}\0${request.operationId}`, binding = this.bindingFor(request.target);
+    if (!binding?.sessionId || !sameAttachment(request, request.target)) return;
     const existing = this.evalPreparations.get(key), fingerprint = JSON.stringify(request);
     if (existing) {
       if (existing.fingerprint === fingerprint && existing.fence) { try { this.assertPreparation(existing); await this.runtime.browserRequest('browser.desktop.evalPrepared', { ...existing.fence }); } catch { this.cancelPreparation(existing); } }
@@ -412,7 +512,7 @@ export class BrowserAgentController {
     const id = request.target.sourceTabId;
     try {
       if (this.evalPreparations.size >= 128 || this.nativePreparing.has(id) || this.lanes.get(id)?.active) throw new BrowserAgentEvalError('browser_eval_unavailable');
-      const tab = this.requireTab(id), nativeFence = this.grants.captureControl(id, tab.document);
+      const tab = this.requireTab(id), nativeFence = binding.grants.captureControl(id, tab.document);
       preparation = { key, request: Object.freeze({ ...request, target: Object.freeze({ ...request.target }) }), fingerprint, controller: new AbortController(), nativeFence, title: clipBrowserAgentText(tab.title, 512) };
       this.assertPreparation(preparation); this.evalPreparations.set(key, preparation); this.nativePreparing.add(id); contents = tab.contents;
       preparation.fence = await this.evalAdapter().prepare(preparation.request, this.evalContext(preparation));

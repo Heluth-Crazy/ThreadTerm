@@ -264,8 +264,12 @@ test('aborted load promises keep the document while real load failures remain vi
  const retained=await f.invoke({type:'state',tabId:'page-one'});assert.equal(retained.url,url);assert.equal(retained.issue,undefined);assert.equal(retained.navigation,'load_observed');
  f.setLoad(async()=>{throw Object.assign(Error('connection refused'),{code:'ERR_CONNECTION_REFUSED'});});
  await f.invoke({type:'navigate',tabId:'page-one',url:`${url}unavailable`});await new Promise(resolve=>setImmediate(resolve));
- wc.emit('did-fail-load',{},-102,'ERR_CONNECTION_REFUSED',`${url}unavailable`,true);wc.emit('did-stop-loading');
+ wc.emit('did-fail-load',{},-102,'ERR_CONNECTION_REFUSED',`${url}unavailable`,true);
+ wc.url=`${url}unavailable`;wc.emit('did-finish-load');wc.emit('did-stop-loading');
  const failed=await f.invoke({type:'state',tabId:'page-one'});assert.equal(failed.navigation,'failed');assert.equal(failed.url,`${url}unavailable`);assert.match(failed.issue,/ERR_CONNECTION_REFUSED/);
+ wc.emit('did-start-navigation',{isMainFrame:true,url:wc.url},wc.url,false,true);
+ wc.emit('did-navigate',{},wc.url);wc.emit('did-finish-load');wc.emit('did-stop-loading');
+ const recovered=await f.invoke({type:'state',tabId:'page-one'});assert.equal(recovered.navigation,'load_observed');assert.equal(recovered.issue,undefined);
 });
 
 test('every LRU eviction victim reloads its saved page when shown',async()=>{

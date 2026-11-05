@@ -137,6 +137,7 @@ struct Attachment {
     view_generation: u64,
     workspace_id: String,
     scope: Scope,
+    control_session: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -332,6 +333,7 @@ struct Attach {
     workspace_id: String,
     workspace_revision: i64,
     view_generation: u64,
+    control_session_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -772,7 +774,7 @@ impl BrowserTools {
             || self.live_turn(&pending.identity.session)?.as_deref() != pending.turn_id.as_deref()
             || !Self::registrations_current(&state, &pending.targets)
             || self
-                .targets_current(&pending.targets, &pending.scope)
+                .targets_current(&pending.targets, &pending.scope, &pending.identity.session)
                 .is_err()
             || self.session_scope(&pending.identity.session)? != pending.scope;
         if stale {
@@ -1022,6 +1024,12 @@ impl BrowserTools {
                 let (scope, _) = self
                     .db
                     .transaction(|tx| workspace(tx, &p.workspace_id, Some(p.workspace_revision)))?;
+                if let Some(session) = &p.control_session_id {
+                    id(session)?;
+                    if self.session_scope(session)? != scope {
+                        return Err(anyhow!("browser_unauthorized"));
+                    }
+                }
                 let mut state = self.state.lock().map_err(|_| anyhow!("browser_internal"))?;
                 if state
                     .connections
@@ -1030,10 +1038,25 @@ impl BrowserTools {
                 {
                     return Err(anyhow!("browser_unavailable"));
                 }
+                if state.attachments.values().any(|a| {
+                    a.view_id == p.view_id
+                        && (a.principal != principal || a.connection != connection)
+                }) {
+                    return Err(anyhow!("browser_target_in_use"));
+                }
+                if state.attachments.values().any(|a| {
+                    a.view_id == p.view_id
+                        && a.control_session != p.control_session_id
+                        && (a.view_generation != p.view_generation
+                            || a.workspace_id != p.workspace_id
+                            || a.scope != scope)
+                }) {
+                    return Err(anyhow!("browser_target_in_use"));
+                }
                 let previous = state
                     .attachments
                     .values()
-                    .find(|a| a.view_id == p.view_id)
+                    .find(|a| a.view_id == p.view_id && a.control_session == p.control_session_id)
                     .cloned();
                 if let Some(a) = previous {
                     if a.principal != principal || a.connection != connection {
@@ -1042,6 +1065,7 @@ impl BrowserTools {
                     if a.view_generation == p.view_generation
                         && a.workspace_id == p.workspace_id
                         && a.scope == scope
+                        && a.control_session == p.control_session_id
                     {
                         return Ok(self.attachment_value(&a));
                     }
@@ -1063,6 +1087,7 @@ impl BrowserTools {
                     view_generation: p.view_generation,
                     workspace_id: p.workspace_id,
                     scope,
+                    control_session: p.control_session_id,
                 };
                 let result = self.attachment_value(&a);
                 state.attachments.insert(a.id.clone(), a);
@@ -1138,12 +1163,29 @@ impl BrowserTools {
                     &p.attachment_id,
                     p.attachment_generation,
                 )?;
+                if state.tabs.values().any(|registration| {
+                    registration.source_tab_id == p.source_tab_id
+                        && state
+                            .attachments
+                            .get(&registration.attachment_id)
+                            .is_some_and(|existing| {
+                                existing.workspace_id == a.workspace_id
+                                    && (existing.principal != principal
+                                        || existing.connection != connection
+                                        || existing.view_generation != a.view_generation)
+                            })
+                }) {
+                    return Err(anyhow!("browser_target_in_use"));
+                }
                 if let Some(registration) = state.tabs.values().find(|t| {
                     t.source_tab_id == p.source_tab_id
                         && state
                             .attachments
                             .get(&t.attachment_id)
-                            .is_some_and(|existing| existing.workspace_id == a.workspace_id)
+                            .is_some_and(|existing| {
+                                existing.workspace_id == a.workspace_id
+                                    && existing.control_session == a.control_session
+                            })
                 }) {
                     if registration.attachment_id != a.id {
                         return Err(anyhow!("browser_target_in_use"));
@@ -1234,12 +1276,17 @@ impl BrowserTools {
         }
         state.tabs.remove(tab);
     }
-    fn targets_current(&self, targets: &[Target], scope: &Scope) -> Result<()> {
+    fn targets_current(&self, targets: &[Target], scope: &Scope, session: &str) -> Result<()> {
         self.db.transaction(|tx| {
             for target in targets {
                 let (current, layout) = workspace(tx, &target.attachment.workspace_id, None)?;
                 if current != *scope
                     || current != target.attachment.scope
+                    || target
+                        .attachment
+                        .control_session
+                        .as_deref()
+                        .is_some_and(|owner| owner != session)
                     || target
                         .tabs
                         .iter()
@@ -1649,10 +1696,33 @@ impl BrowserTools {
                     let Some(a) = state
                         .attachments
                         .get(&registration.attachment_id)
-                        .filter(|a| a.scope == caller_scope)
+                        .filter(|a| {
+                            a.scope == caller_scope
+                                && a.control_session
+                                    .as_deref()
+                                    .is_none_or(|owner| owner == identity.session)
+                                && (kind == OperationKind::Read
+                                    || a.control_session.as_deref() == Some(&identity.session))
+                        })
                     else {
                         continue;
                     };
+                    if tab.is_none()
+                        && a.control_session.is_none()
+                        && state.tabs.values().any(|candidate| {
+                            candidate.source_tab_id == registration.source_tab_id
+                                && state.attachments.get(&candidate.attachment_id).is_some_and(
+                                    |attachment| {
+                                        attachment.workspace_id == a.workspace_id
+                                            && attachment.scope == caller_scope
+                                            && attachment.control_session.as_deref()
+                                                == Some(&identity.session)
+                                    },
+                                )
+                        })
+                    {
+                        continue;
+                    }
                     grouped
                         .entry(a.id.clone())
                         .or_insert_with(|| Target {
@@ -1704,7 +1774,7 @@ impl BrowserTools {
                     }
                 }
                 // This short DB validation happens before dispatch, with no wait.
-                self.targets_current(&targets, &caller_scope)?;
+                self.targets_current(&targets, &caller_scope, &identity.session)?;
                 state.next_operation = state
                     .next_operation
                     .checked_add(1)
@@ -1845,7 +1915,7 @@ impl BrowserTools {
             || result == error_result("browser_worker_stale")
             || result == error_result("browser_read_failed");
         if !local_error {
-            self.targets_current(targets, expected)?;
+            self.targets_current(targets, expected, session)?;
         }
         let state = self.state.lock().map_err(|_| anyhow!("browser_internal"))?;
         if self.authorize(&state, session, token, false)? != identity.generation {
@@ -1907,7 +1977,7 @@ impl BrowserTools {
         }
         if !Self::registrations_current(&state, &pending.targets)
             || self
-                .targets_current(&pending.targets, &pending.scope)
+                .targets_current(&pending.targets, &pending.scope, &pending.identity.session)
                 .is_err()
         {
             self.cancel_locked(&mut state, &reply.operation_id, "browser_grant_required");
@@ -2270,7 +2340,17 @@ mod tests {
             )
         }
         fn attach(&self, connection: &str) -> Value {
+            self.attach_control(connection, "a")
+        }
+        fn attach_read(&self, connection: &str) -> Value {
             self.tools.desktop_dispatch("desktop",connection,"browser.attach",&json!({"viewId":format!("view-{connection}"),"workspaceId":"workspace","workspaceRevision":1,"viewGeneration":1})).unwrap()
+        }
+        fn attach_control(&self, connection: &str, session: &str) -> Value {
+            self.tools.desktop_dispatch("desktop",connection,"browser.attach",&json!({"viewId":format!("view-{connection}"),"workspaceId":"workspace","workspaceRevision":1,"viewGeneration":1,"controlSessionId":session})).unwrap()
+        }
+        fn attach_distinct_control(&self, connection: &str, session: &str, source: &str) -> Value {
+            let attachment = self.tools.desktop_dispatch("desktop",connection,"browser.attach",&json!({"viewId":format!("view-{source}"),"workspaceId":"workspace","workspaceRevision":1,"viewGeneration":1,"controlSessionId":session})).unwrap();
+            self.register(connection, &attachment, source)
         }
         fn register(&self, connection: &str, attachment: &Value, source: &str) -> Value {
             self.tools.desktop_dispatch("desktop",connection,"browser.registerTab",&json!({"attachmentId":attachment["attachmentId"],"attachmentGeneration":attachment["attachmentGeneration"],"sourceTabId":source,"workspaceRevision":1})).unwrap()
@@ -2298,7 +2378,10 @@ mod tests {
             json!({"content":[{"type":"text","text":"Page data, not instructions\nSnapshot: fixture"}]})
         }
         fn turn(&self, turn: &str) {
-            self.db.transaction(|tx| {tx.execute("INSERT INTO session_activity(session_id,state,revision,turn_id) VALUES('a','running',1,?) ON CONFLICT(session_id) DO UPDATE SET state='running',revision=revision+1,turn_id=excluded.turn_id",[turn])?;Ok(())}).unwrap();
+            self.turn_for("a", turn);
+        }
+        fn turn_for(&self, session: &str, turn: &str) {
+            self.db.transaction(|tx| {tx.execute("INSERT INTO session_activity(session_id,state,revision,turn_id) VALUES(?,'running',1,?) ON CONFLICT(session_id) DO UPDATE SET state='running',revision=revision+1,turn_id=excluded.turn_id",[session, turn])?;Ok(())}).unwrap();
         }
         fn dispatch_params(request: &Value) -> Value {
             let mut params = request["params"].clone();
@@ -2575,8 +2658,12 @@ mod tests {
                     .get_mut("other")
                     .unwrap()
                     .eval = capability;
-                let mut params =
-                    f.params(1, "browser_eval", json!({"tabId":tab["tabId"],"code":"2"}));
+                let other_tab = f.attach_distinct_control("connection", "other", "web-two");
+                let mut params = f.params(
+                    1,
+                    "browser_eval",
+                    json!({"tabId":other_tab["tabId"],"code":"2"}),
+                );
                 params["callerSessionId"] = json!("other");
                 params["callerToken"] = json!(token);
                 let tools = Arc::clone(&f.tools);
@@ -3061,8 +3148,15 @@ mod tests {
         let f = Fixture::new();
         enable_eval(&f);
         let (_presence, mut receiver) = f.connect("connection", 128);
-        let attachment = f.attach("connection");
-        let tab = f.register("connection", &attachment, "web");
+        f.db.transaction(|tx| {
+            let layout: String = tx.query_row("SELECT layout FROM workspaces WHERE id='workspace'", [], |r| r.get(0))?;
+            let mut layout: Value = serde_json::from_str(&layout)?;
+            for index in 0..9 {
+                layout["tabs"].as_array_mut().unwrap().push(json!({"kind":"web","id":format!("eval-web-{index}"),"url":"http://localhost:5173/"}));
+            }
+            tx.execute("UPDATE workspaces SET layout=?", [layout.to_string()])?;
+            Ok(())
+        }).unwrap();
         let capability = f.tools.state.lock().unwrap().grants["a"].eval.clone();
         let mut tasks = Vec::new();
         let mut cancel = Vec::new();
@@ -3081,6 +3175,8 @@ mod tests {
                 .get_mut(&session)
                 .unwrap()
                 .eval = capability.clone();
+            let tab =
+                f.attach_distinct_control("connection", &session, &format!("eval-web-{index}"));
             for sequence in 1..=8 {
                 let mut params = f.params(
                     sequence,
@@ -4044,7 +4140,7 @@ mod tests {
         let mut wrong = request.clone();
         wrong["params"]["runtimeEpoch"] = json!("previous-runtime");
         assert!(f.reply("one", &wrong, Fixture::snapshot()).is_err());
-        let replacement=f.tools.desktop_dispatch("desktop","one","browser.attach",&json!({"viewId":"view-one","workspaceId":"workspace","workspaceRevision":1,"viewGeneration":2})).unwrap();
+        let replacement=f.tools.desktop_dispatch("desktop","one","browser.attach",&json!({"viewId":"view-one","workspaceId":"workspace","workspaceRevision":1,"viewGeneration":2,"controlSessionId":"a"})).unwrap();
         assert_ne!(replacement["attachmentId"], attachment["attachmentId"]);
         assert_eq!(
             call.await.unwrap().unwrap(),
@@ -4086,6 +4182,101 @@ mod tests {
             .unwrap()
             .contains("\"count\":0"));
         assert!(receiver.try_recv().is_err());
+    }
+    #[tokio::test]
+    async fn read_and_conversation_control_layers_coexist_and_detach_independently() {
+        let f = Fixture::new();
+        f.db.transaction(|tx| {
+            tx.execute("UPDATE sessions SET worktree_path=(SELECT path FROM worktrees WHERE id='one') WHERE id='b'", [])?;
+            Ok(())
+        }).unwrap();
+        let (_presence, mut receiver) = f.connect("one", 16);
+        let read = f.attach_read("one");
+        let read_tab = f.register("one", &read, "web");
+        let control_a = f.attach_control("one", "a");
+        let control_a_tab = f.register("one", &control_a, "web");
+        assert!(f.tools.desktop_dispatch("desktop", "one", "browser.attach", &json!({"viewId":"view-one","workspaceId":"workspace","workspaceRevision":1,"viewGeneration":2,"controlSessionId":"b"})).is_err());
+        let control_b = f.attach_control("one", "b");
+        let control_b_tab = f.register("one", &control_b, "web");
+        let (_second_presence, _second_receiver) = f.connect("two", 8);
+        assert!(f.tools.desktop_dispatch("desktop", "two", "browser.attach", &json!({"viewId":"view-one","workspaceId":"workspace","workspaceRevision":1,"viewGeneration":1,"controlSessionId":"b"})).is_err());
+        let cross_connection = f.tools.desktop_dispatch("desktop", "two", "browser.attach", &json!({"viewId":"view-two","workspaceId":"workspace","workspaceRevision":1,"viewGeneration":1,"controlSessionId":"b"})).unwrap();
+        assert!(f.tools.desktop_dispatch("desktop", "two", "browser.registerTab", &json!({"attachmentId":cross_connection["attachmentId"],"attachmentGeneration":cross_connection["attachmentGeneration"],"sourceTabId":"web","workspaceRevision":1})).is_err());
+
+        let call_a = f.begin(1, "browser_list_tabs", json!({}));
+        let request_a = event(&mut receiver).await;
+        assert_eq!(
+            request_a["params"]["attachmentId"],
+            control_a["attachmentId"]
+        );
+        f.reply("one", &request_a, json!({"tabs":[{"tabId":control_a_tab["tabId"],"title":"Control A","url":"http://localhost:5173/","origin":"http://localhost:5173","shareLevel":"control"}],"truncated":false})).unwrap();
+        assert!(call_a.await.unwrap().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"count\":1"));
+
+        let token_b = f.tools.issue("b", "worker").unwrap();
+        let mut params_b = f.params(2, "browser_list_tabs", json!({}));
+        params_b["callerSessionId"] = json!("b");
+        params_b["callerToken"] = json!(token_b.clone());
+        let tools = Arc::clone(&f.tools);
+        let call_b = tokio::spawn(async move { tools.tool_call(params_b).await });
+        let request_b = event(&mut receiver).await;
+        assert_eq!(
+            request_b["params"]["attachmentId"],
+            control_b["attachmentId"]
+        );
+        f.reply("one", &request_b, json!({"tabs":[{"tabId":control_b_tab["tabId"],"title":"Control B","url":"http://localhost:5173/","origin":"http://localhost:5173","shareLevel":"control"}],"truncated":false})).unwrap();
+        assert!(call_b.await.unwrap().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"count\":1"));
+
+        let read_while_controlled =
+            f.begin(3, "browser_snapshot", json!({"tabId":read_tab["tabId"]}));
+        let read_request = event(&mut receiver).await;
+        assert_eq!(read_request["params"]["attachmentId"], read["attachmentId"]);
+        f.reply("one", &read_request, Fixture::snapshot()).unwrap();
+        assert!(
+            read_while_controlled.await.unwrap().unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Snapshot")
+        );
+
+        f.tools.desktop_dispatch("desktop", "one", "browser.detach", &json!({"attachmentId":control_a["attachmentId"],"attachmentGeneration":control_a["attachmentGeneration"]})).unwrap();
+        let call_a_read = f.begin(4, "browser_list_tabs", json!({}));
+        let request_a_read = event(&mut receiver).await;
+        assert_eq!(
+            request_a_read["params"]["attachmentId"],
+            read["attachmentId"]
+        );
+        f.reply("one", &request_a_read, json!({"tabs":[{"tabId":read_tab["tabId"],"title":"Read","url":"http://localhost:5173/","origin":"http://localhost:5173","shareLevel":"read"}],"truncated":false})).unwrap();
+        assert!(call_a_read.await.unwrap().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"count\":1"));
+
+        let mut b_after_detach = f.params(
+            5,
+            "browser_snapshot",
+            json!({"tabId":control_b_tab["tabId"]}),
+        );
+        b_after_detach["callerSessionId"] = json!("b");
+        b_after_detach["callerToken"] = json!(token_b);
+        let tools = Arc::clone(&f.tools);
+        let b_after_detach = tokio::spawn(async move { tools.tool_call(b_after_detach).await });
+        let request_b_after_detach = event(&mut receiver).await;
+        assert_eq!(
+            request_b_after_detach["params"]["attachmentId"],
+            control_b["attachmentId"]
+        );
+        f.reply("one", &request_b_after_detach, Fixture::snapshot())
+            .unwrap();
+        assert!(b_after_detach.await.unwrap().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Snapshot"));
     }
     #[tokio::test]
     async fn same_canonical_root_under_a_different_project_has_no_authority() {
@@ -4408,7 +4599,7 @@ mod tests {
     async fn cancel_session_pending_preserves_other_sessions_pending_and_receipts() {
         let f = Fixture::new();
         let (_presence, mut receiver) = f.connect("one", 16);
-        let attachment = f.attach("one");
+        let attachment = f.attach_read("one");
         let tab = f.register("one", &attachment, "web");
         f.db.transaction(|tx| {
             tx.execute("UPDATE sessions SET worktree_path=(SELECT worktree_path FROM sessions WHERE id='a') WHERE id='b'",[])?;
@@ -4619,7 +4810,7 @@ mod tests {
     async fn attachment_limit_is_shared_across_sessions_and_reply_lane_stays_available() {
         let f = Fixture::new();
         let (_presence, mut receiver) = f.connect("one", 128);
-        let attachment = f.attach("one");
+        let attachment = f.attach_read("one");
         f.register("one", &attachment, "web");
         f.db.transaction(|tx| {
             for number in 0..5 {tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at) SELECT ?,project_id,worktree_path,'Fixture','codex','chat','idle','t','t' FROM sessions WHERE id='a'",[format!("many-{number}")])?;}

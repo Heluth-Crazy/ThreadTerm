@@ -101,6 +101,30 @@ report.consistency=[];report.contrast=[];report.geometry=[];
 try{assert.ok(existsSync(runtime),`missing ${runtime}; build runtime/target-qa first`);await mkdir(out,{recursive:true});await mkdir(bin,{recursive:true});await mkdir(work,{recursive:true});await mkdir(plugins,{recursive:true});cpSync(fixture,join(plugins,'browser-preview-acp-qa'),{recursive:true});await writeFile(join(bin,'codex.cmd'),`@"${process.execPath}" "${join(fixture,'fake-codex-browser.cjs')}" %*\r\n`);await buildApp();await start();
  await setTheme('light');await loaded('/console');
  const toolbar=preview().locator('.wb-browser-toolbar'),address=preview().getByLabel('Address',{exact:true});
+ const retryServer=createServer((_req,res)=>res.end(html('Retry', '<p>Server reachable</p>')));
+ try {
+  await new Promise(done=>retryServer.listen(0,'127.0.0.1',done));
+  const retryPort=retryServer.address().port, retryUrl=`http://127.0.0.1:${retryPort}/`;
+  await new Promise(done=>retryServer.close(done));
+  await address.fill(retryUrl);await address.press('Enter');
+  const failed=await until(async()=>{const value=await state();return !value.loading&&value.issue?.includes('ERR_CONNECTION_REFUSED')&&value},'connection refusal reaches native state');
+  assert.equal(failed.navigation,'failed','Chromium error document must not count as a successful page load');
+  const guidance=preview().getByRole('alert').filter({hasText:'Read and Control require a loaded page'});
+  await guidance.waitFor();
+  assert.match(await guidance.innerText(),/enter its address again/);
+  for(const mode of ['Read','Control'])assert.equal(await toolbar.getByRole('button',{name:`Agent access ${mode}`,exact:true}).isDisabled(),true);
+  await new Promise((done,reject)=>{retryServer.once('error',reject);retryServer.listen(retryPort,'127.0.0.1',done)});
+  await address.fill(retryUrl);await address.press('Enter');
+  await until(async()=>{const value=await state();return value.url===retryUrl&&value.navigation==='load_observed'&&!value.loading},'same loopback address loads after retry');
+  await guidance.waitFor({state:'hidden'});
+  check('A refused loopback navigation explains sharing requirements and can retry the same address');
+ } finally {
+  if(retryServer.listening)await new Promise(done=>{
+   retryServer.close(done);
+   retryServer.closeAllConnections();
+  });
+ }
+ await loaded('/console');
  // 1. Idle toolbar: geometry, consistency, the Chrome URL display and the console badge.
  let geometry=await toolbarGeometry();report.geometry.push({label:'idle light default',...geometry});assertToolbar(geometry,'idle light default');
  await consistent(toolbarSelector,'idle toolbar light');

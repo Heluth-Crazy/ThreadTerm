@@ -1,5 +1,5 @@
 import type { BrowserTool } from '@threadterm/protocol';
-import type { BrowserShareCommand, BrowserShareWorkspace, BrowserSharingLevel, BrowserState, BrowserTabOperation } from './browserTypes';
+import type { BrowserShareCommand, BrowserShareWorkspace, BrowserSharingLevel, BrowserSharingState, BrowserState, BrowserTabOperation } from './browserTypes';
 
 type Copy=(en:string,zh:string)=>string;
 export interface BrowserShareFence {
@@ -22,6 +22,16 @@ export function createBrowserStateSequence() {
 
 export function browserControlOrigin(state:Pick<BrowserState,'url'>):string|undefined {
  try{const url=new URL(state.url);return ['http:','https:'].includes(url.protocol)&&!url.username&&!url.password?url.origin:undefined;}catch{return undefined;}
+}
+
+export function sharingForConversation(sharing:BrowserSharingState|undefined,sessionId:string|undefined):BrowserSharingState|undefined {
+ const owners=sharing?.controlSessionIds;
+ if(!sharing||!owners?.length)return sharing;
+ const operations=sharing.operations?.filter(operation=>operation.callerSessionId===sessionId||!owners.includes(operation.callerSessionId));
+ if(sessionId&&owners.includes(sessionId))return {...sharing,operations};
+ if(sharing.worktreeRead)return {...sharing,level:'read',operations};
+ return {level:'off',status:'idle',reading:false,grantEpoch:sharing.grantEpoch,
+  viewGeneration:sharing.viewGeneration,navigationEpoch:sharing.navigationEpoch,controlAvailable:sharing.controlAvailable};
 }
 
 export function canRequestBrowserControl(state:Omit<BrowserState,'tabId'>,visible:boolean,canPrepare:boolean):boolean {
@@ -50,13 +60,14 @@ export function createBrowserShareIntents() {
 }
 
 /** Workspace preparation cannot change the user's captured authority tuple. */
-export async function prepareBrowserShareCommand(level:BrowserSharingLevel,intent:BrowserShareIntent,current:()=>boolean,prepare?: (tabId:string)=>Promise<BrowserShareWorkspace>):Promise<BrowserShareCommand|undefined> {
+export async function prepareBrowserShareCommand(level:BrowserSharingLevel,intent:BrowserShareIntent,current:()=>boolean,prepare?: (tabId:string)=>Promise<BrowserShareWorkspace>,activeSessionId?:string):Promise<BrowserShareCommand|undefined> {
  if(!current())return;
  const tabId=intent.fence.tabId;
- if(level==='off')return {type:'share',tabId,level};
+ if(level==='off')return {type:'share',tabId,level,...(activeSessionId?{sessionId:activeSessionId}:{})};
  if(!prepare)throw new Error('Save this tab in a project workspace before sharing.');
  const workspace=await prepare(tabId);
  if(!current())return;
+ if(level==='control'&&!workspace.sessionId)throw new Error('Select a conversation before enabling browser Control.');
  const {documentGeneration,navigationEpoch,viewGeneration,grantEpoch}=intent.fence;
  return {type:'share',tabId,level,workspace,expected:{documentGeneration,navigationEpoch,viewGeneration,grantEpoch}};
 }
