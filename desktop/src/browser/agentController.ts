@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { isBrowserActionTool, isBrowserActionReceipt, type BrowserActionReceipt } from '@threadterm/protocol';
+import { BrowserAgentActions } from './agentActions.js';
 import { isBrowserAttachment, isBrowserPrivateFrame, isBrowserRegistration, isBrowserMcpResult, isBrowserTabListResult, type BrowserAttachment, type BrowserDesktopMethod, type BrowserEvalExecution, type BrowserEvalFence, type BrowserEvalPreparation, type BrowserEvalReceipt, type BrowserExecution, type BrowserMcpResult, type BrowserPrivateFrame, type BrowserRegistration, type BrowserTabListResult, type PaneLayout, type RuntimeEvent, type Workspace } from '@threadterm/protocol';
 import type { BrowserSharingState, BrowserShareCommand, BrowserTabOperation } from '../../../renderer/src/browserTypes.js';
 import { BrowserAgentGrants } from './agentGrants.js';
@@ -20,10 +22,13 @@ export interface BrowserAgentControllerHost {
   changed(sourceTabId: string): void;
   /** Trusted main capability proof only. Missing means unavailable; settings are separate. */
   evalCapability?(): boolean;
+  actionCapability?(): boolean;
+  canControl?(sourceTabId: string): boolean;
+  navigate?(sourceTabId: string, url: string): Promise<{ sharingRevoked: boolean }>;
   readonly electronVersion?: string;
 }
 type SharedTab = { epoch: number; intent: number; level: 'off' | 'read' | 'control'; status: 'idle' | 'sharing' | 'stopping'; pendingLevel?: 'read' | 'control'; origin?: string; reason?: string; registration?: BrowserRegistration; attachment?: BrowserAttachment; workspace?: Workspace; viewId: string; refs: BrowserAgentSnapshotRefs; preparing?: Promise<void> };
-type Operation = { kind: 'read'; key: string; request: BrowserExecution; sequence: bigint; fingerprint: string; controller: AbortController; fences: BrowserAgentReadFence[]; title?: string; state: 'queued' | 'running' | 'done'; terminalPhase?: 'failed' | 'cancelled'; admittedAtUnixMs: number; finishedAtUnixMs?: number; result?: BrowserMcpResult | BrowserTabListResult; timer?: ReturnType<typeof setTimeout>; bytes: number };
+type Operation = { kind: 'read' | 'action'; key: string; request: BrowserExecution; sequence: bigint; fingerprint: string; controller: AbortController; fences: (BrowserAgentReadFence | BrowserAgentControlFence)[]; nativePending?: boolean; dispatched?: boolean; navigating?: boolean; navigationRelease?: { registration?: BrowserRegistration; attachment?: BrowserAttachment }; title?: string; state: 'queued' | 'running' | 'done'; terminalPhase?: 'failed' | 'cancelled'; admittedAtUnixMs: number; finishedAtUnixMs?: number; result?: BrowserMcpResult | BrowserTabListResult | BrowserActionReceipt; timer?: ReturnType<typeof setTimeout>; bytes: number };
 type EvalPreparation = { key: string; request: BrowserEvalPreparation; fingerprint: string; controller: AbortController; nativeFence: BrowserAgentControlFence; title: string; fence?: BrowserEvalFence };
 type EvalOperation = { kind: 'eval'; key: string; request: BrowserEvalExecution; fingerprint: string; preparation: EvalPreparation; controller: AbortController; state: 'queued' | 'running' | 'done'; nativePending: boolean; monotonicDeadline: number; result?: BrowserEvalReceipt; timer?: ReturnType<typeof setTimeout> };
 type LaneOperation = Operation | EvalOperation;
@@ -46,6 +51,8 @@ export class BrowserAgentController {
   private disposed = false;
   private bindingRefresh = 0;
   private evaluator?: BrowserAgentEval;
+  private actions?: BrowserAgentActions;
+  private readonly navigationReleases = new Set<NonNullable<Operation['navigationRelease']>>();
   private readonly evalPreparations = new Map<string, EvalPreparation>();
   private readonly evalOperations = new Map<string, EvalOperation>();
   private readonly nativePreparing = new Set<string>();
@@ -63,7 +70,7 @@ export class BrowserAgentController {
   state(sourceTabId: string): BrowserSharingState {
     const record = this.tabs.get(sourceTabId), tab = this.host.getTab(sourceTabId);
     return { level: record?.level ?? 'off', status: record?.status ?? 'idle', grantEpoch: record?.epoch ?? 0, viewGeneration: tab?.document.viewGeneration ?? 0, navigationEpoch: tab?.document.navigationEpoch ?? 0,
-      ...(record?.origin ? { origin: record.origin } : {}), ...(record?.reason ? { reason: record.reason } : {}), controlAvailable: this.evalCapable(), operations: this.ordinaryActivity(sourceTabId), reading: [...this.operations.values()].some(op => op.state === 'running' && op.request.targets.some(target => target.sourceTabId === sourceTabId)) };
+      ...(record?.origin ? { origin: record.origin } : {}), ...(record?.reason ? { reason: record.reason } : {}), controlAvailable: this.controlCapable(), operations: this.ordinaryActivity(sourceTabId), reading: [...this.operations.values()].some(op => op.kind === 'read' && op.state === 'running' && op.request.targets.some(target => target.sourceTabId === sourceTabId)) };
   }
 
   async share(command: BrowserShareCommand): Promise<void> {
@@ -88,7 +95,7 @@ export class BrowserAgentController {
       record.intent++; record.epoch++; record.level = 'read'; record.status = 'idle'; record.reason = undefined;
       this.grants.downgradeToRead(command.tabId); this.cancelTab(command.tabId, 'Browser control was downgraded.'); this.host.changed(command.tabId); return;
     }
-    if (command.level === 'control' && !this.evalCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser control is unavailable on this native view.');
+    if (command.level === 'control' && !this.controlCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser control is unavailable on this native view.');
     const current = this.state(command.tabId), expected = command.expected;
     if (record.status !== 'idle' || current.grantEpoch !== expected.grantEpoch || current.viewGeneration !== expected.viewGeneration || current.navigationEpoch !== expected.navigationEpoch || tab.document.documentGeneration !== expected.documentGeneration) throw new BrowserAgentError('browser_stale_ref', 'The browser page changed before sharing was updated.');
     const origin = browserAgentOrigin(tab.document.url);
@@ -121,7 +128,7 @@ export class BrowserAgentController {
       if (!isBrowserRegistration(registered) || !sameAttachment(attachment, registered) || registered.sourceTabId !== command.tabId) throw new BrowserAgentError('browser_unavailable', 'Browser tab registration was not confirmed.');
       registration = registered; const latest = check();
       const installed = this.grants.register(registration);
-      if (command.level === 'control' && !this.evalCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser control capability changed.');
+      if (command.level === 'control' && !this.controlCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser control capability changed.');
       this.grants.setShare(command.tabId, command.level, { ...expected, grantEpoch: installed.grantEpoch }, latest.document);
       record.registration = registration; record.attachment = attachment; record.workspace = workspace; record.level = command.level; record.origin = origin; record.epoch++; record.status = 'idle';
       this.host.changed(command.tabId);
@@ -136,9 +143,9 @@ export class BrowserAgentController {
     const record = this.tabs.get(sourceTabId);
     if (!record) return;
     record.intent++;
-    if (record.status === 'sharing' || record.level !== 'off' && browserAgentOrigin(url) !== record.origin) { void this.revoke(sourceTabId, 'Sharing stopped — the page moved to another site.').catch(() => undefined); return; }
+    if (record.status === 'sharing' || record.level !== 'off' && browserAgentOrigin(url) !== record.origin) { void this.revoke(sourceTabId, 'Sharing stopped — the page moved to another site.', true).catch(() => undefined); return; }
     this.grants.navigationStarted(sourceTabId, url); record.refs.reset(); record.epoch++;
-    this.cancelTab(sourceTabId, 'The browser page changed.'); this.host.changed(sourceTabId);
+    this.cancelTab(sourceTabId, 'The browser page changed.', true); this.host.changed(sourceTabId);
   }
 
   invalidate(sourceTabId: string, reason: string, removed = false): void {
@@ -155,12 +162,18 @@ export class BrowserAgentController {
       this.cancelTab(id, reason); this.host.changed(id);
     }
     this.grants.clear(reason);
-    for (const operation of this.operations.values()) { operation.controller.abort(); if (operation.timer) clearTimeout(operation.timer); }
+    for (const operation of this.operations.values()) {
+      operation.controller.abort(); if (operation.timer) clearTimeout(operation.timer);
+      const held = operation.navigationRelease; operation.navigationRelease = undefined;
+      if (held) void this.releaseNavigation(held).catch(() => undefined);
+    }
+    for (const held of this.navigationReleases) void this.releaseNavigation(held).catch(() => undefined);
     this.evaluator?.clear();
+    this.actions?.clear();
     this.operations.clear(); this.completed.length = 0; this.retainedBytes = 0; this.retired.clear();
     for (const [id, lane] of this.lanes) {
       lane.queued.length = 0;
-      if (!(lane.active?.kind === 'eval' && lane.active.nativePending) && !this.nativePreparing.has(id)) this.lanes.delete(id);
+      if (!lane.active?.nativePending && !this.nativePreparing.has(id)) this.lanes.delete(id);
     }
   }
 
@@ -168,13 +181,23 @@ export class BrowserAgentController {
 
   dispose(): void { if (this.disposed) return; this.clear('Browser view was closed.'); this.disposed = true; for (const stop of this.stopListeners) stop(); }
 
-  private async revoke(sourceTabId: string, reason: string): Promise<void> {
+  private async revoke(sourceTabId: string, reason: string, preserveNavigation = false): Promise<void> {
     const record = this.tabs.get(sourceTabId);
     if (!record) return;
     const registration = record.registration, attachment = record.attachment, preparing = record.preparing, intent = ++record.intent;
+    const navigation = preserveNavigation ? [...this.operations.values()].find(op => op.kind === 'action' && op.navigating && op.dispatched && op.state !== 'done' && op.request.targets.some(target => target.sourceTabId === sourceTabId)) : undefined;
+    if (navigation && (registration || attachment)) { navigation.navigationRelease ??= { registration, attachment }; this.navigationReleases.add(navigation.navigationRelease); }
     record.level = 'off'; record.origin = undefined; record.epoch++; record.status = 'stopping'; record.pendingLevel = undefined; record.reason = reason; record.registration = undefined; record.attachment = undefined; record.workspace = undefined; record.refs.reset();
-    this.grants.unregister(sourceTabId, reason); this.cancelTab(sourceTabId, reason); this.host.changed(sourceTabId);
-    try { await this.release(registration, attachment); await preparing; }
+    this.grants.unregister(sourceTabId, reason); this.cancelTab(sourceTabId, reason, preserveNavigation); this.host.changed(sourceTabId);
+    try {
+      if (!navigation) {
+        await this.release(registration, attachment);
+        for (const operation of this.operations.values()) if (operation.navigationRelease && operation.request.targets.some(target => target.sourceTabId === sourceTabId)) {
+          const held = operation.navigationRelease; operation.navigationRelease = undefined; await this.releaseNavigation(held);
+        }
+      }
+      await preparing;
+    }
     finally { if (this.tabs.get(sourceTabId) === record && record.intent === intent) { record.status = 'idle'; this.host.changed(sourceTabId); } }
   }
 
@@ -212,19 +235,25 @@ export class BrowserAgentController {
     if (frame.method === 'browser.eval.prepare') { void this.prepareEval(frame.params); return; }
     if (frame.method === 'browser.eval.execute') { this.admitEval(frame.params); return; }
     const execution = frame.params, sequence = this.sequence(execution.operationId, execution.runtimeEpoch);
-    if (sequence === undefined || ![...this.tabs.values()].some(tab => tab.attachment && sameAttachment(tab.attachment, execution))) return;
+    if (sequence === undefined) return;
     const fingerprint = JSON.stringify(execution);
     if (existing) {
-      if (existing.fingerprint !== fingerprint) { void this.reply(execution, errorResult('browser_invalid_arguments', 'Browser operation identity was reused.')); return; }
-      if (existing.state === 'done' && existing.result) { try { this.assertOperation(existing); void this.reply(execution, existing.result); } catch { void this.reply(execution, errorResult('browser_grant_required', 'Browser sharing changed.')); } }
+      if (existing.fingerprint !== fingerprint) { void this.reply(execution, existing.kind === 'action' ? { outcome: 'failed', code: 'browser_action_failed' } : errorResult('browser_invalid_arguments', 'Browser operation identity was reused.')); return; }
+      if (existing.state === 'done' && existing.result) {
+        if (existing.kind === 'action') { void this.reply(execution, existing.result); return; }
+        try { this.assertOperation(existing); void this.reply(execution, existing.result); } catch { void this.reply(execution, errorResult('browser_grant_required', 'Browser sharing changed.')); }
+      }
       return;
     }
-    if (sequence <= (this.retired.get(execution.attachmentId) ?? 0n)) { void this.reply(execution, errorResult('browser_receipt_expired', 'The browser operation receipt expired and will not be replayed.')); return; }
-    const operation: Operation = { kind: 'read', key, request: execution, sequence, fingerprint, controller: new AbortController(), fences: [], state: 'queued', admittedAtUnixMs: Date.now(), bytes: 0 };
+    if (![...this.tabs.values()].some(tab => tab.attachment && sameAttachment(tab.attachment, execution))) return;
+    if (sequence <= (this.retired.get(execution.attachmentId) ?? 0n)) { void this.reply(execution, isBrowserActionTool(execution.tool) ? { outcome: 'failed', code: 'browser_unavailable' } : errorResult('browser_receipt_expired', 'The browser operation receipt expired and will not be replayed.')); return; }
+    const operation: Operation = { kind: isBrowserActionTool(execution.tool) ? 'action' : 'read', key, request: execution, sequence, fingerprint, controller: new AbortController(), fences: [], state: 'queued', admittedAtUnixMs: Date.now(), bytes: 0 };
     try {
-      if (!['browser_list_tabs', 'browser_snapshot', 'browser_screenshot', 'browser_console_messages'].includes(execution.tool)) throw new BrowserAgentError('browser_unavailable', 'This browser action has no proven native adapter.');
+      if (operation.kind === 'action' && !this.actionCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser actions are unavailable on this native view.');
       this.assertTargets(execution);
-      operation.fences = execution.targets.map(target => this.grants.captureRead(target.sourceTabId, this.requireTab(target.sourceTabId).document));
+      operation.fences = execution.targets.map(target => operation.kind === 'action'
+        ? this.grants.captureControl(target.sourceTabId, this.requireTab(target.sourceTabId).document)
+        : this.grants.captureRead(target.sourceTabId, this.requireTab(target.sourceTabId).document));
       if (execution.tool !== 'browser_list_tabs') operation.title = clipBrowserAgentText(this.requireTab(execution.targets[0].sourceTabId).title, 512);
       this.operations.set(key, operation);
       operation.timer = setTimeout(() => this.cancel(operation, 'Browser read deadline expired.', 'browser_deadline'), Math.max(1, execution.deadlineUnixMs - Date.now()));
@@ -245,7 +274,12 @@ export class BrowserAgentController {
   private assertOperation(operation: Operation): void {
     if (operation.controller.signal.aborted) throw new BrowserAgentError('browser_cancelled', 'Browser read was cancelled.');
     this.assertTargets(operation.request);
-    for (const fence of operation.fences) this.grants.assertRead(fence, this.requireTab(fence.registration.sourceTabId).document);
+    if (operation.kind === 'action' && !this.actionCapable()) throw new BrowserAgentError('browser_unavailable', 'Browser action capability changed.');
+    if (operation.kind === 'action' && operation.request.targets.some(target => this.host.canControl?.(target.sourceTabId) === false)) throw new BrowserAgentError('browser_unavailable', 'The shared browser page is not visible.');
+    for (const fence of operation.fences) {
+      if (fence.level === 'control') this.grants.assertControl(fence, this.requireTab(fence.registration.sourceTabId).document);
+      else this.grants.assertRead(fence, this.requireTab(fence.registration.sourceTabId).document);
+    }
   }
   private requireTab(id: string): BrowserAgentNativeTab & { title: string } {
     const tab = this.host.getTab(id);
@@ -259,6 +293,29 @@ export class BrowserAgentController {
     for (const target of request.targets) this.host.changed(target.sourceTabId);
     try {
       this.assertOperation(operation);
+      if (operation.kind === 'action') {
+        const target = request.targets[0], record = this.tabs.get(target.sourceTabId)!, fence = operation.fences[0] as BrowserAgentControlFence;
+        this.actions ??= new BrowserAgentActions({ electronVersion: this.host.electronVersion ?? process.versions.electron ?? '', available: () => this.actionCapable() });
+        const source = { title: operation.title ?? '', url: fence.url, origin: fence.origin };
+        const ticket = this.actions.execute(request, { fence, source, signal: operation.controller.signal,
+          getTab: () => this.host.getTab(target.sourceTabId),
+          resolveRef: ref => record.refs.resolve({ ...fence, level: 'read' }, ref),
+          assertAuthorized: () => this.assertOperation(operation),
+          beforeDispatch: async () => {
+            this.assertOperation(operation);
+            const { operationId, runtimeEpoch, workerGeneration, attachmentId, attachmentGeneration, viewGeneration } = request;
+            const ack = await this.runtime.browserRequest('browser.desktop.dispatch', { operationId, runtimeEpoch, workerGeneration, attachmentId, attachmentGeneration, viewGeneration });
+            if (!(ack && typeof ack === 'object' && 'accepted' in ack && ack.accepted === true)) throw new BrowserAgentError('browser_cancelled', 'Browser action dispatch was not acknowledged.');
+            this.assertOperation(operation); operation.dispatched = true;
+          },
+          navigate: this.host.navigate ? url => { operation.navigating = true; return this.host.navigate!(target.sourceTabId, url); } : undefined,
+        });
+        operation.nativePending = true;
+        void ticket.settled.finally(() => { operation.nativePending = false; if (operation.state === 'done' || this.operations.get(operation.key) !== operation) this.advance(operation); }).catch(() => undefined);
+        const result = await ticket.result;
+        this.finish(operation, isBrowserActionReceipt(result) ? result : { outcome: operation.dispatched ? 'outcome_unknown' : 'failed', code: 'browser_action_failed' });
+        return;
+      }
       if (request.tool === 'browser_list_tabs') {
         const result: BrowserTabListResult = { tabs: [], truncated: false };
         for (const target of request.targets) {
@@ -273,7 +330,7 @@ export class BrowserAgentController {
       } else {
         if (request.tool !== 'browser_snapshot' && request.tool !== 'browser_screenshot' && request.tool !== 'browser_console_messages') throw new BrowserAgentError('browser_unavailable', 'This browser action is unavailable.');
         const target = request.targets[0], record = this.tabs.get(target.sourceTabId)!;
-        const result = await readBrowserAgentTool(this.grants, record.refs, { fence: operation.fences[0], signal: operation.controller.signal, deadline: request.deadlineUnixMs, getTab: () => this.host.getTab(target.sourceTabId), assertAuthorized: () => this.assertOperation(operation) }, request.tool, request.arguments.level as 'error' | 'warning' | 'info' | 'debug' | 'log' | undefined);
+        const result = await readBrowserAgentTool(this.grants, record.refs, { fence: operation.fences[0] as BrowserAgentReadFence, signal: operation.controller.signal, deadline: request.deadlineUnixMs, getTab: () => this.host.getTab(target.sourceTabId), assertAuthorized: () => this.assertOperation(operation) }, request.tool, request.arguments.level as 'error' | 'warning' | 'info' | 'debug' | 'log' | undefined);
         this.assertOperation(operation);
         const data = result as Record<string, unknown>;
         data.provenance = { ...(data.provenance as object), ...this.provenance(operation, 'completed') };
@@ -290,13 +347,23 @@ export class BrowserAgentController {
     try { return !this.disposed && (this.host.electronVersion ?? process.versions.electron) === '44.3.0' && this.host.evalCapability?.() === true; }
     catch { return false; }
   }
+  private actionCapable(): boolean {
+    try { return !this.disposed && (this.host.electronVersion ?? process.versions.electron) === '44.3.0' && this.host.actionCapability?.() === true; }
+    catch { return false; }
+  }
+  private controlCapable(): boolean { return this.actionCapable() || this.evalCapable(); }
+  navigationAdmitted(sourceTabId: string): void { void this.revoke(sourceTabId, 'Sharing stopped — the agent navigated this browser tab.', true).catch(() => undefined); }
+  private async releaseNavigation(held: NonNullable<Operation['navigationRelease']>): Promise<void> {
+    if (!this.navigationReleases.delete(held)) return;
+    await this.release(held.registration, held.attachment);
+  }
 
   private ordinaryActivity(sourceTabId: string): BrowserTabOperation[] {
     return [...this.operations.values()].filter(operation => operation.request.targets.some(target => target.sourceTabId === sourceTabId)).slice(-50).map(operation => {
-      const failed = operation.result && 'isError' in operation.result && operation.result.isError === true;
+      const failed = operation.result && ('isError' in operation.result && operation.result.isError === true || 'outcome' in operation.result && operation.result.outcome !== 'completed');
       const title = operation.title?.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
       return { operationId: operation.request.operationId, tool: operation.request.tool, callerSessionId: operation.request.callerSessionId,
-        phase: operation.state === 'done' ? operation.terminalPhase ?? (failed ? 'failed' : 'completed') : operation.state,
+        phase: operation.state === 'done' ? operation.kind === 'action' && operation.result && 'outcome' in operation.result ? operation.result.outcome : operation.terminalPhase ?? (failed ? 'failed' : 'completed') : operation.state,
         admittedAtUnixMs: operation.admittedAtUnixMs, ...(operation.finishedAtUnixMs ? { finishedAtUnixMs: operation.finishedAtUnixMs } : {}),
         ...(operation.fences[0]?.origin ? { origin: operation.fences[0].origin } : { provenanceUnavailable: true }), ...(title !== undefined ? { title } : {}), canStop: operation.state !== 'done' };
     });
@@ -307,7 +374,7 @@ export class BrowserAgentController {
   }
 
   /** Main calls this after the exact old WebContents emits destroyed, never for a replacement. */
-  nativeDestroyed(contents: BrowserAgentNativeTab['contents']): void { this.evaluator?.confirmDestroyed(contents); }
+  nativeDestroyed(contents: BrowserAgentNativeTab['contents']): void { this.evaluator?.confirmDestroyed(contents); this.actions?.confirmDestroyed(contents); }
 
   /** Sender/tab membership is checked by the main IPC handler before this idempotent stop. */
   stopAgentOperation(sourceTabId: string, operationId: string): void {
@@ -448,7 +515,7 @@ export class BrowserAgentController {
   private start(operation: LaneOperation): void { if (operation.kind === 'eval') void this.executeEval(operation); else void this.execute(operation); }
   private advance(operation: LaneOperation): void {
     const id = this.sourceId(operation), lane = this.lanes.get(id);
-    if (!lane || operation.kind === 'eval' && operation.nativePending) return;
+    if (!lane || operation.nativePending) return;
     lane.queued = lane.queued.filter(value => value !== operation);
     if (lane.active === operation) lane.active = undefined;
     this.advanceSource(id);
@@ -468,20 +535,35 @@ export class BrowserAgentController {
     catch { /* Disconnected and late outcomes are settled by the broker; never replay code. */ }
   }
 
-  private cancelTab(id: string, reason: string): void {
+  private cancelTab(id: string, reason: string, preserveNavigation = false): void {
     this.evaluator?.invalidate(id);
+    this.actions?.invalidate(id);
     for (const preparation of this.evalPreparations.values()) if (preparation.nativeFence.registration.sourceTabId === id) this.cancelPreparation(preparation);
     for (const operation of this.evalOperations.values()) if (operation.preparation.nativeFence.registration.sourceTabId === id) this.cancelEval(operation);
-    for (const op of this.operations.values()) if (op.request.targets.some(target => target.sourceTabId === id)) this.cancel(op, reason);
+    for (const op of this.operations.values()) if (op.request.targets.some(target => target.sourceTabId === id)) {
+      if (preserveNavigation && op.kind === 'action' && op.navigating && op.dispatched && op.request.tool === 'browser_navigate') continue;
+      this.cancel(op, reason);
+    }
   }
   private cancel(operation: Operation, reason: string, code = 'browser_cancelled'): void {
+    if (operation.kind === 'action' && operation.state === 'done') return;
     operation.terminalPhase = code === 'browser_deadline' ? 'failed' : 'cancelled';
-    operation.controller.abort();
+    operation.controller.abort(code);
+    if (operation.kind === 'action') {
+      if (operation.state === 'done' || operation.nativePending) return;
+      this.finish(operation, { outcome: operation.dispatched ? 'outcome_unknown' : code === 'browser_deadline' ? 'failed' : 'cancelled', code: operation.dispatched ? 'browser_outcome_unknown' : code === 'browser_deadline' ? 'browser_deadline' : 'browser_cancelled' }); return;
+    }
     if (operation.state === 'done') { this.retainedBytes -= operation.bytes; operation.bytes = 0; operation.result = errorResult(code, reason); return; }
     this.finish(operation, errorResult(code, reason));
   }
-  private finish(operation: Operation, result: BrowserMcpResult | BrowserTabListResult): void {
+  private finish(operation: Operation, result: BrowserMcpResult | BrowserTabListResult | BrowserActionReceipt): void {
     if (operation.state === 'done' || this.operations.get(operation.key) !== operation) return;
+    if (operation.kind === 'action' && !('outcome' in result)) {
+      let code = 'browser_action_failed';
+      if ('content' in result) { try { code = JSON.parse(result.content.find(block => block.type === 'text')?.text ?? '{}').code; } catch {} }
+      const known = ['browser_unavailable','browser_deadline','browser_cancelled','browser_stale_ref'].includes(code) ? code as 'browser_unavailable' | 'browser_deadline' | 'browser_cancelled' | 'browser_stale_ref' : code === 'browser_grant_required' ? 'browser_control_required' : 'browser_action_failed';
+      result = { outcome: operation.dispatched ? 'outcome_unknown' : 'failed', code: operation.dispatched ? 'browser_outcome_unknown' : known };
+    }
     if ('isError' in result && result.isError && operation.fences.length && operation.request.tool !== 'browser_list_tabs') {
       const text = result.content.find(block => block.type === 'text');
       const error = text?.type === 'text' ? JSON.parse(text.text) as { code: string; message: string } : { code: 'browser_read_failed', message: 'The browser read failed.' };
@@ -490,7 +572,8 @@ export class BrowserAgentController {
     if ('content' in result && !isBrowserMcpResult(result)) result = errorResult('browser_read_failed', 'Browser read exceeded its MCP bounds.');
     if (operation.timer) clearTimeout(operation.timer);
     operation.state = 'done'; operation.finishedAtUnixMs = Date.now(); operation.result = result; operation.bytes = Buffer.byteLength(JSON.stringify(result), 'utf8'); this.retainedBytes += operation.bytes; this.completed.push(operation.key);
-    void this.reply(operation.request, result);
+    const replied = this.reply(operation.request, result);
+    if (operation.navigationRelease) void replied.finally(() => { const held = operation.navigationRelease; operation.navigationRelease = undefined; if (held) return this.releaseNavigation(held); }).catch(() => undefined);
     for (const target of operation.request.targets) this.host.changed(target.sourceTabId);
     if (operation.request.tool !== 'browser_list_tabs') this.advance(operation);
     while (this.completed.length > 512 || this.retainedBytes > 16 * 1024 * 1024) {
@@ -500,11 +583,11 @@ export class BrowserAgentController {
   }
   private failure(error: unknown): BrowserMcpResult { return error instanceof BrowserAgentError ? errorResult(error.code, error.message) : errorResult('browser_read_failed', 'The browser read failed.'); }
   private provenance(operation: Operation, outcome: 'completed' | 'failed'): Record<string, unknown> {
-    return { ...browserAgentProvenance(operation.fences[0]), operationId: operation.request.operationId, title: operation.title ?? '', callerSessionId: operation.request.callerSessionId, tool: operation.request.tool, outcome };
+    return { ...browserAgentProvenance({ ...operation.fences[0], level: 'read' }), operationId: operation.request.operationId, title: operation.title ?? '', callerSessionId: operation.request.callerSessionId, tool: operation.request.tool, outcome };
   }
   private sequence(id: string, epoch: string): bigint | undefined { const prefix = `${epoch}:`, value = id.startsWith(prefix) ? id.slice(prefix.length) : ''; return /^[1-9][0-9]{0,19}$/.test(value) ? BigInt(value) : undefined; }
   private retire(attachment: string, id: string, epoch: string): void { const value = this.sequence(id, epoch); if (value !== undefined && value > (this.retired.get(attachment) ?? 0n)) this.retired.set(attachment, value); }
-  private async reply(request: BrowserExecution, result: BrowserMcpResult | BrowserTabListResult): Promise<void> {
+  private async reply(request: BrowserExecution, result: BrowserMcpResult | BrowserTabListResult | BrowserActionReceipt): Promise<void> {
     try { await this.runtime.browserRequest('browser.desktop.reply', { operationId: request.operationId, runtimeEpoch: request.runtimeEpoch, workerGeneration: request.workerGeneration, attachmentId: request.attachmentId, attachmentGeneration: request.attachmentGeneration, viewGeneration: request.viewGeneration, result }); }
     catch { /* The broker owns disconnected/late operation settlement; never replay. */ }
   }

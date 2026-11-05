@@ -23,6 +23,8 @@ const workingTree = flags.has('--working-tree') || release;
 const fast = flags.has('--fast') && !release;
 // --only=<text> runs just the step labels containing <text>; an iteration aid, not a release mode.
 const only = ([...flags].find(flag => flag.startsWith('--only=')) ?? '').slice('--only='.length).toLowerCase();
+const testThreads = ([...flags].find(flag => flag.startsWith('--test-threads=')) ?? '--test-threads=2').slice('--test-threads='.length);
+if (!/^[1-9][0-9]?$/.test(testThreads)) throw new Error('--test-threads must be a positive integer');
 const targetRoot = join(repo, 'runtime', 'target-check');
 
 if (release && process.env.THREADTERM_SKIP_CHECK === '1') {
@@ -287,6 +289,7 @@ npmRun('protocol tests', root, ['run', 'test:protocol'], 600000);
 run('protocol usage-ledger tests', root, process.execPath, ['--experimental-strip-types', '--test', 'protocol/usage-ledger.test.mjs'], 300000);
 run('renderer unit tests', root, process.execPath, [join(root, 'scripts/run-renderer-tests.mjs')], 900000);
 npmRun('desktop tests', root, ['run', 'test:desktop'], 1200000);
+npmRun('browser action tests', root, ['run', 'test:browser-actions'], 300000);
 npmRun('claude sidecar build', root, ['--workspace', '@threadterm/v3-claude-sdk', 'run', 'build'], 600000);
 npmRun('claude sidecar tests', root, ['--workspace', '@threadterm/v3-claude-sdk', 'test'], 600000);
 
@@ -388,7 +391,7 @@ if (!fast) {
   if (!cargo) fail('cargo is required for the full gate; install Rust (rustup) or run npm run check:fast');
   if (!workingTree) notes.push('rust tests always run on the working tree of runtime/');
   for (const note of notes) console.log(`     ${note}`);
-  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${process.env.RUST_TEST_THREADS || '2'}`];
+  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
   for (const skip of skips) rustArgs.push('--skip', skip);
   // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
   // The explicit --test-threads argument above still enforces the caller's concurrency limit.

@@ -36,12 +36,13 @@
     "test:desktop": "npm run test:remote-machines && npm run test:desktop-paths && npm run test:html-preview && npm run test:app-csp && npm run test:background-images && npm run test:theme-pack && npm run test:chat-export && npm run test:attach-files && esbuild desktop/test/output-fanout.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/output-fanout.test.cjs && esbuild desktop/src/stdioGuards.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/stdioGuards.test.cjs && esbuild desktop/src/windowChrome.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/windowChrome.test.cjs && esbuild desktop/src/runtime-log.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/runtime-log.test.cjs && esbuild desktop/src/runtime-handshake.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/runtime-handshake.test.cjs && esbuild desktop/test/runtime-client-replay.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/runtime-client-replay.test.cjs && esbuild desktop/test/inboxNotification.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/inboxNotification.test.cjs && esbuild desktop/test/notificationPreferences.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/notificationPreferences.test.cjs && esbuild desktop/test/pageCommentsCore.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/pageCommentsCore.test.cjs && esbuild desktop/test/pagePickerScript.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/pagePickerScript.test.cjs && esbuild desktop/test/pageComments.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/pageComments.test.cjs && esbuild desktop/test/quitConfirmation.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/quitConfirmation.test.cjs && node --test desktop-dist/quitConfirmation.test.cjs desktop-dist/pageComments.test.cjs desktop-dist/pageCommentsCore.test.cjs desktop-dist/pagePickerScript.test.cjs desktop-dist/inboxNotification.test.cjs desktop-dist/notificationPreferences.test.cjs desktop-dist/runtime-client-replay.test.cjs desktop-dist/output-fanout.test.cjs desktop-dist/stdioGuards.test.cjs desktop-dist/windowChrome.test.cjs desktop-dist/runtime-handshake.test.cjs desktop-dist/runtime-log.test.cjs desktop/test/terminal-buffer-semantics.test.cjs && esbuild desktop/test/runtime-client-browser.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/runtime-client-browser.test.cjs && node --test desktop-dist/runtime-client-browser.test.cjs",
     "test:app-csp": "esbuild desktop/src/appCsp.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/appCsp.test.cjs && node --test desktop-dist/appCsp.test.cjs",
     "test:background-images": "esbuild desktop/src/backgroundImagesCore.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/backgroundImagesCore.test.cjs && node --test desktop-dist/backgroundImagesCore.test.cjs",
-  "test:theme-pack": "esbuild desktop/src/themePackCore.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/themePackCore.test.cjs && node --test desktop-dist/themePackCore.test.cjs",
+    "test:theme-pack": "esbuild desktop/src/themePackCore.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/themePackCore.test.cjs && node --test desktop-dist/themePackCore.test.cjs",
     "test:html-preview": "esbuild desktop/src/htmlPreview.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/htmlPreview.test.cjs && esbuild desktop/src/htmlPreviewRoot.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/htmlPreviewRoot.test.cjs && esbuild desktop/src/htmlPreviewIpc.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/htmlPreviewIpc.test.cjs && esbuild desktop/src/htmlPreviewComments.test.mts --bundle --platform=node --format=cjs --outfile=desktop-dist/htmlPreviewComments.test.cjs && node --test desktop-dist/htmlPreview.test.cjs desktop-dist/htmlPreviewRoot.test.cjs desktop-dist/htmlPreviewIpc.test.cjs desktop-dist/htmlPreviewComments.test.cjs",
     "test:chat-export": "esbuild desktop/src/chatMarkdownExport.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/chatMarkdownExport.test.cjs && node --test desktop-dist/chatMarkdownExport.test.cjs",
     "test:attach-files": "esbuild desktop/src/attachFiles.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/attachFiles.test.cjs && node --test desktop-dist/attachFiles.test.cjs",
     "dist:win": "node scripts/check.mjs --release && npm run build && npm run build:runtime && npm run prepare:conpty && electron-builder --win nsis",
-    "start": "electron ."
+    "start": "electron .",
+    "test:browser-actions": "esbuild desktop/test/browser-agent-actions.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/browser-agent-actions.test.cjs && esbuild desktop/test/browser-agent-action-controller.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/browser-agent-action-controller.test.cjs && node --test --test-timeout=30000 desktop-dist/browser-agent-actions.test.cjs desktop-dist/browser-agent-action-controller.test.cjs"
   },
   "build": {
     "appId": "com.threadterm.v3",
@@ -77,7 +78,11 @@
       {
         "from": "runtime/vendor/conpty/x64",
         "to": "runtime/conpty",
-        "filter": ["conpty.dll", "OpenConsole.exe", "VERSION.txt"]
+        "filter": [
+          "conpty.dll",
+          "OpenConsole.exe",
+          "VERSION.txt"
+        ]
       }
     ],
     "win": {
