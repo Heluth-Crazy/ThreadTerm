@@ -251,8 +251,9 @@ export function isBrowserTabListResult(value: unknown): value is BrowserTabListR
 }
 export function validateBrowserDesktopRequest(method: unknown, value: unknown): asserts method is BrowserDesktopMethod {
   let valid = false;
-  if (method === 'browser.attach') valid = exact(value, ['viewId', 'workspaceId', 'workspaceRevision', 'viewGeneration'])
-    && text(value.viewId) && text(value.workspaceId) && counter(value.workspaceRevision) && counter(value.viewGeneration);
+  if (method === 'browser.attach') valid = exact(value, ['viewId', 'workspaceId', 'workspaceRevision', 'viewGeneration'], ['controlSessionId'])
+    && text(value.viewId) && text(value.workspaceId) && counter(value.workspaceRevision) && counter(value.viewGeneration)
+    && (value.controlSessionId === undefined || text(value.controlSessionId));
   else if (method === 'browser.registerTab') valid = exact(value, ['attachmentId', 'attachmentGeneration', 'sourceTabId', 'workspaceRevision'])
     && text(value.attachmentId) && counter(value.attachmentGeneration) && text(value.sourceTabId) && counter(value.workspaceRevision);
   else if (method === 'browser.detach' || method === 'browser.unregisterTab') valid = exact(value,

@@ -48,7 +48,7 @@ function fixture(capability = true) {
     async snapshot() { return { workspaces: [workspace] as any }; },
   };
   const controller = new BrowserAgentController(runtime, { getTab: id => id === 'source' && !destroyed ? { document, contents, title: 'Fixture title' } : undefined, changed: () => undefined, electronVersion: '44.3.0', evalCapability: () => capability });
-  const share = (level: 'read' | 'control' = 'control') => controller.share({ type: 'share', tabId: 'source', level, workspace: { id: 'workspace', revision: 1 }, expected: { documentGeneration: document.documentGeneration, ...controller.state('source') } });
+  const share = (level: 'read' | 'control' = 'control', sessionId = 'approved-session') => controller.share({ type: 'share', tabId: 'source', level, workspace: { id: 'workspace', revision: 1, sessionId } as any, expected: { documentGeneration: document.documentGeneration, ...controller.state('source') } });
   const target = () => [...registrations.values()].at(-1);
   const envelope = (id: number) => { const { tabId: _tabId, sourceTabId: _source, ...attachment } = target(); return { ...attachment, operationId: `epoch:${id}`, workerGeneration: 'worker', invocationId: `host:${id}`, callerSessionId: 'caller' }; };
   const preparation = (id: number, code = 'globalThis.fixtureEffect++; 42') => ({ ...envelope(id), turnId: 'turn', tabId: target().tabId, codeHash: createHash('sha256').update(code).digest('hex'), codeByteLength: Buffer.byteLength(code), settingsGeneration: 'settings', deadlineUnixMs: Date.now() + 10_000, target: target() });
@@ -73,11 +73,32 @@ test('Control registration is fresh, includes Read, and downgrades immediately w
   const f = fixture();
   try {
     await f.share('read'); const previous = f.target(); await f.share(); assert.notEqual(f.target().tabId, previous.tabId);
-    assert.ok(f.calls.some(call => call.method === 'browser.unregisterTab' && call.params.tabId === previous.tabId));
+    assert.equal(f.calls.some(call => call.method === 'browser.unregisterTab' && call.params.tabId === previous.tabId), false);
     f.emit('browser.execute', f.read(1, 'browser_list_tabs')); await until(() => f.replies.length === 1); assert.equal(f.replies[0].result.tabs[0].shareLevel, 'control');
     f.emit('browser.execute', f.read(2)); await until(() => f.replies.length === 2); assert.equal(f.replies[1].result.content[1].type, 'image');
-    f.setDocument({ ...f.document, loaded: false }); await f.share('read'); assert.equal(f.controller.state('source').level, 'read');
+    await f.share('read', 'approved-session'); assert.equal(f.controller.state('source').level, 'read');
     assert.equal(isBrowserSharingState(f.controller.state('source')), true);
+  } finally { f.dispose(); }
+});
+
+test('two conversations retain separate Control registrations while worktree Read remains available', async () => {
+  const f = fixture();
+  try {
+    await f.share('read');
+    const read = f.target();
+    await f.share('control', 'A');
+    const first = f.target();
+    await f.share('control', 'B');
+    const second = f.target();
+    assert.notEqual(first.tabId, second.tabId);
+    assert.equal((f.controller.state('source') as any).worktreeRead, true);
+    assert.deepEqual((f.controller.state('source') as any).controlSessionIds.sort(), ['A', 'B']);
+    await f.controller.share({ type: 'share', tabId: 'source', level: 'off', sessionId: 'A' } as any);
+    assert.deepEqual((f.controller.state('source') as any).controlSessionIds, ['B']);
+    assert.equal((f.controller.state('source') as any).worktreeRead, undefined);
+    assert.equal(f.calls.some(call => call.method === 'browser.unregisterTab' && call.params.tabId === read.tabId), true);
+    assert.equal(f.calls.some(call => call.method === 'browser.unregisterTab' && call.params.tabId === first.tabId), true);
+    assert.equal(f.calls.some(call => call.method === 'browser.unregisterTab' && call.params.tabId === second.tabId), false);
   } finally { f.dispose(); }
 });
 

@@ -1319,7 +1319,9 @@ impl BrowserTools {
                 .ok_or_else(|| rejected("browser_tab_not_found"))?;
             let fence = ScopeFence::capture(&self.db, &identity.session, &attachment.workspace_id)?;
             let admitted_scope = fence.preflight()?;
-            if attachment.scope != admitted_scope {
+            if attachment.scope != admitted_scope
+                || attachment.control_session.as_deref() != Some(&identity.session)
+            {
                 return Err(anyhow!("browser_tab_not_found"));
             }
             let mut immediate = None;

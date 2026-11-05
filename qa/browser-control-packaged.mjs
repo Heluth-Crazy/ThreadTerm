@@ -59,12 +59,12 @@ try {
   const session = await request('session.create', { projectId: project.id, cwd: work, provider, mode: 'chat', title: 'Browser control QA', operationId: randomUUID() });
   await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.getAllWindows()[0].webContents.send('threadterm:desktop-navigate', { sessionId: id }), session.id);
   const scope = page.getByTestId(`session-chat-${session.id}`); await scope.locator('textarea').first().waitFor();
-  async function send(id, steps) {
-    await until(async () => await scope.locator('.chat-compose-send.is-stop').count() === 0, 'previous turn settled');
-    await scope.locator('textarea').first().fill(`qa-browser ${JSON.stringify({ id, steps })}`);
-    const button = scope.locator('.chat-compose-send[type=submit]'); await until(() => button.isEnabled(), 'Send enabled'); await button.click();
+  async function send(id, steps, chat = scope) {
+    await until(async () => await chat.locator('.chat-compose-send.is-stop').count() === 0, 'previous turn settled');
+    await chat.locator('textarea').first().fill(`qa-browser ${JSON.stringify({ id, steps })}`);
+    const button = chat.locator('.chat-compose-send[type=submit]'); await until(() => button.isEnabled(), 'Send enabled'); await button.click();
     await until(async () => (await rows()).some(row => row.event === 'turn.result' && row.detail.id === id), id);
-    await until(async () => await scope.locator('.chat-compose-send.is-stop').count() === 0, `${id} completed`);
+    await until(async () => await chat.locator('.chat-compose-send.is-stop').count() === 0, `${id} completed`);
     return (await rows()).filter(row => row.event === 'raw.result' && row.detail.id === id).map(row => row.detail.result);
   }
   let results = await send('open', [{ tool: 'preview_present', path: 'page' }]); assert.notEqual(results[0].isError, true);
@@ -95,6 +95,46 @@ try {
   await send('relist', [{ tool: 'browser_list_tabs' }]);
   const navigated = await action('navigate', 'browser_navigate', { url: `${baseUrl}/next` }); assert.equal(navigated.navigation.admitted, true); assert.equal(navigated.navigation.sharingRevoked, true);
   await until(async () => { const value = await state(); return value.url === `${baseUrl}/next` && value.sharing.level === 'off' && value.sharing.status === 'idle'; }, 'navigation and Control revocation'); check('Composed MCP browser_navigate admitted and revoked sharing');
+  if (process.argv.includes('--conversation-scope')) {
+    const originalTab = await sourceId();
+    const access = mode => preview().getByRole('button', { name: `Agent access ${mode}`, exact: true });
+    await until(() => access('Read').isEnabled(), 'Read available after navigation');
+    await access('Read').click();
+    await until(async () => (await state()).sharing.worktreeRead, 'explicit Read');
+    await access('Control').click();
+    await page.getByRole('button', { name: 'Allow Control', exact: true }).click();
+    await until(async () => (await state()).sharing.controlSessionIds?.includes(session.id), 'conversation A owns Control');
+    const [listedA] = await send('scope-a', [{ tool: 'browser_list_tabs' }]);
+    const [controlTab] = data(listedA).tabs;
+    assert.equal(controlTab.shareLevel, 'control');
+    const other = await request('session.create', { projectId: project.id, cwd: work, provider, mode: 'chat', title: 'Browser control QA B', operationId: randomUUID() });
+    const switchTo = id => app.evaluate(({ BrowserWindow }, sessionId) => BrowserWindow.getAllWindows()[0].webContents.send('threadterm:desktop-navigate', { sessionId }), id);
+    await switchTo(other.id);
+    const otherChat = page.getByTestId(`session-chat-${other.id}`);
+    const [listedB, readable, denied] = await send('scope-b', [
+      { tool: 'browser_list_tabs' },
+      { tool: 'browser_snapshot', target: 'last' },
+      { tool: 'browser_snapshot', arguments: { tabId: controlTab.tabId } },
+    ], otherChat);
+    const readTabs = data(listedB).tabs;
+    assert.equal(readTabs.length, 1);
+    const [readTab] = readTabs;
+    assert.equal(readTab.shareLevel, 'read');
+    assert.notEqual(readTab.tabId, controlTab.tabId);
+    assert.equal(typeof data(readable).outline, 'string');
+    assert.equal(denied.isError, true);
+    const [openedB] = await send('scope-b-open', [{ tool: 'preview_present', path: 'next' }], otherChat);
+    assert.notEqual(openedB.isError, true);
+    await until(async () => await sourceId() !== originalTab && (await state()).navigation === 'load_observed', 'B opens its own tab');
+    assert.equal((await state()).sharing.level, 'off');
+    await switchTo(session.id);
+    const [returned] = await send('scope-a-return', [{ tool: 'browser_list_tabs' }]);
+    assert.deepEqual(data(returned).tabs, [controlTab]);
+    const original = await browser({ type: 'state', tabId: originalTab });
+    assert.equal(Boolean(original.unloaded), false);
+    assert.deepEqual(original.sharing.controlSessionIds, [session.id]);
+    check('Control survives A/B/A, while B can only discover the explicit Read grant');
+  }
   await page.screenshot({ path: join(out, 'success.png') }); report.passed = true;
 } catch (error) {
   report.error = error.stack || String(error); process.exitCode = 1;

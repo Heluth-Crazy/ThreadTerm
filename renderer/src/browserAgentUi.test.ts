@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BROWSER_ACTION_TOOLS, BROWSER_READ_TOOLS } from '@threadterm/protocol';
-import { browserControlOrigin, browserOperationActive, browserOperationName, browserOperationStatus, browserShareFence, canRequestBrowserControl, canStopBrowserOperation, createBrowserShareIntents, createBrowserStateSequence, prepareBrowserShareCommand, recentBrowserOperations } from './browserAgentUi';
+import { browserControlOrigin, browserOperationActive, browserOperationName, browserOperationStatus, browserShareFence, canRequestBrowserControl, canStopBrowserOperation, createBrowserShareIntents, createBrowserStateSequence, prepareBrowserShareCommand, recentBrowserOperations, sharingForConversation } from './browserAgentUi';
 import { isBrowserShareCommand, isBrowserSharingState, isBrowserStopAgentOperationCommand, isBrowserTabOperation, type BrowserState, type BrowserTabOperation } from './browserTypes';
 
 const page:BrowserState={tabId:'tab-a',url:'https://example.test/page',title:'Page',loading:false,canGoBack:false,canGoForward:false,zoom:1,documentGeneration:2,navigation:'load_observed',unloaded:false,
@@ -52,16 +52,30 @@ test('Control requires explicit current main capability and a loaded visible sav
 test('Control and Read commands share an exact saved-workspace generation fence; operation Stop is distinct',()=>{
  const expected={documentGeneration:2,navigationEpoch:5,viewGeneration:4,grantEpoch:3};
  for(const level of ['read','control']){
-  const command={type:'share',tabId:'tab-a',level,workspace:{id:'saved-workspace',revision:8},expected};
+  const command={type:'share',tabId:'tab-a',level,workspace:{id:'saved-workspace',revision:8,...(level==='control'?{sessionId:'chat-a'}:{})},expected};
   assert.equal(isBrowserShareCommand(command),true);
   for(const bad of [{...command,expected:{...expected,grantEpoch:-1}},{...command,workspace:{...command.workspace,callerSessionId:'forged'}},
    {...command,expected:undefined},{...command,level:'eval'},{...command,level:{toString:()=>level}},{...command,callerToken:'forged'}])assert.equal(isBrowserShareCommand(bad),false);
  }
+ assert.equal(isBrowserShareCommand({type:'share',tabId:'tab-a',level:'control',workspace:{id:'saved-workspace',revision:8},expected}),false);
+ assert.equal(isBrowserShareCommand({type:'share',tabId:'tab-a',level:'read',workspace:{id:'saved-workspace',revision:8,sessionId:'chat-a'},expected}),true);
  assert.equal(isBrowserShareCommand({type:'share',tabId:'tab-a',level:'off'}),true);
+ assert.equal(isBrowserShareCommand({type:'share',tabId:'tab-a',level:'off',preserveControl:true}),true);
  assert.equal(isBrowserStopAgentOperationCommand({type:'stopAgentOperation',tabId:'tab-a',operationId:'op-a'}),true);
  for(const bad of [{type:'stop',tabId:'tab-a'},{type:'stopAgentOperation',tabId:'tab-a',operationId:''},
   {type:'stopAgentOperation',tabId:'tab-a',operationId:'op-a',callerSessionId:'other'},
   {type:'stopAgentOperation',tabId:'tab-a',operationId:'\nprivate'},{type:'stopAgentOperation',tabId:'tab-a',operationId:'界'.repeat(171)}])assert.equal(isBrowserStopAgentOperationCommand(bad),false);
+});
+
+test('switching conversations masks Control and its activity, while explicit Read stays visible',()=>{
+ const control={...page.sharing!,level:'control' as const,controlSessionIds:['chat-a'],worktreeRead:false,origin:'https://example.test',operations:[operation()]};
+ assert.deepEqual(sharingForConversation(control,'chat-a'),control);
+ assert.deepEqual(sharingForConversation(control,'chat-b'),{level:'off',status:'idle',reading:false,grantEpoch:3,viewGeneration:4,navigationEpoch:5,controlAvailable:true});
+ assert.deepEqual(sharingForConversation(control,'chat-a'),control);
+ assert.equal(sharingForConversation(page.sharing,'chat-b'),page.sharing);
+ assert.equal(sharingForConversation({...control,worktreeRead:true},'chat-b')?.level,'read');
+ assert.deepEqual(sharingForConversation({...control,controlSessionIds:['chat-a','chat-b']},'chat-b')?.operations,[]);
+ assert.equal(sharingForConversation({...control,controlSessionIds:['chat-a','chat-b']},'chat-b')?.level,'control');
 });
 
 test('Off, downgrade and unmount invalidate a Control workspace await without blocking the newer choice',async()=>{
@@ -80,8 +94,10 @@ test('Off, downgrade and unmount invalidate a Control workspace await without bl
 
 test('workspace preparation preserves the captured tuple and propagates failure without a share request',async()=>{
  const gate=createBrowserShareIntents(),fence=browserShareFence(page.tabId,page,'project/worktree',true),intent=gate.capture(fence);
- const workspace={id:'saved-workspace',revision:9},command=await prepareBrowserShareCommand('control',intent,()=>gate.current(intent,fence),async tabId=>{assert.equal(tabId,page.tabId);return workspace;});
+ const workspace={id:'saved-workspace',revision:9,sessionId:'chat-a'},command=await prepareBrowserShareCommand('control',intent,()=>gate.current(intent,fence),async tabId=>{assert.equal(tabId,page.tabId);return workspace;});
  assert.deepEqual(command,{type:'share',tabId:page.tabId,level:'control',workspace,expected:{documentGeneration:2,navigationEpoch:5,viewGeneration:4,grantEpoch:3}});
+ const read=await prepareBrowserShareCommand('read',intent,()=>true,async()=>workspace);
+ assert.deepEqual(read&&read.level==='read'&&read.workspace,workspace);
  await assert.rejects(prepareBrowserShareCommand('read',intent,()=>true,async()=>{throw new Error('save failed');}),/save failed/);
  await assert.rejects(prepareBrowserShareCommand('control',intent,()=>true),/Save this tab/);
  let prepared=false;assert.equal(await prepareBrowserShareCommand('read',intent,()=>false,async()=>{prepared=true;return workspace;}),undefined);assert.equal(prepared,false);
