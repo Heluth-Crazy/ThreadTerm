@@ -113,6 +113,10 @@ test('console arguments reject unrelated fields and preserve exact level choices
 test('desktop-only methods reject identities, caller tools and malformed acknowledgements', () => {
   const attach = { viewId: 'view', workspaceId: 'workspace', workspaceRevision: 1, viewGeneration: 1 };
   assert.doesNotThrow(() => validateBrowserDesktopRequest('browser.attach', attach));
+  assert.doesNotThrow(() => validateBrowserDesktopRequest('browser.attach', { ...attach, controlSessionId: 'chat-a' }));
+  for (const controlSessionId of ['', null, 'chat\nforged']) {
+    assert.throws(() => validateBrowserDesktopRequest('browser.attach', { ...attach, controlSessionId }));
+  }
   assert.throws(() => validateBrowserDesktopRequest('browser.attach', { ...attach, principal: 'another-client' }));
   assert.throws(() => validateBrowserDesktopRequest('browser.tool.call', {}));
   assert.doesNotThrow(() => validateBrowserDesktopRequest('browser.desktop.dispatch', operation));

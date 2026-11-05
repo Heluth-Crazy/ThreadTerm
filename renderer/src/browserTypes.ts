@@ -9,9 +9,9 @@ export interface BrowserTabOperation {
  operationId:string; tool:BrowserTool; callerSessionId:string; phase:BrowserOperationPhase; admittedAtUnixMs:number;
  finishedAtUnixMs?:number; origin?:string; title?:string; provenanceUnavailable?:boolean; canStop:boolean;
 }
-export interface BrowserSharingState { level:BrowserSharingLevel; status:'idle'|'sharing'|'stopping'; grantEpoch:number; viewGeneration:number; navigationEpoch:number; origin?:string; reason?:string; reading:boolean; controlAvailable?:boolean; operations?:BrowserTabOperation[] }
-export interface BrowserShareWorkspace { id:string; revision:number }
-export type BrowserShareCommand = {type:'share';tabId:string;level:'off'} | {type:'share';tabId:string;level:'read'|'control';workspace:BrowserShareWorkspace;expected:{documentGeneration:number;navigationEpoch:number;viewGeneration:number;grantEpoch:number}};
+export interface BrowserSharingState { level:BrowserSharingLevel; status:'idle'|'sharing'|'stopping'; grantEpoch:number; viewGeneration:number; navigationEpoch:number; origin?:string; reason?:string; reading:boolean; controlAvailable?:boolean; controlSessionIds?:string[]; worktreeRead?:boolean; operations?:BrowserTabOperation[] }
+export interface BrowserShareWorkspace { id:string; revision:number; sessionId?:string }
+export type BrowserShareCommand = {type:'share';tabId:string;level:'off';preserveControl?:true;sessionId?:string} | {type:'share';tabId:string;level:'read'|'control';workspace:BrowserShareWorkspace;expected:{documentGeneration:number;navigationEpoch:number;viewGeneration:number;grantEpoch:number}};
 export type BrowserStopAgentOperationCommand = {type:'stopAgentOperation';tabId:string;operationId:string};
 export interface BrowserState { tabId:string; url:string; title:string; loading:boolean; canGoBack:boolean; canGoForward:boolean; zoom:number; documentGeneration:number; navigation:'pending'|'load_observed'|'failed'; favicon?:string; issue?:string; snapshot?:string; snapshotGeneration?:number; unloaded?:boolean; find?:{activeMatchOrdinal:number;matches:number}; notice?:string; download?:{id:string;name:string}; sharing?:BrowserSharingState; devtools?:{open:boolean;snapshot?:string;snapshotGeneration?:number} }
 export type BrowserCommand =
@@ -38,10 +38,13 @@ export function isBrowserShareCommand(value:unknown):value is BrowserShareComman
  if(!value||typeof value!=='object'||Array.isArray(value))return false;
  const data=value as Record<string,unknown>,exact=(record:Record<string,unknown>,keys:string[])=>Object.keys(record).length===keys.length&&keys.every(key=>Object.hasOwn(record,key)),counter=(item:unknown)=>Number.isSafeInteger(item)&&Number(item)>=0;
  if(data.type!=='share'||typeof data.tabId!=='string'||!data.tabId||data.tabId.length>128)return false;
- if(data.level==='off')return exact(data,['type','tabId','level']);
+ if(data.level==='off')return exact(data,['type','tabId','level'])||data.preserveControl===true&&exact(data,['type','tabId','level','preserveControl'])
+  ||browserUiText(data.sessionId,256)&&data.sessionId.length>0&&exact(data,['type','tabId','level','sessionId']);
  if(typeof data.level!=='string'||!['read','control'].includes(data.level)||!exact(data,['type','tabId','level','workspace','expected'])||!data.workspace||typeof data.workspace!=='object'||Array.isArray(data.workspace)||!data.expected||typeof data.expected!=='object'||Array.isArray(data.expected))return false;
  const workspace=data.workspace as Record<string,unknown>,expected=data.expected as Record<string,unknown>;
- return exact(workspace,['id','revision'])&&typeof workspace.id==='string'&&workspace.id.length>0&&workspace.id.length<=256&&counter(workspace.revision)
+ const workspaceKeys=Object.hasOwn(workspace,'sessionId')?['id','revision','sessionId']:['id','revision'];
+ return exact(workspace,workspaceKeys)&&typeof workspace.id==='string'&&workspace.id.length>0&&workspace.id.length<=256&&counter(workspace.revision)
+  &&(data.level==='read'&&!Object.hasOwn(workspace,'sessionId')||browserUiText(workspace.sessionId,256)&&workspace.sessionId.length>0)
   &&exact(expected,['documentGeneration','navigationEpoch','viewGeneration','grantEpoch'])&&Object.values(expected).every(counter);
 }
 
@@ -74,6 +77,9 @@ export function isBrowserSharingState(value:unknown):value is BrowserSharingStat
  return (data.level==='off'||data.level==='read'||data.level==='control')&&typeof data.status==='string'&&['idle','sharing','stopping'].includes(data.status)&&['grantEpoch','viewGeneration','navigationEpoch'].every(key=>browserUiCounter(data[key]))
   &&typeof data.reading==='boolean'&&(data.origin===undefined||browserUiText(data.origin,4096))&&(data.reason===undefined||browserUiText(data.reason,1024))
   &&(data.controlAvailable===undefined||typeof data.controlAvailable==='boolean')
+  &&(data.worktreeRead===undefined||typeof data.worktreeRead==='boolean')
+  &&(data.controlSessionIds===undefined||Array.isArray(data.controlSessionIds)&&data.controlSessionIds.length<=64
+   &&data.controlSessionIds.every(id=>browserUiText(id,256)&&id.length>0)&&new Set(data.controlSessionIds).size===data.controlSessionIds.length)
   &&(data.operations===undefined||Array.isArray(data.operations)&&data.operations.length<=50&&data.operations.every(isBrowserTabOperation)
    &&new Set(data.operations.map(operation=>operation.operationId)).size===data.operations.length);
 }

@@ -247,6 +247,7 @@ export function PaneWorkspace({ layout, sessions, data, onChange, theme, termina
         terminalCompatibility={terminalCompatibility}
         onChange={commit}
         layout={layout}
+        browserSessionId={ownerSessionId}
         selected={Boolean(visible)&&focusPaneId === node.id}
         fullscreen={fullscreenPaneId === node.id}
         browserVisible={!fullscreenPaneId||fullscreenPaneId===node.id}
@@ -369,10 +370,11 @@ function Pane({
   providers,
   onResumed,
   closing,onActivateTab,onCloseTab,onCloseTabs,onReorder,paneLabel,fileMenuItems,onOpenSessionFiles,onNavigateDiff,
-  onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
+  onFileReference,fileReveal,onOpenPath,projectPath,onWebNavigation,browserSessionId,prepareBrowserShare,previewProvenance,previewLabels,delegationEnabled,sessionInfoEnabled,workbench,
 }: {
   node: Extract<PaneLayout, { kind: "pane" }>;
   visibleNode?: Extract<PaneLayout, { kind: "pane" }>;
+  browserSessionId?: string;
   style?: CSSProperties;
   sessions: Session[];
   data?: Snapshot;
@@ -521,7 +523,7 @@ function Pane({
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
       comments={workbench?.comments}/>
   ) : item.kind === "web" ? (
-    <WebPreview prepareBrowserShare={prepareBrowserShare} tabId={item.id} url={item.url} visible={active&&browserVisible} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>persistWebNavigation(item,observation)} onPopup={popup=>addBrowserPopup(item,popup)} onNewTab={addBrowserTab} addressFocus={newBrowserTab===item.id?item.id:undefined}/>
+    <WebPreview activeSessionId={browserSessionId} prepareBrowserShare={prepareBrowserShare} tabId={item.id} url={item.url} visible={active&&browserVisible} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments} commentProvenance={previewProvenance?.get(item.id)} onNavigation={observation=>persistWebNavigation(item,observation)} onPopup={popup=>addBrowserPopup(item,popup)} onNewTab={addBrowserTab} addressFocus={newBrowserTab===item.id?item.id:undefined}/>
   ) : isFileTab(item) ? (
     <FileWorkspace
       projectId={item.projectId}

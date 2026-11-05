@@ -58,7 +58,7 @@ function fixture() {
     canControl: () => true,
     navigate: async (id, url) => { navigationCalls++; return navigate(id, url); },
   });
-  const share = () => controller.share({ type: 'share', tabId: 'source', level: 'control', workspace: { id: 'workspace', revision: 1 }, expected: { documentGeneration: document.documentGeneration, ...controller.state('source') } });
+  const share = () => controller.share({ type: 'share', tabId: 'source', level: 'control', workspace: { id: 'workspace', revision: 1, sessionId: 'approved-session' } as any, expected: { documentGeneration: document.documentGeneration, ...controller.state('source') } });
   const target = () => [...registrations.values()].at(-1);
   const envelope = (id: number) => { const { tabId: _tabId, sourceTabId: _source, ...attachment } = target(); return { ...attachment, operationId: `epoch:${id}`, workerGeneration: 'worker', invocationId: `host:${id}`, callerSessionId: 'caller' }; };
   const action = (id: number, deadlineUnixMs = Date.now() + 10_000) => ({ ...envelope(id), deadlineUnixMs, tool: 'browser_navigate', arguments: { tabId: target().tabId, url: `http://127.0.0.1:4001/page-${id}` }, targets: [target()] });

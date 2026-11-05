@@ -173,7 +173,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   if(!saved.current.id||persistedLayout.current!==latestLayout.current)await save(latestLayout.current);
   await saving.current;
   if(!live.current||!contains()||!saved.current.id||persistedLayout.current!==latestLayout.current)throw new Error('The current browser workspace could not be saved.');
-  return {id:saved.current.id,revision:saved.current.revision};
+  return {id:saved.current.id,revision:saved.current.revision,sessionId:previewSessionId};
  };
  /** Bring back file tabs dropped on open that still have unsaved edits (drafts), in their old places when the
   * layout is still the one shown on open, otherwise beside the routed session. Persist the result. */
