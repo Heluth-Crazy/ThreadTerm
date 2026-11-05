@@ -202,6 +202,7 @@ impl Database {
             )?;
         }
         crate::quick_launch::initialize_connection(&connection)?;
+        crate::desktop_files::initialize_connection(&connection)?;
         crate::terminal_agents::initialize_connection(&connection)?;
         crate::usage_ledger::initialize_connection(&connection)?;
         schema::migrate_main(&mut connection, upgrade_backup)?;

@@ -40,6 +40,21 @@ pub(crate) const DENIED_METHODS: &[&str] = &[
     "qa.chat.projection.fail",
 ];
 
+/// The peer ALPN can only authenticate desktop-profile credentials.  Keep the
+/// navigation surface explicit nevertheless: a future method below this prefix
+/// is host-only until it is deliberately reviewed for desktop authority.
+pub(crate) const DESKTOP_EDITOR_NAVIGATION_METHODS: &[&str] = &[
+    "editorNavigation.configuration",
+    "editorNavigation.configure",
+    "editorNavigation.prepare",
+    "editorNavigation.status",
+    "editorNavigation.sync",
+    "editorNavigation.definition",
+    "editorNavigation.documentSymbols",
+    "editorNavigation.cancel",
+    "editorNavigation.release",
+];
+
 type GroupKey = (String, String);
 struct Group {
     epoch: String,
@@ -180,7 +195,11 @@ pub(crate) fn guard(
     let Some(identity) = principal.strip_prefix("peer:") else {
         return Ok(());
     };
-    if DENIED_METHODS.contains(&method) {
+    if method.starts_with("desktop.files.")
+        || DENIED_METHODS.contains(&method)
+        || (method.starts_with("editorNavigation.")
+            && !DESKTOP_EDITOR_NAVIGATION_METHODS.contains(&method))
+    {
         return Err(failure(
             "peer_forbidden",
             "This method is available only on the host",

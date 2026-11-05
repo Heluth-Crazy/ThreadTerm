@@ -588,11 +588,11 @@ async fn incompatible_frames_name_both_contracts_before_admitting_work() {
     let mut stream = tls(fixture.root.path(), port, crate::peer::ALPN).await;
     let challenge = read_frame(&mut stream).await;
     assert_eq!(challenge["version"], crate::RUNTIME_VERSION);
-    write_frame(&mut stream,&json!({"kind":"auth","protocol":1,"contract":18,"version":"old-client","nonce":challenge["nonce"],"channel":"control","clientId":uuid::Uuid::new_v4(),"credential":paired["token"],"epoch":null})).await;
+    write_frame(&mut stream,&json!({"kind":"auth","protocol":1,"contract":PROTOCOL_CONTRACT - 1,"version":"old-client","nonce":challenge["nonce"],"channel":"control","clientId":uuid::Uuid::new_v4(),"credential":paired["token"],"epoch":null})).await;
     let incompatible = read_frame(&mut stream).await;
     assert_eq!(incompatible["kind"], "incompatible");
-    assert_eq!(incompatible["contract"], 19);
-    assert_eq!(incompatible["receivedContract"], 18);
+    assert_eq!(incompatible["contract"], PROTOCOL_CONTRACT);
+    assert_eq!(incompatible["receivedContract"], PROTOCOL_CONTRACT - 1);
     assert_eq!(incompatible["receivedVersion"], "old-client");
     assert_closed(&mut stream).await;
 }
@@ -775,7 +775,7 @@ async fn every_deny_entry_is_refused_over_peer_control_and_real_locally() {
     let fixture = Fixture::new();
     let (status, paired) = fixture.desktop().await;
     let port = status["port"].as_u64().unwrap() as u16;
-    let (mut control, _) = peer(
+    let (mut control, hello) = peer(
         fixture.root.path(),
         port,
         paired["token"].as_str().unwrap(),
@@ -802,6 +802,38 @@ async fn every_deny_entry_is_refused_over_peer_control_and_real_locally() {
             assert_ne!(error.code, "unknown_method", "{method}");
         }
     }
+    let private = "desktop.files.context";
+    let denied = control_rpc(
+        &mut control,
+        "deny-private-files",
+        private,
+        json!({"kind":"workspace","projectId":"missing"}),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], "peer_forbidden", "{denied}");
+    let local = fixture.service.dispatch(
+        "desktop",
+        RpcRequest {
+            v: 1,
+            id: "local-private-files".into(),
+            method: private.into(),
+            params: json!({"kind":"workspace","projectId":"missing"}),
+        },
+    );
+    assert_eq!(local.unwrap_err().code, "project_missing");
+    // The TLS peer transport authenticates only desktop-profile credentials;
+    // navigation is nevertheless an explicit bounded allowlist, not a prefix
+    // grant for future remote methods.
+    let peer_principal = hello["principal"].as_str().unwrap();
+    for method in crate::peer::DESKTOP_EDITOR_NAVIGATION_METHODS {
+        assert!(crate::peer::guard(&fixture.service, peer_principal, method).is_ok(), "{method}");
+    }
+    assert_eq!(
+        crate::peer::guard(&fixture.service, peer_principal, "editorNavigation.future")
+            .unwrap_err()
+            .code,
+        "peer_forbidden"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

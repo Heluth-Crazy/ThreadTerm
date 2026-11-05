@@ -28,6 +28,7 @@ import {
 import { OutputFanout } from './output-fanout.js';
 import { RuntimeLogWriter } from './runtime-log.js';
 import { authenticatePeer, connectPinned, PeerHeartbeat, PeerTransportError, type PeerProfile } from './peer-transport.js';
+import { LocalFileAccessNotCreatedError, isLocalFileCommand, validateLocalFileResult, type LocalFileCommand } from './local-files/coordination.js';
 
 const CONNECT_TIMEOUT_MS = 1_500;
 const RUNTIME_READY_TIMEOUT_MS = 12_000;
@@ -166,7 +167,7 @@ interface ControlResponse { v: 1; id: string; result?: unknown; error?: RuntimeE
 interface AuthChallenge { kind: 'challenge'; nonce: string; protocol: number; contract?: number }
 interface AuthRequest { kind: 'auth'; clientId: string; protocol: number; contract: number; nonce: string; hmac: string }
 interface Authenticated { kind: 'authenticated'; principal: string; epoch: string; hmac: string; contract?: number }
-interface PendingRequest { method: Method|'qa.chat.projection.fail'; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
+interface PendingRequest { method: Method|'qa.chat.projection.fail'|LocalFileCommand; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
 interface BrowserControlSession { control: LengthPrefixedSocket; pipe: string; token: string; epoch: string }
 interface BrowserConnectionAttempt { session: BrowserControlSession; connection?: LengthPrefixedSocket; promise: Promise<LengthPrefixedSocket> }
 interface PendingBrowserRequest { method: BrowserDesktopMethod; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
@@ -376,6 +377,31 @@ export class RuntimeClient {
   }
 
   onEvent(listener: (event: RuntimeEvent) => void): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }
+
+  /** Optional file module's DB coordination. Never exposed through renderer RPC or a peer client. */
+  async localFileRequest(command: string, params: Record<string, unknown>): Promise<unknown> {
+    let id: string, payload: Buffer;
+    try {
+      if (!isLocalFileCommand(command) || this.options.profile?.kind === 'peer') throw new Error('Local file coordination is unavailable');
+      if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
+      await this.ensureConnected();
+      this.assertOpen();
+      if (this.pending.size >= 256) throw new RuntimeUnavailableError('Local file request capacity is exhausted');
+      id = randomUUID();
+      payload = Buffer.from(JSON.stringify({ v: PROTOCOL_VERSION, id, method: command, params }), 'utf8');
+      if (payload.length > MAX_FRAME_BYTES) throw new Error('Local file request is too large');
+    } catch (error) {
+      if (command === 'desktop.files.access.begin') throw new LocalFileAccessNotCreatedError(asError(error).message);
+      throw error;
+    }
+    // Failures from dispatch onward may follow an accepted begin; never mark them as not created.
+    return new Promise((resolvePromise, reject) => {
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new RuntimeUnavailableError('Local file coordination timed out')); }, 30_000);
+      this.pending.set(id, { method: command as LocalFileCommand, resolve: resolvePromise, reject, timer });
+      try { this.control?.write(payload); }
+      catch (error) { clearTimeout(timer); this.pending.delete(id); reject(asError(error)); }
+    });
+  }
 
   /** Main-only capability transport; deliberately absent from renderer IPC. */
   browserRequest(method: BrowserDesktopMethod, params: Record<string, unknown>): Promise<unknown> {
@@ -931,7 +957,8 @@ export class RuntimeClient {
       try {
         if (pending.method === 'qa.chat.projection.fail') {
           if (env.THREADTERM_V3_RELOCATION_QA !== '1' || value.result !== null) throw new Error('Invalid QA projection result');
-        } else validateResult(pending.method, value.result);
+        } else if (isLocalFileCommand(pending.method)) validateLocalFileResult(pending.method, value.result);
+        else validateResult(pending.method, value.result);
         if (pending.method === 'runtime.shutdown') this.control?.write(Buffer.from(JSON.stringify({ kind: 'shutdownAck', id: value.id }), 'utf8'));
         pending.resolve(value.result);
       }

@@ -26,6 +26,7 @@ import { readHostPageShot, reviewShotSession } from './remoteFiles.js';
 import { HostFilePickers, hostRevealTarget } from './hostFiles.js';
 import { localPageShotPath } from './pageComments.js';
 import { qaOpenExternalPathsOverride } from './externalFiles.js';
+import { createLocalFileBackend, registerLocalFileBackendIpc } from './local-files/index.js';
 
 import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
 import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
@@ -85,6 +86,7 @@ let tray: Tray | undefined;
 let allowQuit = false;
 let quitPending = false;
 let stoppingRuntime = false;
+let localFileBackend: ReturnType<typeof createLocalFileBackend> | undefined;
 let lastSessionId: string | undefined;
 let lightweightMode = false;
 let floatMode: FloatMode = 'manual';
@@ -399,6 +401,17 @@ async function notifyNative(kind: NotificationKind, copy: (locale: NotificationL
 }
 
 function registerIpc(): void {
+  const localFiles = localFileBackend = createLocalFileBackend({
+    configPath: join(app.getPath('userData'), 'local-file-backend.json'),
+    coordination: (command, params) => adminRuntime.localFileRequest(command, params),
+    trashItem: path => shell.trashItem(path),
+  });
+  registerLocalFileBackendIpc(ipcMain, localFiles, assertTrustedRenderer, event => machineBindings.get(event.sender.id).machineId);
+  localFiles.onBackendChanged(backend => {
+    for (const contents of machineRenderers.values()) {
+      if (!contents.isDestroyed() && machineBindings.get(contents.id).machineId === 'local') contents.send('threadterm:local-files-backend-changed', backend);
+    }
+  });
   const hostFilePickers = new HostFilePickers();
   ipcMain.handle('threadterm:host-files-complete', (event, id: unknown, paths: unknown) => {
     assertTrustedRenderer(event);
@@ -566,7 +579,7 @@ function registerIpc(): void {
     const runtime = runtimeFor(event);
     if (method === 'data.backup') await event.sender.session.flushStorageData();
     const requestParams = method === 'data.backup' ? { ...params as RequestParams<'data.backup'>, desktopDataRoot: app.getPath('userData') } : params;
-    return runtime.request(method, requestParams as RequestParams<Method>);
+    return localFiles.request(machineBindings.get(event.sender.id).machineId, runtime, method, requestParams as RequestParams<Method>);
   });
   ipcMain.handle('threadterm:qa-drop-control', (event) => {
     assertTrustedRenderer(event);
@@ -731,7 +744,7 @@ function registerIpc(): void {
     if (!isRevealSessionId(sessionId) || !isRevealPath(path)) throw new Error('Invalid file reveal request');
     let target: { scope: string; path: string };
     try {
-      const resolved = await runtimeFor(event).request('filesystem.resolve', { sessionId, path });
+      const resolved = await localFiles.request(machineBindings.get(event.sender.id).machineId, runtimeFor(event), 'filesystem.resolve', { sessionId, path });
       if (!resolved.worktreePath) throw new Error('File project scope is unavailable');
       target = revealTarget(resolved, realpathSync(resolved.worktreePath));
     } catch (error) {
@@ -998,9 +1011,10 @@ async function requestQuit(): Promise<void> {
     // Stop every ordinary client's reconnect/auto-launch before asking the
     // daemon to exit. A dedicated no-launch client owns the final handshake.
     const ordinaryClients = [adminRuntime, ...windowRuntimes.values()];
-    for (const client of ordinaryClients) client.setSuspended(true);
     const shutdownClient = new RuntimeClient({ autoLaunch: false });
     try {
+      await localFileBackend?.prepareToQuit();
+      for (const client of ordinaryClients) client.setSuspended(true);
       // A daemon spawned before suspension may not have bound its pipe yet.
       // Wait only existing attempts, then re-probe; never launch for shutdown.
       const settleDeadline = Date.now() + 30_000;
@@ -1019,6 +1033,7 @@ async function requestQuit(): Promise<void> {
         if (active || hosting) choice = await confirm();
         if (choice === 'cancel') {
           stoppingRuntime = false;
+          localFileBackend?.resumeAfterQuitCancelled();
           for (const client of ordinaryClients) client.setSuspended(false);
           return;
         }
@@ -1034,6 +1049,7 @@ async function requestQuit(): Promise<void> {
       }
     } catch (error) {
       stoppingRuntime = false;
+      localFileBackend?.resumeAfterQuitCancelled();
       adminRuntime.setSuspended(false);
       for (const client of windowRuntimes.values()) client.setSuspended(false);
       const options = {

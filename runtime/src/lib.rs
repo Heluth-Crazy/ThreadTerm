@@ -35,6 +35,8 @@ pub mod environment;
 pub mod file_ops;
 pub mod file_references;
 pub(crate) mod external_files;
+pub(crate) mod desktop_files;
+pub mod editor_navigation;
 #[cfg(test)]
 mod external_files_boundary_tests;
 pub mod git_actions;
@@ -83,7 +85,7 @@ pub mod attachments;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Semantic contract includes remote-machine peer handshakes and device profiles. Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 19;
+pub const PROTOCOL_CONTRACT: u32 = 20;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;

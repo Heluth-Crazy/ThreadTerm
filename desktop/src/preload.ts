@@ -34,6 +34,15 @@ ipcRenderer.on('threadterm:desktop-navigate', (_event, value: unknown) => {
 });
 type FilePathBridge = { getPathForFile: (file: File) => string };
 const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & BackgroundBridge & FilePathBridge & MachineBridge & RemoteFilesBridge = {
+  localFiles: {
+    getBackend: () => ipcRenderer.invoke('threadterm:local-files-get-backend'),
+    setBackend: backend => ipcRenderer.invoke('threadterm:local-files-set-backend', backend),
+    onBackendChanged: listener => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { if (value === 'runtime' || value === 'main') listener(value); };
+      ipcRenderer.on('threadterm:local-files-backend-changed', handler);
+      return () => ipcRenderer.removeListener('threadterm:local-files-backend-changed', handler);
+    },
+  },
   uploadClientFiles: (sessionId, paths) => ipcRenderer.invoke('threadterm:upload-client-files', sessionId, paths),
   readAttachPaths: paths => ipcRenderer.invoke('threadterm:read-attach-paths', paths),
   persistPageShot: (id, sessionId, projectId, root) => ipcRenderer.invoke('threadterm:persist-page-shot', id, sessionId, projectId, root),

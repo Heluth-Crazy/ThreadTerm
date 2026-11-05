@@ -261,6 +261,23 @@ enum Lane {
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn request_lane(method: &str) -> Lane {
+    if matches!(
+        method,
+        "editorNavigation.configuration"
+            | "editorNavigation.configure"
+            | "editorNavigation.prepare"
+            | "editorNavigation.status"
+            | "editorNavigation.sync"
+            | "editorNavigation.definition"
+            | "editorNavigation.documentSymbols"
+            | "editorNavigation.cancel"
+            | "editorNavigation.release"
+    ) {
+        // The manager serializes only a context's own state. Admission, server
+        // startup and semantic waits must never occupy the ordered or terminal
+        // control lanes.
+        return Lane::Concurrent;
+    }
     if matches!(method, "browser.tool.call" | "browser.tool.cancel") { return Lane::Concurrent; }
     if method.starts_with("preview.") { return Lane::Concurrent; }
     match method {
@@ -329,6 +346,19 @@ struct Reply {
     sequenced: bool,
     accepted_shutdown: bool,
     served_snapshot: bool,
+}
+
+#[cfg(windows)]
+struct NavigationControlPresence {
+    navigation: Arc<crate::editor_navigation::EditorNavigation>,
+    principal: String,
+}
+
+#[cfg(windows)]
+impl Drop for NavigationControlPresence {
+    fn drop(&mut self) {
+        self.navigation.disconnect(&self.principal);
+    }
 }
 
 #[cfg(windows)]
@@ -569,6 +599,12 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     let _presence = service.leases.connect(&principal);
     let _preview_presence = service.previews.connect(&principal);
     let _browser_presence = service.browser_tools.connect_control(&principal)?;
+    // A dropped control connection revokes all contexts owned by that principal,
+    // including a concurrent startup or lookup that ignored client cancellation.
+    let _navigation_presence = NavigationControlPresence {
+        navigation: Arc::clone(&service.editor_navigation),
+        principal: principal.clone(),
+    };
     let mut turn_speeds = service.subscribe_turn_speed();
     let mut turn_speeds_open = true;
     let mut sent_seq = service.db.snapshot()?.revision;
@@ -1305,6 +1341,15 @@ mod decoder_tests {
         // The agent run tools specifically: a status/log list poll must never wait behind
         // a slow read, and the three that can block on the user stay ordered.
         for read in [
+            "editorNavigation.configuration",
+            "editorNavigation.configure",
+            "editorNavigation.prepare",
+            "editorNavigation.status",
+            "editorNavigation.sync",
+            "editorNavigation.definition",
+            "editorNavigation.documentSymbols",
+            "editorNavigation.cancel",
+            "editorNavigation.release",
             "chat.tool.run.list",
             "chat.tool.run.status",
             "chat.tool.run.logs",

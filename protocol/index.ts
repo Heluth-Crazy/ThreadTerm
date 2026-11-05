@@ -7,7 +7,7 @@ export interface BrowserEvalApprovalRead {
 }
 export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract includes remote-machine peer handshakes and device profiles. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 19 as const;
+export const PROTOCOL_CONTRACT = 20 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 /** Largest answer the runtime writes for one request. A bigger answer is a typed
  * `response_too_large` error for that request; the connection stays open. */
@@ -827,7 +827,26 @@ export interface UsageLedgerSuccessMap {
 export type UsageLedgerMethod = keyof UsageLedgerRequestMap;
 export type UsageLedgerProgressEvent = RuntimeEvent<'usage.ledger.progress',UsageLedgerProgress>;
 
+export type EditorNavigationLanguage = 'typescript'|'javascript'|'rust'|'python'|'java';
+export type EditorNavigationToolId = 'typescript'|'rust'|'python'|'java'|'jdtls';
+export interface EditorNavigationTools { typescript?:string; rust?:string; python?:string; java?:string; jdtls?:string }
+export interface EditorNavigationDetectedTool { id:EditorNavigationToolId; available:boolean; path?:string; message?:string }
+export interface EditorNavigationConfiguration { enabled:boolean; tools:EditorNavigationTools; detected:EditorNavigationDetectedTool[] }
+export interface EditorNavigationStatus { contextId:string; state:'preparing'|'ready'|'failed'; message?:string }
+export interface EditorNavigationDocument { path:string; content:string; version:number }
+export interface EditorNavigationTarget { path:string; line:number; column:number; endLine?:number; endColumn?:number; name?:string }
+export interface EditorNavigationSymbol { name:string; kind:number; path:string; line:number; column:number; container?:string }
+
 export interface RequestMap {
+ 'editorNavigation.configuration': [{},EditorNavigationConfiguration];
+ 'editorNavigation.configure': [{enabled:boolean;tools:EditorNavigationTools},EditorNavigationConfiguration];
+ 'editorNavigation.prepare': [{projectId:string;worktreePath?:string;bufferGroup:string;language:EditorNavigationLanguage},EditorNavigationStatus];
+ 'editorNavigation.status': [{contextId:string},EditorNavigationStatus];
+ 'editorNavigation.sync': [{contextId:string;documents:EditorNavigationDocument[]},{accepted:true}];
+ 'editorNavigation.definition': [{contextId:string;path:string;version:number;line:number;column:number;requestId:string},{targets:EditorNavigationTarget[];truncated:boolean}];
+ 'editorNavigation.documentSymbols': [{contextId:string;path:string;version:number;requestId:string},{symbols:EditorNavigationSymbol[];truncated:boolean}];
+ 'editorNavigation.cancel': [{contextId:string;requestId:string},{accepted:true}];
+ 'editorNavigation.release': [{contextId:string},{accepted:true}];
  'usage.ledger.summary':[UsageLedgerRequestMap['usage.ledger.summary'],UsageLedgerSuccessMap['usage.ledger.summary']];
  'usage.ledger.series':[UsageLedgerRequestMap['usage.ledger.series'],UsageLedgerSuccessMap['usage.ledger.series']];
  'usage.ledger.breakdown':[UsageLedgerRequestMap['usage.ledger.breakdown'],UsageLedgerSuccessMap['usage.ledger.breakdown']];
@@ -1145,6 +1164,8 @@ export type RequestParams<M extends Method> = RequestMap[M][0];
 export type RequestResult<M extends Method> = RequestMap[M][1];
 export interface OutputChunk { sessionId:string; cursor:number; data:Uint8Array; gap?:boolean }
 export interface ThreadTermBridge {
+ /** Optional, local desktop compatibility module; not part of portable Runtime settings. */
+ localFiles?:{getBackend():Promise<'runtime'|'main'>;setBackend(backend:'runtime'|'main'):Promise<'runtime'|'main'>;onBackendChanged?(listener:(backend:'runtime'|'main')=>void):()=>void};
  readonly platform:string;
  readonly windowsPty?:{backend:'conpty';buildNumber:number};
  request<M extends Method>(method:M,params:RequestParams<M>):Promise<RequestResult<M>>;
@@ -1197,6 +1218,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 // The legacy list predates review-draft RPCs; extend it here so old callers of
 // `validateRequest` accept the additive methods without rebuilding that list.
 (METHODS as unknown as string[]).unshift(
+ 'editorNavigation.configuration','editorNavigation.configure','editorNavigation.prepare','editorNavigation.status','editorNavigation.sync','editorNavigation.definition','editorNavigation.documentSymbols','editorNavigation.cancel','editorNavigation.release',
  'filesystem.browse','filesystem.preview.read','attachment.upload','attachment.read',
  'filesystem.external.readWindow','filesystem.readWindow',
  'git.undo','git.undo.list',
@@ -1207,6 +1229,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'editorNavigation.prepare':['projectId','bufferGroup'],'editorNavigation.status':['contextId'],'editorNavigation.sync':['contextId'],'editorNavigation.definition':['contextId','path','requestId'],'editorNavigation.documentSymbols':['contextId','path','requestId'],'editorNavigation.cancel':['contextId','requestId'],'editorNavigation.release':['contextId'],
  'filesystem.preview.read':['projectId','path'],'attachment.upload':['uploadId','sessionId','name'],'attachment.read':['assetId'],
  'git.history.plan':['projectId','hash'],'git.cherryPick':['projectId','hash','operationId'],'git.revert':['projectId','hash','operationId'],
  'git.reset':['projectId','hash','expectedHead','operationId'],'git.operation.abort':['projectId','kind','operationId'],'git.operation.continue':['projectId','kind','operationId'],
@@ -1283,6 +1306,35 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
+ if(m.startsWith('editorNavigation.')) {
+  const id=(value:unknown)=>typeof value==='string'&&value.length>0&&new TextEncoder().encode(value).byteLength<=256&&!/[\u0000-\u001f\u007f-\u009f]/.test(value);
+  // Worktree selectors are absolute host paths; document paths below stay relative.
+  const scopePath=(value:unknown)=>typeof value==='string'&&value.length>0&&new TextEncoder().encode(value).byteLength<=4096&&!/[\u0000\r\n]/.test(value);
+  const path=(value:unknown)=>typeof value==='string'&&value.length>0&&new TextEncoder().encode(value).byteLength<=4096&&!/[\u0000\r\n]/.test(value)&&!/^(?:[\\/]|[A-Za-z]:)/.test(value)&&!value.split(/[\\/]/).some(part=>!part||part==='.'||part==='..');
+  const position=(value:unknown)=>Number.isSafeInteger(value)&&Number(value)>=1&&Number(value)<=1_000_000;
+  if(m==='editorNavigation.configuration'&&Object.keys(params).length!==0) throw new Error('Invalid editor navigation configuration request');
+  if(m==='editorNavigation.configure') {
+   if(typeof params.enabled!=='boolean'||!isRecord(params.tools)) throw new Error('Invalid editor navigation configuration');
+   for(const [key,value] of Object.entries(params.tools)) if(!['typescript','rust','python','java','jdtls'].includes(key)||typeof value!=='string'||new TextEncoder().encode(value).byteLength>4096||/[\u0000\r\n]/.test(value)) throw new Error('Invalid editor navigation tool path');
+  }
+  if(m==='editorNavigation.prepare'&&(!id(params.projectId)||!id(params.bufferGroup)||(params.worktreePath!==undefined&&!scopePath(params.worktreePath))||!['typescript','javascript','rust','python','java'].includes(String(params.language)))) throw new Error('Invalid editor navigation prepare request');
+  if(['editorNavigation.status','editorNavigation.release'].includes(m)&&!id(params.contextId)) throw new Error('Invalid editor navigation context');
+  if(m==='editorNavigation.sync') {
+   if(!id(params.contextId)||!Array.isArray(params.documents)||params.documents.length>128) throw new Error('Invalid editor navigation documents');
+   let bytes=0; const paths=new Set<string>();
+   for(const document of params.documents) {
+    if(!isRecord(document)) throw new Error('Invalid editor navigation document');
+    const documentPath=document.path as string;
+    if(!path(documentPath)||typeof document.content!=='string'||!Number.isSafeInteger(document.version)||Number(document.version)<0||paths.has(documentPath)) throw new Error('Invalid editor navigation document');
+    const size=new TextEncoder().encode(document.content as string).byteLength;
+    if(size>1024*1024||(bytes+=size)>8*1024*1024) throw new Error('Editor navigation document limit exceeded');
+    paths.add(documentPath);
+   }
+  }
+  if(m==='editorNavigation.definition'&&(!id(params.contextId)||!id(params.requestId)||!path(params.path)||!Number.isSafeInteger(params.version)||Number(params.version)<0||!position(params.line)||!position(params.column))) throw new Error('Invalid editor navigation definition request');
+  if(m==='editorNavigation.documentSymbols'&&(!id(params.contextId)||!id(params.requestId)||!path(params.path)||!Number.isSafeInteger(params.version)||Number(params.version)<0)) throw new Error('Invalid editor navigation symbols request');
+  if(m==='editorNavigation.cancel'&&(!id(params.contextId)||!id(params.requestId))) throw new Error('Invalid editor navigation cancellation');
+ }
  if(m==='filesystem.preview.read'||m==='attachment.upload'||m==='attachment.read') {
   for(const key of ['offset','limit',...(m==='attachment.upload'?['size']:[])]) {
    const value=params[key];
@@ -1598,6 +1650,30 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {
+ if(method.startsWith('editorNavigation.')) {
+  const value=result as Record<string,unknown>;
+  const id=(item:unknown)=>typeof item==='string'&&item.length>0&&new TextEncoder().encode(item).byteLength<=256&&!/[\u0000-\u001f\u007f-\u009f]/.test(item);
+  const path=(item:unknown)=>typeof item==='string'&&item.length>0&&new TextEncoder().encode(item).byteLength<=4096&&!/[\u0000\r\n]/.test(item)&&!/^(?:[\\/]|[A-Za-z]:)/.test(item)&&!item.split(/[\\/]/).some(part=>!part||part==='.'||part==='..');
+  const position=(item:unknown)=>Number.isSafeInteger(item)&&Number(item)>=1&&Number(item)<=1_000_000;
+  if(!isRecord(result)) throw new Error('Invalid editor navigation result');
+  if(method==='editorNavigation.configuration'||method==='editorNavigation.configure') {
+   if(typeof value.enabled!=='boolean'||!isRecord(value.tools)||!Array.isArray(value.detected)||value.detected.length>5) throw new Error('Invalid editor navigation configuration');
+   for(const [key,item] of Object.entries(value.tools)) if(!['typescript','rust','python','java','jdtls'].includes(key)||typeof item!=='string'||new TextEncoder().encode(item).byteLength>4096) throw new Error('Invalid editor navigation tool path');
+   for(const item of value.detected) if(!isRecord(item)||!['typescript','rust','python','java','jdtls'].includes(String(item.id))||typeof item.available!=='boolean'||(item.path!==undefined&&typeof item.path!=='string')||(item.message!==undefined&&(typeof item.message!=='string'||new TextEncoder().encode(item.message).byteLength>2048))) throw new Error('Invalid detected editor navigation tool');
+  }
+  if(method==='editorNavigation.prepare'||method==='editorNavigation.status') {
+   if(!id(value.contextId)||!['preparing','ready','failed'].includes(String(value.state))||(value.message!==undefined&&(typeof value.message!=='string'||new TextEncoder().encode(value.message).byteLength>2048))) throw new Error('Invalid editor navigation status');
+  }
+  if(['editorNavigation.sync','editorNavigation.cancel','editorNavigation.release'].includes(method)&&value.accepted!==true) throw new Error('Invalid editor navigation acknowledgement');
+  if(method==='editorNavigation.definition') {
+   if(!Array.isArray(value.targets)||value.targets.length>100||typeof value.truncated!=='boolean') throw new Error('Invalid editor navigation definition result');
+   for(const target of value.targets) if(!isRecord(target)||!path(target.path)||!position(target.line)||!position(target.column)||(target.endLine!==undefined&&!position(target.endLine))||(target.endColumn!==undefined&&!position(target.endColumn))||(target.name!==undefined&&(typeof target.name!=='string'||new TextEncoder().encode(target.name).byteLength>512))) throw new Error('Invalid editor navigation target');
+  }
+  if(method==='editorNavigation.documentSymbols') {
+   if(!Array.isArray(value.symbols)||value.symbols.length>2000||typeof value.truncated!=='boolean') throw new Error('Invalid editor navigation symbols result');
+   for(const symbol of value.symbols) if(!isRecord(symbol)||typeof symbol.name!=='string'||new TextEncoder().encode(symbol.name).byteLength>1024||!Number.isSafeInteger(symbol.kind)||Number(symbol.kind)<1||Number(symbol.kind)>26||!path(symbol.path)||!position(symbol.line)||!position(symbol.column)||(symbol.container!==undefined&&(typeof symbol.container!=='string'||new TextEncoder().encode(symbol.container).byteLength>1024))) throw new Error('Invalid editor navigation symbol');
+  }
+ }
  if(method==='quickLaunch.list'||method==='quickLaunch.save'||method==='quickLaunch.repo.list'||method==='quickLaunch.repo.save'||method==='quickLaunch.repo.trust') {
   const commands=method==='quickLaunch.list'?result:method==='quickLaunch.repo.list'&&isRecord(result)?result.entries:[result];
   if(Array.isArray(commands)) for(const command of commands) {

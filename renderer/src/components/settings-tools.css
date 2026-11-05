@@ -21,4 +21,12 @@
 .settings-tool-accounts[open] > .provider-settings { margin-top: 12px; }
 .settings-tool-notice { color: var(--muted); }
 .settings-tools-force-cwd { display: block; margin-top: 10px; overflow-wrap: anywhere; }
+.local-file-access-settings { display: grid; gap: 8px; }
+.local-file-access-settings h4, .local-file-access-settings p { margin: 0; }
+.local-file-access-settings fieldset { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
+.settings-drawer .settings-tools .local-file-access-settings fieldset label.local-file-access-option { display: flex; align-items: flex-start; gap: 8px; min-height: 44px; margin: 0; cursor: pointer; }
+.local-file-access-settings fieldset input { width: auto; flex: none; margin: 3px 0 0; accent-color: var(--primary); }
+.local-file-access-settings fieldset span { display: grid; gap: 2px; }
+.local-file-access-settings fieldset small { color: var(--muted); font-size: 12px; }
+.local-file-access-settings fieldset:disabled label { cursor: default; }
 @media (max-width: 720px) { .settings-tools-path, .settings-tool-runs li { align-items: stretch; flex-direction: column; } .settings-tool-runs li > div { justify-content: flex-start; } }

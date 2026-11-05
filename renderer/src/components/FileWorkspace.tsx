@@ -54,6 +54,8 @@ import { externalFileError, externalFileErrorCode, externalSelectionText } from 
 import { displayPath } from '../displayPath';
 import { EditorView } from '@codemirror/view';
 import type { GitWorkbenchAction, GitWorkbenchCommand } from '../workbench/gitKeyboardCommand';
+import { useEditorNavigation } from './useEditorNavigation';
+import { navigationLanguage, type NavigationLocation } from '../editorNavigation';
 
 type View = "file" | "diff" | "preview";
 type Props = {
@@ -68,7 +70,7 @@ type Props = {
   ownerSessionId?: string;
   reveal?: { line: number; column?: number; key: string };
   embedded?: boolean;
-  onOpenPath?: (path: string, view: View) => void;
+  onOpenPath?: (path: string, view: View, position?: { line: number; column: number; navigation?: boolean }) => void | Promise<void>;
   assetKind?: "image" | "text";
   previewNavigation?: {
     activeId: string;
@@ -242,6 +244,29 @@ function FileWorkspaceInstance({
   };
   const zh = globalThis.document.documentElement.lang === "zh-CN";
   const issueText = typeof issue === "object" ? externalFileError(issue.externalError, zh) : issue;
+  const [navigationReveal, setNavigationReveal] = useState<(NavigationLocation & { key: string })>();
+  useEffect(() => { setNavigationReveal(undefined); }, [reveal?.key]);
+  const navigation = useEditorNavigation({
+    ...scope, ownerSessionId, editorId, path: document?.path, text, dirty, zh,
+    host: sourceEditorHost, active: active !== false,
+    bufferEligible: !external && Boolean(document && !image && !largeFile && (!compare || !compare.committedOnly) && (view !== 'diff' || (!staged && !document.readonly))),
+    enabled: !external && view === 'file' && !image && !largeFile && !fileNavigation && !navigationDisabled && Boolean(document && navigationLanguage(document.path)),
+    persisted: () => [...drafts.current.values()].map(draft => ({ path: draft.path, content: draft.content, dirty: true })),
+    open: async (target, current) => {
+      if (!current()) return false;
+      if (embedded && onOpenPath) { await onOpenPath(target.path, 'file', { line: target.line, column: target.column, navigation: true }); return true; }
+      if (loaded.current?.path !== target.path) {
+        const source = loaded.current;
+        // Standalone navigation retains the draft before changing files; a conflict leaves it in place.
+        if (source && currentText.current !== source.content) {
+          await persistDraft(source, currentText.current, base.current);
+          if (!current() || drafts.current.get(source.path)?.content !== currentText.current) return false;
+        }
+        if (!current() || !await open(target.path, 'file', false, currentText.current)) return false;
+      }
+      setView('file'); setNavigationReveal({ ...target, key: crypto.randomUUID() }); return true;
+    },
+  });
   const pinnedDocument = !external && document && sessionDocuments && isDocumentPinned(sessionDocuments.documents, document.path);
   const sessionDocumentIssue = sessionDocuments?.error;
   const needsSessionDocuments = Boolean(!external && sessionDocuments && document && !image);
@@ -371,7 +396,7 @@ function FileWorkspaceInstance({
         : (zh ? "此工作区无法添加评论。" : "Comments are unavailable in this workspace.");
     const common = {zh,lines:selection,canComment,commentReason:reason,comment:()=>setCommentDraft(kind === "file" ? {side:"new",...selection} : selection as MergeSelection)};
     const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:!compare&&commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(external||document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine, ...(external?{selection:selectedExternalText()}:{})}:{})}):undefined,plans:external?undefined:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(external||sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:external?(zh?"工作区外文件不能固定到计划与文档。":"Outside-workspace files cannot be pinned to Plans & docs."):sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:external?undefined:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
-    showContextMenu({ x, y, restoreFocus: target, items: sourceItems });
+    showContextMenu({ x, y, restoreFocus: target, items: kind === 'file' ? [...navigation.menuItems, ...sourceItems] : sourceItems });
   };
   async function refreshGit() {
     await gitState.refresh();
@@ -380,6 +405,7 @@ function FileWorkspaceInstance({
     path: string,
     nextView: View = "file",
     ignoreDraft = false,
+    syncedNavigationText?: string,
   ) {
     const ticket = ++generation.current;
     let resolvedExternalId = externalId;
@@ -387,7 +413,7 @@ function FileWorkspaceInstance({
     const changingFile = Boolean(source && source.path !== path);
     setFileNavigation(changingFile);
     // Recheck live text, including edits dispatched before React applies the read-only state.
-    const canApply = () => !changingFile || (loaded.current === source && currentText.current === source?.content);
+    const canApply = () => !changingFile || (loaded.current === source && currentText.current === (syncedNavigationText ?? source?.content));
     try {
       const externalRead = async (id: string, registeredPath: string, image: boolean, recovered = false): Promise<FileDocument | { mime: string; data: string }> => {
         resolvedExternalId = id;
@@ -993,7 +1019,7 @@ function FileWorkspaceInstance({
     const index=snapshot.chunks.findIndex(chunk=>chunk.fromB<=position&&position<chunk.toB||chunk.fromB>=position);
     if(index>=0) {setHunk(index);editor.focusChunk(index);}setDiffReveal(undefined);
   },[view,diff,diffReveal,document?.path,hunkCount]);
-  const editorReveal =
+  const editorReveal = navigationReveal?.path === document?.path ? navigationReveal :
     document && document.path === initialPath && reveal
       ? { ...reveal, path: document.path }
       : undefined;
@@ -1056,6 +1082,7 @@ function FileWorkspaceInstance({
   const sendAction = document && onSendToAgent && (!image || external) && <button type="button" className="icon-btn icon-btn-sm file-bar-optional" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}><Icon name="send" /></button>;
   const dirtyPill = <span className="file-dirty ws-chip" data-testid="editor-dirty" hidden={!dirty} title={zh ? "未保存" : "Unsaved"}>●<span className="file-dirty-label">{zh ? "未保存" : "Unsaved"}</span></span>;
   const fileMenuItems: ContextMenuItem[] = document ? [
+    ...navigation.menuItems,
     {id:"file-copy-path",label:zh ? "复制路径" : "Copy path",icon:<WbIcon name="copy" />,onSelect:()=>navigator.clipboard.writeText(document.path)},
     ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="folder" />,onSelect:()=>{if(embedded)dispatchEvent(new CustomEvent("threadterm:workbench",{detail:{view:"files"}}));else setToolsOpen(true);}}] : []),
     ...(!busy ? [{id:"file-reload",label:copy.reload,icon:<WbIcon name="refresh" />,onSelect:()=>{if(external)void open(document.path,view,true);else setPending({path:document.path,view,reload:true});}}] : []),
@@ -1230,7 +1257,7 @@ function FileWorkspaceInstance({
                     oldText={diff.oldText}
                     newText={staged || compare?.committedOnly ? diff.newText : text}
                     readOnly={staged || !compareEditable || document.readonly || fileNavigation || Boolean(navigationDisabled)}
-                    onChange={value => { currentText.current = value; setText(value); }}
+                    onChange={value => { navigation.invalidate(); currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
                     onChunks={setHunkCount}
                     onStageHunk={!compare ? () => void applyHunk() : undefined}
@@ -1264,15 +1291,17 @@ function FileWorkspaceInstance({
             ) : (
               <>
                 {resolvedNotice === document.path && <p className="wb-summary" role="status">{zh ? "此文件中的所有冲突已解决。请暂存以标记为已解决。" : "All conflicts resolved in this file. Stage it to mark it resolved."}</p>}
-                <section ref={sourceEditorHost} className="tt-editor-shell" data-testid="file-editor-surface">
+                {navigation.panel}
+                <section ref={sourceEditorHost} className="tt-editor-shell" data-testid="file-editor-surface" onKeyDownCapture={navigation.onKeyDownCapture} onClickCapture={navigation.onClickCapture}>
                   <CodeEditor
                     path={document.path}
                     value={text}
-                    onChange={value => { currentText.current = value; setText(value); }}
+                    onChange={value => { navigation.invalidate(); currentText.current = value; setText(value); }}
                     onSave={() => void saveFile()}
                     readOnly={external || document.readonly || fileNavigation || Boolean(navigationDisabled)}
                     reveal={editorReveal}
                     resetKey={editorResetKey}
+                    preserveHistory
                     gitBaseText={external?null:gitBaseText}
                     gitHunkActions={external?undefined:{conflicted:conflictedFile,disabled:dirty?(zh?'请先保存文件以暂存此更改':'Save the file to stage this change'):conflictedFile?(zh?'无法暂存冲突文件的单个更改':'Cannot stage a change in a conflicted file'):busy?(zh?'正在处理…':'Working…'):undefined,stage:(base,buffer,chunk)=>void stageGutterHunk(base,buffer,chunk),openDiff:line=>{setStaged(false);setDiffReveal({path:document.path,line});setView('diff');}}}
                     blame={blameOn && !dirty ? blame : undefined}
