@@ -48,6 +48,15 @@ test('machine tree uses own snapshot children and the other machine feed, with a
   assert.match(html, /aria-label="2 needs you"/); assert.equal((html.match(/data-session-id="same"/g) ?? []).length, 2);
   assert.ok(html.indexOf('Add a computer') > html.indexOf('Remote approval'));
 });
+test('remote machine, project, and branch rows expose new-session affordances', () => {
+  const { snapshot, feed } = treeFixture();
+  const html = renderToStaticMarkup(createElement(MachineRowsView, { zh: false, snapshot, feed }));
+  assert.match(html, /aria-label="Office-PC actions"/);
+  assert.match(html, /aria-label="Host project actions"/);
+  assert.match(html, /aria-label="main actions"/);
+  assert.match(html, /aria-label="New terminal in Host project"/);
+  assert.match(html, /aria-label="New terminal in main"/);
+});
 test('online rows show only counts; a plain-directory project lists its sessions without a branch row', () => {
   const { snapshot, feed } = treeFixture();
   feed.machines[1].worktrees = [];

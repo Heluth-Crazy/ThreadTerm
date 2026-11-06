@@ -77,6 +77,7 @@ import { InboxPage } from "./components/InboxPage";
 import { ImportedHistoryView } from "./components/ImportedHistoryView";
 import { SessionWorkspace } from "./components/SessionWorkspace";
 import { HostFiles } from './components/HostFiles';
+import { desktopDialogAction } from './desktopNavigation';
 import { SessionCreateDialog } from "./components/SessionCreateDialog";
 import { AddProjectDialog } from "./components/AddProjectDialog";
 import { WorkbenchPage } from "./components/WorkbenchPage";
@@ -136,6 +137,7 @@ function MachineApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<"tools" | "computers">();
   const [creatorOpen, setCreatorOpen] = useState(false);
+  const [creatorRevision, setCreatorRevision] = useState(0);
   const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string;draft?:string;mode?:"chat"|"terminal"}>();
   const [groupCreate,setGroupCreate]=useState(false);
   const [groupContext,setGroupContext]=useState<{sessionId:string}>();
@@ -365,6 +367,9 @@ function MachineApp() {
     () => onDesktopNavigate((target) => {
       if (target.action === "computers") {setSettingsInitialTab("computers");setSettingsOpen(true);return;}
       if (target.action === "command-palette") {setPaletteOpen(true);return;}
+      const dialog = desktopDialogAction(target);
+      if (dialog?.kind === "new-session") {setSettingsOpen(false);setProjectCreatorOpen(false);setGroupCreate(false);setGroupContext(undefined);setCreatorDefaults({projectId:dialog.projectId,path:dialog.path});setCreatorRevision(value=>value+1);setCreatorOpen(true);return;}
+      if (dialog?.kind === "add-project") {setSettingsOpen(false);setCreatorOpen(false);setGroupCreate(false);setGroupContext(undefined);setProjectCreatorOpen(true);return;}
       if (target.sessionId) {setSettingsOpen(false);void navigate({ kind: "session", id: target.sessionId });}
       else if (target.workspaceId) {setSettingsOpen(false);void navigate({ kind: "workspace", id: target.workspaceId });}
     }),
@@ -626,7 +631,7 @@ function MachineApp() {
         {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} runtimeState={runtimeState} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}} onUsage={()=>{setShellMenu(undefined);openUsage();}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
         {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>{setGroupCreate(false);setGroupContext(undefined);setCreatorOpen(true);}} onCreateGroup={()=>{setGroupCreate(true);setGroupContext(undefined);setCreatorOpen(true);}} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)} onUsage={()=>{setPaletteOpen(false);openUsage();}}/>}
         {creatorOpen && data && (
-          <SessionCreateDialog data={data}
+          <SessionCreateDialog key={creatorRevision} data={data}
             initialProjectId={creatorDefaults?.projectId} initialPath={creatorDefaults?.path} initialProvider={creatorDefaults?.provider} initialTitle={creatorDefaults?.title} initialDraft={creatorDefaults?.draft}
             defaultKind={groupCreate?'group':creatorDefaults?.mode} fromSessionId={groupContext?.sessionId}
             onClose={() => {setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);}}

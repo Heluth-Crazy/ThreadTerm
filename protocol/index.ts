@@ -1170,7 +1170,7 @@ export interface ThreadTermBridge {
  readonly windowsPty?:{backend:'conpty';buildNumber:number};
  request<M extends Method>(method:M,params:RequestParams<M>):Promise<RequestResult<M>>;
  onEvent(listener:(event:RuntimeEvent)=>void):()=>void;
- onDesktopNavigate(listener:(target:{sessionId?:string;workspaceId?:string;action?:"command-palette"|"computers"})=>void):()=>void;
+ onDesktopNavigate(listener:(target:{sessionId?:string;workspaceId?:string;action?:"command-palette"|"computers"|"new-session"|"add-project";projectId?:string;path?:string})=>void):()=>void;
  windowState():Promise<{maximized:boolean}>;
  onWindowState(listener:(state:{maximized:boolean})=>void):()=>void;
  subscribeOutput(sessionId:string,cursor:number,onChunk:(chunk:OutputChunk)=>void|Promise<void>):Promise<()=>void>;

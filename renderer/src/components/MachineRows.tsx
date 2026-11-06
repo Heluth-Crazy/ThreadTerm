@@ -2,6 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from 'react';
 import { machineBridge, useMachines, useMachineTree } from '../machines';
 import { machineTreeKey, type MachineSnapshot, type MachineTreeFeed, type MachineTreeSession, type MachineTree } from '../machineTypes';
 import { Icon, SessionIcon } from './PrototypeIcon';
+import { CatalogPopover } from './CatalogActions';
 import { sameCanonicalScope } from '../projectScope';
 import { sessionState, sessionStateLabel } from '../sessionState';
 import { isTerminalAttentionSession, sessionActivity, sessionActivityLabel, sortSessionsByActivity } from '../sessionActivity';
@@ -13,11 +14,15 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
   zh: boolean; snapshot: MachineSnapshot; feed?: MachineTreeFeed; children?: ReactNode; onAddComputer?: () => void;
 }) {
   const [issue, setIssue] = useState<string>();
+  const [menu, setMenu] = useState<{ key: string; anchor: HTMLElement }>();
   if (!snapshot.enabled || snapshot.machines.length < 2) return <>{children}</>;
   const fail = (error: unknown) => setIssue(error instanceof Error ? error.message : String(error));
   const expanded = (key: string) => feed.expanded[key] !== false;
   const toggle = (key: string) => { void machineBridge()?.machineExpand(key, !expanded(key)).catch(fail); };
   const open = (id: string, sessionId?: string) => { setIssue(undefined); void machineBridge()?.machineShow(id, sessionId).catch(fail); };
+  const closeMenu = () => setMenu(undefined);
+  const start = (machineId: string, projectId?: string, path?: string) => { closeMenu(); setIssue(undefined); void machineBridge()?.machineShow(machineId, undefined, { action: 'new-session', projectId, path }).catch(fail); };
+  const addProject = (machineId: string) => { setMenu(undefined); setIssue(undefined); void machineBridge()?.machineShow(machineId, undefined, { action: 'add-project' }).catch(fail); };
   const count = (value: number) => value > 0 && <span className="badge amber" aria-label={zh ? `${value} 项需要你` : `${value} needs you`}>{value}</span>;
   const sessions = (tree: MachineTree, rows: MachineTreeSession[]) => {
     const byId = new Map(rows.map(row => [row.session.id, row]));
@@ -44,10 +49,13 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
       return <div className="proj-group" key={key}>
         <div className="proj-row-wrap"><button type="button" className={`proj-disclosure${expanded(key) ? ' open' : ''}`} aria-expanded={expanded(key)} aria-label={`${expanded(key) ? (zh ? '收起' : 'Collapse') : (zh ? '展开' : 'Expand')} ${project.name}`} onClick={() => toggle(key)}><Icon name="chevron" className="chev" /></button>
           <button type="button" className="proj-row" onClick={() => toggle(key)}><Icon name="folder" /><span className="grow">{project.name}</span>{!expanded(key) && count(rows.reduce((sum, row) => sum + row.needsYou, 0))}</button>
+          <button type="button" className="tree-new" aria-label={zh ? `在 ${project.name} 中新建终端` : `New terminal in ${project.name}`} onClick={() => start(tree.machine.id, project.id, project.path)}><Icon name="plus" /></button>
+          <button type="button" className="icon-btn row-more" aria-label={zh ? `${project.name} 操作` : `${project.name} actions`} aria-haspopup="menu" aria-expanded={menu?.key === key} onClick={event => setMenu(menu?.key === key ? undefined : {key,anchor:event.currentTarget})}><Icon name="more" /></button>
+          {menu?.key === key && <CatalogPopover anchor={menu.anchor} onClose={closeMenu} label={project.name}><button type="button" role="menuitem" className="menu-item" onClick={() => start(tree.machine.id, project.id, project.path)}><Icon name="plus" />{zh ? '新建终端' : 'New terminal'}</button></CatalogPopover>}
         </div>
         {expanded(key) && <div className="tree-list">{branches.map(branch => {
           const branchKey = machineTreeKey(tree.machine.id, 'branch', branch.path), members = rows.filter(row => sameCanonicalScope(row.session.worktreePath ?? project.path, branch.path));
-          return <div className="catalog-tree-group" key={branchKey}><div className="tree-row-wrap"><button type="button" className="tree-row" aria-expanded={expanded(branchKey)} onClick={() => toggle(branchKey)}><span className="bico"><Icon name="branch" /></span><span className="branch">{branch.branch ?? (zh ? '本地目录' : 'Local directory')}</span>{count(members.reduce((sum, row) => sum + row.needsYou, 0))}</button></div>{expanded(branchKey) && sessions(tree, members)}</div>;
+          return <div className="catalog-tree-group" key={branchKey}><div className="tree-row-wrap"><button type="button" className="tree-row" aria-expanded={expanded(branchKey)} onClick={() => toggle(branchKey)}><span className="bico"><Icon name="branch" /></span><span className="branch">{branch.branch ?? (zh ? '本地目录' : 'Local directory')}</span>{count(members.reduce((sum, row) => sum + row.needsYou, 0))}</button><button type="button" className="tree-new" aria-label={zh ? `在 ${branch.branch ?? project.name} 中新建终端` : `New terminal in ${branch.branch ?? project.name}`} onClick={() => start(tree.machine.id, project.id, branch.path)}><Icon name="plus" /></button><button type="button" className="icon-btn row-more" aria-label={zh ? `${branch.branch ?? project.name} 操作` : `${branch.branch ?? project.name} actions`} aria-haspopup="menu" aria-expanded={menu?.key === branchKey} onClick={event => setMenu(menu?.key === branchKey ? undefined : {key:branchKey,anchor:event.currentTarget})}><Icon name="more" /></button>{menu?.key === branchKey && <CatalogPopover anchor={menu.anchor} onClose={closeMenu} label={branch.branch ?? project.name}><button type="button" role="menuitem" className="menu-item" onClick={() => start(tree.machine.id, project.id, branch.path)}><Icon name="plus" />{zh ? '新建终端' : 'New terminal'}</button></CatalogPopover>}</div>{expanded(branchKey) && sessions(tree, members)}</div>;
         })}{sessions(tree, loose)}</div>}
       </div>;
     })}{sessions(tree, tree.sessions.filter(row => !row.session.projectId && !row.session.archived))}</div>
@@ -64,6 +72,7 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
           <button type="button" className={`machine-row${own ? ' active' : ''}`} aria-current={own ? 'true' : undefined} onClick={() => open(machine.id)}>
             <i className="machine-dot" aria-hidden="true" /><span className="machine-name">{name}</span>{online ? count(tree?.needsYou ?? 0) : <small>{machineStateLabel(machine.state, zh)}</small>}
           </button>
+          {!own && online && <><button type="button" className="icon-btn row-more machine-more" aria-label={zh ? `${name} 操作` : `${name} actions`} aria-haspopup="menu" aria-expanded={menu?.key === key} onClick={event => setMenu(menu?.key === key ? undefined : {key,anchor:event.currentTarget})}><Icon name="more" /></button>{menu?.key === key && <CatalogPopover anchor={menu.anchor} onClose={closeMenu} label={name}><button type="button" role="menuitem" className="menu-item" onClick={() => start(machine.id)}><Icon name="plus" />{zh ? '新建终端' : 'New terminal'}</button><button type="button" role="menuitem" className="menu-item" onClick={() => addProject(machine.id)}><Icon name="folder" />{zh ? '添加项目' : 'Add project'}</button></CatalogPopover>}</>}
         </div>
         {online && expanded(key) && (own ? children : tree && remoteTree(tree))}
       </div>;

@@ -2,10 +2,11 @@
 export type MachineState = 'local' | 'connecting' | 'connected' | 'disconnected' | 'incompatible' | 'pin-mismatch';
 export interface MachineInfo { id: string; name: string; color: string; state: MachineState; message?: string }
 export interface MachineSnapshot { enabled: boolean; currentId: string; machines: MachineInfo[] }
+export type MachineNavigation = { action: 'new-session'; projectId?: string; path?: string } | { action: 'add-project' };
 export interface MachineBridge {
   readonly machineId: string;
   machineList(): Promise<MachineSnapshot>;
-  machineShow(id: string, sessionId?: string): Promise<void>;
+  machineShow(id: string, sessionId?: string, navigation?: MachineNavigation): Promise<void>;
   machineSettings(): Promise<void>;
   machineTree(): Promise<MachineTreeFeed>;
   machineExpand(key: string, expanded: boolean): Promise<void>;

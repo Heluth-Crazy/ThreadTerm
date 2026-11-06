@@ -25,6 +25,12 @@
 .project-catalog .catalog-menu { top:25px; right:2px; }
 .project-catalog .tree-new { display:grid; place-items:center; border:0; border-radius:var(--radius); background:var(--surface); color:var(--muted); }
 .project-catalog .tree-new:hover { background:var(--soft); color:var(--text); }
+.remote-project-catalog .tree-new { position:absolute; right:25px; top:50%; z-index:2; width:22px; height:22px; padding:0; transform:translateY(-50%); opacity:0; pointer-events:none; }
+.remote-project-catalog .proj-row-wrap:hover .tree-new, .remote-project-catalog .tree-row-wrap:hover .tree-new, .remote-project-catalog .proj-row-wrap:focus-within .tree-new, .remote-project-catalog .tree-row-wrap:focus-within .tree-new { opacity:1; pointer-events:auto; }
+.remote-project-catalog .proj-row-wrap:hover .proj-row, .remote-project-catalog .tree-row-wrap:hover .tree-row, .remote-project-catalog .proj-row-wrap:focus-within .proj-row, .remote-project-catalog .tree-row-wrap:focus-within .tree-row { padding-right:48px; }
+.machine-row-wrap .machine-more { position:absolute; right:2px; top:50%; z-index:2; width:22px; height:22px; padding:0; transform:translateY(-50%); opacity:0; pointer-events:none; }
+.machine-row-wrap:hover .machine-more, .machine-row-wrap:focus-within .machine-more, .machine-row-wrap .machine-more:focus-visible, .machine-row-wrap .machine-more[aria-expanded="true"] { opacity:1; pointer-events:auto; }
+.machine-row-wrap:has(.machine-more):hover .machine-row, .machine-row-wrap:has(.machine-more):focus-within .machine-row { padding-right:26px; }
 .catalog-more-trees { justify-self:start; margin:2px 0 0 26px; padding:2px 8px; font-size:11px; }
 .catalogue-popover { position:fixed; z-index:900; width:280px; max-height:calc(100vh - 16px); overflow:auto; }
 .catalogue-popover .menu-item { width:100%; }

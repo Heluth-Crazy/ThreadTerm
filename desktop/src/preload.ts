@@ -18,7 +18,7 @@ import {
   type AttachedFile,
 } from '@threadterm/protocol';
 
-type DesktopNavigateTarget = { sessionId?: string; workspaceId?: string; action?: 'command-palette' | 'computers' };
+type DesktopNavigateTarget = { sessionId?: string; workspaceId?: string; action?: 'command-palette' | 'computers' | 'new-session' | 'add-project'; projectId?: string; path?: string };
 const desktopNavigateListeners = new Set<(target: DesktopNavigateTarget) => void>();
 let pendingDesktopNavigate: DesktopNavigateTarget | undefined;
 ipcRenderer.on('threadterm:desktop-navigate', (_event, value: unknown) => {
@@ -26,7 +26,9 @@ ipcRenderer.on('threadterm:desktop-navigate', (_event, value: unknown) => {
   const target: DesktopNavigateTarget = {
     sessionId: typeof value.sessionId === 'string' ? value.sessionId : undefined,
     workspaceId: typeof value.workspaceId === 'string' ? value.workspaceId : undefined,
-    action: value.action === 'command-palette' || value.action === 'computers' ? value.action : undefined,
+    action: value.action === 'command-palette' || value.action === 'computers' || value.action === 'new-session' || value.action === 'add-project' ? value.action : undefined,
+    projectId: typeof value.projectId === 'string' && value.projectId.length > 0 && value.projectId.length <= 512 ? value.projectId : undefined,
+    path: typeof value.path === 'string' && value.path.length > 0 && value.path.length <= 32768 ? value.path : undefined,
   };
   if (!target.sessionId && !target.workspaceId && !target.action) return;
   if (desktopNavigateListeners.size) for (const listener of desktopNavigateListeners) listener(target);
@@ -54,7 +56,7 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & Backgrou
   completeHostFiles: (id, paths) => ipcRenderer.invoke('threadterm:host-files-complete', id, paths),
   machineId: process.argv.find(value => value.startsWith('--threadterm-machine-id='))?.slice('--threadterm-machine-id='.length) ?? 'local',
   machineList: () => ipcRenderer.invoke('threadterm:machine-list'),
-  machineShow: (id, sessionId) => ipcRenderer.invoke('threadterm:machine-show', id, sessionId),
+  machineShow: (id, sessionId, navigation) => ipcRenderer.invoke('threadterm:machine-show', id, sessionId, navigation),
   machineSettings: () => ipcRenderer.invoke('threadterm:machine-settings'),
   machineTree: () => ipcRenderer.invoke('threadterm:machine-tree-get'),
   machineExpand: (key, expanded) => ipcRenderer.invoke('threadterm:machine-expand', key, expanded),

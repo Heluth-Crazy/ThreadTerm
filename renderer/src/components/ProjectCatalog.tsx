@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CatalogVisibility, GroupSummary, ProjectCatalogItem, Session, Worktree } from "@threadterm/protocol";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { CatalogVisibility, ProjectCatalogItem, Session, Worktree } from "@threadterm/protocol";
 import { machineBridge, useMachines, useMachineTree } from '../machines';
 import { machineTreeKey } from '../machineTypes';
 import { request, subscribeEvents } from "../bridge";
+import { projectCatalogStore } from '../projectCatalogStore';
 import { displayPath, sameCanonicalScope } from "../projectScope";
 import { useTranslation } from "../i18n";
 import { Icon, SessionIcon } from "./PrototypeIcon";
@@ -58,9 +59,11 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
   const branchExpanded=(path:string)=>!sharedTree||machineTree.expanded[machineTreeKey(machine.currentId,'branch',path)]!==false;
   const sessions=sessionSnapshot??[];
   const {locale}=useTranslation(),zh=locale==="zh-CN",label=(en:string,cn:string)=>zh?cn:en;
-  const [items,setItems]=useState<ProjectCatalogItem[]>([]),[trees,setTrees]=useState<Record<string,Worktree[]>>({}),[groups,setGroups]=useState<Record<string,GroupSummary[]>>({});
-  const [issue,setIssue]=useState<string>(),[collapsed,setCollapsed]=useState<Record<string,boolean>>({}),[showAll,setShowAll]=useState<Record<string,boolean>>({});
-  const [scopeProjectId,setScopeProjectId]=useState<string>(),[menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[activities,setActivities]=useState<Record<string,NonNullable<Session['activity']>>>({}),[frozenOrder,setFrozenOrder]=useState<ReadonlyMap<string,number>>(),generation=useRef(0),groupGeneration=useRef(0),catalogProjectIds=useRef<string[]>([]),activityEpoch=useRef<string|undefined>(undefined);
+  const store=useMemo(()=>projectCatalogStore(machine.currentId,request),[machine.currentId]);
+  const {items,trees,groups,loaded,loading,issue:loadIssue}=useSyncExternalStore(store.subscribe,store.getSnapshot,store.getSnapshot);
+  const [actionIssue,setIssue]=useState<string>(),issue=actionIssue??loadIssue;
+  const [collapsed,setCollapsed]=useState<Record<string,boolean>>({}),[showAll,setShowAll]=useState<Record<string,boolean>>({});
+  const [scopeProjectId,setScopeProjectId]=useState<string>(),[menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[activities,setActivities]=useState<Record<string,NonNullable<Session['activity']>>>({}),[frozenOrder,setFrozenOrder]=useState<ReadonlyMap<string,number>>(),activityEpoch=useRef<string|undefined>(undefined);
   const catalogSessions=useMemo(()=>sessions.filter(session=>!isCodeReviewSession(session)).map(session=>{const snapshotActivity=session.activity,override=activities[session.id];return !override||snapshotActivity&&snapshotActivity.revision>=override.revision?session:{...session,activity:override};}),[sessions,activities]);
   const [expandedDelegates,setExpandedDelegates]=useState<string[]>(()=>{try{return readExpandedParents(localStorage.getItem(EXPANDED_DELEGATES_KEY));}catch{return [];}});
   useEffect(()=>{
@@ -71,29 +74,10 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
   },[sessionSnapshot,expandedDelegates]);
   const renderDelegateFold=(row:Extract<DelegateCatalogRow,{kind:'fold'}>)=><div className="sess-row-wrap is-delegate" key={`fold:${row.parentId}`}><button type="button" className="sess-row delegate-fold-row" data-parent-id={row.parentId} aria-expanded={row.expanded} onClick={()=>setExpandedDelegates(current=>row.expanded?current.filter(id=>id!==row.parentId):boundedExpandedParents([...current,row.parentId]))}><span className="bico"><Icon name="chevron" className="chev"/></span><span className="grow">{label(`${row.count} finished`,`${row.count} 个已结束`)}</span></button></div>;
   const visibilityOf=(kind:CatalogVisibility["kind"],id:string)=>visibility.find(row=>row.kind===kind&&row.id===id)?.visibility??"active";
-  const reloadGroups=async()=>{
-    const current=++groupGeneration.current,ids=catalogProjectIds.current;
-    const next=await Promise.all(ids.map(async projectId=>[projectId,await request("group.list",{projectId}).catch(()=>[])] as const));
-    if(current!==groupGeneration.current)return;
-    setGroups(previous=>({...previous,...Object.fromEntries(next)}));
-  };
-  const reload=async()=>{
-    const current=++generation.current;++groupGeneration.current;
-    try{
-      const next=await request("project.catalog.list",{});
-      const pairs=await Promise.all(next.map(async item=>{
-        const [worktrees,projectGroups]=await Promise.all([request("worktree.list",{projectId:item.id}),request("group.list",{projectId:item.id}).catch(()=>[])]);
-        return [item.id,worktrees,projectGroups] as const;
-      }));
-      if(current!==generation.current)return;
-      catalogProjectIds.current=next.map(item=>item.id);
-      setItems([...next].sort((a,b)=>Number(b.pinned)-Number(a.pinned)||a.sortOrder-b.sortOrder));
-      setTrees(Object.fromEntries(pairs.map(([id,worktrees])=>[id,worktrees])));setGroups(Object.fromEntries(pairs.map(([id,,projectGroups])=>[id,projectGroups])));setIssue(undefined);
-    }catch(error){if(current===generation.current)setIssue(error instanceof Error?error.message:String(error));}
-  };
-  useEffect(()=>{void reload();const unsubscribe=subscribeEvents(event=>{const data=event.data as {kind?:unknown;sessionId?:unknown;activity?:unknown;state?:unknown}|null,kind=data?.kind,sessionId=data?.sessionId,activity=data?.activity;if(event.event==="session.activity"&&typeof sessionId==="string"&&isActivity(activity)){if(activityEpoch.current&&activityEpoch.current!==event.epoch)setActivities({});activityEpoch.current=event.epoch;setActivities(current=>current[sessionId]?.revision!==undefined&&current[sessionId].revision>activity.revision?current:{...current,[sessionId]:activity});}if(event.event==="runtime.transport"&&['reconnected','disconnected','incompatible'].includes(String(data?.state))){activityEpoch.current=undefined;setActivities({});if(data?.state==='reconnected')void reload();else generation.current++;}if(event.event==="state.changed"&&String(kind)==="group")void reloadGroups();else if(event.event==="state.changed"&&["project","project.catalog","worktree","catalog.visibility"].includes(String(kind)))void reload();});return()=>{generation.current++;groupGeneration.current++;unsubscribe();};},[]);
+  const reload=store.reload;
+  useEffect(()=>{const deactivate=store.activate();const unsubscribe=subscribeEvents(event=>{const data=event.data as {kind?:unknown;sessionId?:unknown;activity?:unknown;state?:unknown}|null,kind=data?.kind,sessionId=data?.sessionId,activity=data?.activity;if(event.event==="session.activity"&&typeof sessionId==="string"&&isActivity(activity)){if(activityEpoch.current&&activityEpoch.current!==event.epoch)setActivities({});activityEpoch.current=event.epoch;setActivities(current=>current[sessionId]?.revision!==undefined&&current[sessionId].revision>activity.revision?current:{...current,[sessionId]:activity});}if(event.event==="runtime.transport"&&['reconnected','disconnected','incompatible'].includes(String(data?.state))){activityEpoch.current=undefined;setActivities({});store.transport(data?.state);}if(event.event==="state.changed"&&String(kind)==="group")store.reloadGroups();else if(event.event==="state.changed"&&["project","project.catalog","worktree","catalog.visibility"].includes(String(kind)))void reload();});return()=>{deactivate();unsubscribe();};},[store]);
   useEffect(()=>{const active=new Set(sessions.map(session=>session.id));setActivities(current=>{const next=Object.fromEntries(Object.entries(current).filter(([id])=>active.has(id)));return Object.keys(next).length===Object.keys(current).length?current:next;});},[sessions]);
-  const changed=()=>{void reload();onChanged?.();};
+  const changed=()=>{setIssue(undefined);void reload();onChanged?.();};
   const hide=(target:CatalogTarget)=>{
     if(target.kind==="project"&&selectedProjectId===target.id||target.kind==="worktree"&&selectedProjectId===target.projectId&&sameCanonicalScope(target.path,selectedWorktreePath)||target.kind==="session"&&selectedSessionId===target.id)onAll();
     if(target.kind==="project"&&scopeProjectId===target.id){setScopeProjectId(undefined);onScopeChange?.();}
@@ -139,7 +123,8 @@ ${displayPath(tree.path)}`} onClick={()=>onWorktree?.(item.id,tree.path)}><span 
         </>}</div>;
       })}{!ordered.length&&renderGroups(projectGroups)}{foldedDelegateRows(sortSessionsByActivity(plainDirectorySessions,frozenOrder),visibleProjectSessions,selectedSessionId,expandedDelegates).map(row=>{if(row.kind==="fold")return renderDelegateFold(row);const session=row.session,sessionTarget:CatalogTarget={kind:"session",id:session.id,name:session.title,path:session.worktreePath??item.path,projectId:item.id},activity=sessionActivity(session),activityLabel=isTerminalAttentionSession(session)?sessionStateLabel(sessionState(session),zh,session.readOnly):sessionActivityLabel(activity,zh),needsAttention=activity==="awaiting_approval"||activity==="awaiting_input";return <div className={"sess-row-wrap"+(nestedIds.has(session.id)?" is-delegate":"")} data-session-id={session.id} data-activity={activity} key={session.id}>{needsAttention&&<i className="session-attention-bar" aria-hidden="true"/>}<button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} data-session-id={session.id} data-activity={activity} title={session.title+" · "+activityLabel} onClick={()=>onSession?.(session.id)}><span className={`bico session-activity-${activity}`} aria-label={activityLabel} title={activityLabel}><span className="session-agent-icon"><SessionIcon session={session}/>{activity==="running"&&<i className="session-attention-ring"/>}</span>{needsAttention&&<Icon name="bell" className="session-attention-icon" aria-hidden="true"/>}<i className={"bico-dot st-"+attentionStateClass(session)}/></span><span className="grow">{session.title}</span><DelegateChip session={session} nested={nestedIds.has(session.id)} zh={zh}/>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}</button>{actions(sessionTarget)}</div>;})}{ordered.length>8&&<button type="button" className="btn btn-sm catalog-more-trees" onClick={()=>setShowAll(value=>({...value,[item.id]:!value[item.id]}))}>{showAll[item.id]?label("Collapse more worktrees","收起更多工作目录"):label("Show "+(ordered.length-8)+" more worktrees","显示其余 "+(ordered.length-8)+" 个工作目录")}</button>}</div>}</div>;
     })}</div>
-    {!items.length&&!issue&&<p className="side-empty">{label("No projects yet. Add a directory to get started.","还没有项目，请先添加目录。")}</p>}{issue&&<p className="side-empty" role="alert">{issue}</p>}
+    {loading&&!items.length&&!issue&&<p className="side-empty" role="status">{label("Loading projects…","正在加载项目…")}</p>}
+    {loaded&&!loading&&!items.length&&!issue&&<p className="side-empty">{label("No projects yet. Add a directory to get started.","还没有项目，请先添加目录。")}</p>}{issue&&<p className="side-empty" role="alert">{issue} <button type="button" className="btn btn-sm" onClick={()=>{setIssue(undefined);void reload();}}>{label("Try again","重试")}</button></p>}
     {menuAnchor&&<CatalogPopover anchor={menuAnchor} onClose={closeMenu} label={label("Project scope","项目范围")}>
       {onAddProject&&<button type="button" role="menuitem" className="menu-item" onClick={()=>{closeMenu();onAddProject();}}><Icon name="plus"/>{label("Add project","添加项目")}</button>}
       {onAddProject&&<div className="menu-sep"/>}

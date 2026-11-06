@@ -8,7 +8,7 @@ function facade() { return window.threadterm; }
 export const snapshot = () => facade().request("runtime.snapshot", {});
 export const request = <M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> => facade().request(method, params);
 export const subscribeEvents = (listener: (event: RuntimeEvent) => void) => facade().onEvent(listener);
-export const onDesktopNavigate = (listener: (target: { sessionId?: string; workspaceId?: string; action?:"command-palette"|"computers" }) => void) => facade().onDesktopNavigate(listener);
+export const onDesktopNavigate = (listener: (target: { sessionId?: string; workspaceId?: string; action?:"command-palette"|"computers"|"new-session"|"add-project"; projectId?: string; path?: string }) => void) => facade().onDesktopNavigate(listener);
 export const windowState = () => facade().windowState?.() ?? Promise.resolve({ maximized: false });
 export const onWindowState = (listener: (state: { maximized: boolean }) => void) => facade().onWindowState?.(listener) ?? (() => {});
 export const chooseDirectory = () => facade().chooseDirectory();

@@ -101,7 +101,28 @@ try {
   await localPage.getByRole('button', { name: 'Close settings', exact: true }).click();
   pass('gate off shows only the Computers switch while Phones stays available');
   await rpc(localPage, 'settings.update', { patch: { remoteMachines: { enabled: true }, language: 'en', theme: 'dark', themeSelection: 'dark', notifications: { native: treeProbe, attention: true, completed: false, sound: false } }, expectedRevision: localSnapshot.settings.revision, operationId: randomUUID() });
-  await rpc(localPage, 'project.add', { path: clientWork, name: 'Client-only project', operationId: randomUUID() });
+  const clientProject = await rpc(localPage, 'project.add', { path: clientWork, name: 'Client-only project', operationId: randomUUID() });
+  const slowWork = join(scratch, 'client-slow'), badWork = join(scratch, 'client-bad');
+  await mkdir(slowWork); await mkdir(badWork);
+  const slowProject = await rpc(localPage, 'project.add', { path: slowWork, name: 'Slow project', operationId: randomUUID() });
+  const badProject = await rpc(localPage, 'project.add', { path: badWork, name: 'Retry project', operationId: randomUUID() });
+  // Hold one project's details across the pairing/remount and reject another. The catalog list itself is healthy.
+  // Inject at main's IPC boundary so the real renderer, preload and runtime routing still participate.
+  await app.evaluate(({ ipcMain, BrowserWindow }, { slowId, badId }) => {
+    const original = ipcMain._invokeHandlers.get('threadterm:request');
+    const senderId = BrowserWindow.getAllWindows()[0].webContents.id;
+    let released = false;
+    const pending = new Promise(resolve => { globalThis.__releaseCatalogDetails = () => { released = true; resolve(); }; });
+    globalThis.__catalogFaults = { slow: 0, failed: 0 };
+    ipcMain.removeHandler('threadterm:request');
+    ipcMain.handle('threadterm:request', async (event, method, params) => {
+      if (event.sender.id === senderId && method === 'worktree.list') {
+        if (params.projectId === slowId && !released) { globalThis.__catalogFaults.slow++; await pending; }
+        if (params.projectId === badId && !globalThis.__catalogFaults.failed++) throw new Error('QA temporary worktree failure');
+      }
+      return original(event, method, params);
+    });
+  }, { slowId: slowProject.id, badId: badProject.id });
   await until(async () => (await localPage.evaluate(() => window.threadterm.machineList())).enabled, 'client preview enabled');
   await localPage.getByRole('button', { name: 'Local user', exact: true }).click();
   await localPage.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -122,6 +143,23 @@ try {
   assert.ok(saved[0].encryptedCredential); assert.equal(saved[0].credential, undefined);
   pass('real Computers UI checks the pin, compares the code, pairs and stores an encrypted credential');
   await localPage.getByRole('button', { name: 'Close settings', exact: true }).click();
+  // Once a second computer joins, This PC's own catalog moves under its machine row: it must still list its projects,
+  // and again after the row is collapsed and expanded.
+  const ownCatalog = localPage.locator('.machine-group[data-machine-id="local"]').getByText('Client-only project', { exact: true });
+  await until(async () => await ownCatalog.count() > 0, 'This PC lists its own project after pairing', 15000);
+  await localPage.locator('.machine-group[data-machine-id="local"] .machine-disclosure').click();
+  await until(async () => await ownCatalog.count() === 0, 'This PC collapses', 5000);
+  await localPage.locator('.machine-group[data-machine-id="local"] .machine-disclosure').click();
+  await until(async () => await ownCatalog.count() > 0, 'This PC lists its own project after collapse and expand', 15000);
+  pass('This PC keeps its own catalog after pairing and after collapse/expand');
+  const ownGroup = localPage.locator('.machine-group[data-machine-id="local"]');
+  for (const name of ['Slow project', 'Retry project']) await ownGroup.getByText(name, { exact: true }).waitFor({ timeout: 5000 });
+  assert.equal((await rpc(localPage, 'project.catalog.list')).length, 3);
+  const faults = await app.evaluate(() => globalThis.__catalogFaults);
+  assert.ok(faults.slow > 0 && faults.failed > 0, 'both slow and failing detail requests reached the renderer');
+  assert.equal(await ownGroup.getByText('No projects yet. Add a directory to get started.', { exact: true }).count(), 0);
+  await app.evaluate(() => globalThis.__releaseCatalogDetails());
+  pass('several local projects stay visible across pairing/remount while one worktree list stalls and another fails');
   if (treeProbe) {
     await until(async () => (await localPage.evaluate(() => window.threadterm.machineTree())).machines.find(row => row.machine.id === machine.id)?.machine.state === 'connected', 'control-only watcher connected without opening a host view');
     assert.equal(app.context().pages().length, 1, 'watcher creates no renderer view');
@@ -148,11 +186,25 @@ try {
     await localPage.screenshot({ path: join(out, 'this-pc-host-attention.png') });
     pass('while This PC is shown, host approval updates its tree/count and records exactly one machine-named notification');
     await localPage.locator('.remote-project-catalog .sess-row').filter({ hasText: 'Host approval' }).click();
-  } else await localPage.locator('.machine-row').filter({ hasText: 'Office-PC' }).click();
+  } else {
+    const hostGroup = localPage.locator(`.machine-group[data-machine-id="${machine.id}"]`);
+    await hostGroup.locator('.proj-row-wrap').filter({ hasText: 'Host-only project' }).hover();
+    await hostGroup.getByRole('button', { name: 'New terminal in Host-only project', exact: true }).click();
+  }
   remotePage = await until(async () => {
     for (const page of app.context().pages()) if (page !== localPage && await page.evaluate(() => window.threadterm?.machineId).catch(() => undefined) === machine.id) return page;
   }, 'remote WebContentsView renderer');
   await remotePage.getByText('Host-only project', { exact: true }).first().waitFor();
+  await until(async () => await remotePage.locator('.machine-group[data-machine-id="local"]').getByText('Client-only project', { exact: true }).count() > 0, 'the host view lists This PC projects', 15000);
+  pass('a computer view lists This PC projects under This PC');
+  if (!treeProbe) {
+    const firstCreator = remotePage.getByRole('dialog');
+    await firstCreator.getByRole('textbox', { name: 'Local path', exact: true }).waitFor();
+    assert.equal((await firstCreator.getByRole('textbox', { name: 'Local path', exact: true }).inputValue()).replaceAll('\\', '/'), hostWork.replaceAll('\\', '/'));
+    assert.equal(await firstCreator.getByRole('combobox').first().getAttribute('data-value'), hostProject.id);
+    await firstCreator.getByRole('button', { name: 'Cancel', exact: true }).click();
+    pass('remote project plus creates the host view and delivers prefilled New session after its first load');
+  }
   if (treeProbe) {
     await remotePage.getByTestId(`session-chat-${attentionSession.id}`).waitFor();
     await remotePage.evaluate(() => { window.__machineRetainedProof = 'retained'; });
@@ -193,6 +245,45 @@ try {
   for (const name of ['Computers', 'Phones', 'Data']) assert.equal(await remotePage.getByRole('tab', { name, exact: true }).count(), 0);
   await remotePage.getByRole('button', { name: 'Close settings', exact: true }).click();
   pass('remote settings hide host administration pages and machine partitions isolate localStorage');
+
+  await remotePage.locator('.machine-row').filter({ hasText: 'This PC' }).click();
+  await until(async () => await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()) === 'ThreadTerm', 'This PC shown for remote row action');
+  const hostRows = localPage.locator(`.machine-group[data-machine-id="${machine.id}"]`);
+  await hostRows.locator('.proj-row-wrap').filter({ hasText: 'Host-only project' }).hover();
+  await hostRows.getByRole('button', { name: 'Host-only project actions', exact: true }).click();
+  await localPage.getByRole('menuitem', { name: 'New terminal', exact: true }).click();
+  await until(async () => await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()) === 'ThreadTerm — Office-PC', 'remote project action switches to the host');
+  const creator = remotePage.getByRole('dialog');
+  await creator.getByRole('textbox', { name: 'Local path', exact: true }).waitFor();
+  assert.equal((await creator.getByRole('textbox', { name: 'Local path', exact: true }).inputValue()).replaceAll('\\', '/'), hostWork.replaceAll('\\', '/'));
+  assert.equal(await creator.getByRole('combobox').first().getAttribute('data-value'), hostProject.id);
+  assert.equal(await localPage.getByRole('dialog').count(), 0, 'This PC never opens the remote action locally');
+  await remotePage.screenshot({ path: join(out, 'remote-new-session.png') });
+  // A retained view can still own a dialog when another navigation switches computers. A fresh action replaces it.
+  await creator.getByRole('textbox', { name: 'Local path', exact: true }).fill(join(hostWork, 'old-choice'));
+  await remotePage.evaluate(() => window.threadterm.machineShow('local'));
+  await hostRows.locator('.proj-row-wrap').filter({ hasText: 'Host-only project' }).hover();
+  await hostRows.getByRole('button', { name: 'New terminal in Host-only project', exact: true }).click();
+  await until(async () => (await creator.getByRole('textbox', { name: 'Local path', exact: true }).inputValue()).replaceAll('\\', '/') === hostWork.replaceAll('\\', '/'), 'a fresh remote action replaces retained dialog defaults');
+  await creator.getByRole('button', { name: 'Cancel', exact: true }).click();
+  pass('remote project menu switches to the host view and opens New session with the host project and directory prefilled');
+  await remotePage.locator('.machine-row').filter({ hasText: 'This PC' }).click();
+  await until(async () => await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()) === 'ThreadTerm', 'This PC shown for machine menu');
+  await assert.rejects(localPage.evaluate(id => window.threadterm.machineShow(id, undefined, { action: 'new-session', path: 42 }), machine.id), /Invalid machine navigation/);
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()), 'ThreadTerm', 'invalid navigation never switches views');
+  await hostRows.locator('.machine-row-wrap').hover();
+  await hostRows.getByRole('button', { name: 'Office-PC actions', exact: true }).click();
+  await localPage.getByRole('menuitem', { name: 'New terminal', exact: true }).waitFor();
+  await localPage.keyboard.press('Escape');
+  assert.equal(await localPage.getByRole('menuitem', { name: 'New terminal', exact: true }).count(), 0);
+  await hostRows.getByRole('button', { name: 'Office-PC actions', exact: true }).click();
+  await localPage.getByRole('menuitem', { name: 'Add project', exact: true }).click();
+  const projectCreator = remotePage.getByRole('dialog', { name: 'Add project', exact: true });
+  await projectCreator.waitFor();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()), 'ThreadTerm — Office-PC');
+  assert.equal(await localPage.getByRole('dialog').count(), 0);
+  await projectCreator.getByRole('button', { name: 'Cancel', exact: true }).click();
+  pass('remote machine menu supports New session and Add project, Escape closes it, and invalid actions cannot switch computers');
 
   const session = await rpc(remotePage, 'session.create', { projectId: hostProject.id, cwd: hostWork, provider: 'codex', mode: 'chat', title: 'Remote Chat', operationId: randomUUID() });
   await rpc(remotePage, 'session.present', { sessionId: session.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });

@@ -423,14 +423,15 @@ function registerIpc(): void {
     await refreshMachinesGate();
     return machineSnapshot(event.sender.id);
   });
-  ipcMain.handle('threadterm:machine-show', async (event, id: unknown, sessionId: unknown) => {
+  ipcMain.handle('threadterm:machine-show', async (event, id: unknown, sessionId: unknown, navigation: unknown) => {
     assertTrustedRenderer(event);
     await assertMachinesEnabled();
     if (typeof id !== 'string' || !machines.list().some(item => item.id === id)) throw new Error('Unknown computer');
     if (sessionId !== undefined && !isRevealSessionId(sessionId)) throw new Error('Invalid session');
     const bound = machineBindings.get(event.sender.id);
     const owner = machineViews.has(bound.owner.id) ? bound.owner : mainWindow;
-    showMachine(owner, id, sessionId as string | undefined);
+    if (navigation !== undefined && !isMachineNavigation(navigation)) throw new Error('Invalid machine navigation');
+    showMachine(owner, id, sessionId as string | undefined, navigation);
   });
   ipcMain.handle('threadterm:machine-settings', async event => {
     assertTrustedRenderer(event); await assertMachinesEnabled();
@@ -1129,7 +1130,17 @@ function applyMachinesGate(enabled: boolean): void {
   }
   broadcastMachines();
 }
-function showMachine(owner: BrowserWindow | undefined, id: string, sessionId?: string): void {
+type MachineNavigation = { action: 'new-session'; projectId?: string; path?: string } | { action: 'add-project' };
+function isMachineNavigation(value: unknown): value is MachineNavigation {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const target = value as Record<string, unknown>;
+  if (target.action === 'add-project') return Object.keys(target).length === 1;
+  if (target.action !== 'new-session') return false;
+  if (target.projectId !== undefined && (typeof target.projectId !== 'string' || !target.projectId || target.projectId.length > 512)) return false;
+  if (target.path !== undefined && (typeof target.path !== 'string' || !target.path || target.path.length > 32768)) return false;
+  return Object.keys(target).every(key => key === 'action' || key === 'projectId' || key === 'path');
+}
+function showMachine(owner: BrowserWindow | undefined, id: string, sessionId?: string, navigation?: MachineNavigation): void {
   if (!owner || owner.isDestroyed()) { showMainWindow(); owner = mainWindow; }
   if (!owner || !machineViews.has(owner.id)) return;
   const state = machineTree.feed().machines.find(row => row.machine.id === id)?.machine.state ?? machineStates.get(id)?.state;
@@ -1141,8 +1152,8 @@ function showMachine(owner: BrowserWindow | undefined, id: string, sessionId?: s
   const view = machineViews.get(owner.id)!.show(id);
   pendingMachineSession.delete(id);
   const contents = view instanceof WebContentsView ? view.webContents : owner.webContents;
-  if (sessionId) {
-    const route = () => { if (!contents.isDestroyed()) contents.send('threadterm:desktop-navigate', { sessionId }); };
+  if (sessionId || navigation) {
+    const route = () => { if (!contents.isDestroyed()) contents.send('threadterm:desktop-navigate', sessionId ? { sessionId } : navigation!); };
     if (contents.isLoading()) contents.once('did-finish-load', route); else route();
   }
   owner.setTitle(id === 'local' ? 'ThreadTerm' : `ThreadTerm — ${machines.list().find(item => item.id === id)?.name ?? 'Computer'}`);
