@@ -59,7 +59,7 @@ const prepareAppSession = createAppSessionPreparer((appSession: Electron.Session
 });
 const machineBindings = new MachineBindings<BrowserWindow>();
 const machineRenderers = new Map<number, Electron.WebContents>();
-const machineViews = new Map<number, MachineViews<View>>();
+const machineViews = new Map<number, MachineViews<View, WebContentsView>>();
 const machineStates = new Map<string, Pick<MachineInfo, 'state' | 'message'>>();
 const pendingPairings = new Map<number, { descriptor: PairDescriptor; endpoint: string; socket: TLSSocket; timer: NodeJS.Timeout }>();
 let machines: MachineRegistry;
@@ -218,22 +218,26 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
     const root = new View();
     window.setContentView(root);
     root.addChildView(localView);
-    const views = new MachineViews<View>(localView, id => {
+    const views = new MachineViews<View, WebContentsView>(localView, id => {
       const appSession = session.fromPartition(`persist:machine-${id}`);
       prepareAppSession(appSession);
       const view = new WebContentsView({ webPreferences: { session: appSession, preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, additionalArguments: [...terminalWindowArguments(process.platform, release()), `--threadterm-machine-id=${id}`] } });
       bindMachineRenderer(view.webContents, id, window);
       view.webContents.on('will-navigate', (event, url) => { if (!isTrustedRendererUrl(url)) event.preventDefault(); });
-      root.addChildView(view);
+      // Windows does not composite WebContentsViews nested inside another one.
+      // Keep app, browser pages and DevTools as siblings in a neutral container.
+      const container = new View();
+      container.addChildView(view);
+      root.addChildView(container);
       void loadRenderer(view.webContents, { machineId: id, sessionId: pendingMachineSession.get(id) });
-      return view;
+      return { container, app: view };
     }, () => window.getContentSize() as [number, number]);
     machineViews.set(window.id, views);
     views.show('local');
     window.on('resize', () => views.resize());
     window.once('closed', () => {
       machineViews.delete(window.id);
-      for (const view of views.all()) if (view instanceof WebContentsView && !view.webContents.isDestroyed()) view.webContents.close();
+      for (const { app } of views.all()) if (app && !app.webContents.isDestroyed()) app.webContents.close();
     });
   }
   if (machineId !== 'local') window.setTitle(`ThreadTerm — ${machines.list().find(item => item.id === machineId)?.name ?? 'Computer'}`);
@@ -246,7 +250,7 @@ function createWindow(options: { sessionId?: string; workspaceId?: string; float
     if (window.isDestroyed()) return;
     const state = { maximized: window.isMaximized() };
     window.webContents.send('threadterm:window-state', state);
-    for (const view of machineViews.get(window.id)?.all() ?? []) if (view instanceof WebContentsView && view.webContents !== window.webContents && !view.webContents.isDestroyed()) view.webContents.send('threadterm:window-state', state);
+    for (const { app } of machineViews.get(window.id)?.all() ?? []) if (app && !app.webContents.isDestroyed()) app.webContents.send('threadterm:window-state', state);
   };
   window.on('maximize', emitWindowState);
   window.on('unmaximize', emitWindowState);
@@ -484,8 +488,8 @@ function registerIpc(): void {
       for (const [windowId, views] of machineViews) {
         const removed = views.remove(entry.id);
         if (removed) {
-          const owner = BrowserWindow.fromId(windowId); owner?.contentView.removeChildView(removed);
-          if (removed instanceof WebContentsView && !removed.webContents.isDestroyed()) removed.webContents.close();
+          const owner = BrowserWindow.fromId(windowId); owner?.contentView.removeChildView(removed.container);
+          if (removed.app && !removed.app.webContents.isDestroyed()) removed.app.webContents.close();
         }
       }
       for (const window of BrowserWindow.getAllWindows()) if (machineBindings.get(window.webContents.id).machineId === entry.id) window.destroy();
@@ -502,8 +506,8 @@ function registerIpc(): void {
       const removed = views.remove(id);
       if (removed) {
         const owner = BrowserWindow.fromId(windowId);
-        owner?.contentView.removeChildView(removed);
-        if (removed instanceof WebContentsView && !removed.webContents.isDestroyed()) removed.webContents.close();
+        owner?.contentView.removeChildView(removed.container);
+        if (removed.app && !removed.app.webContents.isDestroyed()) removed.app.webContents.close();
         if (views.currentId === 'local') owner?.setTitle('ThreadTerm');
       }
     }
@@ -524,7 +528,7 @@ function registerIpc(): void {
     if (!machineRenderers.has(contents.id)) return undefined;
     const bound = machineBindings.get(contents.id);
     const views=machineViews.get(bound.owner.id)?.all();
-    return views?.find(view=>view instanceof WebContentsView&&view.webContents===contents) ?? (bound.machineId==='local'?views?.[0]??bound.owner.contentView:undefined);
+    return views?.find(view=>view.app?.webContents===contents)?.container ?? (bound.machineId==='local'?views?.[0]?.container??bound.owner.contentView:undefined);
   }, {
     partitionFor: contents => machineBrowserPartition(machineBindings.get(contents.id).machineId),
     windowFor: contents => machineBindings.get(contents.id).owner,
@@ -1123,8 +1127,8 @@ function applyMachinesGate(enabled: boolean): void {
       for (const machine of machines.list()) if (machine.id !== 'local') {
         const removed = views.remove(machine.id);
         if (removed) {
-          owner?.contentView.removeChildView(removed);
-          if (removed instanceof WebContentsView && !removed.webContents.isDestroyed()) removed.webContents.close();
+          owner?.contentView.removeChildView(removed.container);
+          if (removed.app && !removed.app.webContents.isDestroyed()) removed.app.webContents.close();
         }
       }
     }
@@ -1155,7 +1159,7 @@ function showMachine(owner: BrowserWindow | undefined, id: string, sessionId?: s
   if (sessionId) pendingMachineSession.set(id, sessionId);
   const view = machineViews.get(owner.id)!.show(id);
   pendingMachineSession.delete(id);
-  const contents = view instanceof WebContentsView ? view.webContents : owner.webContents;
+  const contents = view.app?.webContents ?? owner.webContents;
   if (sessionId || navigation) {
     const route = () => { if (!contents.isDestroyed()) contents.send('threadterm:desktop-navigate', sessionId ? { sessionId } : navigation!); };
     if (contents.isLoading()) contents.once('did-finish-load', route); else route();

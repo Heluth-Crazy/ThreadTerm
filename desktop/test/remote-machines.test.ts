@@ -223,16 +223,24 @@ test('session setup runs once per partition object, including unavailable preloa
 });
 test('view swapping retains views, shows exactly one, and sizes all views with the window', () => {
   const create = () => ({ visible: true, bounds: {}, setVisible(value: boolean) { this.visible = value; }, setBounds(value: object) { this.bounds = value; } });
-  const local = create(), remotes: ReturnType<typeof create>[] = [];
+  const local = create(), remotes: Array<{ container: ReturnType<typeof create>; app: ReturnType<typeof create> }> = [];
   let size: [number, number] = [1440, 900];
-  const views = new MachineViews(local, () => { const value = create(); remotes.push(value); return value; }, () => size);
+  const views = new MachineViews(local, () => { const value = { container: create(), app: create() }; remotes.push(value); return value; }, () => size);
   views.show('one'); views.show('two'); views.show('one');
-  assert.equal(remotes.length, 2); assert.equal(views.all().filter(view => view.visible).length, 1);
-  assert.equal(local.visible, false); assert.equal(remotes[0].visible, true);
+  assert.equal(remotes.length, 2); assert.equal(views.all().filter(view => view.container.visible).length, 1);
+  assert.equal(local.visible, false); assert.equal(remotes[0].container.visible, true);
+  assert.equal(views.show('one'), remotes[0], 'switching reuses the entire surface');
   size = [1000, 700]; views.resize();
-  for (const view of views.all()) assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1000, height: 700 });
-  views.remove('one'); assert.equal(views.currentId, 'local'); assert.equal(local.visible, true);
-  assert.equal(views.all().filter(view => view.visible).length, 1);
+  for (const view of views.all()) {
+    assert.deepEqual(view.container.bounds, { x: 0, y: 0, width: 1000, height: 700 });
+    if (view.app) assert.deepEqual(view.app.bounds, view.container.bounds, 'the inner app fills even a hidden container');
+  }
+  assert.equal(views.remove('two'), remotes[1]); assert.equal(views.currentId, 'one');
+  assert.equal(views.remove('one'), remotes[0]); assert.equal(views.currentId, 'local'); assert.equal(local.visible, true);
+  assert.equal(views.all().filter(view => view.container.visible).length, 1);
+  assert.deepEqual(views.all(), [{ container: local }]);
+  assert.equal(views.remove('missing'), undefined);
+  assert.throws(() => views.remove('local'), /Cannot remove This PC/);
 });
 
 test('watch profile opens only control, refuses output/browser/leases and reconnects control only', async t => {

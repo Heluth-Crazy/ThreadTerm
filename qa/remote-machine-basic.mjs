@@ -219,12 +219,9 @@ try {
   await until(async () => await remotePage.locator('.machine-group[data-machine-id="local"]').getByText('Client-only project', { exact: true }).count() > 0, 'the host view lists This PC projects', 15000);
   pass('a computer view lists This PC projects under This PC');
   if (!treeProbe) {
-    const firstCreator = remotePage.getByRole('dialog');
-    await firstCreator.getByRole('textbox', { name: 'Local path', exact: true }).waitFor();
-    assert.equal((await firstCreator.getByRole('textbox', { name: 'Local path', exact: true }).inputValue()).replaceAll('\\', '/'), hostWork.replaceAll('\\', '/'));
-    assert.equal(await firstCreator.getByRole('combobox').first().getAttribute('data-value'), hostProject.id);
-    await firstCreator.getByRole('button', { name: 'Cancel', exact: true }).click();
-    pass('remote project plus creates the host view and delivers prefilled New session after its first load');
+    assert.equal(await remotePage.getByRole('dialog').count(), 0);
+    await remotePage.getByText('Host-only project', { exact: true }).first().waitFor();
+    pass('remote project plus creates the host view at its current start page without opening a stale New session dialog');
   }
   if (treeProbe) {
     await remotePage.getByTestId(`session-chat-${delegatedChild.id}`).waitFor();
@@ -313,19 +310,22 @@ try {
   await rpc(remotePage, 'session.present', { sessionId: session.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
   let chat = remotePage.getByTestId(`session-chat-${session.id}`);
   await chat.locator('textarea').waitFor();
-  await until(async () => {
-    if (await chat.locator('textarea').isEnabled()) return true;
-    if (hosting) {
-      const take = chat.getByRole('button', { name: /^(Take control|Reclaim control)$/ });
-      if (await take.isVisible().catch(() => false) && await take.isEnabled()) await take.click();
-    }
-    return false;
-  }, 'remote Chat ready', 45000);
-  await chat.locator('textarea').fill('Reply from the host.');
-  await chat.locator('button[type=submit]').click();
-  if(browserProbe)await chat.getByText(/^BROWSER_QA_RESULT /).waitFor({timeout:30000});else await chat.getByText('TRANSITION-SAVED-ANSWER', { exact: true }).waitFor({ timeout: 30000 });
-  await remotePage.screenshot({ path: join(out, 'remote-chat.png') });
-  pass('a Chat turn sent through peer TLS displays the fake host provider’s reply');
+  // The browser fixture receives its explicit qa-browser plan in runRemoteBrowserProbe.
+  if (!browserProbe) {
+    await until(async () => {
+      if (await chat.locator('textarea').isEnabled()) return true;
+      if (hosting) {
+        const take = chat.getByRole('button', { name: /^(Take control|Reclaim control)$/ });
+        if (await take.isVisible().catch(() => false) && await take.isEnabled()) await take.click();
+      }
+      return false;
+    }, 'remote Chat ready', 45000);
+    await chat.locator('textarea').fill('Reply from the host.');
+    await chat.locator('button[type=submit]').click();
+    await chat.getByText('TRANSITION-SAVED-ANSWER', { exact: true }).waitFor({ timeout: 30000 });
+    await remotePage.screenshot({ path: join(out, 'remote-chat.png') });
+    pass('a Chat turn sent through peer TLS displays the fake host provider’s reply');
+  }
   if (filesProbe) {
     const { runRemoteFilesProbe } = await import('./remote-machine-files-scenarios.mjs');
     await runRemoteFilesProbe({ app, remotePage, localPage, rpc, until, pass, hostPeer, hostEnv, clientEnv, hostProject, session, hostWork, clientWork, scratch, out });

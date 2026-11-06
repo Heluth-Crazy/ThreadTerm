@@ -14,7 +14,7 @@ export async function setupRemoteBrowserProbe(scratch) {
     if(req.url==='/icon.svg'){res.writeHead(200,{'Content-Type':'image/svg+xml'});res.end('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#0a0"/></svg>');return;}
     if(req.url.startsWith('/stream')) { streamOpened = true; res.writeHead(200, {'Content-Type':'text/plain'}); res.write('HOST STREAM'); req.socket.once('close',()=>{streamClosed=true;});return; }
     res.writeHead(200, {'Content-Type':'text/html','Cache-Control':'no-store'});
-    res.end('<!doctype html><title>Host browser page</title><link rel="icon" href="/icon.svg"><h1>HOST</h1><button id="pick">Host comment target</button><script>window.loadToken=crypto.randomUUID()</script>');
+    res.end('<!doctype html><title>Host browser page</title><link rel="icon" href="/icon.svg"><style>html,body,#host-colour{margin:0;width:100%;height:100%;background:#21c55d;color:#062b13;font:24px sans-serif}#pick{margin:24px}</style><div id="host-colour"><h1>HOST</h1><button id="pick">Host comment target</button></div><script>window.loadToken=crypto.randomUUID()</script>');
   });
   let ipv6 = true, hostPort;
   try { hostPort = await listen(host, '::'); } catch { ipv6 = false; hostPort = await listen(host, '127.0.0.1'); }
@@ -45,6 +45,60 @@ export async function runRemoteBrowserProbe({app,remotePage,localPage,rpc,until,
   const panel=async(target)=>{try{await remotePage.evaluate(url=>window.threadterm.openExternal(url),target);await browser().getByLabel('Address',{exact:true}).waitFor();return until(async()=>{const rows=await native(partition);for(const row of rows)if(row.url===new URL(target).href&&await evaluate(row.id,'document.body.innerText').catch(()=>undefined)==='HOST\nHost comment target')return row;},`HOST panel ${target}`);}catch(error){const rows=await native(partition);const detail=[];for(const row of rows)detail.push({...row,text:await evaluate(row.id,'document.body.innerText').catch(String)});const id=await browser().getAttribute('data-web-tab-id');const state=await remotePage.evaluate(tabId=>window.threadterm.browserCommand({type:'state',tabId}),id).catch(String);throw new Error(`${error.message}; ${JSON.stringify({detail,state})}`);}};
   await remotePage.evaluate(()=>window.threadterm.browserCommand({type:'preferences',patch:{linkTarget:'system'}}));
   for(const hostname of ['localhost','127.0.0.1','app.localhost',...(fixtures.ipv6?['[::1]']:[])]){await panel(`http://${hostname}:${fixtures.port}`);pass(`HOST reached via ${hostname}`);}
+  // capturePage proves that the page rendered, but only desktopCapturer proves that
+  // its native WebContentsView was composited above the remote renderer on screen.
+  const assertHostOnScreen=async(label)=>{
+    const panelBounds=await remotePage.locator('.wb-side-browser .tt-browser-view:visible').boundingBox();
+    assert.ok(panelBounds,'visible remote browser page bounds');
+    let lastOnScreen;
+    await until(async()=>{
+      lastOnScreen=await app.evaluate(async({desktopCapturer,BrowserWindow},{bounds,title})=>{
+        const windows=BrowserWindow.getAllWindows().filter(candidate=>candidate.isVisible()&&candidate.getTitle()===title);
+        if(windows.length!==1)throw Error(`Expected one visible ${title} window, got ${windows.length}`);
+        const [window]=windows,frame=window.getBounds(),content=window.getContentBounds();
+        const sources=await desktopCapturer.getSources({types:['window'],thumbnailSize:{width:1600,height:1000}});
+        const source=sources.find(candidate=>candidate.id===window.getMediaSourceId())??sources.find(candidate=>candidate.name===window.getTitle());
+        if(!source)throw Error('Window capture source not found');
+        const image=source.thumbnail,size=image.getSize(),bitmap=image.toBitmap(),scale=size.width/frame.width;
+        const rgbAt=(x,y)=>{
+          const px=Math.round((x+content.x-frame.x)*scale),py=Math.round((y+content.y-frame.y)*scale),index=(py*size.width+px)*4;
+          return {r:bitmap[index+2],g:bitmap[index+1],b:bitmap[index]};
+        };
+        const samples=[[.5,.5],[.75,.5],[.5,.75],[.75,.75]].map(([x,y])=>rgbAt(bounds.x+bounds.width*x,bounds.y+bounds.height*y));
+        return {samples,hostPixels:samples.filter(pixel=>Math.abs(pixel.r-33)<=12&&Math.abs(pixel.g-197)<=12&&Math.abs(pixel.b-93)<=12).length};
+      },{bounds:panelBounds,title:`ThreadTerm — ${machine.name}`});
+      return lastOnScreen.hostPixels>=3;
+    },'remote HOST page composited into window pixels',10000).catch(error=>{throw new Error(`${error.message}; last window pixels: ${JSON.stringify(lastOnScreen?.samples)}`);});
+    assert.ok(lastOnScreen.hostPixels>=3,`remote HOST page must be visible in window pixels, got ${JSON.stringify(lastOnScreen.samples)}`);
+    pass(`${label}: HOST page is composited on screen`);
+  };
+  await assertHostOnScreen('remote browser panel');
+  const layers=()=>app.evaluate(({BrowserWindow,WebContentsView,session},{machineId,partition})=>{
+    const window=BrowserWindow.getAllWindows().find(candidate=>candidate.getTitle()===`ThreadTerm — ${machineId.name}`);
+    const appProfile=session.fromPartition(`persist:machine-${machineId.id}`),pageProfile=session.fromPartition(partition);
+    const container=window.contentView.children.find(view=>view.children.some(child=>child.webContents?.session===appProfile));
+    if(!container)return undefined;
+    return {neutral:!(container instanceof WebContentsView),bounds:container.getBounds(),size:window.getContentSize(),children:container.children.map(view=>({id:view.webContents?.id,kind:view.webContents?.session===appProfile?'app':view.webContents?.session===pageProfile?'page':view.webContents?.getURL().startsWith('devtools://')?'devtools':'other',bounds:view.getBounds()}))};
+  },{machineId:machine,partition});
+  const toolsButton=browser().getByRole('button',{name:'Developer tools',exact:true});
+  await toolsButton.click();
+  await until(async()=>{const value=await layers();return value?.neutral&&value.children.some(child=>child.kind==='devtools');},'remote app, browser and DevTools are siblings in a neutral container');
+  const originalBounds=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].getBounds());
+  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1200,800));
+  await until(async()=>{const value=await layers(),app=value?.children.find(child=>child.kind==='app');return value?.size[0]===1200&&value.bounds.width===value.size[0]&&value.bounds.height===value.size[1]&&JSON.stringify(app?.bounds)===JSON.stringify(value.bounds);},'remote container and inner app resize together');
+  await assertHostOnScreen('remote resize with docked DevTools');
+  await localPage.evaluate(()=>window.threadterm.machineShow('local'));
+  await localPage.evaluate(id=>window.threadterm.machineShow(id),machine.id);
+  await assertHostOnScreen('switch away and back with DevTools');
+  const menu=remotePage.getByRole('menu',{name:'Workspace actions',exact:true});
+  await remotePage.getByRole('button',{name:'Workspace actions',exact:true}).click();await menu.waitFor();
+  await browser().locator('.tt-browser-view img').waitFor();
+  await remotePage.keyboard.press('Escape');await menu.waitFor({state:'detached'});
+  await browser().locator('.tt-browser-view img').waitFor({state:'detached'});
+  await assertHostOnScreen('menu snapshot closes and live page reattaches');
+  await toolsButton.click();
+  await app.evaluate(({BrowserWindow},bounds)=>BrowserWindow.getAllWindows()[0].setBounds(bounds),originalBounds);
+  pass('remote container preserves browser and docked DevTools across resize, switching and snapshot occlusion');
   if(!fixtures.ipv6)note('IPv6 unavailable on this PC (connect EACCES); [::1] probe skipped');
   assert.equal(fixtures.clientRequests,0);pass('remote panel shows HOST for every loopback spelling; client service receives zero requests; system link preference cannot bypass host routing');
   const proxyResolution=await app.evaluate(({session},partition)=>session.fromPartition(partition).resolveProxy('http://localhost:12345'),partition);assert.match(proxyResolution,/PROXY 127\.0\.0\.1:/);
@@ -82,7 +136,9 @@ export async function runRemoteBrowserProbe({app,remotePage,localPage,rpc,until,
   const lease=await rpc(remotePage,'session.claim',{sessionId:session.id,clientId:'threadterm-renderer'});
   await rpc(remotePage,'chat.send',{sessionId:session.id,leaseEpoch:lease.leaseEpoch,text:`qa-browser ${JSON.stringify({id:'remote-host-tools',steps})}`,operationId:randomUUID()});
   const results=await until(async()=>{let rows;try{rows=(await readFile(join(scratch,'host-browser-events.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));}catch{return false;}return rows.find(row=>row.event==='turn.result'&&row.detail.id==='remote-host-tools')?.detail.results;},'host MCP navigate and snapshot');
-  assert.equal(results.length,3);assert.equal(results[0].isError,false);assert.equal(results[2].isError,false);assert.ok(results[2].refCount>0);assert.equal(results[2].provenance.origin,url);pass('host agent MCP snapshot drives the remote machine partition over the browser channel');if(results[1].isError){assert.match(results[1].error,/browser_control_required|browser_unavailable|browser_action_failed/);note('ordinary browser_navigate acceptance is BLOCKED: existing native controller has no proven action adapter; snapshot succeeds and Control policy stays unchanged',true);}else pass('host agent browser_navigate reaches the host page');
+  assert.equal(results.length,3);assert.equal(results[0].isError,false);assert.equal(results[2].isError,false);assert.ok(results[2].refCount>0);assert.equal(results[2].provenance.origin,url);pass('host agent MCP snapshot drives the remote machine partition over the browser channel');
+  // Read registrations are deliberately excluded from action targets before admission.
+  assert.equal(results[1].isError,true);assert.equal(results[1].error,'browser_tab_not_found');pass('Read sharing rejects agent navigation before action admission while allowing the host snapshot');
   await web.getByRole('button',{name:'Comment',exact:true}).click();
   const sharedNative=await until(async()=>{const rows=await native(partition);return rows.find(row=>row.url===(results[1].isError?`${url}/`:`${url}/agent`));},'agent page for comment');
   await app.evaluate(async({webContents},id)=>{const wc=webContents.fromId(id),point=await wc.executeJavaScript("(()=>{const r=document.querySelector('#pick').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()");wc.debugger.attach('1.3');try{for(const type of ['mousePressed','mouseReleased'])await wc.debugger.sendCommand('Input.dispatchMouseEvent',{type,...point,button:'left',buttons:type==='mousePressed'?1:0,clickCount:1});}finally{wc.debugger.detach();}},sharedNative.id);
