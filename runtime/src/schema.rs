@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const MAIN_VERSION: u32 = 5;
+pub(crate) const MAIN_VERSION: u32 = 6;
 pub(crate) const LEDGER_VERSION: u32 = 1;
 const HISTORY_LIMIT: usize = 16;
 
@@ -226,6 +226,31 @@ const MAIN_MIGRATIONS: &[Migration] = &[Migration {
             let columns = statement.query_map([], |row| row.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
             if !columns.iter().any(|column| column == "tailscale_only") {
                 tx.execute_batch("ALTER TABLE remote_access_state ADD COLUMN tailscale_only INTEGER NOT NULL DEFAULT 0 CHECK(tailscale_only IN (0,1));")?;
+            }
+            Ok(())
+        },
+    }, Migration {
+        // Cross-network computers (iroh): the policy switch, an optional custom relay, and the iroh key a desktop
+        // paired over.
+        version: 6,
+        min_reader: 6,
+        destructive: false,
+        needs_backup: |_| Ok(false),
+        apply: |tx| {
+            for (table, column, definition) in [
+                ("remote_access_state", "iroh_enabled", "INTEGER NOT NULL DEFAULT 0 CHECK(iroh_enabled IN (0,1))"),
+                ("remote_access_state", "iroh_relay_url", "TEXT"),
+                ("paired_devices", "iroh_endpoint_id", "TEXT"),
+            ] {
+                let mut statement = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+                let exists = statement
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .iter()
+                    .any(|existing| existing == column);
+                if !exists {
+                    tx.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
+                }
             }
             Ok(())
         },

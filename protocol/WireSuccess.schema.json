@@ -1944,12 +1944,27 @@
         },
         "identityError": {
           "type": "string"
+        },
+        "irohEnabled": {
+          "type": "boolean",
+          "description": "\"Connect across networks\" as configured; it runs only while Tailscale-only is off."
+        },
+        "irohRelayUrl": {
+          "type": "string"
+        },
+        "irohEndpointId": {
+          "type": "string",
+          "description": "This PC's public iroh key while the cross-network endpoint runs."
+        },
+        "irohError": {
+          "type": "string"
         }
       },
       "required": [
         "enabled",
         "tailscaleOnly",
-        "tlsFingerprint"
+        "tlsFingerprint",
+        "irohEnabled"
       ],
       "additionalProperties": false
     },
@@ -1958,6 +1973,25 @@
     },
     "RequestResult<\"device.tailscaleOnly.set\">": {
       "$ref": "#/definitions/RemoteAccessStatus"
+    },
+    "RequestResult<\"device.iroh.set\">": {
+      "$ref": "#/definitions/RemoteAccessStatus"
+    },
+    "RequestResult<\"device.peer.dial\">": {
+      "type": "object",
+      "properties": {
+        "pipe": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pipe",
+        "token"
+      ],
+      "additionalProperties": false
     },
     "RequestResult<\"device.disable\">": {
       "$ref": "#/definitions/RemoteAccessStatus"
@@ -1994,6 +2028,22 @@
         },
         "tlsFingerprint": {
           "type": "string"
+        },
+        "iroh": {
+          "type": "object",
+          "properties": {
+            "endpointId": {
+              "type": "string"
+            },
+            "relayUrl": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "endpointId"
+          ],
+          "additionalProperties": false,
+          "description": "Desktop offers while this PC connects across networks; the descriptor is then v2."
         }
       },
       "required": [
@@ -11760,6 +11810,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22device.tailscaleOnly.set%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.iroh.set"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22device.iroh.set%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.peer.dial"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22device.peer.dial%22%3E"
         }
       },
       "required": [

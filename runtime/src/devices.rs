@@ -120,6 +120,18 @@ pub struct PairingOffer {
     pub expires_at: String,
     pub server_url: String,
     pub tls_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh: Option<IrohOffer>,
+}
+
+/// How a desktop offer is reached across networks: this PC's public iroh key, and the relay it currently uses (a hint;
+/// with n0's relays the key's current relay is also published).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IrohOffer {
+    pub endpoint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,6 +153,20 @@ pub struct RemoteAccessPreference {
     pub enabled: bool,
     pub port: Option<u16>,
     pub last_error: Option<String>,
+    /// "Connect across networks": computers reach this PC through iroh. Off by default; never with Tailscale-only.
+    pub iroh_enabled: bool,
+    /// A self-hosted iroh relay instead of n0's public ones.
+    pub iroh_relay_url: Option<String>,
+}
+
+/// What an iroh connection from a given key may do before TLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrohAdmission {
+    /// A paired, unrevoked computer.
+    Paired,
+    /// An unknown key while a desktop pairing offer is open: the pairing request only.
+    PairingOnly,
+    Denied,
 }
 
 struct NewPairing {
@@ -237,8 +263,8 @@ impl DeviceManager {
 
     pub fn remote_access_preference(&self) -> Result<RemoteAccessPreference> {
         self.db.transaction(|tx| {
-            let (enabled, port, last_error, tailscale_only) = tx.query_row(
-                "SELECT enabled,port,last_error,tailscale_only FROM remote_access_state WHERE singleton=1",
+            let (enabled, port, last_error, tailscale_only, iroh_enabled, iroh_relay_url) = tx.query_row(
+                "SELECT enabled,port,last_error,tailscale_only,iroh_enabled,iroh_relay_url FROM remote_access_state WHERE singleton=1",
                 [],
                 |row| {
                     Ok((
@@ -246,6 +272,8 @@ impl DeviceManager {
                         row.get::<_, Option<i64>>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, bool>(3)?,
+                        row.get::<_, bool>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 },
             )?;
@@ -258,6 +286,8 @@ impl DeviceManager {
                 enabled,
                 port,
                 last_error,
+                iroh_enabled,
+                iroh_relay_url,
             })
         })
     }
@@ -266,6 +296,43 @@ impl DeviceManager {
         self.db.transaction(|tx| {
             tx.execute("UPDATE remote_access_state SET tailscale_only=? WHERE singleton=1", [enabled])?;
             complete_operation(tx, operation_id, "device.tailscaleOnly.set", &Value::Null)
+        })
+    }
+
+    pub fn set_iroh(&self, enabled: bool, relay_url: Option<&str>, operation_id: &str) -> Result<()> {
+        self.db.transaction(|tx| {
+            tx.execute(
+                "UPDATE remote_access_state SET iroh_enabled=?,iroh_relay_url=? WHERE singleton=1",
+                params![enabled, relay_url],
+            )?;
+            complete_operation(tx, operation_id, "device.iroh.set", &Value::Null)
+        })
+    }
+
+    /// Decides, from the remote iroh key alone, whether a connection may proceed to TLS.
+    pub fn iroh_admission(&self, endpoint_id: &str) -> Result<IrohAdmission> {
+        self.iroh_admission_at(endpoint_id, Utc::now())
+    }
+
+    fn iroh_admission_at(&self, endpoint_id: &str, now: DateTime<Utc>) -> Result<IrohAdmission> {
+        let now = timestamp(now);
+        self.db.transaction(|tx| {
+            let paired: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM paired_devices WHERE iroh_endpoint_id=? AND profile='desktop'
+                 AND revoked_at IS NULL AND expires_at>?)",
+                params![endpoint_id, now],
+                |row| row.get(0),
+            )?;
+            if paired {
+                return Ok(IrohAdmission::Paired);
+            }
+            let offer_open: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM device_pairings WHERE profile='desktop' AND consumed_at IS NULL
+                 AND failed_attempts<? AND expires_at>?)",
+                params![MAX_PAIRING_ATTEMPTS, now],
+                |row| row.get(0),
+            )?;
+            Ok(if offer_open { IrohAdmission::PairingOnly } else { IrohAdmission::Denied })
         })
     }
 
@@ -299,6 +366,7 @@ impl DeviceManager {
         self.create_pairing_at(permission, operation_id, server_url, tls_fingerprint, Utc::now())
     }
 
+    /// `iroh` is offered to desktops only; phones keep the v1 descriptor.
     pub fn create_pairing_with_profile(
         &self,
         permission: DevicePermission,
@@ -306,6 +374,7 @@ impl DeviceManager {
         operation_id: &str,
         server_url: &str,
         tls_fingerprint: &str,
+        iroh: Option<IrohOffer>,
     ) -> Result<PairingOffer> {
         if profile == DeviceProfile::Desktop {
             if permission != DevicePermission::Fullcontrol {
@@ -321,6 +390,7 @@ impl DeviceManager {
             operation_id,
             server_url,
             tls_fingerprint,
+            iroh.filter(|_| profile == DeviceProfile::Desktop),
             Utc::now(),
         )
     }
@@ -339,6 +409,7 @@ impl DeviceManager {
             operation_id,
             server_url,
             tls_fingerprint,
+            None,
             now,
         )
     }
@@ -350,6 +421,7 @@ impl DeviceManager {
         operation_id: &str,
         server_url: &str,
         tls_fingerprint: &str,
+        iroh: Option<IrohOffer>,
         now: DateTime<Utc>,
     ) -> Result<PairingOffer> {
         if operation_id.is_empty() {
@@ -386,13 +458,17 @@ impl DeviceManager {
             Ok(NewPairing { id, secret, permission, profile, expires_at })
         })?;
         let code = group_code(&pairing.secret);
-        let data = json!({
+        let mut data = json!({
             "v": 1,
             "serverUrl": server_url,
             "pairingId": pairing.id,
             "code": code,
             "tlsFingerprint": tls_fingerprint,
         });
+        if let Some(iroh) = &iroh {
+            data["v"] = json!(2);
+            data["iroh"] = serde_json::to_value(iroh)?;
+        }
         let encoded =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&data)?);
         let offer = PairingOffer {
@@ -404,20 +480,29 @@ impl DeviceManager {
             expires_at: pairing.expires_at,
             server_url: server_url.to_owned(),
             tls_fingerprint: tls_fingerprint.to_owned(),
+            iroh,
         };
         replays.insert(operation_id.to_owned(), offer.clone());
         Ok(offer)
     }
 
-    pub fn pair(&self, pairing_id: &str, code: &str, device_name: &str) -> Result<PairingResult> {
-        self.pair_at(pairing_id, code, device_name, Utc::now())
+    /// `iroh_endpoint_id` is the verified remote key of the iroh connection the request arrived on, never a value
+    /// taken from the request body; the host admits that key from then on.
+    pub fn pair(&self, pairing_id: &str, code: &str, device_name: &str, iroh_endpoint_id: Option<&str>) -> Result<PairingResult> {
+        self.pair_at_with(pairing_id, code, device_name, iroh_endpoint_id, Utc::now())
     }
 
-    fn pair_at(
+    #[cfg(test)]
+    fn pair_at(&self, pairing_id: &str, code: &str, device_name: &str, now: DateTime<Utc>) -> Result<PairingResult> {
+        self.pair_at_with(pairing_id, code, device_name, None, now)
+    }
+
+    fn pair_at_with(
         &self,
         pairing_id: &str,
         code: &str,
         device_name: &str,
+        iroh_endpoint_id: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<PairingResult> {
         let name = device_name.trim();
@@ -467,6 +552,11 @@ impl DeviceManager {
                 }
                 return Ok(PairAttempt::Rejected)
             }
+            // Only a desktop offer admits an unknown iroh key (IrohAdmission::PairingOnly); refusing a phone offer
+            // before consuming it leaves it usable by the phone.
+            if iroh_endpoint_id.is_some() && profile != DeviceProfile::Desktop.to_string() {
+                return Ok(PairAttempt::Rejected)
+            }
             let changed = tx.execute(
                 "UPDATE device_pairings SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
                 params![timestamp(now), pairing_id],
@@ -494,9 +584,9 @@ impl DeviceManager {
                 revoked_at: None,
             };
             tx.execute(
-                "INSERT INTO paired_devices(id,name,token_hash,permission,profile,created_at,expires_at,last_seen_at,revoked_at)
-                 VALUES(?,?,?,?,?,?,?,NULL,NULL)",
-                params![device.id, device.name, digest(token.as_bytes()).as_slice(), device.permission.to_string(), profile.to_string(), device.created_at, device.expires_at],
+                "INSERT INTO paired_devices(id,name,token_hash,permission,profile,created_at,expires_at,last_seen_at,revoked_at,iroh_endpoint_id)
+                 VALUES(?,?,?,?,?,?,?,NULL,NULL,?)",
+                params![device.id, device.name, digest(token.as_bytes()).as_slice(), device.permission.to_string(), profile.to_string(), device.created_at, device.expires_at, iroh_endpoint_id],
             )?;
             emit_device_change(tx, "device.paired")?;
             Ok(PairAttempt::Paired(PairingResult { token, device }))
@@ -1032,6 +1122,68 @@ mod tests {
     }
 
     #[test]
+    fn iroh_admits_a_paired_key_and_unknown_keys_only_while_a_desktop_offer_is_open() {
+        let (_directory, manager) = manager();
+        let now = Utc::now();
+        assert_eq!(manager.iroh_admission_at("stranger", now).unwrap(), IrohAdmission::Denied);
+        // A phone offer never opens the door for an unknown key.
+        let phone = manager.create_pairing_at(DevicePermission::Readonly, "iroh-phone", "https://x", "AA", now).unwrap();
+        assert_eq!(manager.iroh_admission_at("stranger", now).unwrap(), IrohAdmission::Denied);
+        assert!(manager.pair_at_with(&phone.id, &phone.code, "Phone", Some("phone-key"), now).is_err(), "iroh pairs desktops only");
+        assert!(manager.pair_at(&phone.id, &phone.code, "Phone", now).is_ok(), "the refused attempt left the phone offer usable");
+        let desktop = manager
+            .create_pairing_profile_at(DevicePermission::Fullcontrol, DeviceProfile::Desktop, "iroh-desktop", "https://x", "AA", None, now)
+            .unwrap();
+        assert_eq!(manager.iroh_admission_at("office-key", now).unwrap(), IrohAdmission::PairingOnly);
+        let expired = now + Duration::minutes(PAIRING_TTL_MINUTES + 1);
+        assert_eq!(manager.iroh_admission_at("office-key", expired).unwrap(), IrohAdmission::Denied, "the window closes with the offer");
+        let paired = manager.pair_at_with(&desktop.id, &desktop.code, "Office", Some("office-key"), now).unwrap();
+        assert_eq!(manager.iroh_admission_at("office-key", now).unwrap(), IrohAdmission::Paired);
+        assert_eq!(manager.iroh_admission_at("stranger", now).unwrap(), IrohAdmission::Denied, "the consumed offer admits nobody else");
+        manager.revoke(&paired.device.id, "iroh-revoke").unwrap();
+        assert_eq!(manager.iroh_admission_at("office-key", now).unwrap(), IrohAdmission::Denied);
+    }
+
+    #[test]
+    fn desktop_offers_carry_iroh_only_when_given_and_phones_never() {
+        let (_directory, manager) = manager();
+        manager.db.update_settings(&json!({"remoteMachines":{"enabled":true}}), 0, "iroh-gate").unwrap();
+        let iroh = IrohOffer { endpoint_id: "host-key".into(), relay_url: Some("https://relay.example./".into()) };
+        let decode = |offer: &PairingOffer| -> Value {
+            let encoded = offer.qr_payload.strip_prefix("threadterm://pair?data=").unwrap();
+            serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap()
+        };
+        let desktop = manager
+            .create_pairing_with_profile(DevicePermission::Fullcontrol, DeviceProfile::Desktop, "iroh-v2", "https://x", "AA", Some(iroh.clone()))
+            .unwrap();
+        assert_eq!(decode(&desktop)["v"], 2);
+        assert_eq!(decode(&desktop)["iroh"]["endpointId"], "host-key");
+        assert_eq!(desktop.iroh.as_ref(), Some(&iroh));
+        let phone = manager
+            .create_pairing_with_profile(DevicePermission::Readonly, DeviceProfile::Phone, "iroh-phone-v1", "https://x", "AA", Some(iroh))
+            .unwrap();
+        assert_eq!(decode(&phone)["v"], 1);
+        assert!(decode(&phone).get("iroh").is_none() && phone.iroh.is_none());
+        let plain = manager
+            .create_pairing_with_profile(DevicePermission::Fullcontrol, DeviceProfile::Desktop, "tcp-v1", "https://x", "AA", None)
+            .unwrap();
+        assert_eq!(decode(&plain)["v"], 1);
+    }
+
+    #[test]
+    fn iroh_settings_persist() {
+        let (_directory, manager) = manager();
+        let preference = manager.remote_access_preference().unwrap();
+        assert!(!preference.iroh_enabled, "off by default");
+        assert_eq!(preference.iroh_relay_url, None);
+        manager.set_iroh(true, Some("https://relay.example./"), "iroh-set").unwrap();
+        let preference = manager.remote_access_preference().unwrap();
+        assert!(preference.iroh_enabled);
+        assert_eq!(preference.iroh_relay_url.as_deref(), Some("https://relay.example./"));
+        assert!(manager.operation_completed("iroh-set").unwrap());
+    }
+
+    #[test]
     fn pairing_is_one_time_and_tokens_are_hashed_and_revocable() {
         let (_directory, manager) = manager();
         let now = Utc::now();
@@ -1199,6 +1351,7 @@ mod tests {
                 "desktop-pair",
                 "https://x",
                 "AA",
+                None,
                 now,
             )
             .unwrap();
@@ -1239,6 +1392,7 @@ mod tests {
                 "late-pair",
                 "https://x",
                 "AA",
+                None,
                 now,
             )
             .unwrap();
@@ -1484,6 +1638,7 @@ mod tests {
                 "desktop-disabled",
                 "https://x",
                 "AA",
+                None,
             )
             .is_err());
         assert!(manager
@@ -1493,6 +1648,7 @@ mod tests {
                 "desktop-readonly",
                 "https://x",
                 "AA",
+                None,
             )
             .is_err());
         manager
@@ -1510,6 +1666,7 @@ mod tests {
                 "desktop-enabled",
                 "https://x",
                 "AA",
+                None,
             )
             .unwrap();
         let paired = manager

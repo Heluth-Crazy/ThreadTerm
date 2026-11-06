@@ -22,6 +22,8 @@ pub(crate) const DENIED_METHODS: &[&str] = &[
     "device.status",
     "device.enable",
     "device.tailscaleOnly.set",
+    "device.iroh.set",
+    "device.peer.dial",
     "device.disable",
     "device.identity.reset",
     "device.pairing.create",
@@ -235,7 +237,7 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
     mut stream: T,
     remote: Arc<crate::remote_access::RemoteAccess>,
     generation: u64,
-    address: std::net::SocketAddr,
+    address: String,
 ) -> Result<()> {
     use crate::{
         transport::{read_json, write_json},
@@ -381,7 +383,7 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
     remote.devices.peer_activity(&device.id)?;
     // Persist only an address, never credentials. Authentication activity itself
     // is recorded by DeviceManager, coalesced for long-lived streams.
-    remote.record_peer_address(&device.id, &address.ip().to_string())?;
+    remote.record_peer_address(&device.id, &address)?;
     drop(handshake_permit);
     let result = {
         let connection = async {

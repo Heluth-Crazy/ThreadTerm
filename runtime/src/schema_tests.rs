@@ -37,7 +37,7 @@ fn schema_empty_first_creation_has_no_upgrade_data_to_back_up() {
     drop(Database::open(&path).unwrap());
     assert!(backups(root.path()).is_empty());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "5");
+    assert_eq!(value(&conn, "schema.version"), "6");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
 }
@@ -66,7 +66,7 @@ fn schema_migration_three_creates_review_draft_tables_and_reopens() {
     drop(conn);
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "5");
+    assert_eq!(value(&conn, "schema.version"), "6");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn schema_migration_four_preserves_legacy_phone_credentials() {
     }
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "5");
+    assert_eq!(value(&conn, "schema.version"), "6");
     let device: (String, Vec<u8>, Option<String>) = conn.query_row(
         "SELECT profile,token_hash,last_address FROM paired_devices WHERE id='phone'", [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -126,10 +126,10 @@ fn schema_old_copy_is_backed_up_verified_and_migrated_only_once() {
         "Daily"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "5");
-    assert_eq!(value(&conn, "schema.minReader"), "5");
+    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.minReader"), "6");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
-    assert_eq!(history.as_array().unwrap().len(), 5);
+    assert_eq!(history.as_array().unwrap().len(), 6);
     assert_eq!(history[0]["version"], 1);
     assert!(history[0]["appliedAt"].as_str().is_some());
     assert_eq!(history[0]["appVersion"], crate::RUNTIME_VERSION);
@@ -174,7 +174,7 @@ fn schema_unversioned_database_without_presets_upgrades_without_a_backup() {
         "nothing unrecoverable to back up"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "5");
+    assert_eq!(value(&conn, "schema.version"), "6");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
     assert!(conn.prepare("SELECT * FROM usage_facts").is_err());
@@ -506,5 +506,30 @@ fn schema_migration_five_preserves_listener_preferences_and_defaults_policy_off(
     let conn = Connection::open(&path).unwrap();
     let row: (bool,u16,String,bool) = conn.query_row("SELECT enabled,port,last_error,tailscale_only FROM remote_access_state", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
     assert_eq!(row,(true,12345,"retained".into(),false));
-    assert_eq!(value(&conn,"schema.version"),"5");
+    assert_eq!(value(&conn,"schema.version"),"6");
+}
+
+#[test]
+fn schema_migration_six_adds_cross_network_settings_off_and_the_device_key_column() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("remote-v5.sqlite");
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("DROP TABLE remote_access_state;
+        CREATE TABLE remote_access_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1), enabled INTEGER NOT NULL,
+            port INTEGER, last_error TEXT, tailscale_only INTEGER NOT NULL DEFAULT 0 CHECK(tailscale_only IN (0,1)));
+        INSERT INTO remote_access_state VALUES(1,1,23456,NULL,1);
+        ALTER TABLE paired_devices DROP COLUMN iroh_endpoint_id;
+        UPDATE metadata SET value='5' WHERE key IN ('schema.version','schema.minReader');").unwrap();
+    drop(conn);
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    let row: (bool, u16, bool, bool, Option<String>) = conn.query_row(
+        "SELECT enabled,port,tailscale_only,iroh_enabled,iroh_relay_url FROM remote_access_state", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).unwrap();
+    assert_eq!(row, (true, 23456, true, false, None), "existing settings kept; crossing networks starts off");
+    let mut columns = conn.prepare("PRAGMA table_info(paired_devices)").unwrap();
+    let columns: Vec<String> = columns.query_map([], |row| row.get(1)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert!(columns.iter().any(|column| column == "iroh_endpoint_id"));
+    assert_eq!(value(&conn, "schema.version"), "6");
 }

@@ -58,6 +58,7 @@ pub mod plugins;
 mod plugin_services;
 pub mod pty;
 pub mod remote_access;
+pub(crate) mod iroh_transport;
 pub(crate) mod peer;
 pub(crate) mod tunnel;
 #[cfg(all(test, windows))]

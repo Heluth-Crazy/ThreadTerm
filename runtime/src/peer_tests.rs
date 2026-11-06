@@ -1451,3 +1451,143 @@ async fn debug_contract_override_is_advertised_before_authentication() {
     assert_eq!(incompatible["kind"], "incompatible");
     assert_eq!(incompatible["contract"], 987);
 }
+
+// --- iroh: the same pinned TLS and peer protocol, carried across networks -------------------------------------------
+
+#[cfg(windows)]
+mod over_iroh {
+    use super::*;
+    use crate::devices::IrohAdmission;
+    use crate::remote_access::RemoteAccess;
+    use iroh::EndpointAddr;
+    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+    type IrohTls = tokio_rustls::client::TlsStream<NamedPipeClient>;
+
+    async fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
+        for _ in 0..200 {
+            if let Some(value) = probe() {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for the iroh endpoint");
+    }
+
+    /// Dials `host` through `dialer`'s local pipe and runs TLS over it, trusting only the host's certificate.
+    async fn try_iroh_tls(dialer: &Arc<RemoteAccess>, host: &EndpointAddr, host_root: &std::path::Path, alpn: &[u8]) -> Option<IrohTls> {
+        let (dialer, address) = (Arc::clone(dialer), host.clone());
+        let pipe = tokio::task::spawn_blocking(move || dialer.dial_pipe(address)).await.unwrap().ok()?;
+        let mut client = ClientOptions::new().open(&pipe.pipe).unwrap();
+        client.write_all(pipe.token.as_bytes()).await.unwrap();
+        let mut roots = RootCertStore::empty();
+        let mut pem = Cursor::new(std::fs::read(host_root.join(REMOTE_CERTIFICATE_FILE)).unwrap());
+        for certificate in rustls_pemfile::certs(&mut pem) {
+            roots.add(certificate.unwrap()).unwrap();
+        }
+        let mut config = ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        config.alpn_protocols = vec![alpn.to_vec()];
+        let connect = TlsConnector::from(Arc::new(config)).connect(ServerName::try_from("localhost").unwrap().to_owned(), client);
+        tokio::time::timeout(Duration::from_secs(10), connect).await.ok()?.ok()
+    }
+
+    async fn iroh_tls(dialer: &Arc<RemoteAccess>, host: &EndpointAddr, host_root: &std::path::Path, alpn: &[u8]) -> IrohTls {
+        try_iroh_tls(dialer, host, host_root, alpn).await.expect("TLS over iroh")
+    }
+
+    /// One HTTP/1.1 request over iroh, the way the desktop pairs.
+    async fn iroh_http(dialer: &Arc<RemoteAccess>, host: &EndpointAddr, host_root: &std::path::Path, path: &str, body: Value) -> (u16, Value) {
+        let mut stream = iroh_tls(dialer, host, host_root, b"http/1.1").await;
+        let body = serde_json::to_vec(&body).unwrap();
+        let head = format!("POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        stream.write_all(head.as_bytes()).await.unwrap();
+        stream.write_all(&body).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut response)).await;
+        let text = String::from_utf8_lossy(&response);
+        let status = text.split_whitespace().nth(1).and_then(|code| code.parse().ok()).unwrap_or(0);
+        let json = text.split_once("\r\n\r\n").and_then(|(_, body)| serde_json::from_str(body).ok()).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    async fn read_any<S: AsyncRead + Unpin>(stream: &mut S) -> Value {
+        let size = stream.read_u32_le().await.unwrap() as usize;
+        let mut bytes = vec![0; size];
+        stream.read_exact(&mut bytes).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn write_any<S: AsyncWrite + Unpin>(stream: &mut S, value: &Value) {
+        let bytes = serde_json::to_vec(value).unwrap();
+        stream.write_u32_le(bytes.len() as u32).await.unwrap();
+        stream.write_all(&bytes).await.unwrap();
+        stream.flush().await.unwrap();
+    }
+
+    async fn closed<S: AsyncRead + Unpin>(stream: &mut S) -> bool {
+        let mut byte = [0_u8; 1];
+        matches!(tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await, Ok(Ok(0)) | Ok(Err(_)))
+    }
+
+    /// End to end on loopback (no relay, no lookups): the desktop offer carries the host key; a client runtime dials
+    /// through its local pipe; before pairing its key may only pair; pairing records the key the connection proved;
+    /// that key then authenticates the peer protocol; a key that never paired is refused before TLS.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_computer_pairs_and_connects_over_iroh_and_an_unpaired_key_is_refused() {
+        let host = Fixture::new();
+        host.rpc("settings.update", json!({"patch":{"remoteMachines":{"enabled":true}},"expectedRevision":0,"operationId":"iroh-gate"}));
+        host.rpc("device.iroh.set", json!({"enabled":true,"operationId":"iroh-on"}));
+        host.rpc("device.enable", json!({"operationId":"iroh-listener"}));
+        let remote = Arc::clone(host.service.remote.get().unwrap());
+        let host_address = wait_for(|| remote.iroh_host_address().filter(|address| address.ip_addrs().next().is_some())).await;
+        let host_key = host_address.id.to_string();
+        assert_eq!(host.rpc("device.status", json!({}))["irohEndpointId"], host_key.as_str());
+
+        let offer = host.rpc("device.pairing.create", json!({"permission":"fullcontrol","profile":"desktop","operationId":"iroh-offer"}));
+        assert_eq!(offer["iroh"]["endpointId"], host_key.as_str());
+        let encoded = offer["qrPayload"].as_str().unwrap().strip_prefix("threadterm://pair?data=").unwrap();
+        let descriptor: Value = serde_json::from_slice(&base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, encoded).unwrap()).unwrap();
+        assert_eq!(descriptor["v"], 2);
+        assert_eq!(descriptor["iroh"]["endpointId"], host_key.as_str());
+        let phone = host.rpc("device.pairing.create", json!({"permission":"readonly","operationId":"iroh-phone-offer"}));
+        assert!(phone.get("iroh").is_none(), "phones keep the v1 descriptor");
+
+        let client = Fixture::new();
+        let dialer = Arc::clone(client.service.remote.get().unwrap());
+        // Before pairing, the unknown key may only send the pairing request.
+        let mut early_peer = iroh_tls(&dialer, &host_address, host.root.path(), crate::peer::ALPN).await;
+        assert!(closed(&mut early_peer).await, "an unpaired key cannot open the peer protocol");
+        let (status, body) = iroh_http(&dialer, &host_address, host.root.path(), "/v1/rpc", json!({"method":"remote.sessions","params":{}})).await;
+        assert_eq!(status, 403, "{body}");
+        let (status, paired) = iroh_http(&dialer, &host_address, host.root.path(), "/v1/pair",
+            json!({"pairingId":offer["id"],"code":offer["code"],"deviceName":"Office"})).await;
+        assert_eq!(status, 200, "{paired}");
+        let client_key = dialer.iroh_dial_key().expect("the client dialed with its own key");
+        assert_ne!(client_key, host_key);
+        assert_eq!(remote.devices.iroh_admission(&client_key).unwrap(), IrohAdmission::Paired);
+
+        // The paired key authenticates the peer protocol over iroh with the credential from pairing.
+        let mut control = iroh_tls(&dialer, &host_address, host.root.path(), crate::peer::ALPN).await;
+        let challenge = read_any(&mut control).await;
+        write_any(&mut control, &json!({"kind":"auth","protocol":PROTOCOL_VERSION,"contract":PROTOCOL_CONTRACT,
+            "nonce":challenge["nonce"],"channel":"control","clientId":uuid::Uuid::new_v4().to_string(),
+            "credential":paired["token"],"epoch":Value::Null})).await;
+        assert_eq!(read_any(&mut control).await["kind"], "authenticated");
+
+        // The offer is consumed: a computer that never paired is refused before any TLS.
+        let stranger = Fixture::new();
+        let stranger_dialer = Arc::clone(stranger.service.remote.get().unwrap());
+        assert!(try_iroh_tls(&stranger_dialer, &host_address, host.root.path(), b"http/1.1").await.is_none());
+        assert_eq!(remote.devices.iroh_admission(&stranger_dialer.iroh_dial_key().unwrap()).unwrap(), IrohAdmission::Denied);
+    }
+
+    /// The new local methods are host administration: a paired computer may not call them.
+    #[test]
+    fn peers_cannot_change_or_use_the_iroh_transport() {
+        for method in ["device.iroh.set", "device.peer.dial"] {
+            assert!(crate::peer::DENIED_METHODS.contains(&method), "{method}");
+        }
+    }
+}

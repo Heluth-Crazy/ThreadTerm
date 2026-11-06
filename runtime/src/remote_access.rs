@@ -5,10 +5,12 @@
 use crate::{
     config::RuntimeConfig,
     db::Database,
-    devices::{DeviceManager, DevicePermission, DeviceProfile},
+    devices::{DeviceManager, DevicePermission, DeviceProfile, IrohAdmission, IrohOffer},
     domain::RpcRequest,
+    iroh_transport::{self, Reach},
     service::RuntimeService,
 };
+use iroh::{Endpoint, EndpointAddr, RelayUrl};
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -35,7 +37,7 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{oneshot, Semaphore},
+    sync::{oneshot, OwnedSemaphorePermit, Semaphore},
     task::{JoinHandle, JoinSet},
     time::timeout,
 };
@@ -71,6 +73,82 @@ pub struct RemoteAccessStatus {
     // is unusable; Devices settings offers an explicit reset for that case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity_error: Option<String>,
+    /// "Connect across networks" as configured; it only runs while Tailscale-only is off.
+    pub iroh_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iroh_relay_url: Option<String>,
+    /// This PC's public iroh key while the cross-network endpoint runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iroh_endpoint_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iroh_error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IrohSet {
+    enabled: bool,
+    #[serde(default)]
+    relay_url: Option<String>,
+    operation_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PeerDial {
+    endpoint_id: String,
+    #[serde(default)]
+    relay_url: Option<String>,
+}
+
+/// A local pipe bridged to one iroh stream: the desktop opens `pipe`, writes `token`, then runs its pinned TLS.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DialPipe {
+    pub pipe: String,
+    pub token: String,
+}
+
+/// Where a TLS stream came from. An unknown iroh key during an open desktop offer may only pair.
+#[derive(Debug, Clone)]
+enum Origin {
+    Tcp(std::net::SocketAddr),
+    Iroh { key: String, pairing_only: bool },
+}
+
+impl Origin {
+    fn pairing_only(&self) -> bool {
+        matches!(self, Origin::Iroh { pairing_only: true, .. })
+    }
+    fn iroh_key(&self) -> Option<&str> {
+        match self {
+            Origin::Iroh { key, .. } => Some(key),
+            Origin::Tcp(_) => None,
+        }
+    }
+    /// The address a paired device was last seen at, as Settings shows it.
+    fn label(&self) -> String {
+        match self {
+            Origin::Tcp(address) => address.ip().to_string(),
+            Origin::Iroh { key, .. } => format!("iroh:{}", key.chars().take(10).collect::<String>()),
+        }
+    }
+}
+
+struct IrohHostPlan {
+    secret: iroh::SecretKey,
+    reach: Reach,
+    /// The dial-only endpoint to close before hosting binds the same key.
+    retired: Option<Endpoint>,
+}
+
+/// The cross-network endpoint: the hosting one of the running listener generation, or a dial-only one while this
+/// PC does not host. Never both: they share the key.
+#[derive(Default)]
+struct IrohRuntime {
+    host: Option<(u64, Endpoint)>,
+    dial: Option<Endpoint>,
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -129,6 +207,8 @@ pub struct RemoteAccess {
     // Remote DB activity takes a read lock. Disable takes the write lock, so a
     // completed disable is also a drain barrier for relocation.
     access_gate: RwLock<()>,
+    iroh: Mutex<IrohRuntime>,
+    iroh_connections: iroh_transport::Connections,
 }
 
 impl RemoteAccess {
@@ -155,6 +235,8 @@ impl RemoteAccess {
             }),
             stopped: Condvar::new(),
             access_gate: RwLock::new(()),
+            iroh: Mutex::new(IrohRuntime::default()),
+            iroh_connections: iroh_transport::Connections::default(),
         });
         if preference.enabled {
             // An unusable identity is recorded as a remote-access error and
@@ -195,6 +277,35 @@ impl RemoteAccess {
                 }
                 serde_json::to_value(self.status()?)?
             }
+            "device.iroh.set" => {
+                let request: IrohSet = parse(params)?;
+                let relay = request.relay_url.as_deref().map(str::trim).filter(|url| !url.is_empty());
+                if let Some(url) = relay {
+                    if !url.starts_with("https://") || url.parse::<RelayUrl>().is_err() {
+                        bail!("invalid_relay_url: Enter the relay address as https://…");
+                    }
+                }
+                if !self.devices.operation_completed(&request.operation_id)? {
+                    let preference = self.devices.remote_access_preference()?;
+                    if preference.iroh_enabled != request.enabled || preference.iroh_relay_url.as_deref() != relay {
+                        // Like the Tailscale-only switch: one listener owns every socket, so drain it and restart.
+                        self.stop_listener_inner(None)?;
+                        self.devices.set_iroh(request.enabled, relay, &request.operation_id)?;
+                        if preference.enabled { self.start_listener()?; }
+                    } else {
+                        self.devices.complete_marker(&request.operation_id, "device.iroh.set")?;
+                    }
+                }
+                serde_json::to_value(self.status()?)?
+            }
+            "device.peer.dial" => {
+                let request: PeerDial = parse(params)?;
+                let mut address = EndpointAddr::new(iroh_transport::parse_key(&request.endpoint_id)?);
+                if let Some(url) = request.relay_url.as_deref().filter(|url| !url.is_empty()) {
+                    address = address.with_relay_url(url.parse().map_err(|_| anyhow!("invalid_relay_url"))?);
+                }
+                serde_json::to_value(self.dial_pipe(address)?)?
+            }
             "device.disable" => {
                 let request: OperationOnly = parse(params)?;
                 if !self.devices.operation_completed(&request.operation_id)? {
@@ -215,12 +326,14 @@ impl RemoteAccess {
                 let request: CreatePairing = parse(params)?;
                 let status = self.status()?;
                 let server_url = self.pairing_url(status.tailscale_only)?;
+                let iroh = if request.profile == DeviceProfile::Desktop { self.iroh_offer()? } else { None };
                 serde_json::to_value(self.devices.create_pairing_with_profile(
                     request.permission,
                     request.profile,
                     &request.operation_id,
                     &server_url,
                     &status.tls_fingerprint,
+                    iroh,
                 )?)?
             }
             "device.pairing.cancel" => {
@@ -278,14 +391,20 @@ impl RemoteAccess {
             .state
             .lock()
             .map_err(|_| anyhow!("remote access state lock poisoned"))?;
+        let preference = self.devices.remote_access_preference()?;
+        let iroh = self.iroh.lock().map_err(|_| anyhow!("iroh state lock poisoned"))?;
         Ok(RemoteAccessStatus {
             enabled: state.enabled,
-            tailscale_only: self.devices.remote_access_preference()?.tailscale_only,
+            tailscale_only: preference.tailscale_only,
             url: state.url.clone(),
             port: state.port,
             tls_fingerprint: self.fingerprint(),
             error: state.error.clone(),
             identity_error: state.identity_error.clone(),
+            iroh_enabled: preference.iroh_enabled,
+            iroh_relay_url: preference.iroh_relay_url,
+            iroh_endpoint_id: iroh.host.as_ref().map(|(_, endpoint)| iroh_transport::key_text(endpoint.id())),
+            iroh_error: iroh.error.clone(),
         })
     }
 
@@ -387,6 +506,9 @@ impl RemoteAccess {
                 &self.data_dir.join(REMOTE_CERTIFICATE_FILE),
                 &self.data_dir.join(REMOTE_PRIVATE_KEY_FILE),
             )?;
+            // A new identity is a new iroh key as well; the dial-only endpoint still holds the old one.
+            iroh_transport::remove_secret(&self.data_dir)?;
+            self.retire_dial_endpoint();
             let identity = Arc::new(load_certificate(&self.data_dir)?);
             *self
                 .identity
@@ -405,6 +527,156 @@ impl RemoteAccess {
         }
         self.devices
             .complete_marker(operation_id, "device.identity.reset")
+    }
+
+    /// What the next listener generation hosts across networks, or `None` while that is off (or Tailscale-only is on).
+    fn iroh_host_plan(&self, preference: &crate::devices::RemoteAccessPreference) -> Option<IrohHostPlan> {
+        let mut iroh = self.iroh.lock().ok()?;
+        iroh.error = None;
+        if !preference.iroh_enabled || preference.tailscale_only {
+            return None;
+        }
+        let plan = self.host_reach(preference).and_then(|reach| {
+            Ok(IrohHostPlan { secret: iroh_transport::load_or_create_secret(&self.data_dir)?, reach, retired: None })
+        });
+        match plan {
+            Ok(mut plan) => {
+                // The dial-only endpoint holds the same key; hosting replaces it.
+                plan.retired = iroh.dial.take();
+                self.iroh_connections.clear();
+                Some(plan)
+            }
+            Err(error) => {
+                iroh.error = Some(format!("Connecting across networks is unavailable: {error:#}"));
+                None
+            }
+        }
+    }
+
+    fn host_reach(&self, preference: &crate::devices::RemoteAccessPreference) -> Result<Reach> {
+        #[cfg(test)]
+        {
+            let _ = preference;
+            Ok(Reach::Loopback { accept: true })
+        }
+        #[cfg(not(test))]
+        match preference.iroh_relay_url.as_deref() {
+            Some(url) => Ok(Reach::CustomRelay(url.parse().map_err(|_| anyhow!("invalid_relay_url"))?)),
+            None => Ok(Reach::PublicRelays),
+        }
+    }
+
+    fn dial_reach(&self) -> Result<Reach> {
+        #[cfg(test)]
+        {
+            Ok(Reach::Loopback { accept: false })
+        }
+        #[cfg(not(test))]
+        {
+            let relay = self.devices.remote_access_preference()?.iroh_relay_url;
+            let custom_relay = relay.map(|url| url.parse().map_err(|_| anyhow!("invalid_relay_url"))).transpose()?;
+            Ok(Reach::DialOnly { custom_relay })
+        }
+    }
+
+    /// Records the hosting endpoint of listener `generation`, or why it could not start; returns it to accept on.
+    fn iroh_bound(&self, generation: u64, bound: Result<Endpoint>) -> Option<Endpoint> {
+        let mut iroh = self.iroh.lock().ok()?;
+        match bound {
+            Ok(endpoint) => {
+                iroh.host = Some((generation, endpoint.clone()));
+                iroh.error = None;
+                Some(endpoint)
+            }
+            Err(error) => {
+                iroh.error = Some(format!("Connecting across networks is unavailable: {error:#}"));
+                None
+            }
+        }
+    }
+
+    fn iroh_stopped(&self, generation: u64) {
+        if let Ok(mut iroh) = self.iroh.lock() {
+            if iroh.host.as_ref().is_some_and(|(running, _)| *running == generation) {
+                iroh.host = None;
+            }
+        }
+        self.iroh_connections.clear();
+    }
+
+    fn retire_dial_endpoint(&self) {
+        let retired = self.iroh.lock().ok().and_then(|mut iroh| iroh.dial.take());
+        self.iroh_connections.clear();
+        if let Some(endpoint) = retired {
+            tokio::spawn(async move { endpoint.close().await });
+        }
+    }
+
+    /// The cross-network part of a desktop offer, while this PC hosts across networks.
+    fn iroh_offer(&self) -> Result<Option<IrohOffer>> {
+        let preference = self.devices.remote_access_preference()?;
+        if !preference.iroh_enabled || preference.tailscale_only {
+            return Ok(None);
+        }
+        let iroh = self.iroh.lock().map_err(|_| anyhow!("iroh state lock poisoned"))?;
+        let Some((_, endpoint)) = iroh.host.as_ref() else {
+            if let Some(error) = &iroh.error {
+                bail!("iroh_unavailable: {error}");
+            }
+            bail!("iroh_not_ready: Connecting across networks is still starting. Try again in a moment.");
+        };
+        let relay_url = preference
+            .iroh_relay_url
+            .or_else(|| endpoint.addr().relay_urls().next().map(|url| url.to_string()));
+        Ok(Some(IrohOffer { endpoint_id: iroh_transport::key_text(endpoint.id()), relay_url }))
+    }
+
+    /// Opens an iroh stream to another computer and bridges it to a fresh local pipe for the desktop. Runs on the
+    /// blocking pool (local dispatch), never on an async worker.
+    pub(crate) fn dial_pipe(&self, address: EndpointAddr) -> Result<DialPipe> {
+        let handle = tokio::runtime::Handle::current();
+        let endpoint = self.dial_endpoint(&handle)?;
+        let (send, recv) = handle.block_on(self.iroh_connections.stream(&endpoint, address))?;
+        let pipe = format!(r"\\.\pipe\threadterm-dial-{}", Uuid::new_v4());
+        let mut token = [0_u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut token);
+        let token = hex::encode(token);
+        let _context = handle.enter();
+        iroh_transport::bridge_pipe(pipe.clone(), token.clone(), send, recv)?;
+        Ok(DialPipe { pipe, token })
+    }
+
+    /// The hosting endpoint when this PC hosts across networks, otherwise a dial-only one bound on first use.
+    fn dial_endpoint(&self, handle: &tokio::runtime::Handle) -> Result<Endpoint> {
+        {
+            let iroh = self.iroh.lock().map_err(|_| anyhow!("iroh state lock poisoned"))?;
+            if let Some((_, endpoint)) = &iroh.host {
+                return Ok(endpoint.clone());
+            }
+            if let Some(endpoint) = &iroh.dial {
+                return Ok(endpoint.clone());
+            }
+        }
+        let secret = iroh_transport::load_or_create_secret(&self.data_dir)?;
+        let endpoint = handle.block_on(iroh_transport::bind(secret, &self.dial_reach()?))?;
+        let mut iroh = self.iroh.lock().map_err(|_| anyhow!("iroh state lock poisoned"))?;
+        // Hosting may have started meanwhile; never keep two endpoints with one key.
+        if let Some(existing) = iroh.host.as_ref().map(|(_, endpoint)| endpoint.clone()).or_else(|| iroh.dial.clone()) {
+            handle.spawn(async move { endpoint.close().await });
+            return Ok(existing);
+        }
+        iroh.dial = Some(endpoint.clone());
+        Ok(endpoint)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iroh_host_address(&self) -> Option<EndpointAddr> {
+        self.iroh.lock().ok()?.host.as_ref().map(|(_, endpoint)| endpoint.addr())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iroh_dial_key(&self) -> Option<String> {
+        self.iroh.lock().ok()?.dial.as_ref().map(|endpoint| iroh_transport::key_text(endpoint.id()))
     }
 
     /// Stops network activity without changing the persisted user preference.
@@ -492,6 +764,7 @@ impl RemoteAccess {
         let weak = Arc::downgrade(self);
         let tailscale_only = preference.tailscale_only;
         let acceptor = TlsAcceptor::from(Arc::clone(&certificate.config));
+        let iroh_plan = self.iroh_host_plan(&preference);
         let task = tokio::spawn(async move {
             // Handshakes are short-lived and have their own bound. Once ALPN
             // is known, HTTP/pairing and peer control/dependents use separate
@@ -501,10 +774,32 @@ impl RemoteAccess {
             let mut tasks = JoinSet::new();
             let mut listener_error = None;
             let mut cleanup = tokio::time::interval(Duration::from_secs(60));
+            // Computers on other networks arrive through iroh and share the TLS acceptor and both budgets.
+            let iroh_endpoint = match iroh_plan {
+                Some(plan) => {
+                    if let Some(retired) = plan.retired {
+                        retired.close().await;
+                    }
+                    let bound = iroh_transport::bind(plan.secret, &plan.reach).await;
+                    weak.upgrade().and_then(|remote| remote.iroh_bound(generation, bound))
+                }
+                None => None,
+            };
+            let mut iroh_accepting = iroh_endpoint.clone();
+            enum Accepted {
+                Tcp(std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)>),
+                Iroh(Option<iroh::endpoint::Incoming>),
+            }
             loop {
                 let accepted = tokio::select! {
                     _ = &mut cancelled => break,
-                    accepted = listener.accept() => accepted,
+                    accepted = listener.accept() => Accepted::Tcp(accepted),
+                    incoming = async {
+                        match &iroh_accepting {
+                            Some(endpoint) => endpoint.accept().await,
+                            None => std::future::pending().await,
+                        }
+                    } => Accepted::Iroh(incoming),
                     _ = tasks.join_next(), if !tasks.is_empty() => continue,
                     _ = cleanup.tick() => {
                         if let Some(remote) = weak.upgrade() {
@@ -514,10 +809,26 @@ impl RemoteAccess {
                     }
                 };
                 let (stream, peer) = match accepted {
-                    Ok(value) => value,
-                    Err(error) => {
+                    Accepted::Tcp(Ok(value)) => value,
+                    Accepted::Tcp(Err(error)) => {
                         listener_error = Some(format!("Remote HTTPS listener stopped: {error}"));
                         break;
+                    }
+                    Accepted::Iroh(Some(incoming)) => {
+                        tasks.spawn(serve_iroh_connection(
+                            weak.clone(),
+                            acceptor.clone(),
+                            incoming,
+                            generation,
+                            Arc::clone(&handshakes),
+                            Arc::clone(&connections),
+                        ));
+                        continue;
+                    }
+                    // The endpoint closed; TCP keeps serving.
+                    Accepted::Iroh(None) => {
+                        iroh_accepting = None;
+                        continue;
                     }
                 };
                 if !source_allowed(peer.ip(), tailscale_only) {
@@ -528,51 +839,29 @@ impl RemoteAccess {
                     drop(stream);
                     continue;
                 };
-                let acceptor = acceptor.clone();
-                let connection_weak = weak.clone();
-                let connections = Arc::clone(&connections);
-                tasks.spawn(async move {
-                    let Ok(Ok(tls)) = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await else {
-                        return;
-                    };
-                    drop(permit);
-                    if tls.get_ref().1.alpn_protocol() == Some(crate::peer::ALPN) {
-                        // Peer streams idle for hours; a client that slept or lost its
-                        // network must not keep holding its slot and group.
-                        let _ = socket2::SockRef::from(tls.get_ref().0).set_tcp_keepalive(
-                            &socket2::TcpKeepalive::new()
-                                .with_time(Duration::from_secs(30))
-                                .with_interval(Duration::from_secs(10)),
-                        );
-                        #[cfg(windows)]
-                        if let Some(remote) = connection_weak.upgrade() {
-                            let _ = crate::peer::accept(tls, remote, generation, peer).await;
-                        }
-                        return;
-                    }
-                    let Ok(_permit) = connections.try_acquire_owned() else { return };
-                    let request_weak = connection_weak.clone();
-                    let service = service_fn(move |request| {
-                        let weak = request_weak.clone();
-                        async move {
-                            let response = match weak.upgrade() {
-                                Some(remote) => remote.handle_http(request, generation).await,
-                                None => json_response(
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    json!({"error":{"code":"runtime_unavailable","message":"runtime unavailable"}}),
-                                ),
-                            };
-                            Ok::<_, Infallible>(response)
-                        }
-                    });
-                    let connection = http1::Builder::new()
-                        .keep_alive(true)
-                        .serve_connection(TokioIo::new(tls), service);
-                    let _ = timeout(HTTP_CONNECTION_TIMEOUT, connection).await;
-                });
+                // Peer streams idle for hours; a client that slept or lost its
+                // network must not keep holding its slot and group.
+                let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(
+                    &socket2::TcpKeepalive::new()
+                        .with_time(Duration::from_secs(30))
+                        .with_interval(Duration::from_secs(10)),
+                );
+                tasks.spawn(serve_tls(
+                    weak.clone(),
+                    acceptor.clone(),
+                    stream,
+                    Origin::Tcp(peer),
+                    generation,
+                    permit,
+                    Arc::clone(&connections),
+                ));
             }
             tasks.shutdown().await;
+            if let Some(endpoint) = iroh_endpoint {
+                endpoint.close().await;
+            }
             if let Some(remote) = weak.upgrade() {
+                remote.iroh_stopped(generation);
                 remote.mark_listener_stopped(generation, listener_error);
             }
         });
@@ -656,6 +945,7 @@ impl RemoteAccess {
         self: Arc<Self>,
         request: Request<Incoming>,
         listener_generation: u64,
+        origin: Origin,
     ) -> Response<Full<Bytes>> {
         if request.method() != Method::POST {
             return error_response(
@@ -668,6 +958,10 @@ impl RemoteAccess {
         if path != "/v1/pair" && path != "/v1/rpc" {
             return error_response(StatusCode::NOT_FOUND, "not_found", "endpoint not found");
         }
+        if origin.pairing_only() && path != "/v1/pair" {
+            return error_response(StatusCode::FORBIDDEN, "pairing_only", "pair this computer first");
+        }
+        let iroh_key = origin.iroh_key().map(str::to_owned);
         let authorization = request
             .headers()
             .get(AUTHORIZATION)
@@ -708,7 +1002,7 @@ impl RemoteAccess {
                         ));
                     }
                     if path == "/v1/pair" {
-                        remote.handle_pair(&body)
+                        remote.handle_pair(&body, iroh_key.as_deref())
                     } else {
                         remote.handle_rpc(authorization.as_deref(), &body)
                     }
@@ -727,10 +1021,10 @@ impl RemoteAccess {
         }
     }
 
-    fn handle_pair(&self, body: &[u8]) -> std::result::Result<Value, HttpFailure> {
+    fn handle_pair(&self, body: &[u8], iroh_key: Option<&str>) -> std::result::Result<Value, HttpFailure> {
         let request: PairRequest = parse_body(body)?;
         self.devices
-            .pair(&request.pairing_id, &request.code, &request.device_name)
+            .pair(&request.pairing_id, &request.code, &request.device_name, iroh_key)
             .map(|result| serde_json::to_value(result).expect("pairing result serializes"))
             .map_err(|error| {
                 let message = error.to_string();
@@ -1278,6 +1572,116 @@ fn create_certificate_pair(certificate_path: &Path, key_path: &Path) -> Result<(
     result
 }
 
+/// One TLS connection, whatever carries it: phone and pairing HTTP, or the peer protocol.
+async fn serve_tls<S>(
+    weak: Weak<RemoteAccess>,
+    acceptor: TlsAcceptor,
+    stream: S,
+    origin: Origin,
+    generation: u64,
+    permit: OwnedSemaphorePermit,
+    connections: Arc<Semaphore>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let Ok(Ok(tls)) = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await else {
+        return;
+    };
+    drop(permit);
+    if tls.get_ref().1.alpn_protocol() == Some(crate::peer::ALPN) {
+        if origin.pairing_only() {
+            return;
+        }
+        #[cfg(windows)]
+        if let Some(remote) = weak.upgrade() {
+            let _ = crate::peer::accept(tls, remote, generation, origin.label()).await;
+        }
+        return;
+    }
+    let Ok(_permit) = connections.try_acquire_owned() else { return };
+    let service = service_fn(move |request| {
+        let weak = weak.clone();
+        let origin = origin.clone();
+        async move {
+            let response = match weak.upgrade() {
+                Some(remote) => remote.handle_http(request, generation, origin).await,
+                None => json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":{"code":"runtime_unavailable","message":"runtime unavailable"}}),
+                ),
+            };
+            Ok::<_, Infallible>(response)
+        }
+    });
+    let connection = http1::Builder::new()
+        .keep_alive(true)
+        .serve_connection(TokioIo::new(tls), service);
+    let _ = timeout(HTTP_CONNECTION_TIMEOUT, connection).await;
+}
+
+/// One iroh connection: its key is admitted before any TLS, and again for every stream it opens, so a revoked
+/// computer cannot keep using a connection it already holds.
+async fn serve_iroh_connection(
+    weak: Weak<RemoteAccess>,
+    acceptor: TlsAcceptor,
+    incoming: iroh::endpoint::Incoming,
+    generation: u64,
+    handshakes: Arc<Semaphore>,
+    connections: Arc<Semaphore>,
+) {
+    let Ok(accepting) = incoming.accept() else { return };
+    let Ok(Ok(connection)) = timeout(TLS_HANDSHAKE_TIMEOUT, accepting).await else { return };
+    let key = iroh_transport::key_text(connection.remote_id());
+    let admission = |weak: &Weak<RemoteAccess>| {
+        weak.upgrade()
+            .and_then(|remote| remote.devices.iroh_admission(&key).ok())
+            .unwrap_or(IrohAdmission::Denied)
+    };
+    if admission(&weak) == IrohAdmission::Denied {
+        connection.close(1u32.into(), b"not paired");
+        return;
+    }
+    while let Ok((send, recv)) = connection.accept_bi().await {
+        let pairing_only = match admission(&weak) {
+            IrohAdmission::Paired => false,
+            IrohAdmission::PairingOnly => true,
+            IrohAdmission::Denied => {
+                connection.close(1u32.into(), b"not paired");
+                return;
+            }
+        };
+        let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else { continue };
+        tokio::spawn(serve_tls(
+            weak.clone(),
+            acceptor.clone(),
+            tokio::io::join(recv, send),
+            Origin::Iroh { key: key.clone(), pairing_only },
+            generation,
+            permit,
+            Arc::clone(&connections),
+        ));
+    }
+}
+
+/// Writes a private file atomically: a sibling restricted to the current user first, then renamed into place.
+pub(crate) fn install_private_file(path: &Path, value: &[u8]) -> Result<()> {
+    let temp = temporary_sibling(path);
+    let install = || -> Result<()> {
+        write_new(&temp, value)?;
+        #[cfg(windows)]
+        crate::windows_security::restrict_file_to_current_user(&temp)?;
+        #[cfg(unix)]
+        restrict_private_file(&temp)?;
+        fs::rename(&temp, path)?;
+        Ok(())
+    };
+    let result = install();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
 fn write_new(path: &Path, value: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(value)?;
@@ -1306,12 +1710,14 @@ fn fingerprint(der: &[u8]) -> String {
 
 /// One IPv4 address of this PC, as far as choosing what a pairing offer advertises goes.
 #[derive(Clone, Copy, Debug)]
-struct AdapterAddress {
-    ip: Ipv4Addr,
+pub(crate) struct AdapterAddress {
+    pub(crate) ip: Ipv4Addr,
     /// On an Ethernet or Wi-Fi adapter with a default gateway: the PC's real network connection. Proxy and VPN
     /// tunnels (sing-box, Clash, WireGuard) and host-only adapters (VMware, Hyper-V) are not, and their
     /// addresses mean nothing on another computer.
-    routed_lan: bool,
+    pub(crate) routed_lan: bool,
+    /// The adapter has a default gateway. A tunnel adapter with one (a proxy TUN, a VPN) owns routes iroh must avoid.
+    pub(crate) gateway: bool,
 }
 
 /// What a pairing offer tells the other device to dial. With Tailscale-only on, only this PC's Tailscale
@@ -1349,7 +1755,7 @@ fn advertised_ip(tailscale_only: bool) -> Option<Ipv4Addr> {
 
 /// Every IPv4 address of an adapter that is up, with whether that adapter is a routed LAN connection.
 #[cfg(windows)]
-fn adapter_addresses() -> Vec<AdapterAddress> {
+pub(crate) fn adapter_addresses() -> Vec<AdapterAddress> {
     use windows_sys::Win32::{
         Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR},
         NetworkManagement::{
@@ -1387,13 +1793,14 @@ fn adapter_addresses() -> Vec<AdapterAddress> {
     // SAFETY: after NO_ERROR the buffer holds a linked list whose pointers all point into the buffer.
     while let Some(entry) = unsafe { adapter.as_ref() } {
         if entry.OperStatus == IfOperStatusUp {
-            let routed_lan = matches!(entry.IfType, ETHERNET | WIFI) && !entry.FirstGatewayAddress.is_null();
+            let gateway = !entry.FirstGatewayAddress.is_null();
+            let routed_lan = matches!(entry.IfType, ETHERNET | WIFI) && gateway;
             let mut unicast = entry.FirstUnicastAddress;
             while let Some(address) = unsafe { unicast.as_ref() } {
                 let sockaddr = address.Address.lpSockaddr;
                 if !sockaddr.is_null() && unsafe { (*sockaddr).sa_family } == AF_INET {
                     let raw = unsafe { sockaddr.cast::<SOCKADDR_IN>().read_unaligned().sin_addr.S_un.S_addr };
-                    addresses.push(AdapterAddress { ip: Ipv4Addr::from(raw.to_ne_bytes()), routed_lan });
+                    addresses.push(AdapterAddress { ip: Ipv4Addr::from(raw.to_ne_bytes()), routed_lan, gateway });
                 }
                 unicast = address.Next;
             }
@@ -1404,7 +1811,7 @@ fn adapter_addresses() -> Vec<AdapterAddress> {
 }
 
 #[cfg(not(windows))]
-fn adapter_addresses() -> Vec<AdapterAddress> {
+pub(crate) fn adapter_addresses() -> Vec<AdapterAddress> {
     local_addresses()
 }
 
@@ -1415,7 +1822,7 @@ fn local_addresses() -> Vec<AdapterAddress> {
             interfaces
                 .into_iter()
                 .filter_map(|(_, ip)| match ip {
-                    IpAddr::V4(ip) => Some(AdapterAddress { ip, routed_lan: false }),
+                    IpAddr::V4(ip) => Some(AdapterAddress { ip, routed_lan: false, gateway: false }),
                     IpAddr::V6(_) => None,
                 })
                 .collect()
@@ -1586,6 +1993,8 @@ mod tests {
             "history.list",
             "device.identity.reset",
             "device.tailscaleOnly.set",
+            "device.iroh.set",
+            "device.peer.dial",
             "device.list",
             "device.pairing.cancel",
             "device.rename",
@@ -1623,7 +2032,7 @@ mod tests {
             .unwrap();
         let paired = remote
             .devices
-            .pair(&offer.id, &offer.code, "Controller")
+            .pair(&offer.id, &offer.code, "Controller", None)
             .unwrap();
         let mutation_finished = Arc::new(AtomicBool::new(false));
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -1686,6 +2095,8 @@ mod tests {
             state: Mutex::new(ListenerState::default()),
             stopped: Condvar::new(),
             access_gate: RwLock::new(()),
+            iroh: Mutex::new(IrohRuntime::default()),
+            iroh_connections: iroh_transport::Connections::default(),
         })
     }
 
@@ -2073,6 +2484,7 @@ mod tests {
                 offer["id"].as_str().unwrap(),
                 offer["code"].as_str().unwrap(),
                 "Phone",
+                None,
             )
             .unwrap();
         assert!(devices.authenticate(&paired.token).is_ok());
@@ -2305,21 +2717,21 @@ mod hosting_tests {
         }
     }
     fn adapter(ip: &str, routed_lan: bool) -> AdapterAddress {
-        AdapterAddress { ip: ip.parse().unwrap(), routed_lan }
+        AdapterAddress { ip: ip.parse().unwrap(), routed_lan, gateway: routed_lan }
     }
     #[test]
     fn offers_skip_proxy_tunnels_and_host_only_adapters_and_need_tailscale_when_tailscale_only() {
-        // A real home PC, in Windows enumeration order: VMware host-only, the sing-box TUN (it has a gateway but
-        // is no Ethernet/Wi-Fi adapter), Wi-Fi, VMware NAT. Older builds advertised the TUN's 172.18.0.1.
+        // A typical PC, in Windows enumeration order: a VMware host-only adapter, a sing-box TUN (it has a gateway but
+        // is no Ethernet/Wi-Fi adapter), Wi-Fi, VMware NAT. Older builds advertised the TUN address.
         let mut home = vec![
-            adapter("192.168.70.1", false), adapter("172.18.0.1", false), adapter("127.0.0.1", false),
-            adapter("192.168.1.82", true), adapter("192.168.80.1", false),
+            adapter("192.168.56.1", false), adapter("172.19.0.1", false), adapter("127.0.0.1", false),
+            adapter("10.20.30.40", true), adapter("192.168.57.1", false),
         ];
-        assert_eq!(choose_advertised_ip(&home, false), Some(Ipv4Addr::new(192, 168, 1, 82)));
+        assert_eq!(choose_advertised_ip(&home, false), Some(Ipv4Addr::new(10, 20, 30, 40)));
         assert_eq!(choose_advertised_ip(&home, true), None, "Tailscale-only without Tailscale has nothing to offer");
         home.insert(0, adapter("100.101.102.103", false));
         assert_eq!(choose_advertised_ip(&home, true), Some(Ipv4Addr::new(100, 101, 102, 103)));
-        assert_eq!(choose_advertised_ip(&home, false), Some(Ipv4Addr::new(192, 168, 1, 82)), "the LAN still comes first");
+        assert_eq!(choose_advertised_ip(&home, false), Some(Ipv4Addr::new(10, 20, 30, 40)), "the LAN still comes first");
         // Without adapter details (other platforms, or the API failed): Tailscale, then any private address.
         let plain = [adapter("169.254.3.4", false), adapter("10.0.0.5", false), adapter("100.64.0.9", false)];
         assert_eq!(choose_advertised_ip(&plain, false), Some(Ipv4Addr::new(100, 64, 0, 9)));
