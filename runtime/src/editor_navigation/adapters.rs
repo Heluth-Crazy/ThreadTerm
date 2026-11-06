@@ -13,6 +13,15 @@ const MAX_JAVA_STARTUP_LOG_DIRECTORY_ENTRIES: usize = 64;
 const MAX_JAVA_STARTUP_LOG_FILES: usize = 8;
 const MAX_JAVA_STARTUP_LOG_BYTES: u64 = 128 * 1024;
 const MAX_JAVA_STARTUP_LOG_TOTAL_BYTES: u64 = 256 * 1024;
+const MIN_JDTLS_JAVA: u32 = 21;
+/// Each candidate costs one `java -version`, and discovery stops at the first usable one.
+const MAX_JAVA_CANDIDATES: usize = 16;
+/// Bounds one install or extensions folder listing.
+const MAX_DISCOVERY_ENTRIES: usize = 1024;
+#[cfg(windows)]
+const JAVA_FILE: &str = "java.exe";
+#[cfg(not(windows))]
+const JAVA_FILE: &str = "java";
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,8 +113,8 @@ pub(super) fn detect(tools: &ToolConfiguration) -> Vec<Detection> {
     let typescript = executable(&tools.typescript, "typescript-language-server");
     let rust = executable(&tools.rust, "rust-analyzer");
     let python = executable(&tools.python, "pyright-langserver");
-    let java = executable(&tools.java, "java");
     let jdtls = jdtls_root(&tools.jdtls);
+    let java = find_java(&tools.java, jdtls.as_deref().ok());
     vec![
         detection("typescript", typescript, "typescript-language-server was not found; install it explicitly or configure its executable path"),
         rust_detection(rust),
@@ -134,6 +143,16 @@ pub(super) fn detect_quick(tools: &ToolConfiguration) -> Vec<Detection> {
             }),
         },
     };
+    let jdtls = jdtls_root(&tools.jdtls);
+    // No version query here: the first existing candidate stands in until `detect` finishes.
+    let java = if tools.java.is_empty() {
+        java_candidates(&JavaSearch::current(), jdtls.as_deref().ok())
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("navigation_server_unavailable: java executable was not found"))
+    } else {
+        executable(&tools.java, "java")
+    };
     vec![
         detection(
             "typescript",
@@ -152,12 +171,12 @@ pub(super) fn detect_quick(tools: &ToolConfiguration) -> Vec<Detection> {
         ),
         pending(
             "java",
-            executable(&tools.java, "java"),
+            java,
             "Java 21 or newer was not found; configure its executable path",
         ),
         detection(
             "jdtls",
-            jdtls_root(&tools.jdtls),
+            jdtls,
             "JDT LS server directory was not found; configure the extracted server directory",
         ),
     ]
@@ -168,7 +187,8 @@ fn detection(id: &'static str, value: Result<PathBuf>, missing: &str) -> Detecti
         Ok(path) => Detection {
             id,
             available: true,
-            path: Some(path.to_string_lossy().into_owned()),
+            // The JDT LS directory stays canonical for launching; show the ordinary spelling.
+            path: Some(crate::git_read::plain_path(&path).to_string_lossy().into_owned()),
             message: None,
         },
         Err(error) => Detection {
@@ -184,29 +204,15 @@ fn detection(id: &'static str, value: Result<PathBuf>, missing: &str) -> Detecti
     }
 }
 
-fn java_detection(value: Result<PathBuf>) -> Detection {
+fn java_detection(value: Result<(PathBuf, u32)>) -> Detection {
     match value {
-        Ok(path) => match java_major(&path) {
-            Ok(major) if major >= 21 => Detection {
-                id: "java",
-                available: true,
-                path: Some(path.to_string_lossy().into_owned()),
-                message: None,
-            },
-            Ok(major) => Detection {
-                id: "java",
-                available: false,
-                path: Some(path.to_string_lossy().into_owned()),
-                message: Some(format!(
-                    "Java 21 or newer is required by JDT LS; detected Java {major}"
-                )),
-            },
-            Err(error) => Detection {
-                id: "java",
-                available: false,
-                path: Some(path.to_string_lossy().into_owned()),
-                message: Some(error.to_string()),
-            },
+        Ok((path, major)) => Detection {
+            id: "java",
+            available: major >= MIN_JDTLS_JAVA,
+            path: Some(path.to_string_lossy().into_owned()),
+            message: (major < MIN_JDTLS_JAVA).then(|| {
+                format!("Java {MIN_JDTLS_JAVA} or newer is required by JDT LS; detected Java {major}")
+            }),
         },
         Err(error) => Detection {
             id: "java",
@@ -320,13 +326,182 @@ fn python(tools: &ToolConfiguration) -> Result<Launch> {
 }
 
 fn java(tools: &ToolConfiguration, context_data: &Path) -> Result<Launch> {
-    let java = executable(&tools.java, "java")?;
-    let major = java_major(&java)?;
-    if major < 21 {
-        return Err(anyhow!("navigation_java_incompatible: Java 21 or newer is required by JDT LS; detected Java {major}"));
-    }
+    // The server comes first: its bundled JRE, if any, is the preferred Java.
     let root = jdtls_root(&tools.jdtls)?;
+    let (java, major) = find_java(&tools.java, Some(&root))?;
+    if major < MIN_JDTLS_JAVA {
+        return Err(anyhow!("navigation_java_incompatible: Java {MIN_JDTLS_JAVA} or newer is required by JDT LS; detected Java {major}"));
+    }
     java_launch(java, root, context_data)
+}
+
+/// Where a Java may be installed, besides the JRE bundled with JDT LS.
+struct JavaSearch {
+    java_home: Option<PathBuf>,
+    path: Vec<PathBuf>,
+    roots: Vec<PathBuf>,
+}
+
+impl JavaSearch {
+    fn current() -> Self {
+        let environment = crate::environment::provider_environment();
+        let var = |name: &str| {
+            crate::environment::value(&environment.vars, name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        let mut roots = Vec::new();
+        #[cfg(windows)]
+        for base in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"]
+            .into_iter()
+            .filter_map(var)
+            .chain(var("LOCALAPPDATA").map(|local| local.join("Programs")))
+        {
+            for vendor in ["Java", "Eclipse Adoptium", "AdoptOpenJDK", "Microsoft", "Zulu", "Amazon Corretto", "BellSoft", "Semeru", "OpenJDK"] {
+                roots.push(base.join(vendor));
+            }
+        }
+        #[cfg(target_os = "macos")]
+        roots.push(PathBuf::from("/Library/Java/JavaVirtualMachines"));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        roots.push(PathBuf::from("/usr/lib/jvm"));
+        // IntelliJ keeps the JDKs it downloads here.
+        if let Some(home) = user_home(&environment.vars) {
+            roots.push(home.join(".jdks"));
+        }
+        Self {
+            java_home: var("JAVA_HOME"),
+            path: environment.search_paths.clone(),
+            roots,
+        }
+    }
+}
+
+/// A configured Java is used as-is. Otherwise the first discovered Java new
+/// enough for JDT LS wins; with none, the newest older one is returned so the
+/// caller can name it. Windows PATH often starts with an old Java (Oracle's
+/// `javapath`), so stopping at the first `java` would miss a newer install.
+fn find_java(configured: &str, jdtls: Option<&Path>) -> Result<(PathBuf, u32)> {
+    if !configured.is_empty() {
+        let path = executable(configured, "java")?;
+        let major = java_major(&path)?;
+        return Ok((path, major));
+    }
+    pick_java(java_candidates(&JavaSearch::current(), jdtls), java_major)
+}
+
+fn pick_java(
+    candidates: Vec<PathBuf>,
+    mut major: impl FnMut(&Path) -> Result<u32>,
+) -> Result<(PathBuf, u32)> {
+    let mut newest_old: Option<(PathBuf, u32)> = None;
+    let mut failure = None;
+    for path in candidates {
+        match major(&path) {
+            Ok(version) if version >= MIN_JDTLS_JAVA => return Ok((path, version)),
+            Ok(version) => {
+                if newest_old.as_ref().is_none_or(|(_, old)| version > *old) {
+                    newest_old = Some((path, version));
+                }
+            }
+            Err(error) => {
+                failure.get_or_insert(error);
+            }
+        }
+    }
+    newest_old.ok_or_else(|| {
+        failure.unwrap_or_else(|| anyhow!("navigation_server_unavailable: java executable was not found"))
+    })
+}
+
+/// Existing Java executables in preference order: the JRE an editor extension
+/// ships beside its JDT LS, JAVA_HOME, every PATH entry, then install folders
+/// newest-looking first. Only file checks; versions are queried by the caller.
+fn java_candidates(search: &JavaSearch, jdtls: Option<&Path>) -> Vec<PathBuf> {
+    let homes = |root: &Path| {
+        let mut homes = child_dirs(root);
+        homes.sort_by_key(|home| {
+            std::cmp::Reverse(home.file_name().and_then(|name| name.to_str()).and_then(parse_java_major))
+        });
+        homes
+    };
+    let mut files = Vec::new();
+    if let Some(extension) = jdtls.and_then(Path::parent) {
+        files.extend(homes(&extension.join("jre")).into_iter().map(|home| home.join("bin").join(JAVA_FILE)));
+    }
+    files.extend(search.java_home.iter().map(|home| home.join("bin").join(JAVA_FILE)));
+    files.extend(search.path.iter().map(|directory| directory.join(JAVA_FILE)));
+    for root in &search.roots {
+        for home in homes(root) {
+            files.push(home.join("bin").join(JAVA_FILE));
+            // macOS bundles keep the JDK one level down.
+            files.push(home.join("Contents").join("Home").join("bin").join(JAVA_FILE));
+        }
+    }
+    let mut unique = Vec::new();
+    for file in files {
+        if unique.len() == MAX_JAVA_CANDIDATES {
+            break;
+        }
+        let Ok(canonical) = file.canonicalize() else {
+            continue;
+        };
+        let plain = crate::git_read::plain_path(&canonical);
+        if canonical.is_file() && !unique.contains(&plain) {
+            unique.push(plain);
+        }
+    }
+    unique
+}
+
+fn child_dirs(root: &Path) -> Vec<PathBuf> {
+    fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .take(MAX_DISCOVERY_ENTRIES)
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+fn user_home(vars: &crate::environment::Vars) -> Option<PathBuf> {
+    ["USERPROFILE", "HOME"]
+        .into_iter()
+        .find_map(|name| crate::environment::value(vars, name).filter(|value| !value.is_empty()))
+        .map(PathBuf::from)
+}
+
+/// Red Hat's Java extension for VS Code (and its forks) ships a complete JDT LS
+/// in `<extension>/server`; the newest complete one wins.
+fn editor_jdtls(home: &Path) -> Option<PathBuf> {
+    let mut newest: Option<(Vec<u32>, PathBuf)> = None;
+    for editor in [".vscode", ".vscode-insiders", ".vscode-oss", ".cursor", ".windsurf"] {
+        for extension in child_dirs(&home.join(editor).join("extensions")) {
+            let Some(version) = extension
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("redhat.java-"))
+                .map(|rest| {
+                    rest.split('-')
+                        .next()
+                        .unwrap_or_default()
+                        .split('.')
+                        .map(|part| part.parse().unwrap_or(0))
+                        .collect::<Vec<u32>>()
+                })
+            else {
+                continue;
+            };
+            let server = extension.join("server");
+            if server.join("plugins").is_dir()
+                && server.join(platform_configuration()).is_dir()
+                && newest.as_ref().is_none_or(|(best, _)| version > *best)
+            {
+                newest = Some((version, server));
+            }
+        }
+    }
+    newest.map(|(_, server)| server)
 }
 
 fn java_launch(java: PathBuf, root: PathBuf, context_data: &Path) -> Result<Launch> {
@@ -565,6 +740,12 @@ fn jdtls_root(configured: &str) -> Result<PathBuf> {
             }
         }
     }
+    let environment = crate::environment::provider_environment();
+    if let Some(server) = user_home(&environment.vars).and_then(|home| editor_jdtls(&home)) {
+        return server
+            .canonicalize()
+            .context("canonicalizing detected JDT LS directory");
+    }
     Err(anyhow!(
         "navigation_server_unavailable: JDT LS server directory was not found"
     ))
@@ -645,6 +826,7 @@ fn platform_configuration() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn executable_fixture(root: &Path, name: &str) -> PathBuf {
         let path = root.join(name);
@@ -661,6 +843,72 @@ mod tests {
         );
         assert_eq!(parse_java_major("openjdk 21.0.5 2024-10-15"), Some(21));
         assert_eq!(parse_java_major("not a version"), None);
+    }
+
+    fn java_install(root: &Path, name: &str) -> PathBuf {
+        let bin = root.join(name).join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        crate::git_read::plain_path(&executable_fixture(&bin, JAVA_FILE))
+    }
+
+    #[test]
+    fn java_discovery_looks_past_an_old_path_java_for_a_newer_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let extension = root.join("redhat.java-1.58.0-win32-x64");
+        fs::create_dir_all(extension.join("server")).unwrap();
+        let bundled = java_install(&extension.join("jre"), "25.0.4.1-win32-x86_64");
+        let java_home = java_install(root, "java-home");
+        let javapath = java_install(root, "javapath");
+        let old = java_install(&root.join("vendor"), "jdk1.8.0_212");
+        let new = java_install(&root.join("vendor"), "jdk-21.0.5");
+        let search = JavaSearch {
+            java_home: Some(root.join("java-home")),
+            // A missing entry, a duplicate of JAVA_HOME and a repeated root are skipped.
+            path: vec![root.join("missing"), root.join("javapath/bin"), root.join("java-home/bin")],
+            roots: vec![root.join("vendor"), root.join("vendor")],
+        };
+        assert_eq!(
+            java_candidates(&search, Some(&extension.join("server"))),
+            [bundled.clone(), java_home.clone(), javapath.clone(), new.clone(), old.clone()]
+        );
+        assert_eq!(
+            java_candidates(&search, None),
+            [java_home.clone(), javapath.clone(), new.clone(), old.clone()]
+        );
+
+        let versions = HashMap::from([(bundled.clone(), 25), (java_home.clone(), 8), (javapath.clone(), 17), (new.clone(), 21), (old, 8)]);
+        let major = |path: &Path| versions.get(path).copied().ok_or_else(|| anyhow!("unknown Java"));
+        assert_eq!(pick_java(java_candidates(&search, Some(&extension.join("server"))), major).unwrap(), (bundled, 25));
+        assert_eq!(pick_java(java_candidates(&search, None), major).unwrap(), (new, 21));
+        // With only old ones, the newest is named, not the first on PATH.
+        let old_only = JavaSearch { java_home: Some(root.join("java-home")), path: vec![root.join("javapath/bin")], roots: Vec::new() };
+        assert_eq!(pick_java(java_candidates(&old_only, None), major).unwrap(), (javapath, 17));
+        assert!(pick_java(Vec::new(), major).unwrap_err().to_string().contains("not found"));
+
+        let detection = java_detection(Ok((java_home, 8)));
+        assert!(!detection.available);
+        assert_eq!(detection.message.as_deref(), Some("Java 21 or newer is required by JDT LS; detected Java 8"));
+    }
+
+    #[test]
+    fn editor_jdtls_prefers_the_newest_complete_red_hat_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let server = |editor: &str, extension: &str, complete: bool| {
+            let server = home.join(editor).join("extensions").join(extension).join("server");
+            fs::create_dir_all(server.join("plugins")).unwrap();
+            if complete {
+                fs::create_dir_all(server.join(platform_configuration())).unwrap();
+            }
+            server
+        };
+        assert_eq!(editor_jdtls(home), None);
+        server(".vscode", "redhat.java-1.9.0-win32-x64", true);
+        let newest = server(".cursor", "redhat.java-1.58.0-win32-x64", true);
+        server(".vscode", "redhat.java-1.60.0-win32-x64", false);
+        server(".vscode", "vscjava.vscode-java-debug-0.60.0", true);
+        assert_eq!(editor_jdtls(home), Some(newest));
     }
 
     #[test]

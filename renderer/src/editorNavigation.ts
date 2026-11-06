@@ -96,6 +96,18 @@ export function notifyNavigationGroup(group: NavigationGroup) { for (const notif
 
 export function navigationError(error: unknown, zh: boolean): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('navigation_java_incompatible')) {
+    const detected = /Java (\d+) or newer is required by JDT LS; detected Java (\d+)/.exec(message);
+    if (detected) return zh ? `Java 代码跳转需要 Java ${detected[1]} 或更高版本，这台电脑上只找到 Java ${detected[2]}。请安装新版 Java，或在“语言服务”中选择它。` : `Java code navigation needs Java ${detected[1]} or newer, but this computer only has Java ${detected[2]}. Install a newer Java, or choose it in Language services.`;
+    const required = /requires Java (\d+) or newer/.exec(message);
+    if (required) return zh ? `这个 Java 语言服务需要 Java ${required[1]} 或更高版本。请在“语言服务”中选择新版 Java。` : `This Java language server needs Java ${required[1]} or newer. Choose a newer Java in Language services.`;
+    return zh ? '无法读取 Java 版本。请在“语言服务”中选择 Java 21 或更高版本。' : 'The Java version could not be read. Choose Java 21 or newer in Language services.';
+  }
+  if (message.includes('navigation_server_unavailable')) {
+    if (message.includes('java executable')) return zh ? '没有找到 Java 21 或更高版本。请安装后重试，或在“语言服务”中选择它。' : 'Java 21 or newer was not found. Install it and retry, or choose it in Language services.';
+    if (message.includes('JDT LS')) return zh ? '没有找到 Java 语言服务（JDT LS）。在 VS Code 中安装 Red Hat 的 Java 扩展后会自动使用，也可以在“语言服务”中填写它的目录。' : 'The Java language server (JDT LS) was not found. Install Red Hat’s Java extension in VS Code and it is used automatically, or set its folder in Language services.';
+    return zh ? '没有找到这种文件的语言服务。请安装后重试，或在“语言服务”中填写它的位置。' : 'No language service was found for this file. Install it and retry, or set its location in Language services.';
+  }
   const known: Array<[string, string, string]> = [
     ['divergent_buffers', '目标文件在不同标签中有不同草稿，请先保存后重试。', 'The target has different drafts in separate tabs. Save them before retrying.'],
     ['document_too_large', '文件或草稿集合超出代码跳转的大小限制。', 'The file or draft set exceeds the navigation size limit.'],

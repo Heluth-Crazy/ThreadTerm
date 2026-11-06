@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NavigationDocuments, NavigationHistory, navigationKey, navigationLanguage } from './editorNavigation';
+import { NavigationDocuments, NavigationHistory, navigationError, navigationKey, navigationLanguage } from './editorNavigation';
+
+test('setup failures read as plain guidance instead of runtime codes', () => {
+  const old = new Error('navigation_java_incompatible: Java 21 or newer is required by JDT LS; detected Java 8');
+  assert.equal(navigationError(old, false), 'Java code navigation needs Java 21 or newer, but this computer only has Java 8. Install a newer Java, or choose it in Language services.');
+  assert.match(navigationError(old, true), /需要 Java 21 或更高版本，这台电脑上只找到 Java 8/);
+  assert.match(navigationError(new Error('navigation_java_incompatible: configured JDT LS requires Java 25 or newer; choose a compatible Java executable in Editor navigation settings'), false), /needs Java 25 or newer/);
+  assert.match(navigationError(new Error('navigation_java_incompatible: Java version output was not recognized'), false), /could not be read/);
+  assert.match(navigationError(new Error('navigation_server_unavailable: java executable was not found'), false), /^Java 21 or newer was not found/);
+  assert.match(navigationError(new Error('navigation_server_unavailable: JDT LS server directory was not found'), false), /JDT LS\) was not found/);
+  assert.match(navigationError(new Error('navigation_server_unavailable: pyright-langserver executable was not found'), true), /没有找到这种文件的语言服务/);
+  for (const value of [old, new Error('navigation_server_unavailable: x')]) assert.doesNotMatch(navigationError(value, false), /navigation_/);
+});
 
 test('navigation history commits successful opens, branches and bounds itself', () => {
   const history = new NavigationHistory();
