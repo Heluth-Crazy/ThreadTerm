@@ -34,4 +34,7 @@
 .machine-add { margin-top:6px; width:100%; }
 .remote-project-catalog .sess-row:hover .badge { visibility:visible; }
 
-.machine-settings .tailscale-only-setting .setting-switch { flex-direction: row; }
+.machine-settings .tailscale-only-setting .setting-switch, .machine-settings .cross-network-setting .setting-switch { flex-direction: row; }
+.machine-settings .cross-network-relay { margin: 4px 0 10px; }
+.machine-settings .cross-network-relay summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.machine-settings .cross-network-relay label { margin: 8px 0 6px; }

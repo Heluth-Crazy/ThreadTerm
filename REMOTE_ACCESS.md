@@ -60,6 +60,18 @@ Each computer has its own sidebar group. Select its session to work there, or op
 
 **Only accept devices on my Tailscale network** is one shared host switch on This PC's Settings → Computers and Settings → Phones. It applies to computers and phones alike. When enabled, the listener accepts only Tailscale source addresses (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`, including IPv4-mapped IPv6 forms); loopback is refused. Changing the option restarts the listener and closes existing connections, including phones, within two seconds. Allowed clients reconnect. The preference survives runtime restarts. Only the host's local administration surface can change it (`device.tailscaleOnly.set {enabled, operationId}`); `device.status` reports `tailscaleOnly`.
 
+### Across networks (iroh)
+
+**Connect across networks** on This PC's Settings → Computers lets computers on other networks (home and office) reach this PC without Tailscale or port forwarding. It is off by default, and it never runs while Tailscale-only is on. It uses [iroh](https://www.iroh.computer): QUIC between the two PCs, with NAT traversal for a direct path and an encrypted relay when no direct path exists.
+
+- **Pairing.** While the switch is on, a desktop pairing offer also carries this PC's public iroh key (descriptor v2). The other PC dials that key; nothing in the offer names an address. Pairings made before the switch was turned on keep using their address; pair again to use iroh. Phones keep using addresses on the local network or Tailscale.
+- **What iroh carries.** Each connection is the same pinned TLS stream the HTTPS listener serves, so the certificate check, check code, credential and deny list above are unchanged. iroh's own QUIC encryption sits underneath.
+- **Who may connect.** Before any TLS the host looks at the remote iroh key: a paired, unrevoked computer's key may connect; an unknown key may only send the pairing request, and only while a desktop pairing offer is open. The host records the key the connection proved, never one from the request. Revoking a computer stops its key on the next stream.
+- **Identity.** Each install creates a random iroh key on first use and keeps it next to the TLS identity (`remote-access-iroh.key`, current user only). **Reset remote identity** replaces it as well.
+- **Relays.** By default iroh uses n0's free public relays, and publishes this PC's key with the relay it currently uses (`dns.iroh.link`), so paired computers find it when that relay changes. Relays see the two keys, IP addresses and traffic volume, never content. With a self-hosted relay (**Relay server** under the switch) the offer names that relay and nothing is published. A PC that only connects to others publishes nothing.
+- **Proxy tunnels.** On a PC with a proxy TUN (v2rayN, Clash; StrictRoute, FakeIP), iroh's UDP socket binds to the real Wi-Fi/Ethernet address while a tunnel owns the default route, and relay names resolve over DNS-over-HTTPS (AliDNS, then Cloudflare) before the system resolver, ignoring FakeIP answers. No proxy setting needs to change.
+- **Local administration.** `device.iroh.set {enabled, relayUrl?, operationId}`; `device.status` reports `irohEnabled`, `irohRelayUrl`, `irohEndpointId` and `irohError`. The desktop dials with `device.peer.dial {endpointId, relayUrl?}`, which returns a one-time named pipe and token. Both are denied to paired computers.
+
 ### Quitting a host and returning later
 
 With Computers enabled, a running runtime and at least one unrevoked paired desktop computer, both tray Quit and the window's Quit action always ask, even with no active sessions. The heading names computers with live connections, or says **Other computers can use this PC**. Choose:

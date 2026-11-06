@@ -1,3 +1,4 @@
+import net from 'node:net';
 import tls from 'node:tls';
 import http from 'node:http';
 import { PROTOCOL_VERSION, PROTOCOL_CONTRACT, isRecord } from '@threadterm/protocol';
@@ -17,7 +18,14 @@ export function certificateCheckCode(pin: string): string {
   const value = normalizePin(pin).slice(0, 12);
   return `${value.slice(0, 4)} ${value.slice(4, 8)} ${value.slice(8)}`;
 }
-export interface PairDescriptor { v: 1; serverUrl: string; pairingId: string; code: string; tlsFingerprint: string; expiresAt?: string }
+/** A computer reached across networks: its public iroh key, and the relay it last used (a hint). */
+export interface IrohAddress { endpointId: string; relayUrl?: string }
+export interface PairDescriptor { v: 1 | 2; serverUrl: string; pairingId: string; code: string; tlsFingerprint: string; expiresAt?: string; iroh?: IrohAddress }
+const IROH_KEY = /^[0-9a-f]{64}$/;
+function validRelay(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  try { return new URL(value).protocol === 'https:'; } catch { return false; }
+}
 export function parsePairDescriptor(text: string, now = Date.now()): PairDescriptor {
   if (typeof text !== 'string' || text.length > 16384) throw new Error('Invalid pairing text');
   let value: unknown;
@@ -29,42 +37,92 @@ export function parsePairDescriptor(text: string, now = Date.now()): PairDescrip
     if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error();
     value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
   } catch { throw new Error('Invalid ThreadTerm pairing text'); }
-  if (!isRecord(value) || value.v !== 1 || typeof value.serverUrl !== 'string'
+  if (!isRecord(value) || (value.v !== 1 && value.v !== 2) || typeof value.serverUrl !== 'string'
     || typeof value.pairingId !== 'string' || !/^[a-f0-9-]{36}$/i.test(value.pairingId)
     || typeof value.code !== 'string' || !/^[A-F0-9]{32}$/i.test(value.code.replace(/[-\s]/g, ''))
     || typeof value.tlsFingerprint !== 'string') throw new Error('Invalid pairing descriptor');
+  // v2 adds the host's iroh key; v1 never carries one.
+  if (value.v === 2 ? !isRecord(value.iroh) || typeof value.iroh.endpointId !== 'string' || !IROH_KEY.test(value.iroh.endpointId)
+    || value.iroh.relayUrl !== undefined && !validRelay(value.iroh.relayUrl) : value.iroh !== undefined) throw new Error('Invalid pairing descriptor');
   peerEndpoint(value.serverUrl);
   normalizePin(value.tlsFingerprint);
   if (value.expiresAt !== undefined && (typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt)) || Date.parse(value.expiresAt) <= now)) throw new Error('Pairing offer expired');
   return value as unknown as PairDescriptor;
 }
+/** `iroh://<key>?relay=<url>`: the endpoint a computer paired across networks is stored and dialed under. */
+export function irohEndpoint(address: IrohAddress): string {
+  const url = new URL(`iroh://${address.endpointId}`);
+  if (address.relayUrl) url.searchParams.set('relay', address.relayUrl);
+  return url.href;
+}
+export function irohAddress(endpoint: string): IrohAddress | undefined {
+  const url = new URL(endpoint);
+  if (url.protocol !== 'iroh:') return undefined;
+  const relayUrl = url.searchParams.get('relay') ?? undefined;
+  return relayUrl ? { endpointId: url.hostname, relayUrl } : { endpointId: url.hostname };
+}
+/** The same computer, whichever relay it was last seen on. */
+export function sameEndpoint(a: string, b: string): boolean {
+  const left = irohAddress(a), right = irohAddress(b);
+  if (left || right) return left?.endpointId === right?.endpointId;
+  return peerEndpoint(a).href === peerEndpoint(b).href;
+}
 export function peerEndpoint(endpoint: string): URL {
   const url = new URL(endpoint);
+  if (url.protocol === 'iroh:') {
+    if (!IROH_KEY.test(url.hostname) || url.port || url.username || url.password || url.hash || !['', '/'].includes(url.pathname)
+      || [...url.searchParams.keys()].some(key => key !== 'relay') || url.searchParams.getAll('relay').length > 1
+      || url.searchParams.has('relay') && !validRelay(url.searchParams.get('relay'))) throw new Error('Invalid computer endpoint');
+    return url;
+  }
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw new Error('Invalid computer endpoint');
   return url;
 }
-/** No application bytes may leave this socket until secureConnect verifies both identity and ALPN. */
+export type PeerDialer = (address: IrohAddress) => Promise<{ pipe: string; token: string }>;
+let peerDialer: PeerDialer | undefined;
+/** Main wires this to the local runtime's `device.peer.dial`, which bridges an iroh stream to a one-time pipe. */
+export function setPeerDialer(dialer: PeerDialer | undefined): void { peerDialer = dialer; }
+async function irohSocket(address: IrohAddress): Promise<net.Socket> {
+  if (!peerDialer) throw new Error('iroh_unavailable: Connecting across networks is unavailable');
+  const { pipe, token } = await peerDialer(address);
+  return await new Promise((resolve, reject) => {
+    const socket = net.connect(pipe);
+    socket.once('error', reject);
+    socket.once('connect', () => { socket.off('error', reject); socket.write(token); resolve(socket); });
+  });
+}
+/** No application bytes may leave this socket until secureConnect verifies both identity and ALPN. Across networks
+ * the same TLS runs over a pipe to the local runtime, which carries it through iroh. */
 export function connectPinned(endpoint: string, pin: string, alpn = 'threadterm-peer/1'): Promise<tls.TLSSocket> {
-  const url = peerEndpoint(endpoint), expected = normalizePin(pin);
+  const url = peerEndpoint(endpoint), expected = normalizePin(pin), iroh = irohAddress(endpoint);
   return new Promise((resolve, reject) => {
-    const socket = tls.connect({ host: url.hostname.replace(/^\[|\]$/g, ''), port: Number(url.port || 443), rejectUnauthorized: false, ALPNProtocols: [alpn] });
-    const timer = setTimeout(() => fail(Object.assign(new Error('Computer connection timed out'), { code: 'ETIMEDOUT' })), 10000);
+    let socket: tls.TLSSocket | undefined, settled = false;
+    // Across networks a first connection may wait on a relay and on hole punching.
+    const timer = setTimeout(() => fail(Object.assign(new Error('Computer connection timed out'), { code: 'ETIMEDOUT' })), iroh ? 30000 : 10000);
     const fail = (error: Error) => {
-      clearTimeout(timer); socket.destroy();
+      if (settled) return;
+      settled = true; clearTimeout(timer); socket?.destroy();
       reject(/no application protocol/i.test(error.message) ? new PeerTransportError('alpn-mismatch', 'The computer did not negotiate the required connection protocol. Update one so they match.') : error);
     };
-    socket.once('error', fail);
-    socket.once('secureConnect', () => {
+    const secure = (options: tls.ConnectionOptions) => {
+      const current = tls.connect({ ...options, rejectUnauthorized: false, ALPNProtocols: [alpn] });
+      socket = current;
+      current.once('error', fail);
+      current.once('secureConnect', () => {
       try {
-        const actual = socket.getPeerCertificate().fingerprint256;
+        const actual = current.getPeerCertificate().fingerprint256;
         if (!actual || normalizePin(actual) !== expected) throw new PeerTransportError('pin-mismatch', 'This computer’s identity changed. Pair again before connecting.');
-        if (socket.alpnProtocol !== alpn) throw new PeerTransportError('alpn-mismatch', 'The computer did not negotiate the required connection protocol.');
-        clearTimeout(timer);
-        socket.setKeepAlive(true, 30000);
-        socket.pause();
-        resolve(socket);
+        if (current.alpnProtocol !== alpn) throw new PeerTransportError('alpn-mismatch', 'The computer did not negotiate the required connection protocol.');
+        if (settled) { current.destroy(); return; }
+        settled = true; clearTimeout(timer);
+        if (!iroh) current.setKeepAlive(true, 30000);
+        current.pause();
+        resolve(current);
       } catch (error) { fail(error instanceof Error ? error : new Error('Certificate check failed')); }
-    });
+      });
+    };
+    if (iroh) void irohSocket(iroh).then(raw => { if (settled) raw.destroy(); else secure({ socket: raw }); }, fail);
+    else secure({ host: url.hostname.replace(/^\[|\]$/g, ''), port: Number(url.port || 443) });
   });
 }
 /** Socket failures that mean nothing answered at the offer's address from this computer. */
@@ -72,6 +130,10 @@ const UNREACHABLE = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUN
 /** A pairing check that never reached the other computer, as a code the Settings page explains with the address. */
 export function pairingConnectError(error: unknown, endpoint: string): unknown {
   const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  if (irohAddress(endpoint)) {
+    const message = error instanceof Error ? error.message : String(error);
+    return code && UNREACHABLE.has(code) || /iroh_unreachable/.test(message) ? new Error('iroh_unreachable: the other computer did not answer') : error;
+  }
   return code && UNREACHABLE.has(code) ? new Error(`computer_unreachable: ${peerEndpoint(endpoint).host}`) : error;
 }
 export interface PeerFrames {

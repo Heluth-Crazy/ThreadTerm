@@ -12,7 +12,9 @@ import { PROTOCOL_VERSION, PROTOCOL_CONTRACT } from '@threadterm/protocol';
 import { MachineRegistry } from '../src/machines.js';
 import { MachineBindings, MachineViews } from '../src/machineViews.js';
 import { createAppSessionPreparer } from '../src/appSession.js';
-import { connectPinned, pairingConnectError, parsePairDescriptor, pairOnPinnedConnection, PeerHeartbeat, PeerTransportError } from '../src/peer-transport.js';
+import { connectPinned, irohAddress, irohEndpoint, pairingConnectError, parsePairDescriptor, pairOnPinnedConnection, PeerHeartbeat, PeerTransportError, peerEndpoint, sameEndpoint, setPeerDialer } from '../src/peer-transport.js';
+import net from 'node:net';
+import { Duplex } from 'node:stream';
 import { RuntimeClient } from '../src/runtime-client.js';
 
 const scratch = mkdtempSync(join(tmpdir(), 'tt-machine-test-'));
@@ -278,4 +280,90 @@ test('version mismatch stops retries until explicit selection requests one new a
     internal.incompatible = new PeerTransportError('pin-mismatch','Pair again');
     client.retryPeerConnection(); await new Promise(done=>setTimeout(done,50)); assert.equal(attempts,2);
   } finally { client.dispose(); }
+});
+
+// --- across networks (iroh) ------------------------------------------------------------------------------------------
+
+const hostKey = 'ab'.repeat(32);
+test('v2 descriptors carry the host iroh key; v1 never does; keys and relays are validated', () => {
+  const v2 = { ...descriptor(), v: 2, iroh: { endpointId: hostKey, relayUrl: 'https://relay.example./' } };
+  assert.deepEqual(parsePairDescriptor(text(v2)).iroh, v2.iroh);
+  assert.deepEqual(parsePairDescriptor(text({ ...v2, iroh: { endpointId: hostKey } })).iroh, { endpointId: hostKey });
+  for (const bad of [{ ...v2, iroh: undefined }, { ...v2, iroh: { endpointId: 'AB'.repeat(32) } }, { ...v2, iroh: { endpointId: hostKey.slice(2) } },
+    { ...v2, iroh: { endpointId: hostKey, relayUrl: 'http://relay.example./' } }, { ...descriptor(), iroh: { endpointId: hostKey } }, { ...descriptor(), v: 3 }]) {
+    assert.throws(() => parsePairDescriptor(text(bad)), /Invalid/, JSON.stringify(bad));
+  }
+});
+
+test('iroh endpoints name a computer by key: the relay is a hint, and the same key is the same computer', () => {
+  const withRelay = irohEndpoint({ endpointId: hostKey, relayUrl: 'https://relay.example./' }), bare = irohEndpoint({ endpointId: hostKey });
+  assert.equal(bare, `iroh://${hostKey}`);
+  assert.deepEqual(irohAddress(withRelay), { endpointId: hostKey, relayUrl: 'https://relay.example./' });
+  assert.equal(irohAddress('https://127.0.0.1:4567'), undefined);
+  assert.ok(sameEndpoint(withRelay, bare));
+  assert.ok(!sameEndpoint(bare, irohEndpoint({ endpointId: 'cd'.repeat(32) })));
+  assert.ok(!sameEndpoint(bare, 'https://127.0.0.1:4567'));
+  for (const bad of [`iroh://${hostKey}:9`, `iroh://${hostKey}/path`, `iroh://${hostKey}?other=1`, `iroh://${hostKey}?relay=http://x.example`, 'iroh://short']) {
+    assert.throws(() => peerEndpoint(bad), /Invalid computer endpoint/, bad);
+  }
+});
+
+test('a computer paired across networks is stored by its iroh endpoint and re-pairing matches its key', () => {
+  const registry = new MachineRegistry(join(scratch, `iroh-${randomUUID()}.json`), secureStorage);
+  const first = registry.add({ name: 'Home', color: '#3fb8a6', endpoint: irohEndpoint({ endpointId: hostKey, relayUrl: 'https://one.example./' }), pin }, 'credential-1');
+  assert.equal(registry.profile(first.id)?.endpoint, `iroh://${hostKey}?relay=https%3A%2F%2Fone.example.%2F`);
+  const again = registry.add({ name: 'Ignored', color: '#000000', endpoint: irohEndpoint({ endpointId: hostKey, relayUrl: 'https://two.example./' }), pin }, 'credential-2', new Set([first.id]));
+  assert.equal(again.id, first.id, 'the changed-identity entry is replaced, not duplicated');
+  assert.equal(again.name, 'Home');
+});
+
+/** A stand-in for the runtime's dial pipe: checks the one-time token, then serves TLS like the host. */
+async function dialPipeFixture(alpn: string) {
+  const pipe = `\\\\.\\pipe\\tt-iroh-test-${randomUUID()}`, token = 'f'.repeat(64);
+  const server = net.createServer(socket => {
+    socket.on('error', () => {});
+    // The token and the start of the TLS handshake may arrive in one chunk: hand TLS everything after the token.
+    let buffered = Buffer.alloc(0), carrier: Duplex | undefined;
+    socket.on('data', chunk => {
+      if (carrier) { carrier.push(chunk); return; }
+      buffered = Buffer.concat([buffered, chunk]);
+      if (buffered.length < token.length) return;
+      if (buffered.subarray(0, token.length).toString() !== token) { socket.destroy(); return; }
+      carrier = new Duplex({ read() {}, write(data, _encoding, callback) { socket.write(data, callback); }, final(callback) { socket.end(); callback(); } });
+      const secure = new tls.TLSSocket(carrier, { isServer: true, cert, key, ALPNProtocols: [alpn] });
+      secure.on('error', () => {});
+      const rest = buffered.subarray(token.length);
+      if (rest.length) carrier.push(rest);
+    });
+    socket.on('end', () => carrier?.push(null));
+  });
+  await new Promise<void>(resolve => server.listen(pipe, resolve));
+  return { pipe, token, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
+}
+
+test('across networks the pinned TLS runs over the runtime pipe: token, pin and ALPN are all checked', async t => {
+  t.after(() => setPeerDialer(undefined));
+  const fixture = await dialPipeFixture('http/1.1');
+  try {
+    const dialed: unknown[] = [];
+    setPeerDialer(async address => { dialed.push(address); return { pipe: fixture.pipe, token: fixture.token }; });
+    const endpoint = irohEndpoint({ endpointId: hostKey, relayUrl: 'https://relay.example./' });
+    const socket = await connectPinned(endpoint, pin, 'http/1.1');
+    assert.equal(socket.alpnProtocol, 'http/1.1');
+    socket.destroy();
+    assert.deepEqual(dialed, [{ endpointId: hostKey, relayUrl: 'https://relay.example./' }]);
+    await assert.rejects(connectPinned(endpoint, '00'.repeat(32), 'http/1.1'), error => error instanceof PeerTransportError && error.code === 'pin-mismatch');
+    setPeerDialer(async () => ({ pipe: fixture.pipe, token: '0'.repeat(64) }));
+    await assert.rejects(connectPinned(endpoint, pin, 'http/1.1'));
+    setPeerDialer(undefined);
+    await assert.rejects(connectPinned(endpoint, pin, 'http/1.1'), /iroh_unavailable/);
+  } finally { await fixture.close(); }
+});
+
+test('a pairing check that cannot reach the computer across networks says so in one code', () => {
+  const endpoint = irohEndpoint({ endpointId: hostKey });
+  assert.match(String((pairingConnectError(new Error('RuntimeRequestError: iroh_unreachable: timed out'), endpoint) as Error).message), /^iroh_unreachable/);
+  assert.match(String((pairingConnectError(Object.assign(new Error('x'), { code: 'ETIMEDOUT' }), endpoint) as Error).message), /^iroh_unreachable/);
+  const mismatch = new PeerTransportError('pin-mismatch', 'changed');
+  assert.equal(pairingConnectError(mismatch, endpoint), mismatch);
 });

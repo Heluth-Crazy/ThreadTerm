@@ -37,7 +37,7 @@ import { MachineTreeStore, type WatchNotice } from './machineWatcher.js';
 import { MachineRegistry } from './machines.js';
 import { MachineBindings, MachineViews } from './machineViews.js';
 import { createAppSessionPreparer } from './appSession.js';
-import { certificateCheckCode, connectPinned, pairingConnectError, pairOnPinnedConnection, parsePairDescriptor, type PairDescriptor } from './peer-transport.js';
+import { certificateCheckCode, connectPinned, irohEndpoint, pairingConnectError, pairOnPinnedConnection, parsePairDescriptor, setPeerDialer, type PairDescriptor } from './peer-transport.js';
 import type { MachineInfo, MachineSnapshot } from '../../renderer/src/machineTypes.js';
 import type { TLSSocket } from 'node:tls';
 
@@ -61,7 +61,7 @@ const machineBindings = new MachineBindings<BrowserWindow>();
 const machineRenderers = new Map<number, Electron.WebContents>();
 const machineViews = new Map<number, MachineViews<View>>();
 const machineStates = new Map<string, Pick<MachineInfo, 'state' | 'message'>>();
-const pendingPairings = new Map<number, { descriptor: PairDescriptor; socket: TLSSocket; timer: NodeJS.Timeout }>();
+const pendingPairings = new Map<number, { descriptor: PairDescriptor; endpoint: string; socket: TLSSocket; timer: NodeJS.Timeout }>();
 let machines: MachineRegistry;
 let remoteMachinesEnabled = false;
 let machineBrowsers: MachineBrowserProfiles | undefined;
@@ -79,6 +79,8 @@ const machineTree = new MachineTreeStore(feed => {
 }, notice => { void notifyMachineEvent(notice); }, 250, () => remoteMachinesEnabled);
 const pendingMachineSession = new Map<string, string>();
 let adminRuntime = createAdminRuntime();
+// Computers paired across networks are dialed by this PC's runtime (iroh) and reached through a one-time local pipe.
+setPeerDialer(address => adminRuntime.request('device.peer.dial', address.relayUrl ? { endpointId: address.endpointId, relayUrl: address.relayUrl } : { endpointId: address.endpointId }));
 const windowRuntimes = new Map<number, RuntimeClient>();
 const outputSubscriptions = new Map<string, { ownerId: number; unsubscribe?: () => void; acknowledgements: Array<() => void> }>();
 let mainWindow: BrowserWindow | undefined;
@@ -454,12 +456,14 @@ function registerIpc(): void {
     if (typeof text !== 'string') throw new Error('Paste a ThreadTerm pairing offer');
     cancelPendingPairing(event.sender.id);
     const descriptor = parsePairDescriptor(text);
-    const socket = await connectPinned(descriptor.serverUrl, descriptor.tlsFingerprint, 'http/1.1').catch(error => { throw pairingConnectError(error, descriptor.serverUrl); });
+    // An offer made while the host connects across networks is reached through iroh; older offers by address.
+    const endpoint = descriptor.iroh ? irohEndpoint(descriptor.iroh) : descriptor.serverUrl;
+    const socket = await connectPinned(endpoint, descriptor.tlsFingerprint, 'http/1.1').catch(error => { throw pairingConnectError(error, endpoint); });
     if (event.sender.isDestroyed() || !remoteMachinesEnabled) { socket.destroy(); throw new Error('Pairing cancelled'); }
     cancelPendingPairing(event.sender.id);
     const timer = setTimeout(() => cancelPendingPairing(event.sender.id), 60000);
-    pendingPairings.set(event.sender.id, { descriptor, socket, timer });
-    return { checkCode: certificateCheckCode(descriptor.tlsFingerprint), endpoint: descriptor.serverUrl };
+    pendingPairings.set(event.sender.id, { descriptor, endpoint, socket, timer });
+    return { checkCode: certificateCheckCode(descriptor.tlsFingerprint), endpoint };
   });
   ipcMain.handle('threadterm:machine-add', async (event, options: unknown) => {
     assertTrustedRenderer(event); assertLocalMachine(event); await assertMachinesEnabled(); machines.assertEncryptionAvailable();
@@ -473,7 +477,7 @@ function registerIpc(): void {
     if (!remoteMachinesEnabled || event.sender.isDestroyed()) throw new Error('Pairing cancelled');
     const changed = new Set(machineTree.feed().machines.filter(row => row.machine.state === 'pin-mismatch').map(row => row.machine.id));
     for (const [id, state] of machineStates) if (state.state === 'pin-mismatch') changed.add(id);
-    const entry = machines.add({ name, color, endpoint: pending.descriptor.serverUrl, pin: pending.descriptor.tlsFingerprint }, credential, changed);
+    const entry = machines.add({ name, color, endpoint: pending.endpoint, pin: pending.descriptor.tlsFingerprint }, credential, changed);
     if (changed.has(entry.id)) {
       machineTree.remove(entry.id); machineStates.delete(entry.id);
       for (const [key, client] of windowRuntimes) if (machineBindings.get(key).machineId === entry.id) { client.dispose(); windowRuntimes.delete(key); }
