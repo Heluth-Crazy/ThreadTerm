@@ -163,8 +163,10 @@ test('branch invalidations during an in-flight read get a final incremental read
   assert.equal(client.calls.filter(method => method === 'runtime.snapshot').length, 1); watcher.stop();
 });
 
-test('tree feed omits native identities and delegation preview content from full snapshots', async () => {
-  const client = new FakeClient(); client.value.sessions[0] = { ...session(), nativeId: 'PRIVATE_NATIVE_ID', delegation: { id: 'delegate', parentSessionId: 'parent', workspace: 'shared', state: 'completed', outcome: 'PRIVATE_TRANSCRIPT_PREVIEW' } };
+test('tree feed keeps only the delegation parent link and state from full snapshots', async () => {
+  const client = new FakeClient(); client.value.sessions[0] = { ...session(), nativeId: 'PRIVATE_NATIVE_ID', delegation: { id: 'delegate', parentSessionId: 'parent', workspace: 'shared', state: 'completed', authority: 'full_access', outcome: 'PRIVATE_TRANSCRIPT_PREVIEW' } };
   const watcher = new MachineWatcher(machine('a'), client, () => {}, () => {}); watcher.start(); await settled();
-  const tree = JSON.stringify(watcher.tree()); assert.doesNotMatch(tree, /PRIVATE_|nativeId|outcome/); assert.match(tree, /Session/); watcher.stop();
+  const sessionTree = watcher.tree().sessions[0]!.session;
+  assert.deepEqual(sessionTree.delegation, { parentSessionId: 'parent', state: 'completed' });
+  const tree = JSON.stringify(watcher.tree()); assert.doesNotMatch(tree, /PRIVATE_|nativeId|outcome|authority|workspace|delegate/); assert.match(tree, /Session/); watcher.stop();
 });

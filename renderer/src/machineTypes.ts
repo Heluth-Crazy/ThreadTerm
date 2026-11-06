@@ -17,7 +17,13 @@ export interface MachineBridge {
   onMachinesChanged(listener: () => void): () => void;
 }
 
-export interface MachineTreeSession { session: import('@threadterm/protocol').Session; needsYou: number }
+/** Parent identity and lifecycle are enough for nesting and the finished-delegate fold. */
+export type MachineTreeSessionMetadata = Pick<import('@threadterm/protocol').Session,
+  'id' | 'title' | 'provider' | 'mode' | 'status' | 'createdAt' | 'updatedAt' | 'projectId' | 'worktreePath'
+  | 'exitCode' | 'readOnly' | 'archived' | 'activity' | 'terminalAgent'> & {
+  delegation?: Pick<import('@threadterm/protocol').SessionDelegation, 'parentSessionId' | 'state'>;
+};
+export interface MachineTreeSession { session: MachineTreeSessionMetadata; needsYou: number }
 export interface MachineTree { machine: MachineInfo; projects: import('@threadterm/protocol').Project[]; worktrees: import('@threadterm/protocol').Worktree[]; sessions: MachineTreeSession[]; needsYou: number }
 export interface MachineTreeFeed { machines: MachineTree[]; expanded: Record<string, boolean> }
 /** JSON tuple encoding also avoids collisions when ids/paths contain separators. */

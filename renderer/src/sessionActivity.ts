@@ -6,11 +6,11 @@ export type SessionActivityState = SessionActivity['state'];
 // delegated it, so it ranks with running work, not with what needs the user.
 const priority: Record<SessionActivityState, number> = { awaiting_approval: 0, awaiting_input: 0, running: 1, awaiting_parent: 1, idle: 2, unknown: 2 };
 
-export function isTerminalAttentionSession(session: Session): boolean {
+export function isTerminalAttentionSession(session: Pick<Session, 'readOnly' | 'status'>): boolean {
   return Boolean(session.readOnly || ['exited', 'interrupted', 'error'].includes(session.status));
 }
 
-export function sessionActivity(session: Session): SessionActivityState {
+export function sessionActivity(session: Pick<Session, 'readOnly' | 'status' | 'activity' | 'mode'>): SessionActivityState {
   // A snapshot can briefly retain an earlier activity event after a terminal
   // status. Never let that stale event keep the row animated or prioritized.
   if (isTerminalAttentionSession(session)) return 'unknown';
@@ -38,7 +38,7 @@ function time(value: string): number {
 }
 
 /** Sort only sessions in one rendered branch; callers keep project/worktree order intact. */
-export function sortSessionsByActivity<T extends Session>(sessions: readonly T[], frozenOrder?: ReadonlyMap<string, number>): T[] {
+export function sortSessionsByActivity<T extends Pick<Session, 'id' | 'createdAt' | 'readOnly' | 'status' | 'activity' | 'mode'>>(sessions: readonly T[], frozenOrder?: ReadonlyMap<string, number>): T[] {
   return [...sessions].sort((left, right) => {
     if (frozenOrder) {
       const leftOrder = frozenOrder.get(left.id), rightOrder = frozenOrder.get(right.id);

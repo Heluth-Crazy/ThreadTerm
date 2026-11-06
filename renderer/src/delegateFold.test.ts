@@ -42,3 +42,30 @@ test('expanded preference is bounded, deduplicated, pruned and tolerates malform
   assert.deepEqual(readExpandedParents('{"parent":true}'), []);
   assert.deepEqual(readExpandedParents('["parent",7,null,"parent"]'), ['parent']);
 });
+
+test('public tree metadata shares nesting, cross-folder ordering and finished folds with full sessions', () => {
+  const all = [parent, { ...child('active', 'running'), createdAt: '2026-11-04' }, child('finished', 'completed')];
+  const publicRows = all.map(({ delegation, ...session }) => ({ ...session,
+    ...(delegation ? { delegation: { parentSessionId: delegation.parentSessionId, state: delegation.state } } : {}),
+  }));
+  const rows = foldedDelegateRows([publicRows[0]], publicRows, undefined, []);
+  assert.deepEqual(rows, foldedDelegateRows([parent], all, undefined, []).map(row => row.kind === 'fold' ? row : {
+    ...row, session: publicRows.find(session => session.id === row.session.id),
+  }));
+  assert.deepEqual(rows.map(row => row.kind === 'session' ? [row.session.id, row.nested] : ['fold', row.count]),
+    [['parent', false], ['active', true], ['fold', 1]]);
+  assert.deepEqual(ids(foldedDelegateRows([publicRows[1]], publicRows, undefined, [])), []);
+  assert.deepEqual(ids(foldedDelegateRows([publicRows[0]], publicRows, undefined, ['parent'])), ['parent', 'active', 'fold:parent:1', 'finished']);
+});
+
+test('missing and archived parents leave finished children visible without nesting or a fold', () => {
+  const archived = { ...parent, archived: true }, orphan = child('orphan', 'completed');
+  const visible = [archived, orphan].filter(session => !session.archived);
+  assert.deepEqual(foldedDelegateRows(visible, visible, undefined, []), [{ kind: 'session', session: orphan, nested: false }]);
+});
+
+test('feed needs-you metadata keeps a finished child visible even before activity catches up', () => {
+  const all = [parent, child('attention', 'completed'), child('hidden', 'completed')];
+  assert.deepEqual(ids(foldedDelegateRows(all, all, undefined, [], session => session.id === 'attention')),
+    ['parent', 'attention', 'fold:parent:1']);
+});

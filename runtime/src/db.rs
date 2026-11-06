@@ -2625,7 +2625,7 @@ fn collect_projects(conn: &Connection) -> Result<Vec<Project>> {
 }
 /// Sidebar projection deliberately skips delegation outcomes, run commands and native identities.
 fn collect_tree_sessions(conn: &Connection, id: Option<&str>) -> Result<Vec<Value>> {
-    let mut stmt = conn.prepare("SELECT s.id,s.project_id,s.worktree_path,s.title,s.provider,s.mode,s.status,s.created_at,s.updated_at,s.exit_code,s.read_only,t.provider FROM sessions s LEFT JOIN terminal_agents t ON t.session_id=s.id WHERE (?1 IS NULL OR s.id=?1) ORDER BY s.created_at,s.id")?;
+    let mut stmt = conn.prepare("SELECT s.id,s.project_id,s.worktree_path,s.title,s.provider,s.mode,s.status,s.created_at,s.updated_at,s.exit_code,s.read_only,t.provider,d.parent_session_id,d.state FROM sessions s LEFT JOIN terminal_agents t ON t.session_id=s.id LEFT JOIN delegations d ON d.child_session_id=s.id WHERE (?1 IS NULL OR s.id=?1) ORDER BY s.created_at,s.id")?;
     let rows = stmt.query_map([id], |r| {
         let mut session = json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(3)?,"provider":r.get::<_,String>(4)?,"mode":r.get::<_,String>(5)?,"status":r.get::<_,String>(6)?,"createdAt":r.get::<_,String>(7)?,"updatedAt":r.get::<_,String>(8)?,"readOnly":r.get::<_,bool>(10)?});
         if let Some(project) = r.get::<_,Option<String>>(1)? { session["projectId"] = json!(project); }
@@ -2633,6 +2633,9 @@ fn collect_tree_sessions(conn: &Connection, id: Option<&str>) -> Result<Vec<Valu
         if let Some(code) = r.get::<_,Option<i32>>(9)? { session["exitCode"] = json!(code); }
         if session["mode"] == "terminal" && matches!(session["provider"].as_str(), Some("shell" | "custom")) {
             if let Some(agent) = r.get::<_,Option<String>>(11)? { session["terminalAgent"] = json!(agent); }
+        }
+        if let Some(parent_session_id) = r.get::<_,Option<String>>(12)? {
+            session["delegation"] = json!({"parentSessionId":parent_session_id,"state":r.get::<_,String>(13)?});
         }
         Ok(session)
     })?;
@@ -3125,6 +3128,34 @@ fn merge(base: &mut Value, patch: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_delegation_projection_keeps_only_parent_and_state_for_full_and_targeted_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("tree-delegation.sqlite")).unwrap();
+        let parent = db.create_session(CreateSession { project_id: None, title: Some("Parent"), provider: "codex", mode: "chat", native_id: None, operation_id: "tree-parent" }).unwrap();
+        let child = db.create_session(CreateSession { project_id: None, title: Some("Child"), provider: "codex", mode: "chat", native_id: Some("PRIVATE_NATIVE_ID"), operation_id: "tree-child" }).unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,prompt,operation_id,state,result,error,authority,created_at,updated_at) VALUES ('PRIVATE_DELEGATION_ID',?,?, 'codex','worktree','C:/private','PRIVATE_PROMPT','tree-delegation','completed','PRIVATE_RESULT','PRIVATE_ERROR','full_access','now','now')",
+                params![parent.id, child.id],
+            )?;
+            Ok(())
+        }).unwrap();
+        let full = db.tree_projection("state.changed", &json!({"kind":"session"})).unwrap();
+        let full_child = full["sessions"].as_array().unwrap().iter().find(|session| session["id"] == child.id).unwrap();
+        assert_eq!(full_child["delegation"], json!({"parentSessionId":parent.id,"state":"completed"}));
+        let full_text = full_child.to_string();
+        assert!(!full_text.contains("PRIVATE_"));
+        db.transaction(|tx| {
+            tx.execute("UPDATE delegations SET state='running' WHERE child_session_id=?", [&child.id])?;
+            Ok(())
+        }).unwrap();
+        let targeted = db.tree_projection("state.changed", &json!({"kind":"session.title","sessionId":child.id})).unwrap();
+        let targeted_child = &targeted["session"];
+        assert_eq!(targeted_child["delegation"], json!({"parentSessionId":parent.id,"state":"running"}));
+        assert!(!targeted_child.to_string().contains("PRIVATE_"));
+    }
 
     #[test]
     fn imported_browser_receipts_bind_the_target_chat_without_changing_other_tools() {

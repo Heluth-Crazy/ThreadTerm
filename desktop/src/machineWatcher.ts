@@ -1,13 +1,14 @@
 import { isRecord, type CatalogVisibility, type InboxItem, type Project, type RuntimeEvent, type Session, type Settings, type Snapshot, type Worktree } from '@threadterm/protocol';
-import type { MachineInfo, MachineTree, MachineTreeFeed } from '../../renderer/src/machineTypes.js';
+import type { MachineInfo, MachineTree, MachineTreeFeed, MachineTreeSession } from '../../renderer/src/machineTypes.js';
 import type { RuntimeClient } from './runtime-client.js';
 
 export type WatchClient = Pick<RuntimeClient, 'request' | 'onEvent' | 'dispose'>;
 export interface WatchState { visibility: CatalogVisibility[]; projects: Project[]; sessions: Session[]; worktrees: Worktree[]; inbox: InboxItem[]; settings?: Settings; providers: Snapshot['providers'] }
 /** Public tree metadata only, including when the initial full snapshot had richer session fields. */
-function treeSession(session: Session): Session {
+function treeSession(session: Session): MachineTreeSession['session'] {
   const { id, title, provider, mode, status, createdAt, updatedAt, projectId, worktreePath, exitCode, readOnly, archived, activity, terminalAgent } = session;
-  return { id, title, provider, mode, status, createdAt, updatedAt, projectId, worktreePath, exitCode, readOnly, archived, activity, terminalAgent };
+  const delegation = session.delegation && { parentSessionId: session.delegation.parentSessionId, state: session.delegation.state };
+  return { id, title, provider, mode, status, createdAt, updatedAt, projectId, worktreePath, exitCode, readOnly, archived, activity, terminalAgent, delegation };
 }
 export interface WatchNotice { machine: MachineInfo; event: RuntimeEvent; state: WatchState }
 

@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { electron } from './lib/desktop1.mjs';
 import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 import { buildQaApp } from './lib/qa-app.mjs';
@@ -62,7 +63,7 @@ if (filesProbe) {
   clientEnv.THREADTERM_V3_ATTACH_FILES_QA = clientLog;
 }
 let browserReceipt;
-let host, hostPeer, app, hostApp, built, releaseLock, localPage, remotePage, attentionSession;
+let host, hostPeer, app, hostApp, built, releaseLock, localPage, remotePage, attentionSession, delegatedChild;
 const rpc = (page, method, params = {}) => page.evaluate(([name, value]) => window.threadterm.request(name, value), [method, params]);
 const hosting = hostingProbe ? new (await import('./remote-machine-hosting-scenarios.mjs')).HostingProbe({ scratch, runtime, hostEnv, environment, rpc, until, pass, out, report }) : undefined;
 try {
@@ -173,8 +174,28 @@ try {
     await hostPeer.request('chat.connect', { sessionId: attentionSession.id, leaseEpoch: lease.leaseEpoch, operationId: randomUUID() });
     await hostPeer.request('chat.send', { sessionId: attentionSession.id, text: 'TREE-APPROVAL', leaseEpoch: lease.leaseEpoch, operationId: randomUUID() });
     await hostPeer.request('session.release', { sessionId: attentionSession.id, leaseEpoch: lease.leaseEpoch });
+    // The fake provider does not issue delegation MCP calls. Seed only the durable
+    // parent link in this isolated runtime, then use a real runtime mutation to
+    // publish the normal targeted tree projection to the remote watcher.
+    delegatedChild = await hostPeer.request('session.create', { projectId: hostProject.id, cwd: hostWork, provider: 'codex', mode: 'chat', title: 'Finished delegate', operationId: randomUUID() });
+    const database = new DatabaseSync(join(hostEnv.THREADTERM_V3_DATA, 'threadterm-v3.sqlite3'), { timeout: 20_000 });
+    try {
+      database.prepare("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,prompt,operation_id,state,result,error,authority,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(randomUUID(), attentionSession.id, delegatedChild.id, 'codex', 'shared', hostWork, 'QA tree delegate', randomUUID(), 'completed', null, null, 'full_access', new Date().toISOString(), new Date().toISOString());
+    } finally { database.close(); }
+    await hostPeer.request('session.update', { sessionId: delegatedChild.id, title: 'Finished delegated child', operationId: randomUUID() });
     await until(async () => (await localPage.evaluate(() => window.threadterm.machineTree())).machines.find(row => row.machine.id === machine.id)?.sessions.some(row => row.session.id === attentionSession.id && row.needsYou > 0), 'host attention reaches This PC tree');
+    await until(async () => (await localPage.evaluate(() => window.threadterm.machineTree())).machines.find(row => row.machine.id === machine.id)?.sessions.some(row => row.session.id === delegatedChild.id && row.session.delegation?.parentSessionId === attentionSession.id && row.session.delegation?.state === 'completed'), 'delegation parent link reaches This PC tree');
     await localPage.locator('.remote-project-catalog .sess-row').filter({ hasText: 'Host approval' }).waitFor();
+    const hostCatalog = localPage.locator(`.machine-group[data-machine-id="${machine.id}"] .remote-project-catalog`);
+    await hostCatalog.locator('.delegate-fold-row').filter({ hasText: '1 finished' }).waitFor();
+    assert.equal(await hostCatalog.getByText('Finished delegated child', { exact: true }).count(), 0);
+    await hostCatalog.locator('.delegate-fold-row').filter({ hasText: '1 finished' }).click();
+    await hostCatalog.locator('.sess-row').filter({ hasText: 'Finished delegated child' }).waitFor();
+    const nestedChild = hostCatalog.locator('.sess-row-wrap.is-delegate').filter({ hasText: 'Finished delegated child' });
+    assert.equal(await nestedChild.count(), 1, 'expanded finished child keeps its delegate indentation');
+    const sessionTitles = await hostCatalog.locator('.sess-row').evaluateAll(rows => rows.map(row => row.textContent));
+    assert.ok(sessionTitles.findIndex(title => title?.includes('Host approval')) < sessionTitles.findIndex(title => title?.includes('Finished delegated child')), 'parent precedes its nested child');
     await localPage.locator(`.machine-group[data-machine-id="${machine.id}"] .machine-row .badge`).waitFor();
     await until(() => app.evaluate(() => globalThis.__machineToasts.length === 1), 'exactly one remote notification');
     await delay(400);
@@ -185,7 +206,7 @@ try {
     await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.restore(); window.show(); });
     await localPage.screenshot({ path: join(out, 'this-pc-host-attention.png') });
     pass('while This PC is shown, host approval updates its tree/count and records exactly one machine-named notification');
-    await localPage.locator('.remote-project-catalog .sess-row').filter({ hasText: 'Host approval' }).click();
+    await hostCatalog.locator('.sess-row').filter({ hasText: 'Finished delegated child' }).click();
   } else {
     const hostGroup = localPage.locator(`.machine-group[data-machine-id="${machine.id}"]`);
     await hostGroup.locator('.proj-row-wrap').filter({ hasText: 'Host-only project' }).hover();
@@ -206,6 +227,9 @@ try {
     pass('remote project plus creates the host view and delivers prefilled New session after its first load');
   }
   if (treeProbe) {
+    await remotePage.getByTestId(`session-chat-${delegatedChild.id}`).waitFor();
+    pass('remote tree nests and folds finished delegates; nested click opens the child session');
+    await remotePage.locator('.sess-row').filter({ hasText: 'Host approval' }).click();
     await remotePage.getByTestId(`session-chat-${attentionSession.id}`).waitFor();
     await remotePage.evaluate(() => { window.__machineRetainedProof = 'retained'; });
     // A row click asks main asynchronously; wait for each switch before the next one, or a late one wins.

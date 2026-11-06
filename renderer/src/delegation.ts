@@ -122,7 +122,11 @@ export function attachedMessagesLabel(count: number, copy: (en: string, zh: stri
 }
 
 /** Sessions that some shown session delegated, i.e. render nested under it. */
-export function nestedDelegateIds(sessions: readonly Session[]): Set<string> {
+export type DelegateParentLink = Pick<Session, 'id' | 'createdAt'> & {
+  delegation?: Pick<SessionDelegation, 'parentSessionId'>;
+};
+
+export function nestedDelegateIds(sessions: readonly DelegateParentLink[]): Set<string> {
   const shown = new Set(sessions.map(session => session.id));
   return new Set(sessions.filter(session => session.delegation && shown.has(session.delegation.parentSessionId)).map(session => session.id));
 }
@@ -132,7 +136,7 @@ export function nestedDelegateIds(sessions: readonly Session[]): Set<string> {
  * wherever the delegate's folder is. `all` is every session the catalog shows
  * for the project; delegates whose parent is not shown stay where they are.
  */
-export function withDelegates<T extends Session>(list: readonly T[], all: readonly T[]): T[] {
+export function withDelegates<T extends DelegateParentLink>(list: readonly T[], all: readonly T[]): T[] {
   const nested = nestedDelegateIds(all);
   return list
     .filter(session => !nested.has(session.id))

@@ -6,6 +6,7 @@ import { CatalogPopover } from './CatalogActions';
 import { sameCanonicalScope } from '../projectScope';
 import { sessionState, sessionStateLabel } from '../sessionState';
 import { isTerminalAttentionSession, sessionActivity, sessionActivityLabel, sortSessionsByActivity } from '../sessionActivity';
+import { boundedExpandedParents, foldedDelegateRows } from '../delegateFold';
 
 export function MachineRows({ zh, children, onAddComputer }: { zh: boolean; children?: ReactNode; onAddComputer?: () => void }) {
   return <MachineRowsView zh={zh} snapshot={useMachines()} feed={useMachineTree()} onAddComputer={onAddComputer}>{children}</MachineRowsView>;
@@ -15,6 +16,7 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
 }) {
   const [issue, setIssue] = useState<string>();
   const [menu, setMenu] = useState<{ key: string; anchor: HTMLElement }>();
+  const [expandedDelegates, setExpandedDelegates] = useState<string[]>([]);
   if (!snapshot.enabled || snapshot.machines.length < 2) return <>{children}</>;
   const fail = (error: unknown) => setIssue(error instanceof Error ? error.message : String(error));
   const expanded = (key: string) => feed.expanded[key] !== false;
@@ -24,13 +26,19 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
   const start = (machineId: string, projectId?: string, path?: string) => { closeMenu(); setIssue(undefined); void machineBridge()?.machineShow(machineId, undefined, { action: 'new-session', projectId, path }).catch(fail); };
   const addProject = (machineId: string) => { setMenu(undefined); setIssue(undefined); void machineBridge()?.machineShow(machineId, undefined, { action: 'add-project' }).catch(fail); };
   const count = (value: number) => value > 0 && <span className="badge amber" aria-label={zh ? `${value} 项需要你` : `${value} needs you`}>{value}</span>;
-  const sessions = (tree: MachineTree, rows: MachineTreeSession[]) => {
-    const byId = new Map(rows.map(row => [row.session.id, row]));
-    return sortSessionsByActivity(rows.map(row => row.session)).map(session => {
+  const sessions = (tree: MachineTree, rows: MachineTreeSession[], all = rows) => {
+    const byId = new Map(all.map(row => [row.session.id, row]));
+    const expandedParents = all.filter(row => expandedDelegates.includes(machineTreeKey(tree.machine.id, 'delegate-fold', row.session.id))).map(row => row.session.id);
+    return foldedDelegateRows(sortSessionsByActivity(rows.map(row => row.session)), all.map(row => row.session), undefined, expandedParents, session => byId.get(session.id)!.needsYou > 0).map(row => {
+      if (row.kind === 'fold') {
+        const key = machineTreeKey(tree.machine.id, 'delegate-fold', row.parentId);
+        return <div className="sess-row-wrap is-delegate" key={key} data-machine-id={tree.machine.id}><button type="button" className="sess-row delegate-fold-row" data-parent-id={row.parentId} aria-expanded={row.expanded} onClick={() => setExpandedDelegates(current => row.expanded ? current.filter(id => id !== key) : boundedExpandedParents([...current, key]))}><span className="bico"><Icon name="chevron" className="chev" /></span><span className="grow">{zh ? `${row.count} 个已结束` : `${row.count} finished`}</span></button></div>;
+      }
+      const session = row.session;
       const needs = byId.get(session.id)!.needsYou, activity = sessionActivity(session), terminal = isTerminalAttentionSession(session);
       const label = terminal ? sessionStateLabel(sessionState(session), zh, session.readOnly) : sessionActivityLabel(activity, zh);
       const dot = needs ? 'needs' : session.status === 'error' ? 'failed' : session.status === 'interrupted' ? 'stalled' : session.status === 'exited' || session.readOnly ? 'ended' : activity === 'running' || terminal && session.status === 'running' ? 'running' : 'ended';
-      return <div className="sess-row-wrap" key={machineTreeKey(tree.machine.id, 'session', session.id)} data-machine-id={tree.machine.id} data-session-id={session.id} data-activity={activity}>
+      return <div className={`sess-row-wrap${row.nested ? ' is-delegate' : ''}`} key={machineTreeKey(tree.machine.id, 'session', session.id)} data-machine-id={tree.machine.id} data-session-id={session.id} data-activity={activity}>
         {needs > 0 && <i className="session-attention-bar" aria-hidden="true" />}
         <button type="button" className="sess-row" data-session-id={session.id} title={`${session.title} · ${label}`} onClick={() => open(tree.machine.id, session.id)}>
           <span className={`bico session-activity-${activity}`}><span className="session-agent-icon"><SessionIcon session={session} />{activity === 'running' && <i className="session-attention-ring" />}</span><i className={`bico-dot st-${dot}`} /></span>
@@ -55,8 +63,8 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
         </div>
         {expanded(key) && <div className="tree-list">{branches.map(branch => {
           const branchKey = machineTreeKey(tree.machine.id, 'branch', branch.path), members = rows.filter(row => sameCanonicalScope(row.session.worktreePath ?? project.path, branch.path));
-          return <div className="catalog-tree-group" key={branchKey}><div className="tree-row-wrap"><button type="button" className="tree-row" aria-expanded={expanded(branchKey)} onClick={() => toggle(branchKey)}><span className="bico"><Icon name="branch" /></span><span className="branch">{branch.branch ?? (zh ? '本地目录' : 'Local directory')}</span>{count(members.reduce((sum, row) => sum + row.needsYou, 0))}</button><button type="button" className="tree-new" aria-label={zh ? `在 ${branch.branch ?? project.name} 中新建终端` : `New terminal in ${branch.branch ?? project.name}`} onClick={() => start(tree.machine.id, project.id, branch.path)}><Icon name="plus" /></button><button type="button" className="icon-btn row-more" aria-label={zh ? `${branch.branch ?? project.name} 操作` : `${branch.branch ?? project.name} actions`} aria-haspopup="menu" aria-expanded={menu?.key === branchKey} onClick={event => setMenu(menu?.key === branchKey ? undefined : {key:branchKey,anchor:event.currentTarget})}><Icon name="more" /></button>{menu?.key === branchKey && <CatalogPopover anchor={menu.anchor} onClose={closeMenu} label={branch.branch ?? project.name}><button type="button" role="menuitem" className="menu-item" onClick={() => start(tree.machine.id, project.id, branch.path)}><Icon name="plus" />{zh ? '新建终端' : 'New terminal'}</button></CatalogPopover>}</div>{expanded(branchKey) && sessions(tree, members)}</div>;
-        })}{sessions(tree, loose)}</div>}
+          return <div className="catalog-tree-group" key={branchKey}><div className="tree-row-wrap"><button type="button" className="tree-row" aria-expanded={expanded(branchKey)} onClick={() => toggle(branchKey)}><span className="bico"><Icon name="branch" /></span><span className="branch">{branch.branch ?? (zh ? '本地目录' : 'Local directory')}</span>{count(members.reduce((sum, row) => sum + row.needsYou, 0))}</button><button type="button" className="tree-new" aria-label={zh ? `在 ${branch.branch ?? project.name} 中新建终端` : `New terminal in ${branch.branch ?? project.name}`} onClick={() => start(tree.machine.id, project.id, branch.path)}><Icon name="plus" /></button><button type="button" className="icon-btn row-more" aria-label={zh ? `${branch.branch ?? project.name} 操作` : `${branch.branch ?? project.name} actions`} aria-haspopup="menu" aria-expanded={menu?.key === branchKey} onClick={event => setMenu(menu?.key === branchKey ? undefined : {key:branchKey,anchor:event.currentTarget})}><Icon name="more" /></button>{menu?.key === branchKey && <CatalogPopover anchor={menu.anchor} onClose={closeMenu} label={branch.branch ?? project.name}><button type="button" role="menuitem" className="menu-item" onClick={() => start(tree.machine.id, project.id, branch.path)}><Icon name="plus" />{zh ? '新建终端' : 'New terminal'}</button></CatalogPopover>}</div>{expanded(branchKey) && sessions(tree, members, rows)}</div>;
+        })}{sessions(tree, loose, rows)}</div>}
       </div>;
     })}{sessions(tree, tree.sessions.filter(row => !row.session.projectId && !row.session.archived))}</div>
   </section>;

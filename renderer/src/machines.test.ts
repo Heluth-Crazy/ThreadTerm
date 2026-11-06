@@ -6,7 +6,7 @@ import type { PairedDevice } from '@threadterm/protocol';
 import { devicesForProfile, settingsPageVisible, machineSnapshotWithTree } from './machines';
 import { MachineRowsView } from './components/MachineRows';
 import { machineTreeKey } from './machineTypes';
-import type { MachineSnapshot, MachineTreeFeed } from './machineTypes';
+import type { MachineSnapshot, MachineTreeFeed, MachineTreeSession } from './machineTypes';
 
 test('Computers and Phones are both available on This PC; Computers holds the preview switch', () => {
   assert.equal(settingsPageVisible('computers', false), true);
@@ -102,4 +102,57 @@ test('current-machine alerts follow the watcher failure state even when the mach
     assert.deepEqual(merged.machines[0],snapshot.machines[0]);assert.equal(snapshot.machines[1].state,'disconnected');
   }
   snapshot.enabled=false;assert.equal(machineSnapshotWithTree(snapshot,feed),snapshot);
+});
+
+test('other computers nest delegates under parents across branches and fold finished children in both languages', () => {
+  const { snapshot, feed } = treeFixture(), tree = feed.machines[1];
+  const parent = { ...tree.sessions[0].session, id: 'parent', title: 'Parent session', status: 'idle' as const };
+  const child = (id: string, state: 'running' | 'completed', needsYou = 0): MachineTreeSession => ({
+    session: { ...parent, id, title: `Delegate ${id}`, worktreePath: 'C:/host-child',
+      delegation: { parentSessionId: 'parent', state } }, needsYou,
+  });
+  tree.worktrees.push({ ...tree.worktrees[0], id: 'child-branch', branch: 'child-folder', path: 'C:/host-child' });
+  tree.sessions = [child('finished', 'completed'), child('active', 'running', 2), { session: parent, needsYou: 0 }];
+  const render = (zh: boolean) => renderToStaticMarkup(createElement(MachineRowsView, { zh, snapshot, feed }));
+  for (const zh of [false, true]) {
+    const html = render(zh);
+    assert.match(html, /class="sess-row-wrap is-delegate"[^>]*data-session-id="active"/);
+    assert.ok(html.indexOf('Parent session') < html.indexOf('Delegate active'));
+    assert.ok(html.indexOf('Delegate active') < html.indexOf('child-folder'), 'child follows its parent even in another worktree');
+    assert.equal((html.match(/>Delegate active</g) ?? []).length, 1);
+    assert.doesNotMatch(html, /Delegate finished/);
+    assert.match(html, /data-parent-id="parent" aria-expanded="false"/);
+    assert.ok(html.includes(zh ? '1 个已结束' : '1 finished'));
+    assert.match(html, /bico-dot st-needs/);
+    assert.match(html, /session-attention-bar/);
+    assert.match(html, new RegExp(zh ? '2 项需要你' : '2 needs you'));
+  }
+});
+
+test('missing or archived remote parents keep children visible and needs-you children never fold', () => {
+  const { snapshot, feed } = treeFixture(), tree = feed.machines[1];
+  const parent = { ...tree.sessions[0].session, id: 'parent', title: 'Archived parent', archived: true };
+  const child: MachineTreeSession = { session: { ...parent, id: 'orphan', title: 'Visible orphan', archived: false,
+    status: 'idle', delegation: { parentSessionId: 'parent', state: 'completed' } }, needsYou: 1 };
+  for (const includeArchived of [false, true]) {
+    tree.sessions = [child, ...(includeArchived ? [{ session: parent, needsYou: 0 }] : [])];
+    const html = renderToStaticMarkup(createElement(MachineRowsView, { zh: false, snapshot, feed }));
+    assert.match(html, /Visible orphan/); assert.doesNotMatch(html, /Archived parent|is-delegate|finished/);
+  }
+  parent.archived = false;
+  tree.sessions = [{ session: parent, needsYou: 0 }, child];
+  const html = renderToStaticMarkup(createElement(MachineRowsView, { zh: false, snapshot, feed }));
+  assert.match(html, /Visible orphan/); assert.match(html, /is-delegate/); assert.doesNotMatch(html, /finished/);
+});
+
+test('plain directory and unprojected remote lists both use delegate nesting and finished folds', () => {
+  for (const projectId of ['remote-project', undefined]) {
+    const { snapshot, feed } = treeFixture(), tree = feed.machines[1];
+    tree.worktrees = [];
+    const parent = { ...tree.sessions[0].session, projectId, id: 'parent', status: 'idle' as const };
+    tree.sessions = [{ session: parent, needsYou: 0 }, { session: { ...parent, id: 'done',
+      title: 'Hidden finished child', delegation: { parentSessionId: 'parent', state: 'completed' } }, needsYou: 0 }];
+    const html = renderToStaticMarkup(createElement(MachineRowsView, { zh: false, snapshot, feed }));
+    assert.match(html, />1 finished</); assert.doesNotMatch(html, /Hidden finished child/);
+  }
 });
