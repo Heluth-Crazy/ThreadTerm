@@ -95,6 +95,16 @@ For an existing generated iOS project, run `(cd ios && pod install)` from
 For subsequent UI edits, start Metro with `npm run mobile:start` from the root.
 Rebuild the native library and development app after Rust or Swift changes.
 
+The app config sets `expo-build-properties`' `ios.usePrecompiledModules` to
+`false`. With the pinned Expo 58 / React Native 0.88.1 versions, ThreadTerm's
+Release build crashed during Fabric view registration with precompiled Expo
+modules. Compiling them locally avoided that crash while keeping React Native
+core, its third-party dependencies, and Hermes prebuilt. This adds Expo module
+compilation time, but does not require a full React Native source build. Keep
+this setting when regenerating iOS with `expo prebuild --clean`; validate both
+Release cold launch and Debug with Metro before removing it or changing the
+pinned versions.
+
 Follow [the native acceptance checklist](scripts/NATIVE-IOS-VALIDATION.md) and
 [the integrated acceptance plan](../docs/mobile-implementation.md). Windows
 checks do not establish that the Apple build or hardware flows pass.
