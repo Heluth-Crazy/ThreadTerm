@@ -13,7 +13,7 @@ Pod::Spec.new do |s|
   s.dependency 'ExpoModulesCore'
   s.source_files = '*.{h,m,mm,swift}', 'Generated/*.swift'
   s.vendored_frameworks = 'Frameworks/ThreadTermNativeFFI.xcframework'
-  s.frameworks = 'Foundation', 'LocalAuthentication', 'Network', 'Security', 'UIKit', 'UniformTypeIdentifiers', 'WebKit'
+  s.frameworks = 'Foundation', 'LocalAuthentication', 'Network', 'Security', 'SystemConfiguration', 'UIKit', 'UniformTypeIdentifiers', 'WebKit'
   s.swift_version = '5.0'
   s.pod_target_xcconfig = {
     'IPHONEOS_DEPLOYMENT_TARGET' => '17.0',

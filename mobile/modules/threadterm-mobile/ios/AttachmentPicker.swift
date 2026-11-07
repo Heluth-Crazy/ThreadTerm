@@ -77,7 +77,7 @@ final class AttachmentPicker: NSObject, UIDocumentPickerDelegate {
     let accessed = source.startAccessingSecurityScopedResource()
     defer { if accessed { source.stopAccessingSecurityScopedResource() } }
     var coordinationError: NSError?
-    var result: Result<PickedAttachmentValue, Error>?
+    var result: Result<PickedAttachmentValue?, Error>?
     NSFileCoordinator().coordinate(readingItemAt: source, options: .withoutChanges, error: &coordinationError) { coordinated in
       do {
         let values = try coordinated.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .nameKey])

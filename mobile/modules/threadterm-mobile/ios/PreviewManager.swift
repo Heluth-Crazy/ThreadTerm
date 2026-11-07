@@ -33,13 +33,19 @@ final class PreviewManager {
     guard let identifier = UUID(uuidString: machineId) else {
       throw PreviewError.invalidMachine
     }
+    // Per-machine data store and per-store proxy routing are iOS 17 APIs. The
+    // app's minimum is iOS 17.0, so this guard only keeps the pod compiling
+    // when a pod target's deployment setting is read back below 17.
+    guard #available(iOS 17.0, *) else {
+      throw PreviewError.unavailable
+    }
     closeActive(core: core)
     let proxy = try core.startProxy(machineId: machineId)
     guard let port = NWEndpoint.Port(rawValue: proxy.port) else {
       try? core.stopProxy(machineId: machineId)
       throw PreviewError.unavailable
     }
-    let proxyConfiguration = ProxyConfiguration(
+    var proxyConfiguration = ProxyConfiguration(
       httpCONNECTProxy: .hostPort(host: "127.0.0.1", port: port),
       tlsOptions: nil
     )
@@ -73,6 +79,10 @@ final class PreviewManager {
     }
     guard let identifier = UUID(uuidString: machineId) else {
       completion(PreviewError.invalidMachine)
+      return
+    }
+    guard #available(iOS 17.0, *) else {
+      completion(PreviewError.unavailable)
       return
     }
     WKWebsiteDataStore.remove(forIdentifier: identifier) { error in
