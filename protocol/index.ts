@@ -440,7 +440,7 @@ export interface ChatApprovalData {
 export interface RuntimeError { code:string; message:string; details?:unknown }
 export type DevicePermission = 'readonly'|'fullcontrol';
 /** The trust profile selected by the host when a pairing offer is created. */
-export type DeviceProfile = 'phone'|'desktop';
+export type DeviceProfile = 'phone'|'desktop'|'mobile';
 export interface RemoteAccessStatus { enabled:boolean; tailscaleOnly:boolean; url?:string; port?:number; tlsFingerprint:string; error?:string; identityError?:string;
  /** "Connect across networks" as configured; it runs only while Tailscale-only is off. */ irohEnabled:boolean; irohRelayUrl?:string;
  /** This PC's public iroh key while the cross-network endpoint runs. */ irohEndpointId?:string; irohError?:string }
@@ -1425,7 +1425,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  }
  if(m==='filesystem.external.open'&&params.sessionId!==undefined&&(typeof params.sessionId!=='string'||params.sessionId==='')) throw new Error('Invalid sessionId');
  if(m==='device.pairing.create'&&!['readonly','fullcontrol'].includes(String(params.permission))) throw new Error('Invalid device permission');
- if(m==='device.pairing.create'&&params.profile!==undefined&&!['phone','desktop'].includes(String(params.profile))) throw new Error('Invalid device profile');
+ if(m==='device.pairing.create'&&params.profile!==undefined&&!['phone','desktop','mobile'].includes(String(params.profile))) throw new Error('Invalid device profile');
  if(m==='catalog.visibility.update') {
   if(!['project','worktree','session'].includes(String(params.kind))) throw new Error('Invalid catalog kind');
   if(!['active','archived','removed'].includes(String(params.visibility))) throw new Error('Invalid catalog visibility');

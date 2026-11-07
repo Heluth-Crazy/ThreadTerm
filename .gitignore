@@ -190,6 +190,18 @@ docs/*
 !docs/windows-webview-removal-assessment.json
 .gitnexus
 
+# Mobile generated/native build artifacts; source modules stay tracked.
+/mobile/.expo/
+/mobile/.test-build/
+/mobile/**/.qa-*/
+/mobile/native-client/target-*/
+/mobile/ios/
+/mobile/android/
+/mobile/reference/
+/mobile/modules/**/generated/
+!docs/mobile-contract.md
+!docs/mobile-implementation.md
+
 # Downloaded Windows WebDriver binaries and raw local gate diagnostics.
 .cache/windows-terminal-startup/
 e2e/terminal-startup/reports/

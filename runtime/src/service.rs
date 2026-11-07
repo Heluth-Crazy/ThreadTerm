@@ -1497,6 +1497,23 @@ impl RuntimeService {
                 "data relocation is awaiting activation or cancellation",
             ));
         }
+        if crate::mobile::is_principal(principal) {
+            crate::mobile::guard_request(self, principal, &request.method, &request.params)?;
+            match self.dispatch_mobile(principal, &request.method, &request.params) {
+                Ok(Some(value)) => return Ok(value),
+                Ok(None) => {}
+                Err(failure) => {
+                    if let Some(provider) = failure.downcast_ref::<crate::providers::ProviderError>() {
+                        return Err(RpcError {
+                            code: provider.code.clone(),
+                            message: provider.message.clone(),
+                            details: provider.details.clone(),
+                        });
+                    }
+                    return Err(map_error(&failure.to_string()));
+                }
+            }
+        }
         if request.method.starts_with("desktop.files.") {
             return self
                 .desktop_files
@@ -2347,6 +2364,81 @@ impl RuntimeService {
                 map_error(&e.to_string())
             }
         })
+    }
+
+    fn dispatch_mobile(
+        &self,
+        principal: &str,
+        method: &str,
+        params: &Value,
+    ) -> Result<Option<Value>> {
+        match method {
+            "mobile.snapshot" => {
+                parse::<EmptyParams>(params)?;
+                let permission = crate::mobile::permission(self, principal)
+                    .map_err(|error| anyhow::anyhow!("{}: {}", error.code, error.message))?;
+                Ok(Some(crate::mobile::snapshot(
+                    &self.db,
+                    self.providers.capability_snapshot(),
+                    permission,
+                )?))
+            }
+            "mobile.session.create" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct MobileSessionCreate {
+                    project_id: String,
+                    worktree_id: Option<String>,
+                    provider: String,
+                    mode: String,
+                    title: Option<String>,
+                    operation_id: String,
+                }
+                let p: MobileSessionCreate = parse(params)?;
+                if p.operation_id.is_empty() || p.provider.is_empty() {
+                    return Err(anyhow::anyhow!("invalid_request"));
+                }
+                validate_mode(&p.mode)?;
+                let capabilities = self.providers.capability_snapshot_result()?;
+                let capability = capabilities.iter().find(|value| {
+                    value.get("id").and_then(Value::as_str) == Some(p.provider.as_str())
+                }).ok_or_else(|| anyhow::anyhow!("provider_unavailable"))?;
+                let supported = capability.get("installed").and_then(Value::as_bool) == Some(true)
+                    && capability.get(p.mode.as_str()).and_then(Value::as_bool) == Some(true);
+                if !supported {
+                    return Err(anyhow::anyhow!("provider_unavailable"));
+                }
+                let cwd = crate::mobile::resolve_mobile_cwd(
+                    &self.db,
+                    &p.project_id,
+                    p.worktree_id.as_deref(),
+                )?;
+                Ok(Some(self.create_session(&SessionCreate {
+                    project_id: Some(p.project_id),
+                    cwd: Some(cwd),
+                    title: p.title,
+                    provider: p.provider,
+                    mode: p.mode,
+                    executable: None,
+                    args: Vec::new(),
+                    native_id: None,
+                    operation_id: p.operation_id,
+                    defer_launch: false,
+                }, None)?))
+            }
+            "session.lookup" => {
+                let p: OperationOnly = parse(params)?;
+                let Some(result) = self.db.operation(&p.operation_id)? else {
+                    return Ok(Some(Value::Null));
+                };
+                let Some(id) = result.get("id").and_then(Value::as_str) else {
+                    return Ok(Some(Value::Null));
+                };
+                crate::mobile::require_registered_session(&self.db, id)?;
+                Ok(Some(serde_json::to_value(self.db.session_by_id(id)?)?))
+            }
+            _ => Ok(None),
+        }
     }
     fn record_null(&self, operation_id: &str, method: &str) -> Result<()> {
         self.db.complete_null_operation(operation_id, method)?;
@@ -3404,6 +3496,7 @@ fn map_error(message: &str) -> RpcError {
         "file_unavailable" => "file_unavailable",
         "unknown_method" => "unknown_method",
         "provider adapter is not registered" => "provider_unavailable",
+        "provider_unavailable" => "provider_unavailable",
         "chat_not_open" => "chat_not_open",
         "chat_unavailable" => "chat_unavailable",
         "session_not_found" => "session_not_found",
@@ -3647,6 +3740,9 @@ struct SettingsUpdate {
 struct OperationOnly {
     operation_id: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyParams {}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HistoryList {

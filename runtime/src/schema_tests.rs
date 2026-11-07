@@ -37,7 +37,7 @@ fn schema_empty_first_creation_has_no_upgrade_data_to_back_up() {
     drop(Database::open(&path).unwrap());
     assert!(backups(root.path()).is_empty());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
 }
@@ -66,7 +66,7 @@ fn schema_migration_three_creates_review_draft_tables_and_reopens() {
     drop(conn);
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn schema_migration_four_preserves_legacy_phone_credentials() {
     }
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
     let device: (String, Vec<u8>, Option<String>) = conn.query_row(
         "SELECT profile,token_hash,last_address FROM paired_devices WHERE id='phone'", [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -102,7 +102,7 @@ fn schema_migration_four_preserves_legacy_phone_credentials() {
     assert_eq!(offer, "phone");
     drop(conn);
     drop(Database::open(&path).unwrap());
-    assert!(backups(root.path()).is_empty(), "additive migration needs no backup");
+    assert_eq!(backups(root.path()).len(), 1, "widening the profile CHECK rebuilds the device tables safely");
 }
 
 #[test]
@@ -126,10 +126,10 @@ fn schema_old_copy_is_backed_up_verified_and_migrated_only_once() {
         "Daily"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
-    assert_eq!(value(&conn, "schema.minReader"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
+    assert_eq!(value(&conn, "schema.minReader"), "7");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
-    assert_eq!(history.as_array().unwrap().len(), 6);
+    assert_eq!(history.as_array().unwrap().len(), 7);
     assert_eq!(history[0]["version"], 1);
     assert!(history[0]["appliedAt"].as_str().is_some());
     assert_eq!(history[0]["appVersion"], crate::RUNTIME_VERSION);
@@ -174,7 +174,7 @@ fn schema_unversioned_database_without_presets_upgrades_without_a_backup() {
         "nothing unrecoverable to back up"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
     assert!(conn.prepare("SELECT * FROM usage_facts").is_err());
@@ -506,7 +506,7 @@ fn schema_migration_five_preserves_listener_preferences_and_defaults_policy_off(
     let conn = Connection::open(&path).unwrap();
     let row: (bool,u16,String,bool) = conn.query_row("SELECT enabled,port,last_error,tailscale_only FROM remote_access_state", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
     assert_eq!(row,(true,12345,"retained".into(),false));
-    assert_eq!(value(&conn,"schema.version"),"6");
+    assert_eq!(value(&conn,"schema.version"),"7");
 }
 
 #[test]
@@ -531,5 +531,60 @@ fn schema_migration_six_adds_cross_network_settings_off_and_the_device_key_colum
     let mut columns = conn.prepare("PRAGMA table_info(paired_devices)").unwrap();
     let columns: Vec<String> = columns.query_map([], |row| row.get(1)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
     assert!(columns.iter().any(|column| column == "iroh_endpoint_id"));
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
+}
+
+#[test]
+fn schema_migration_seven_preserves_legacy_profiles_and_accepts_mobile() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("mobile-v6.sqlite");
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "DROP INDEX device_pairings_expiry;
+         DROP INDEX paired_devices_expiry;
+         DROP TABLE device_pairings;
+         DROP TABLE paired_devices;
+         CREATE TABLE device_pairings (
+            id TEXT PRIMARY KEY,
+            secret_hash BLOB NOT NULL,
+            permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+            profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            failed_attempts INTEGER NOT NULL DEFAULT 0,
+            consumed_at TEXT
+         );
+         CREATE TABLE paired_devices (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            token_hash BLOB NOT NULL UNIQUE,
+            permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+            profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_seen_at TEXT,
+            last_address TEXT,
+            revoked_at TEXT,
+            iroh_endpoint_id TEXT
+         );
+         CREATE INDEX device_pairings_expiry ON device_pairings(expires_at);
+         CREATE INDEX paired_devices_expiry ON paired_devices(expires_at);
+         INSERT INTO device_pairings(id,secret_hash,permission,profile,created_at,expires_at,failed_attempts,consumed_at)
+            VALUES('desktop-offer',X'01','fullcontrol','desktop','2026-11-01T00:00:00Z','2026-11-01T00:05:00Z',0,NULL);
+         INSERT INTO paired_devices(id,name,token_hash,permission,profile,created_at,expires_at,last_seen_at,last_address,revoked_at,iroh_endpoint_id)
+            VALUES('phone','Phone',X'02','readonly','phone','2026-11-01T00:00:00Z','2026-11-02T00:00:00Z',NULL,NULL,NULL,NULL);
+         UPDATE metadata SET value='6' WHERE key IN ('schema.version','schema.minReader');",
+    ).unwrap();
+    drop(conn);
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(value(&conn, "schema.version"), "7");
+    assert_eq!(conn.query_row("SELECT profile FROM paired_devices WHERE id='phone'", [], |row| row.get::<_, String>(0)).unwrap(), "phone");
+    assert_eq!(conn.query_row("SELECT profile FROM device_pairings WHERE id='desktop-offer'", [], |row| row.get::<_, String>(0)).unwrap(), "desktop");
+    conn.execute(
+        "INSERT INTO paired_devices(id,name,token_hash,permission,profile,created_at,expires_at) VALUES('mobile','iPhone',X'03','readonly','mobile','2026-11-01T00:00:00Z','2026-12-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    assert_eq!(backups(root.path()).len(), 1, "the destructive CHECK widening keeps a verified backup");
 }

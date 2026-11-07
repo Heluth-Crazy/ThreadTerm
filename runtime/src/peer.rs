@@ -194,6 +194,9 @@ pub(crate) fn guard(
     principal: &str,
     method: &str,
 ) -> std::result::Result<(), RpcError> {
+    if crate::mobile::is_principal(principal) {
+        return crate::mobile::guard_stream(service, principal, method);
+    }
     let Some(identity) = principal.strip_prefix("peer:") else {
         return Ok(());
     };
@@ -221,6 +224,21 @@ pub(crate) fn guard(
         .peers
         .validate(&remote.devices, device)
         .map_err(|_| failure("peer_revoked", "Peer credential is no longer valid"))
+}
+
+/// Request-aware authority check. Desktop peers retain their broad authority;
+/// mobile requests additionally validate their registered data scope.
+pub(crate) fn guard_request(
+    service: &RuntimeService,
+    principal: &str,
+    method: &str,
+    params: &serde_json::Value,
+) -> std::result::Result<(), RpcError> {
+    if crate::mobile::is_principal(principal) {
+        crate::mobile::guard_request(service, principal, method, params)
+    } else {
+        guard(service, principal, method)
+    }
 }
 
 /// Test-only version skew. Release binaries contain no environment override.

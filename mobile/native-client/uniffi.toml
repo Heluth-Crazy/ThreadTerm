@@ -1,0 +1,5 @@
+[bindings.swift]
+module_name = "ThreadTermNative"
+ffi_module_name = "ThreadTermNativeFFI"
+generate_module_map = true
+

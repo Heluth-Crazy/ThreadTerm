@@ -11,13 +11,18 @@ test('only the explicit QA flag pre-approves quitting', () => {
 });
 
 const device = (profile = 'desktop', connected = false, name = 'Laptop', revokedAt?: string) => ({ profile, connected, name, revokedAt }) as import('@threadterm/protocol').PairedDevice;
-test('hosting quit applies only to a live runtime with Computers enabled and an unrevoked desktop', () => {
-  assert.equal(hostingQuitContext(false, true, [device()]), undefined);
-  assert.equal(hostingQuitContext(true, false, [device()]), undefined);
-  for (const rows of [[], [device('phone')], [device('desktop', true, 'Removed', 'now')]]) assert.equal(hostingQuitContext(true, true, rows), undefined);
-  assert.deepEqual(hostingQuitContext(true, true, [device()]), { connectedNames: [] });
-  assert.deepEqual(hostingQuitContext(true, true), { connectedNames: [] }, 'unreadable list on a running host must ask');
-  assert.deepEqual(hostingQuitContext(true, true, [device('desktop', true, 'Laptop'), device('desktop', false, 'Offline'), device('desktop', true, 'Office')]), { connectedNames: ['Laptop', 'Office'] });
+test('hosting quit applies to a live runtime with an enabled eligible host profile', () => {
+  assert.equal(hostingQuitContext(false, true, false, [device()]), undefined);
+  assert.equal(hostingQuitContext(true, false, false, [device()]), undefined);
+  assert.equal(hostingQuitContext(true, false, false, [device('mobile')]), undefined);
+  assert.equal(hostingQuitContext(true, true, false, [device('mobile')]), undefined, 'Computers does not make mobile credentials host the runtime');
+  assert.equal(hostingQuitContext(true, false, true, [device('desktop')]), undefined, 'desktop pairing remains behind the Computers preview');
+  for (const rows of [[], [device('phone')], [device('desktop', true, 'Removed', 'now')]]) assert.equal(hostingQuitContext(true, true, true, rows), undefined);
+  assert.deepEqual(hostingQuitContext(true, true, false, [device()]), { connectedNames: [] });
+  assert.deepEqual(hostingQuitContext(true, false, true, [device('mobile')]), { connectedNames: [] }, 'mobile-only hosting does not depend on the Computers preview');
+  assert.deepEqual(hostingQuitContext(true, false, true), { connectedNames: [] }, 'unreadable eligible list on a running host must ask');
+  assert.deepEqual(hostingQuitContext(true, true, true, [device('desktop', true, 'Laptop'), device('desktop', false, 'Offline'), device('mobile', true, 'Phone'), device('phone', true, 'Legacy')]), { connectedNames: ['Laptop', 'Phone'] });
+  assert.deepEqual(hostingQuitContext(true, false, true, [device('future' as 'desktop', true, 'Unknown')]), { connectedNames: ['Unknown'] }, 'unknown explicit profiles are conservative');
   assert.deepEqual([0,1,2,-1].map(hostingQuitChoice), ['keep','stop','cancel','cancel']);
 });
 test('hosting dialog has bilingual prototype copy and safe default/Escape choices; old dialog unchanged', () => {

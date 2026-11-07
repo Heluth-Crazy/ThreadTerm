@@ -47,3 +47,19 @@ test('the Settings dialog tells the Devices tab when it is active', () => {
   const source = readFileSync(resolve('renderer/src/components/SettingsDialog.tsx'), 'utf8');
   assert.match(source, /<DeviceSettings language=\{zh \? "zh-CN" : "en"\} active=\{tab === "mobile"\} \/>/);
 });
+
+test('Phones offers the mobile profile with checked pairing details and keeps legacy renewal separate', () => {
+  const source = readFileSync(resolve('renderer/src/components/DeviceSettings.tsx'), 'utf8');
+  assert.match(source, /device\.pairing\.create", \{ permission: access, profile: 'mobile'/);
+  assert.match(source, /QRCode\.toDataURL\(offer\.qrPayload/);
+  assert.match(source, /fingerprintCheckCode\(offer\.tlsFingerprint\)/);
+  assert.match(source, /Confirm this same code on the phone before finishing pairing/);
+  assert.match(source, /View sessions, chat, terminals, project files, Git, and previews/);
+  assert.match(source, /Also send messages, handle approvals and questions, create or stop sessions, and type in terminals/);
+  assert.match(source, /function MobileDeviceList[\s\S]*Expires after 30 days without use\.[\s\S]*function LegacyPhoneList/);
+  const mobileList = source.slice(source.indexOf('function MobileDeviceList'), source.indexOf('function LegacyPhoneList'));
+  assert.doesNotMatch(mobileList, /device\.renew/);
+  assert.match(source, /<LegacyPhoneList[\s\S]*onRenew=\{device => run\(async \(\) => \{ await request\("device\.renew"/);
+  const legacyList = source.slice(source.indexOf('function LegacyPhoneList'));
+  assert.match(legacyList, /24 hours/);
+});

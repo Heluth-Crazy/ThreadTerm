@@ -982,14 +982,15 @@ async function requestQuit(): Promise<void> {
     let zh = false;
     let hosting: ReturnType<typeof hostingQuitContext>;
     const inspect = async (client: RuntimeClient) => {
-      hosting = hostingQuitContext(true, remoteMachinesEnabled);
+      hosting = hostingQuitContext(true, remoteMachinesEnabled, false);
       try {
         const snapshot = await client.request('runtime.snapshot', {});
         zh = notificationLocale(snapshot.settings) === 'zh-CN';
         active = snapshot.sessions.some(session => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
-        const enabled = !!(snapshot.settings.remoteMachines as { enabled?: boolean } | undefined)?.enabled;
-        hosting = hostingQuitContext(true, enabled);
-        if (enabled) hosting = hostingQuitContext(true, true, await client.request('device.list', {}));
+        const computersEnabled = !!(snapshot.settings.remoteMachines as { enabled?: boolean } | undefined)?.enabled;
+        const mobileStatus = await client.request('device.status', {});
+        hosting = hostingQuitContext(true, computersEnabled, mobileStatus.enabled);
+        if (computersEnabled || mobileStatus.enabled) hosting = hostingQuitContext(true, computersEnabled, mobileStatus.enabled, await client.request('device.list', {}));
       } catch { /* Unknown live host state still requires confirmation. */ }
     };
     const confirm = async (preapproved = false) => {

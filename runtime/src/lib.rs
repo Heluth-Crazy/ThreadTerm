@@ -60,6 +60,7 @@ pub mod pty;
 pub mod remote_access;
 pub(crate) mod iroh_transport;
 pub(crate) mod peer;
+pub(crate) mod mobile;
 pub(crate) mod tunnel;
 #[cfg(all(test, windows))]
 mod peer_tests;

@@ -35,12 +35,13 @@ pub enum DevicePermission {
 }
 
 /// The credential's transport boundary. Phone credentials stay on the HTTPS
-/// allowlist; desktop credentials are accepted only by the peer TLS path.
+/// allowlist; desktop and mobile credentials each have their own TLS ALPN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceProfile {
     Phone,
     Desktop,
+    Mobile,
 }
 
 impl Default for DeviceProfile {
@@ -54,6 +55,7 @@ impl fmt::Display for DeviceProfile {
         f.write_str(match self {
             Self::Phone => "phone",
             Self::Desktop => "desktop",
+            Self::Mobile => "mobile",
         })
     }
 }
@@ -64,6 +66,7 @@ impl FromStr for DeviceProfile {
         match value {
             "phone" => Ok(Self::Phone),
             "desktop" => Ok(Self::Desktop),
+            "mobile" => Ok(Self::Mobile),
             _ => bail!("invalid_device_profile"),
         }
     }
@@ -195,7 +198,7 @@ impl DeviceManager {
             pairing_replays: Arc::new(Mutex::new(HashMap::new())),
         };
         this.initialize()?;
-        this.cleanup_expired_desktops()?;
+        this.cleanup_expired_long_lived()?;
         Ok(this)
     }
 
@@ -213,7 +216,7 @@ impl DeviceManager {
                     id TEXT PRIMARY KEY,
                     secret_hash BLOB NOT NULL,
                     permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
-                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
+                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop','mobile')),
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     failed_attempts INTEGER NOT NULL DEFAULT 0,
@@ -224,7 +227,7 @@ impl DeviceManager {
                     name TEXT NOT NULL,
                     token_hash BLOB NOT NULL UNIQUE,
                     permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
-                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop')),
+                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop','mobile')),
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     last_seen_at TEXT,
@@ -318,7 +321,7 @@ impl DeviceManager {
         let now = timestamp(now);
         self.db.transaction(|tx| {
             let paired: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM paired_devices WHERE iroh_endpoint_id=? AND profile='desktop'
+                "SELECT EXISTS(SELECT 1 FROM paired_devices WHERE iroh_endpoint_id=? AND profile IN ('desktop','mobile')
                  AND revoked_at IS NULL AND expires_at>?)",
                 params![endpoint_id, now],
                 |row| row.get(0),
@@ -327,7 +330,7 @@ impl DeviceManager {
                 return Ok(IrohAdmission::Paired);
             }
             let offer_open: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM device_pairings WHERE profile='desktop' AND consumed_at IS NULL
+                "SELECT EXISTS(SELECT 1 FROM device_pairings WHERE profile IN ('desktop','mobile') AND consumed_at IS NULL
                  AND failed_attempts<? AND expires_at>?)",
                 params![MAX_PAIRING_ATTEMPTS, now],
                 |row| row.get(0),
@@ -366,7 +369,8 @@ impl DeviceManager {
         self.create_pairing_at(permission, operation_id, server_url, tls_fingerprint, Utc::now())
     }
 
-    /// `iroh` is offered to desktops only; phones keep the v1 descriptor.
+    /// `iroh` is offered to long-lived desktop/mobile clients; phones keep the
+    /// legacy v1 descriptor.
     pub fn create_pairing_with_profile(
         &self,
         permission: DevicePermission,
@@ -383,6 +387,8 @@ impl DeviceManager {
             if !self.remote_machines_enabled()? {
                 bail!("remote_machines_disabled")
             }
+        } else if profile == DeviceProfile::Mobile && !self.enabled()? {
+            bail!("remote_access_disabled")
         }
         self.create_pairing_profile_at(
             permission,
@@ -390,7 +396,7 @@ impl DeviceManager {
             operation_id,
             server_url,
             tls_fingerprint,
-            iroh.filter(|_| profile == DeviceProfile::Desktop),
+            iroh.filter(|_| matches!(profile, DeviceProfile::Desktop | DeviceProfile::Mobile)),
             Utc::now(),
         )
     }
@@ -465,6 +471,9 @@ impl DeviceManager {
             "code": code,
             "tlsFingerprint": tls_fingerprint,
         });
+        if pairing.profile == DeviceProfile::Mobile {
+            data["profile"] = json!("mobile");
+        }
         if let Some(iroh) = &iroh {
             data["v"] = json!(2);
             data["iroh"] = serde_json::to_value(iroh)?;
@@ -552,9 +561,12 @@ impl DeviceManager {
                 }
                 return Ok(PairAttempt::Rejected)
             }
-            // Only a desktop offer admits an unknown iroh key (IrohAdmission::PairingOnly); refusing a phone offer
-            // before consuming it leaves it usable by the phone.
-            if iroh_endpoint_id.is_some() && profile != DeviceProfile::Desktop.to_string() {
+            // Only a desktop/mobile offer admits an unknown iroh key
+            // (IrohAdmission::PairingOnly); refusing a phone offer before
+            // consuming it leaves it usable by the phone.
+            if iroh_endpoint_id.is_some()
+                && !matches!(DeviceProfile::from_str(&profile)?, DeviceProfile::Desktop | DeviceProfile::Mobile)
+            {
                 return Ok(PairAttempt::Rejected)
             }
             let changed = tx.execute(
@@ -578,7 +590,7 @@ impl DeviceManager {
                 created_at: timestamp(now),
                 expires_at: timestamp(now + match profile {
                     DeviceProfile::Phone => Duration::hours(DEVICE_TOKEN_TTL_HOURS),
-                    DeviceProfile::Desktop => Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS),
+                    DeviceProfile::Desktop | DeviceProfile::Mobile => Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS),
                 }),
                 last_seen_at: None,
                 revoked_at: None,
@@ -672,8 +684,99 @@ impl DeviceManager {
         authenticated.ok_or_else(|| anyhow::anyhow!("invalid_device_token"))
     }
 
+    /// Authenticates only a mobile credential for the mobile TLS ALPN. The
+    /// iroh key is connection-proved by the outer transport and must match the
+    /// key captured during pairing; TCP-paired credentials remain TCP-only.
+    pub fn authenticate_mobile(
+        &self,
+        token: &str,
+        iroh_endpoint_id: Option<&str>,
+    ) -> Result<AuthenticatedDevice> {
+        self.authenticate_mobile_at(token, iroh_endpoint_id, Utc::now())
+    }
+
+    fn authenticate_mobile_at(
+        &self,
+        token: &str,
+        iroh_endpoint_id: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<AuthenticatedDevice> {
+        if token.len() < 32 || token.len() > 128 {
+            bail!("invalid_device_token")
+        }
+        let token_hash = digest(token.as_bytes());
+        let authenticated = self.db.transaction(|tx| {
+            let row = tx.query_row(
+                "SELECT id,permission,created_at,last_seen_at,expires_at,revoked_at,iroh_endpoint_id
+                 FROM paired_devices WHERE token_hash=? AND profile='mobile'",
+                [token_hash.as_slice()],
+                |row| Ok((
+                    row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?,
+                )),
+            ).optional()?;
+            let Some((id, permission, created_at, last_seen_at, expires_at, revoked_at, stored_iroh)) = row else {
+                return Ok(None)
+            };
+            let expired = parse_timestamp(&expires_at)? <= now;
+            let unconfirmed = last_seen_at.is_none()
+                && parse_timestamp(&created_at)? + Duration::minutes(DESKTOP_UNCONFIRMED_TTL_MINUTES) <= now;
+            if stored_iroh.as_deref() != iroh_endpoint_id || revoked_at.is_some() || expired || unconfirmed {
+                if expired || unconfirmed {
+                    tx.execute("DELETE FROM paired_devices WHERE id=?", [&id])?;
+                }
+                return Ok(None)
+            }
+            if last_seen_at.is_none() {
+                tx.execute(
+                    "UPDATE paired_devices SET last_seen_at=?,expires_at=? WHERE id=? AND revoked_at IS NULL",
+                    params![timestamp(now), timestamp(now + Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS)), id],
+                )?;
+            }
+            Ok(Some(AuthenticatedDevice {
+                id,
+                permission: DevicePermission::from_str(&permission)?,
+            }))
+        })?;
+        authenticated.ok_or_else(|| anyhow::anyhow!("invalid_device_token"))
+    }
+
     pub fn validate_peer(&self, device_id: &str) -> Result<()> {
         self.validate_peer_at(device_id, Utc::now())
+    }
+
+    pub fn validate_mobile(&self, device_id: &str) -> Result<()> {
+        self.validate_mobile_at(device_id, Utc::now())
+    }
+
+    fn validate_mobile_at(&self, device_id: &str, now: DateTime<Utc>) -> Result<()> {
+        let state = self.db.transaction(|tx| {
+            let row = tx.query_row(
+                "SELECT created_at,last_seen_at,expires_at,revoked_at FROM paired_devices
+                 WHERE id=? AND profile='mobile'",
+                [device_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?)),
+            ).optional()?;
+            let Some((created_at, last_seen_at, expires_at, revoked_at)) = row else { return Ok("invalid") };
+            let expired = parse_timestamp(&expires_at)? <= now;
+            let unconfirmed = last_seen_at.is_none()
+                && parse_timestamp(&created_at)? + Duration::minutes(DESKTOP_UNCONFIRMED_TTL_MINUTES) <= now;
+            if revoked_at.is_some() {
+                return Ok("revoked")
+            }
+            if expired || unconfirmed {
+                tx.execute("DELETE FROM paired_devices WHERE id=?", [device_id])?;
+                return Ok(if expired { "expired" } else { "invalid" })
+            }
+            Ok("valid")
+        })?;
+        match state {
+            "valid" => Ok(()),
+            "revoked" => bail!("device_revoked"),
+            "expired" => bail!("device_expired"),
+            _ => bail!("invalid_device_token"),
+        }
     }
 
     fn validate_peer_at(&self, device_id: &str, now: DateTime<Utc>) -> Result<()> {
@@ -711,6 +814,41 @@ impl DeviceManager {
         })
     }
 
+    /// Extends the mobile credential's 30-day idle expiry, coalescing durable
+    /// writes exactly like the desktop peer path.
+    pub fn mobile_activity(&self, device_id: &str) -> Result<()> {
+        self.mobile_activity_at(device_id, Utc::now())
+    }
+
+    fn mobile_activity_at(&self, device_id: &str, now: DateTime<Utc>) -> Result<()> {
+        self.db.transaction(|tx| {
+            let row = tx.query_row(
+                "SELECT last_seen_at,expires_at,revoked_at FROM paired_devices WHERE id=? AND profile='mobile'",
+                [device_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)),
+            ).optional()?;
+            let Some((last_seen, expires_at, revoked_at)) = row else { bail!("invalid_device_token") };
+            if revoked_at.is_some() {
+                bail!("device_revoked")
+            }
+            if parse_timestamp(&expires_at)? <= now {
+                bail!("device_expired")
+            }
+            let write = match last_seen {
+                None => true,
+                Some(value) => parse_timestamp(&value)? + Duration::minutes(PEER_ACTIVITY_WRITE_INTERVAL_MINUTES) <= now,
+            };
+            if write {
+                let changed = tx.execute(
+                    "UPDATE paired_devices SET last_seen_at=?,expires_at=? WHERE id=? AND profile='mobile' AND revoked_at IS NULL",
+                    params![timestamp(now), timestamp(now + Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS)), device_id],
+                )?;
+                if changed != 1 { bail!("invalid_device_token") }
+            }
+            Ok(())
+        })
+    }
+
     pub fn remote_machines_enabled(&self) -> Result<bool> {
         self.db.transaction(|tx| {
             let raw: String =
@@ -733,7 +871,7 @@ impl DeviceManager {
             bail!("invalid_peer_address")
         }
         self.db.transaction(|tx| {
-            let known = tx.query_row("SELECT 1 FROM paired_devices WHERE id=? AND profile='desktop' AND revoked_at IS NULL", [device_id], |_| Ok(())).optional()?.is_some();
+            let known = tx.query_row("SELECT 1 FROM paired_devices WHERE id=? AND profile IN ('desktop','mobile') AND revoked_at IS NULL", [device_id], |_| Ok(())).optional()?.is_some();
             if !known { bail!("invalid_device_token") }
             tx.execute("UPDATE paired_devices SET last_address=? WHERE id=? AND last_address IS NOT ?", params![address, device_id, address])?;
             Ok(())
@@ -741,7 +879,7 @@ impl DeviceManager {
     }
 
     pub fn list(&self) -> Result<Vec<PairedDevice>> {
-        self.cleanup_expired_desktops()?;
+        self.cleanup_expired_long_lived()?;
         self.db.transaction(|tx| {
             let mut statement = tx.prepare(
                 "SELECT id,name,permission,profile,created_at,expires_at,last_seen_at,revoked_at
@@ -878,7 +1016,7 @@ impl DeviceManager {
             device.expires_at = timestamp(
                 now + match device.profile {
                     DeviceProfile::Phone => Duration::hours(DEVICE_TOKEN_TTL_HOURS),
-                    DeviceProfile::Desktop => Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS),
+                    DeviceProfile::Desktop | DeviceProfile::Mobile => Duration::days(DESKTOP_TOKEN_IDLE_TTL_DAYS),
                 },
             );
             tx.execute(
@@ -954,13 +1092,13 @@ impl DeviceManager {
         self.db.transaction(|tx| operation_exists(tx, operation_id))
     }
 
-    /// Removes expired or never-confirmed desktop credentials without touching
-    /// phone rows, whose existing renewal lifecycle is unchanged.
-    pub(crate) fn cleanup_expired_desktops(&self) -> Result<()> {
+    /// Removes expired or never-confirmed desktop/mobile credentials without
+    /// touching phone rows, whose existing renewal lifecycle is unchanged.
+    pub(crate) fn cleanup_expired_long_lived(&self) -> Result<()> {
         let now = Utc::now();
         self.db.transaction(|tx| {
             tx.execute(
-                "DELETE FROM paired_devices WHERE profile='desktop' AND (expires_at<=? OR (last_seen_at IS NULL AND created_at<=?))",
+                "DELETE FROM paired_devices WHERE profile IN ('desktop','mobile') AND (expires_at<=? OR (last_seen_at IS NULL AND created_at<=?))",
                 params![timestamp(now), timestamp(now - Duration::minutes(DESKTOP_UNCONFIRMED_TTL_MINUTES))],
             )?;
             Ok(())
@@ -1122,14 +1260,14 @@ mod tests {
     }
 
     #[test]
-    fn iroh_admits_a_paired_key_and_unknown_keys_only_while_a_desktop_offer_is_open() {
+    fn iroh_admits_a_paired_key_and_unknown_keys_only_while_a_long_lived_offer_is_open() {
         let (_directory, manager) = manager();
         let now = Utc::now();
         assert_eq!(manager.iroh_admission_at("stranger", now).unwrap(), IrohAdmission::Denied);
         // A phone offer never opens the door for an unknown key.
         let phone = manager.create_pairing_at(DevicePermission::Readonly, "iroh-phone", "https://x", "AA", now).unwrap();
         assert_eq!(manager.iroh_admission_at("stranger", now).unwrap(), IrohAdmission::Denied);
-        assert!(manager.pair_at_with(&phone.id, &phone.code, "Phone", Some("phone-key"), now).is_err(), "iroh pairs desktops only");
+        assert!(manager.pair_at_with(&phone.id, &phone.code, "Phone", Some("phone-key"), now).is_err(), "iroh never pairs legacy phones");
         assert!(manager.pair_at(&phone.id, &phone.code, "Phone", now).is_ok(), "the refused attempt left the phone offer usable");
         let desktop = manager
             .create_pairing_profile_at(DevicePermission::Fullcontrol, DeviceProfile::Desktop, "iroh-desktop", "https://x", "AA", None, now)
@@ -1164,6 +1302,20 @@ mod tests {
             .unwrap();
         assert_eq!(decode(&phone)["v"], 1);
         assert!(decode(&phone).get("iroh").is_none() && phone.iroh.is_none());
+        manager.set_enabled(true).unwrap();
+        let mobile = manager
+            .create_pairing_with_profile(
+                DevicePermission::Readonly,
+                DeviceProfile::Mobile,
+                "iroh-mobile-v2",
+                "https://x",
+                "AA",
+                Some(IrohOffer { endpoint_id: "mobile-host-key".into(), relay_url: None }),
+            )
+            .unwrap();
+        assert_eq!(decode(&mobile)["v"], 2);
+        assert_eq!(decode(&mobile)["profile"], "mobile");
+        assert_eq!(decode(&mobile)["iroh"]["endpointId"], "mobile-host-key");
         let plain = manager
             .create_pairing_with_profile(DevicePermission::Fullcontrol, DeviceProfile::Desktop, "tcp-v1", "https://x", "AA", None)
             .unwrap();
@@ -1217,6 +1369,7 @@ mod tests {
             .is_err());
         let authenticated = manager.authenticate_at(&paired.token, now).unwrap();
         assert_eq!(authenticated.id, paired.device.id);
+        assert!(manager.authenticate_mobile_at(&paired.token, None, now).is_err());
         let lease_session = manager
             .db
             .create_session(crate::db::CreateSession {
@@ -1413,6 +1566,76 @@ mod tests {
                 .optional()?
                 .is_some()))
             .unwrap());
+    }
+
+    #[test]
+    fn mobile_credentials_are_profile_and_iroh_key_bound_with_idle_expiry() {
+        let (_directory, manager) = manager();
+        manager.set_enabled(true).unwrap();
+        let now = Utc::now();
+        let offer = manager
+            .create_pairing_profile_at(
+                DevicePermission::Readonly,
+                DeviceProfile::Mobile,
+                "mobile-pair",
+                "https://x",
+                "AA",
+                Some(IrohOffer { endpoint_id: "host-key".into(), relay_url: None }),
+                now,
+            )
+            .unwrap();
+        let paired = manager
+            .pair_at_with(&offer.id, &offer.code, "iPhone", Some("phone-iroh-key"), now)
+            .unwrap();
+        assert_eq!(paired.device.profile, DeviceProfile::Mobile);
+        assert_eq!(paired.device.permission, DevicePermission::Readonly);
+        assert!(manager.authenticate_at(&paired.token, now).is_err());
+        assert!(manager.authenticate_peer_at(&paired.token, now).is_err());
+        assert!(manager.authenticate_mobile_at(&paired.token, None, now).is_err());
+        assert!(manager.authenticate_mobile_at(&paired.token, Some("other-key"), now).is_err());
+        assert!(manager.authenticate_mobile_at(&paired.token, Some("phone-iroh-key"), now).is_ok());
+        manager.mobile_activity_at(&paired.device.id, now + Duration::minutes(5)).unwrap();
+        assert!(manager.validate_mobile_at(
+            &paired.device.id,
+            now + Duration::days(30) + Duration::minutes(5) - Duration::milliseconds(1),
+        ).is_ok());
+        assert_eq!(
+            manager
+                .validate_mobile_at(
+                    &paired.device.id,
+                    now + Duration::days(30) + Duration::minutes(5),
+                )
+                .unwrap_err()
+                .to_string(),
+            "device_expired",
+        );
+
+        let tcp_offer = manager
+            .create_pairing_profile_at(
+                DevicePermission::Fullcontrol,
+                DeviceProfile::Mobile,
+                "mobile-tcp-pair",
+                "https://x",
+                "AA",
+                None,
+                now,
+            )
+            .unwrap();
+        let tcp = manager
+            .pair_at(&tcp_offer.id, &tcp_offer.code, "TCP iPhone", now)
+            .unwrap();
+        assert!(manager.authenticate_mobile_at(&tcp.token, None, now).is_ok());
+        assert!(manager.authenticate_mobile_at(&tcp.token, Some("injected-iroh-key"), now).is_err());
+        assert!(manager.authenticate_at(&tcp.token, now).is_err());
+        assert!(manager.authenticate_peer_at(&tcp.token, now).is_err());
+        manager.revoke(&tcp.device.id, "revoke-mobile-tcp").unwrap();
+        assert_eq!(
+            manager
+                .validate_mobile_at(&tcp.device.id, now)
+                .unwrap_err()
+                .to_string(),
+            "device_revoked",
+        );
     }
 
     #[test]
@@ -1673,6 +1896,7 @@ mod tests {
             .pair_at(&offer.id, &offer.code, "Office", now)
             .unwrap();
         assert!(manager.authenticate_at(&paired.token, now).is_err());
+        assert!(manager.authenticate_mobile_at(&paired.token, None, now).is_err());
         manager.authenticate_peer_at(&paired.token, now).unwrap();
         let initial_expiry: String = manager
             .db
@@ -1743,7 +1967,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        manager.cleanup_expired_desktops().unwrap();
+        manager.cleanup_expired_long_lived().unwrap();
         assert!(manager
             .db
             .transaction(|tx| Ok(tx

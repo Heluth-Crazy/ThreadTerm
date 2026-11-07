@@ -157,6 +157,7 @@ function linkNodeModules(snapshot) {
     ['protocol', 'protocol'],
     ['v3-renderer', 'renderer'],
     ['v3-claude-sdk', 'providers/claude-sdk'],
+    ['mobile', 'mobile'],
   ]);
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     const from = join(source, entry.name);
@@ -173,7 +174,7 @@ function linkNodeModules(snapshot) {
       copyFileSync(from, to);
     }
   }
-  for (const packageDir of ['renderer', 'providers/claude-sdk']) {
+  for (const packageDir of ['renderer', 'providers/claude-sdk', 'mobile']) {
     const local = join(repo, packageDir, 'node_modules');
     if (existsSync(local) && !existsSync(join(snapshot, packageDir, 'node_modules'))) {
       link(local, join(snapshot, packageDir, 'node_modules'));
@@ -284,6 +285,8 @@ protocolFreshness();
 
 run('typecheck desktop', root, process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--noEmit', '-p', 'tsconfig.desktop.json'], 300000);
 run('typecheck renderer', root, process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--noEmit', '-p', 'renderer'], 300000);
+npmRun('typecheck mobile', root, ['run', 'mobile:typecheck'], 300000);
+npmRun('mobile tests', root, ['run', 'mobile:test'], 600000);
 
 npmRun('protocol tests', root, ['run', 'test:protocol'], 600000);
 run('protocol usage-ledger tests', root, process.execPath, ['--experimental-strip-types', '--test', 'protocol/usage-ledger.test.mjs'], 300000);

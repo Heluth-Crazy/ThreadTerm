@@ -25,11 +25,17 @@ export type HostingQuitChoice = 'keep' | 'stop' | 'cancel';
 export interface HostingQuitContext { connectedNames: string[] }
 
 /** Unknown device data on a running host is conservative; stale lastSeenAt is never live presence. */
-export function hostingQuitContext(runtimeRunning: boolean, enabled: boolean, devices?: PairedDevice[]): HostingQuitContext | undefined {
-  if (!runtimeRunning || !enabled) return undefined;
+export function hostingQuitContext(runtimeRunning: boolean, computersEnabled: boolean, mobileEnabled: boolean, devices?: PairedDevice[]): HostingQuitContext | undefined {
+  if (!runtimeRunning || (!computersEnabled && !mobileEnabled)) return undefined;
   if (!devices) return { connectedNames: [] };
-  const desktops = devices.filter(device => device.profile === 'desktop' && !device.revokedAt);
-  return desktops.length ? { connectedNames: desktops.filter(device => device.connected).map(device => device.name) } : undefined;
+  const hosts = devices.filter(device => !device.revokedAt && (
+    (device.profile === 'desktop' && computersEnabled)
+    || (device.profile === 'mobile' && mobileEnabled)
+    // Missing profiles are legacy terminal phones, but an explicit future
+    // profile must not let a possibly active host stop without asking.
+    || (device.profile !== undefined && device.profile !== 'phone' && device.profile !== 'desktop' && device.profile !== 'mobile')
+  ));
+  return hosts.length ? { connectedNames: hosts.filter(device => device.connected).map(device => device.name) } : undefined;
 }
 
 export function hostingQuitChoice(response: number): HostingQuitChoice {

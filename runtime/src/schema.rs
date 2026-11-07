@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const MAIN_VERSION: u32 = 6;
+pub(crate) const MAIN_VERSION: u32 = 7;
 pub(crate) const LEDGER_VERSION: u32 = 1;
 const HISTORY_LIMIT: usize = 16;
 
@@ -252,6 +252,60 @@ const MAIN_MIGRATIONS: &[Migration] = &[Migration {
                     tx.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
                 }
             }
+            Ok(())
+        },
+    }, Migration {
+        // Mobile companion credentials are a third, transport-exclusive
+        // profile. SQLite cannot widen an inline CHECK constraint, so rebuild
+        // both small device tables and preserve every legacy row verbatim.
+        version: 7,
+        min_reader: 7,
+        destructive: true,
+        needs_backup: |conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('device_pairings','paired_devices'))",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?)
+        },
+        apply: |tx| {
+            tx.execute_batch(
+                "CREATE TABLE device_pairings_v7 (
+                    id TEXT PRIMARY KEY,
+                    secret_hash BLOB NOT NULL,
+                    permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop','mobile')),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    failed_attempts INTEGER NOT NULL DEFAULT 0,
+                    consumed_at TEXT
+                 );
+                 INSERT INTO device_pairings_v7(id,secret_hash,permission,profile,created_at,expires_at,failed_attempts,consumed_at)
+                    SELECT id,secret_hash,permission,COALESCE(profile,'phone'),created_at,expires_at,failed_attempts,consumed_at
+                    FROM device_pairings;
+                 CREATE TABLE paired_devices_v7 (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    token_hash BLOB NOT NULL UNIQUE,
+                    permission TEXT NOT NULL CHECK(permission IN ('readonly','fullcontrol')),
+                    profile TEXT NOT NULL DEFAULT 'phone' CHECK(profile IN ('phone','desktop','mobile')),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    last_seen_at TEXT,
+                    last_address TEXT,
+                    revoked_at TEXT,
+                    iroh_endpoint_id TEXT
+                 );
+                 INSERT INTO paired_devices_v7(id,name,token_hash,permission,profile,created_at,expires_at,last_seen_at,last_address,revoked_at,iroh_endpoint_id)
+                    SELECT id,name,token_hash,permission,COALESCE(profile,'phone'),created_at,expires_at,last_seen_at,last_address,revoked_at,iroh_endpoint_id
+                    FROM paired_devices;
+                 DROP TABLE device_pairings;
+                 DROP TABLE paired_devices;
+                 ALTER TABLE device_pairings_v7 RENAME TO device_pairings;
+                 ALTER TABLE paired_devices_v7 RENAME TO paired_devices;
+                 CREATE INDEX device_pairings_expiry ON device_pairings(expires_at);
+                 CREATE INDEX paired_devices_expiry ON paired_devices(expires_at);",
+            )?;
             Ok(())
         },
     },

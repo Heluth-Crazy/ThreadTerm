@@ -1531,6 +1531,35 @@ mod over_iroh {
         matches!(tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await, Ok(Ok(0)) | Ok(Err(_)))
     }
 
+    async fn mobile_rpc<S: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut S,
+        id: &str,
+        method: &str,
+        params: Value,
+    ) -> Value {
+        write_any(stream, &json!({"v":PROTOCOL_VERSION,"id":id,"method":method,"params":params})).await;
+        loop {
+            let frame = read_any(stream).await;
+            if frame.get("id").and_then(Value::as_str) == Some(id) {
+                return frame;
+            }
+        }
+    }
+
+    async fn closes_within_two_seconds<S: AsyncRead + Unpin>(stream: &mut S) -> bool {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut bytes = [0_u8; 1024];
+            loop {
+                match stream.read(&mut bytes).await {
+                    Ok(0) | Err(_) => return true,
+                    Ok(_) => {}
+                }
+            }
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// End to end on loopback (no relay, no lookups): the desktop offer carries the host key; a client runtime dials
     /// through its local pipe; before pairing its key may only pair; pairing records the key the connection proved;
     /// that key then authenticates the peer protocol; a key that never paired is refused before TLS.
@@ -1581,6 +1610,116 @@ mod over_iroh {
         let stranger_dialer = Arc::clone(stranger.service.remote.get().unwrap());
         assert!(try_iroh_tls(&stranger_dialer, &host_address, host.root.path(), b"http/1.1").await.is_none());
         assert_eq!(remote.devices.iroh_admission(&stranger_dialer.iroh_dial_key().unwrap()).unwrap(), IrohAdmission::Denied);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_mobile_pairs_and_uses_its_closed_contract_over_iroh() {
+        let host = Fixture::new();
+        crate::project_catalog::initialize(&host.service.db).unwrap();
+        host.rpc("device.iroh.set", json!({"enabled":true,"operationId":"mobile-iroh-on"}));
+        host.rpc("device.enable", json!({"operationId":"mobile-listener"}));
+        let remote = Arc::clone(host.service.remote.get().unwrap());
+        let host_address = wait_for(|| remote.iroh_host_address().filter(|address| address.ip_addrs().next().is_some())).await;
+        assert!(!remote.devices.remote_machines_enabled().unwrap(), "the Computers preview gate stays off");
+
+        let offer = host.rpc("device.pairing.create", json!({
+            "permission":"readonly",
+            "profile":"mobile",
+            "operationId":"mobile-iroh-offer"
+        }));
+        let encoded = offer["qrPayload"].as_str().unwrap().strip_prefix("threadterm://pair?data=").unwrap();
+        let descriptor: Value = serde_json::from_slice(
+            &base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, encoded).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(descriptor["profile"], "mobile");
+        assert_eq!(descriptor["v"], 2);
+
+        let client = Fixture::new();
+        let dialer = Arc::clone(client.service.remote.get().unwrap());
+        let (status, paired) = iroh_http(
+            &dialer,
+            &host_address,
+            host.root.path(),
+            "/v1/pair",
+            json!({"pairingId":offer["id"],"code":offer["code"],"deviceName":"iPhone"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{paired}");
+        assert_eq!(paired["device"]["profile"], "mobile");
+
+        let client_id = uuid::Uuid::new_v4().to_string();
+        let mut control = iroh_tls(&dialer, &host_address, host.root.path(), crate::mobile::ALPN).await;
+        let challenge = read_any(&mut control).await;
+        assert_eq!(challenge["contract"], crate::mobile::CONTRACT);
+        write_any(&mut control, &json!({
+            "kind":"auth","protocol":PROTOCOL_VERSION,"contract":crate::mobile::CONTRACT,
+            "nonce":challenge["nonce"],"channel":"control","clientId":client_id,
+            "credential":paired["token"],"epoch":Value::Null
+        })).await;
+        let authenticated = read_any(&mut control).await;
+        assert_eq!(authenticated["kind"], "authenticated");
+        assert_eq!(authenticated["permission"], "readonly");
+
+        let subscribed = mobile_rpc(
+            &mut control,
+            "subscribe",
+            "mobile.events.subscribe",
+            json!({"sessionIds":[]}),
+        )
+        .await;
+        assert_eq!(subscribed["result"]["sessionIds"], json!([]));
+        let snapshot = mobile_rpc(&mut control, "snapshot", "mobile.snapshot", json!({})).await;
+        assert_eq!(snapshot["result"]["permission"], "readonly");
+        assert_eq!(snapshot["result"]["capabilities"]["contract"], crate::mobile::CONTRACT);
+        let methods = snapshot["result"]["capabilities"]["methods"].as_array().unwrap();
+        assert!(methods.contains(&json!("chat.read")));
+        assert!(!methods.contains(&json!("chat.send")));
+
+        let denied = mobile_rpc(
+            &mut control,
+            "denied",
+            "chat.send",
+            json!({"sessionId":"untrusted","leaseEpoch":1,"text":"no","operationId":"no"}),
+        )
+        .await;
+        assert_eq!(denied["error"]["code"], "mobile_readonly");
+        let forbidden = mobile_rpc(&mut control, "forbidden", "settings.update", json!({})).await;
+        assert_eq!(forbidden["error"]["code"], "mobile_forbidden");
+
+        let mut rejected = iroh_tls(&dialer, &host_address, host.root.path(), crate::mobile::ALPN).await;
+        let rejected_challenge = read_any(&mut rejected).await;
+        write_any(&mut rejected, &json!({
+            "kind":"auth","protocol":PROTOCOL_VERSION,"contract":crate::mobile::CONTRACT,
+            "nonce":rejected_challenge["nonce"],"channel":"control","clientId":uuid::Uuid::new_v4().to_string(),
+            "credential":"00000000000000000000000000000000","epoch":Value::Null
+        })).await;
+        let authentication_failed = read_any(&mut rejected).await;
+        assert_eq!(authentication_failed["kind"], "authentication_failed");
+        assert_eq!(authentication_failed["code"], "mobile_revoked");
+
+        let mut output = iroh_tls(&dialer, &host_address, host.root.path(), crate::mobile::ALPN).await;
+        let output_challenge = read_any(&mut output).await;
+        write_any(&mut output, &json!({
+            "kind":"auth","protocol":PROTOCOL_VERSION,"contract":crate::mobile::CONTRACT,
+            "nonce":output_challenge["nonce"],"channel":"output","clientId":authenticated["principal"].as_str().unwrap().rsplit(':').next().unwrap(),
+            "credential":paired["token"],"epoch":authenticated["epoch"]
+        })).await;
+        assert_eq!(read_any(&mut output).await["kind"], "authenticated");
+
+        host.rpc("device.revoke", json!({"deviceId":paired["device"]["id"],"operationId":"mobile-revoke"}));
+        assert!(closes_within_two_seconds(&mut output).await, "revoke closes dependent channels within two seconds");
+        let revoked = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let frame = read_any(&mut control).await;
+                if frame.get("event").and_then(Value::as_str) == Some("mobile.revoked") {
+                    return frame;
+                }
+            }
+        }).await.expect("revoked terminal event");
+        assert_eq!(revoked["seq"], 0);
+        assert_eq!(revoked["data"]["reason"], "revoked");
+        assert!(closes_within_two_seconds(&mut control).await, "revoke closes the control channel within two seconds");
     }
 
     /// The new local methods are host administration: a paired computer may not call them.

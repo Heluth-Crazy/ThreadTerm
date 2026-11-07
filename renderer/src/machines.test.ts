@@ -12,9 +12,10 @@ test('Computers and Phones are both available on This PC; Computers holds the pr
   assert.equal(settingsPageVisible('computers', false), true);
   assert.equal(settingsPageVisible('mobile', false), true);
 });
-test('phone rows stay in Phones and desktop rows stay in Computers, preserving legacy phones', () => {
-  const rows = [{ id: 'phone', profile: 'phone' }, { id: 'pc', profile: 'desktop' }, { id: 'legacy-phone' }] as PairedDevice[];
+test('phone, mobile-app, and desktop rows stay in their own settings lists, preserving legacy phones', () => {
+  const rows = [{ id: 'phone', profile: 'phone' }, { id: 'mobile', profile: 'mobile' }, { id: 'pc', profile: 'desktop' }, { id: 'legacy-phone' }] as PairedDevice[];
   assert.deepEqual(devicesForProfile(rows, 'phone').map(row => row.id), ['phone', 'legacy-phone']);
+  assert.deepEqual(devicesForProfile(rows, 'mobile').map(row => row.id), ['mobile']);
   assert.deepEqual(devicesForProfile(rows, 'desktop').map(row => row.id), ['pc']);
 });
 test('remote views hide data backup/restore/relocation and both device administration pages', () => {

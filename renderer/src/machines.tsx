@@ -45,6 +45,7 @@ export function isHostSettingsPage(tab: string): boolean { return ['data', 'mobi
 export function settingsPageVisible(tab: string, remote: boolean): boolean {
   return !(remote && isHostSettingsPage(tab));
 }
-export function devicesForProfile(devices: PairedDevice[], profile: 'phone' | 'desktop'): PairedDevice[] {
+/** Persisted rows from before profiles existed are legacy terminal phones. */
+export function devicesForProfile(devices: PairedDevice[], profile: 'phone' | 'mobile' | 'desktop'): PairedDevice[] {
   return devices.filter(device => (device.profile ?? 'phone') === profile);
 }

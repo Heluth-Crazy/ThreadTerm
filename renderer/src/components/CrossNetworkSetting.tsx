@@ -4,7 +4,7 @@ import { operationId, request } from '../bridge';
 import { userErrorText } from '../runtimeError';
 import { SettingsSwitch } from './SettingsControls';
 
-/** "Connect across networks": computers on other networks reach This PC through iroh. Off by default. */
+/** "Connect across networks": trusted ThreadTerm clients reach This PC through iroh. Off by default. */
 export function CrossNetworkControl({ zh, status, busy, onChange }: {
   zh: boolean; status?: RemoteAccessStatus; busy: boolean; onChange: (enabled: boolean, relayUrl: string | null) => void;
 }) {
@@ -19,8 +19,8 @@ export function CrossNetworkControl({ zh, status, busy, onChange }: {
     </SettingsSwitch>
     <p id={hint} className="hint">{tailscaleOnly
       ? (zh ? '要使用此功能，请先关闭“仅接受我的 Tailscale 网络中的设备”。' : 'Turn off “Only accept devices on my Tailscale network” to use this.')
-      : (zh ? '让其他网络中的电脑连接本机，例如家里和办公室。连接加密，无法直连时经中继转发。开启后请重新配对。'
-        : 'Lets computers on other networks reach this PC, such as home and office. Connections are encrypted and go through a relay when no direct path exists. Pair again after turning this on.')}</p>
+      : (zh ? '让其他网络中的 ThreadTerm 电脑和手机应用连接本机，例如家里和办公室。连接加密，无法直连时经中继转发。开启后请重新配对。'
+        : 'Lets trusted ThreadTerm computers and the mobile app on other networks reach this PC, such as home and office. Connections are encrypted and go through a relay when no direct path exists. Pair again after turning this on.')}</p>
     {enabled && <details className="cross-network-relay">
       <summary>{zh ? '中继服务器' : 'Relay server'}</summary>
       <label>{zh ? '自建中继地址（留空则使用默认的公共中继）' : 'Your own relay (leave empty for the default public relays)'}
@@ -32,7 +32,7 @@ export function CrossNetworkControl({ zh, status, busy, onChange }: {
   </div>;
 }
 
-/** Computers page only: phones keep using addresses on the local network or Tailscale. */
+/** Both local device-administration pages expose the same listener setting. */
 export function CrossNetworkSetting({ zh, status, onStatus }: { zh: boolean; status?: RemoteAccessStatus; onStatus: (status: RemoteAccessStatus) => void }) {
   const [busy, setBusy] = useState(false), [issue, setIssue] = useState<string>();
   const change = (enabled: boolean, relayUrl: string | null) => {

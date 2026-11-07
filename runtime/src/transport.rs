@@ -479,7 +479,7 @@ async fn run_request(
         .flatten();
     let trace_timer = is_chat_send.then(SendTraceTimer::start);
     let result = if request.method == "browser.tool.call" {
-        match crate::peer::guard(&service, &principal, &request.method) {
+        match crate::peer::guard_request(&service, &principal, &request.method, &request.params) {
             Ok(()) => service.browser_tool_call(&principal, request).await,
             Err(error) => Err(error),
         }
@@ -488,7 +488,7 @@ async fn run_request(
         if is_chat_send {
             send_trace::emit(SendTraceEvent::new("transport.dispatch.begin").method("chat.send"));
         }
-        crate::peer::guard(&service, &principal, &request.method)?;
+        crate::peer::guard_request(&service, &principal, &request.method, &request.params)?;
         let result = service.dispatch(&principal, request);
         if is_chat_send {
             send_trace::emit(SendTraceEvent::new("transport.dispatch.end")
@@ -595,20 +595,26 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     service: Arc<RuntimeService>,
     principal: String,
 ) -> Result<()> {
+    let mobile_connection = crate::mobile::is_principal(&principal);
     // Leases follow the principal's control connections; this one counts until serve_control returns.
     let _presence = service.leases.connect(&principal);
     let _preview_presence = service.previews.connect(&principal);
-    let _browser_presence = service.browser_tools.connect_control(&principal)?;
+    let _browser_presence = if mobile_connection {
+        None
+    } else {
+        Some(service.browser_tools.connect_control(&principal)?)
+    };
     // A dropped control connection revokes all contexts owned by that principal,
     // including a concurrent startup or lookup that ignored client cancellation.
-    let _navigation_presence = NavigationControlPresence {
+    let _navigation_presence = (!mobile_connection).then(|| NavigationControlPresence {
         navigation: Arc::clone(&service.editor_navigation),
         principal: principal.clone(),
-    };
+    });
     let mut turn_speeds = service.subscribe_turn_speed();
     let mut turn_speeds_open = true;
     let mut sent_seq = service.db.snapshot()?.revision;
     let mut tree_filter = false;
+    let mut mobile_sessions = std::collections::BTreeSet::new();
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
     let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
@@ -622,8 +628,25 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
         tokio::select! {
             frame = decoder.read(&mut reader) => {
                 let request: RpcRequest = serde_json::from_slice(&frame?)?;
+                if mobile_connection && request.method == "mobile.events.subscribe" {
+                    let result = crate::peer::guard_request(&service, &principal, &request.method, &request.params)
+                        .and_then(|()| crate::mobile::subscription(&service.db, &request.params).map_err(|failure| crate::domain::RpcError {
+                            code: "invalid_request".into(),
+                            message: failure.to_string(),
+                            details: None,
+                        }));
+                    let response = match result {
+                        Ok((sessions, value)) => {
+                            mobile_sessions = sessions;
+                            json!({"v":PROTOCOL_VERSION,"id":request.id,"result":value})
+                        }
+                        Err(error) => json!({"v":PROTOCOL_VERSION,"id":request.id,"error":error}),
+                    };
+                    write_json(&mut writer, &response).await?;
+                    continue;
+                }
                 if request.method == "runtime.events.filter" {
-                    let result = crate::peer::guard(&service, &principal, &request.method)
+                    let result = crate::peer::guard_request(&service, &principal, &request.method, &request.params)
                         .and_then(|()| parse_event_filter(&request.params));
                     let response = match result {
                         Ok(()) => {
@@ -674,7 +697,7 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                 delivery?;
                 if reply.served_snapshot { service.db.start_retention(); }
             }
-            received = turn_speeds.recv(), if !tree_filter && turn_speeds_open && sequenced_in_flight == 0 => {
+            received = turn_speeds.recv(), if !mobile_connection && !tree_filter && turn_speeds_open && sequenced_in_flight == 0 => {
                 let epoch = service.db.epoch()?;
                 if received.is_ok() { guard_stream(&service, &principal, "runtime.event")?; }
                 turn_speeds_open = forward_turn_speed(&mut writer, &epoch, received).await?;
@@ -686,10 +709,17 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
             let previous_seq = sent_seq;
             for (seq, event, mut data) in service.db.events_after(sent_seq)? {
                 sent_seq = seq;
-                if tree_filter && !tree_event(&event, &data) { continue; }
-                if tree_filter && event != "runtime.degraded" {
-                    data["tree"] = service.db.tree_projection(&event, &data)?;
-                }
+                let event = if mobile_connection {
+                    let Some((event, projected)) = crate::mobile::project_event(&service.db, &event, &data, &mobile_sessions) else { continue };
+                    data = projected;
+                    event
+                } else {
+                    if tree_filter && !tree_event(&event, &data) { continue; }
+                    if tree_filter && event != "runtime.degraded" {
+                        data["tree"] = service.db.tree_projection(&event, &data)?;
+                    }
+                    event
+                };
                 let frame = json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data});
                 // Durable state that cannot fit a frame stays in the database; the
                 // connection reports a projection gap instead of dying, and the view
@@ -706,7 +736,7 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                     write_binary(&mut writer, &bytes).await?;
                 }
             }
-            if tree_filter && sent_seq != previous_seq {
+            if (tree_filter || mobile_connection) && sent_seq != previous_seq {
                 write_json(&mut writer, &json!({"v":PROTOCOL_VERSION,"event":"runtime.cursor","epoch":epoch,"seq":sent_seq,"data":{}})).await?;
             }
         }
@@ -741,6 +771,7 @@ pub(crate) async fn serve_output<T: tokio::io::AsyncRead + tokio::io::AsyncWrite
     service: Arc<RuntimeService>,
     principal: String,
 ) -> Result<()> {
+    let mobile_connection = crate::mobile::is_principal(&principal);
     let mut decoder = FrameDecoder::default();
     let mut subscriptions: std::collections::HashMap<String, (i64, i64)> =
         std::collections::HashMap::new();
@@ -760,6 +791,9 @@ pub(crate) async fn serve_output<T: tokio::io::AsyncRead + tokio::io::AsyncWrite
                         .and_then(Value::as_str)
                         .context("subscribe sessionId")?
                         .to_owned();
+                    if mobile_connection {
+                        crate::mobile::require_registered_session(&service.db, &session_id)?;
+                    }
                     let cursor = header.get("cursor").and_then(Value::as_i64).unwrap_or(0);
                     if !subscriptions.contains_key(&session_id) && subscriptions.len() >= 64 {
                         bail!("subscription limit reached")
@@ -796,6 +830,12 @@ pub(crate) async fn serve_output<T: tokio::io::AsyncRead + tokio::io::AsyncWrite
             };
         }
         for (id, (cursor, credit)) in &mut subscriptions {
+            if mobile_connection
+                && *credit > 0
+                && !crate::mobile::session_is_registered(&service.db, id)?
+            {
+                bail!("mobile output scope is no longer registered");
+            }
             while *credit > 0 {
                 let chunks =
                     match service

@@ -41,3 +41,9 @@ test('Computers mounts the setting next to Tailscale-only with one shared status
   assert.match(userErrorText(wrapped, 'fallback', false), /^Couldn’t reach that computer across networks\./);
   assert.match(userErrorText(wrapped, 'fallback', true), /^无法跨网络连接到那台电脑/);
 });
+
+test('Phones independently exposes the same cross-network host setting', () => {
+  const source = readFileSync('renderer/src/components/DeviceSettings.tsx', 'utf8');
+  assert.match(source, /<TailscaleOnlySetting zh=\{zh\} active=\{active\} onStatus=\{setStatus\} \/>/);
+  assert.match(source, /<CrossNetworkSetting zh=\{zh\} status=\{status\} onStatus=\{setStatus\} \/>/);
+});

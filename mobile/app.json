@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "ThreadTerm",
+    "slug": "threadterm-mobile",
+    "version": "0.1.0",
+    "scheme": "threadterm",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "web"],
+    "ios": {
+      "bundleIdentifier": "app.threadterm.mobile",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Unlock control of your paired computers.",
+        "NSLocalNetworkUsageDescription": "Connect to your paired ThreadTerm computers on your network.",
+        "NSCameraUsageDescription": "Scan a ThreadTerm pairing code displayed on your computer.",
+        "NSAppTransportSecurity": { "NSAllowsLocalNetworking": true }
+      }
+    },
+    "plugins": [
+      ["expo-build-properties", { "ios": { "deploymentTarget": "17.0" } }],
+      ["expo-camera", { "cameraPermission": "Scan a ThreadTerm computer pairing code.", "microphonePermission": false, "recordAudioAndroid": false }]
+    ],
+    "web": { "bundler": "metro", "name": "ThreadTerm Mobile" }
+  }
+}

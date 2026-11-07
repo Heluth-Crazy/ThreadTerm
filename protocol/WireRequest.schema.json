@@ -1135,7 +1135,8 @@
       "type": "string",
       "enum": [
         "phone",
-        "desktop"
+        "desktop",
+        "mobile"
       ],
       "description": "The trust profile selected by the host when a pairing offer is created."
     },

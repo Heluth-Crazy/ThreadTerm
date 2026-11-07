@@ -197,6 +197,7 @@ pub struct RemoteAccess {
     service: Weak<RuntimeService>,
     pub(crate) devices: DeviceManager,
     pub(crate) peers: crate::peer::ConnectionGroups,
+    pub(crate) mobiles: crate::mobile::ConnectionGroups,
     db: Arc<Database>,
     data_dir: PathBuf,
     // Loaded lazily: the TLS identity is optional and never created while
@@ -225,6 +226,7 @@ impl RemoteAccess {
             service,
             devices,
             peers: crate::peer::ConnectionGroups::default(),
+            mobiles: crate::mobile::ConnectionGroups::default(),
             db,
             data_dir: config.data_dir,
             identity: RwLock::new(None),
@@ -326,7 +328,11 @@ impl RemoteAccess {
                 let request: CreatePairing = parse(params)?;
                 let status = self.status()?;
                 let server_url = self.pairing_url(status.tailscale_only)?;
-                let iroh = if request.profile == DeviceProfile::Desktop { self.iroh_offer()? } else { None };
+                let iroh = if matches!(request.profile, DeviceProfile::Desktop | DeviceProfile::Mobile) {
+                    self.iroh_offer()?
+                } else {
+                    None
+                };
                 serde_json::to_value(self.devices.create_pairing_with_profile(
                     request.permission,
                     request.profile,
@@ -346,9 +352,11 @@ impl RemoteAccess {
                 parse::<Empty>(params)?;
                 let mut devices = self.devices.list()?;
                 for device in &mut devices {
-                    if device.profile == DeviceProfile::Desktop {
-                        device.connected = Some(self.peers.connected(&device.id));
-                    }
+                    device.connected = match device.profile {
+                        DeviceProfile::Desktop => Some(self.peers.connected(&device.id)),
+                        DeviceProfile::Mobile => Some(self.mobiles.connected(&device.id)),
+                        DeviceProfile::Phone => None,
+                    };
                 }
                 serde_json::to_value(devices)?
             }
@@ -379,6 +387,7 @@ impl RemoteAccess {
                 self.devices
                     .revoke(&request.device_id, &request.operation_id)?;
                 self.peers.revoke(&request.device_id, &self.db)?;
+                self.mobiles.revoke(&request.device_id, &self.db)?;
                 Value::Null
             }
             _ => return Ok(None),
@@ -803,7 +812,7 @@ impl RemoteAccess {
                     _ = tasks.join_next(), if !tasks.is_empty() => continue,
                     _ = cleanup.tick() => {
                         if let Some(remote) = weak.upgrade() {
-                            let _ = remote.devices.cleanup_expired_desktops();
+                            let _ = remote.devices.cleanup_expired_long_lived();
                         }
                         continue;
                     }
@@ -1522,7 +1531,11 @@ fn load_certificate(data_dir: &Path) -> Result<CertificateMaterial> {
         .with_no_client_auth()
         .with_single_cert(certificates, key)
         .context("loading remote TLS identity")?;
-    config.alpn_protocols = vec![crate::peer::ALPN.to_vec(), b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![
+        crate::peer::ALPN.to_vec(),
+        crate::mobile::ALPN.to_vec(),
+        b"http/1.1".to_vec(),
+    ];
     Ok(CertificateMaterial {
         config: Arc::new(config),
         fingerprint,
@@ -1595,6 +1608,24 @@ async fn serve_tls<S>(
         #[cfg(windows)]
         if let Some(remote) = weak.upgrade() {
             let _ = crate::peer::accept(tls, remote, generation, origin.label()).await;
+        }
+        return;
+    }
+    if tls.get_ref().1.alpn_protocol() == Some(crate::mobile::ALPN) {
+        if origin.pairing_only() {
+            return;
+        }
+        #[cfg(windows)]
+        if let Some(remote) = weak.upgrade() {
+            let iroh_key = origin.iroh_key().map(str::to_owned);
+            let _ = crate::mobile::accept(
+                tls,
+                remote,
+                generation,
+                origin.label(),
+                iroh_key,
+            )
+            .await;
         }
         return;
     }
@@ -2087,6 +2118,7 @@ mod tests {
             service: Weak::new(),
             devices: DeviceManager::new(Arc::clone(&db)).unwrap(),
             peers: crate::peer::ConnectionGroups::default(),
+            mobiles: crate::mobile::ConnectionGroups::default(),
             db,
             data_dir: data_dir.to_owned(),
             identity: RwLock::new(Some(Arc::new(

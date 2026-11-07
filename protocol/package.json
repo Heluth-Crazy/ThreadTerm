@@ -1,1 +1,1 @@
-{"name":"@threadterm/protocol","version":"0.1.0","private":true,"type":"module","exports":"./index.ts","scripts":{"typecheck":"tsc --noEmit"}}
+{"name":"@threadterm/protocol","version":"0.1.0","private":true,"type":"module","exports":{".":"./index.ts","./mobile":"./mobile.ts"},"scripts":{"typecheck":"tsc --noEmit"}}

@@ -7,7 +7,8 @@
   "workspaces": [
     "protocol",
     "renderer",
-    "providers/claude-sdk"
+    "providers/claude-sdk",
+    "mobile"
   ],
   "dependencies": {
     "@threadterm/protocol": "file:protocol",
@@ -15,6 +16,9 @@
     "picomatch": "4.0.3"
   },
   "scripts": {
+    "mobile:start": "npm --workspace @threadterm/mobile run start",
+    "mobile:typecheck": "npm --workspace @threadterm/mobile run typecheck",
+    "mobile:test": "node scripts/test-mobile.mjs",
     "dev": "concurrently --kill-others --success first \"npm run dev:renderer\" \"npm run dev:desktop\"",
     "dev:renderer": "vite --config vite.config.ts --host 127.0.0.1",
     "dev:desktop": "npm run protocol:generate && npm run build:desktop && wait-on http://127.0.0.1:5173 && cross-env THREADTERM_V3_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
