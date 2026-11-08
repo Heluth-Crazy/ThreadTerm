@@ -79,7 +79,7 @@ function Header({
   theme: Theme;
   zh: boolean;
   title: string;
-  detail: string;
+  detail?: string;
   onBack: () => void;
 }) {
   return (
@@ -117,13 +117,13 @@ function Load({
 }) {
   return loading ? (
     <Text style={[s.state, { color: theme.muted }]}>
-      {tr(zh, "Reading…", "正在读取…")}
+      {tr(zh, "Loading…", "加载中…")}
     </Text>
   ) : error ? (
     <EmptyState
       theme={theme}
       icon="warning"
-      title={tr(zh, "Could not read this resource", "无法读取内容")}
+      title={tr(zh, "Could not load", "加载失败")}
       detail={error}
       action={
         <Button
@@ -210,7 +210,7 @@ function Files({
         }
         detail={
           route.kind === "files"
-            ? (route.path ?? route.worktreePath)
+            ? route.path
             : route.path
         }
         onBack={onBack}
@@ -254,12 +254,7 @@ function List({
       <EmptyState
         theme={theme}
         icon="folder"
-        title={tr(zh, "No files to show", "没有可显示的文件")}
-        detail={tr(
-          zh,
-          "File access is limited to registered project scopes.",
-          "文件访问仅限于已注册的项目范围。",
-        )}
+        title={tr(zh, "No files", "暂无文件")}
       />
     );
   return (
@@ -279,12 +274,12 @@ function List({
                 <Text numberOfLines={1} style={[s.name, { color: theme.text }]}>
                   {base(path)}
                 </Text>
-                <Text
+                {path !== base(path) && <Text
                   numberOfLines={1}
                   style={[s.path, { color: theme.muted }]}
                 >
                   {path}
-                </Text>
+                </Text>}
               </View>
               <Icon name="chevron" color={theme.faint} />
             </Pressable>
@@ -295,8 +290,8 @@ function List({
         <Text style={[s.notice, { color: theme.muted }]}>
           {tr(
             zh,
-            "Only a bounded list is available.",
-            "仅显示受限数量的文件。",
+            "More files on the computer.",
+            "更多文件请在电脑查看。",
           )}
         </Text>
       )}
@@ -351,7 +346,7 @@ function Document({
           style={{ color: theme.terminalText, fontFamily: "Menlo" }}
         >
           {value.content ||
-            tr(zh, "This text file is empty.", "此文本文件为空。")}
+            tr(zh, "Empty file", "空文件")}
         </Text>
       </Card>
     </>
@@ -442,7 +437,7 @@ function Git({
         theme={theme}
         zh={zh}
         title={title}
-        detail={route.kind === "commit" ? route.commit : route.worktreePath}
+        detail={route.kind === "commit" ? route.commit.slice(0, 8) : undefined}
         onBack={onBack}
       />
       {route.kind === "git" && (
@@ -501,8 +496,8 @@ function GitBody({
           title={tr(zh, "Binary file", "二进制文件")}
           detail={tr(
             zh,
-            "Binary content is not shown on the phone.",
-            "不会在手机上显示二进制内容。",
+            "View on the computer.",
+            "请在电脑查看。",
           )}
         />
       );
@@ -553,6 +548,7 @@ function GitBody({
     );
   }
   if (route.kind === "git" && route.view === "history") {
+    if (isGitLog(value) && !value.commits.length) return <EmptyState theme={theme} icon="git" title={tr(zh, "No commits", "暂无提交")} />;
     return (
       <Card theme={theme} style={s.group}>
         {(isGitLog(value) ? value.commits : []).map((c, i) => (
@@ -586,7 +582,7 @@ function GitBody({
         ))}
       </Card>
     );
-  if (!isGitStatus(value) || !value.changes.length) return <EmptyState theme={theme} icon="check" title={tr(zh, "Working tree clean", "工作区干净")} detail={tr(zh, "There are no uncommitted changes.", "没有未提交的变更。")} />;
+  if (!isGitStatus(value) || !value.changes.length) return <EmptyState theme={theme} icon="check" title={tr(zh, "No changes", "暂无变更")} />;
   const status = value;
   return (
     <Card theme={theme} style={s.group}>

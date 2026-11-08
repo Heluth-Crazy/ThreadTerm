@@ -1,0 +1,76 @@
+// Production CompanionApp + injected NativePort: navigation and keyboard responders.
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { extname, join, normalize } from 'node:path';
+import { chromium } from 'playwright';
+const root = process.cwd(), app = join(root, 'mobile/qa/app'), out = join(app, '.qa-export');
+if (!process.env.TT_QA_SKIP_EXPORT) execFileSync(process.platform === 'win32' ? 'cmd.exe' : 'npx', process.platform === 'win32' ? ['/d','/s','/c','npx expo export --platform web --output-dir .qa-export'] : ['expo','export','--platform','web','--output-dir','.qa-export'], { cwd: app, stdio: 'inherit', windowsHide: true });
+const server = createServer((req,res) => {
+  const path = new URL(req.url ?? '/', 'http://qa').pathname;
+  const file = normalize(join(out, path === '/' ? 'index.html' : path.slice(1)));
+  if (!file.startsWith(out) || !existsSync(file)) { res.writeHead(404); res.end(); return; }
+  res.setHeader('content-type', ({'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.json':'application/json','.woff2':'font/woff2'})[extname(file)] ?? 'application/octet-stream'); res.end(readFileSync(file));
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const browser = await chromium.launch({headless:true}), page = await browser.newPage({viewport:{width:402,height:874}}), errors = [], results = {};
+page.on('pageerror', error => errors.push(String(error)));
+page.setDefaultTimeout(12000);
+try {
+  await page.goto(`http://127.0.0.1:${server.address().port}`, {waitUntil:'networkidle'});
+  await page.getByRole('tab',{name:'Projects',exact:true}).click();
+  await page.getByRole('button',{name:'Control PC',exact:true}).click();
+  await page.getByRole('button',{name:'Project alpha',exact:true}).click();
+  await page.getByRole('button',{name:'Changes',exact:true}).click();
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await page.getByRole('button',{name:'Branches',exact:true}).click();
+  await page.getByRole('button',{name:'Status',exact:true}).click();
+  await page.getByRole('button',{name:'Working',exact:true}).click();
+  await page.getByText('after',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Back',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Status',exact:true}).isVisible(), true, 'Back from a diff returns to its Git tab');
+  await page.getByRole('button',{name:'History',exact:true}).click();
+  await page.getByRole('button',{name:'Branches',exact:true}).click();
+  await page.getByRole('button',{name:'Back',exact:true}).click();
+  results.gitBackLeavesScreen = await page.getByRole('button',{name:'Review alpha',exact:true}).isVisible();
+  console.log('Git tab navigation:', results.gitBackLeavesScreen ? 'PASS' : 'REPRO: Back visits an earlier Git tab');
+  // Reset navigation independently of the Git result.
+  await page.reload({waitUntil:'networkidle'});
+  await page.getByRole('tab',{name:'Projects',exact:true}).click();
+  await page.getByRole('button',{name:'Control PC',exact:true}).click();
+  await page.getByRole('button',{name:'Project alpha',exact:true}).click();
+  await page.getByRole('button',{name:'Review alpha',exact:true}).click();
+  const input = page.getByRole('textbox',{name:'Message',exact:true});
+  await input.fill('keyboard dismissal');
+  await page.getByText('Review alpha',{exact:true}).click();
+  results.backgroundTapBlurs = await input.evaluate(node => document.activeElement !== node);
+  console.log('Background tap dismissal:', results.backgroundTapBlurs ? 'PASS' : 'REPRO: input retains focus');
+  await input.focus();
+  await page.getByRole('button',{name:'Unlock',exact:true}).click();
+  await input.focus();
+  await page.getByRole('radio',{name:'Safe',exact:true}).click();
+  await page.getByRole('button',{name:'Submit answer',exact:true}).click();
+  await page.waitForFunction(() => globalThis.__TT_MOBILE_QA_CALLS__.some(call => call.method === 'chat.answer'));
+  results.handledButtonWorks = true;
+  assert.equal(await page.getByRole('button',{name:'Session actions',exact:true}).count(), 1);
+  assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).count(), 0, 'hide the disabled chat/terminal switch');
+  await page.getByRole('button',{name:'Back',exact:true}).click();
+  await page.getByRole('button',{name:'Build terminal',exact:true}).click();
+  await page.getByRole('button',{name:'Control',exact:true}).click();
+  await page.waitForFunction(() => globalThis.__TT_MOBILE_QA_CALLS__.some(call => call.method === 'terminal.resize'));
+  const resize = await page.evaluate(() => globalThis.__TT_MOBILE_QA_CALLS__.filter(call => call.method === 'terminal.resize').at(-1));
+  assert.equal(resize.params.sessionId,'same-shell');
+  assert.equal(resize.params.leaseEpoch,1);
+  assert.ok(resize.params.cols >= 30 && resize.params.cols <= 60, 'phone columns come from measured monospace cells');
+  assert.ok(resize.params.rows >= 2 && resize.params.rows <= 45, 'phone rows come from output viewport height');
+  await page.getByRole('textbox',{name:'Terminal input',exact:true}).fill('echo round3');
+  await page.getByRole('button',{name:'Run',exact:true}).click();
+  await page.waitForFunction(() => globalThis.__TT_MOBILE_QA_CALLS__.some(call => call.method === 'terminal.input'));
+  const terminalInput = await page.evaluate(() => globalThis.__TT_MOBILE_QA_CALLS__.find(call => call.method === 'terminal.input'));
+  assert.deepEqual(terminalInput.params, {sessionId:'same-shell',data:'echo round3\r',leaseEpoch:1});
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'terminal scrolls horizontally inside the viewport');
+  assert.deepEqual(errors, []);
+  if (!process.argv.includes('--baseline')) assert.deepEqual(results, {gitBackLeavesScreen:true,backgroundTapBlurs:true,handledButtonWorks:true});
+  console.log(JSON.stringify(results));
+} finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

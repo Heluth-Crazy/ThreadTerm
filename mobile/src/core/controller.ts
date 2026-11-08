@@ -8,6 +8,7 @@ import type { CompanionController, CompanionState, MachineState, SessionRef, Ses
 import { sessionKey } from './types';
 import { attentionItems, chatOptionsPermissionRecovery, emptySession, errorMessage } from './projection';
 import { base64Bytes, CONTROL_METHODS, READ_METHODS, mobileResult, validateMobileRequest } from './wire';
+import { TerminalScreen } from './terminalScreen';
 
 export interface LocalStoragePort { getItem(key:string):Promise<string|null>;setItem(key:string,value:string):Promise<void> }
 type Timer=ReturnType<typeof setTimeout>;
@@ -34,6 +35,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
   const optionRevisions=new Map<string,number>(),optionWrites=new Set<string>();
   const optionReads=new Map<string,{transport:number;promise:Promise<void>}>();
   const terminalDecoders=new Map<string,TextDecoder>();
+  const terminalScreens=new Map<string,TerminalScreen>();
   let foreground=true,disposed=false,initialized:Promise<void>|undefined,active:SessionRef|undefined,terminalTimer:Timer|undefined;
   let draftTimer:Timer|undefined,storageWrites:Promise<void>=Promise.resolve(),unlocking:Promise<boolean>|undefined;
   let controlGeneration=0;
@@ -67,9 +69,9 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     connectingEvents.delete(id);
     refreshes.delete(id);refreshAgain.delete(id);
     for(const entry of Object.values(state.sessions)) if(entry.ref.machineId===id) {
-      const key=sessionKey(entry.ref);clearTimeout(leaseTimers.get(key));leaseTimers.delete(key);resyncs.delete(key);sessionTickets.set(key,(sessionTickets.get(key)??0)+1);
+      const key=sessionKey(entry.ref);clearTimeout(leaseTimers.get(key));leaseTimers.delete(key);resyncs.delete(key);terminalScreens.get(key)?.dispose();terminalScreens.delete(key);terminalDecoders.delete(key);sessionTickets.set(key,(sessionTickets.get(key)??0)+1);
     }
-    emit({sessions:Object.fromEntries(Object.entries(state.sessions).map(([key,value])=>[key,value.ref.machineId===id?{...value,syncing:true,leaseEpoch:undefined,optionsLoading:false}:value]))});
+    emit({sessions:Object.fromEntries(Object.entries(state.sessions).map(([key,value])=>[key,value.ref.machineId===id?{...value,syncing:true,leaseEpoch:undefined,optionsLoading:false,terminalCursor:0,terminalGap:value.terminalCursor>0||value.terminalGap}:value]))});
     clearTimeout(refreshTimers.get(id));refreshTimers.delete(id);
   }
   async function raw<M extends MobileMethod>(id:string,method:M,params:MobileParams<M>):Promise<MobileResult<M>> {
@@ -315,8 +317,15 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       let decoder=terminalDecoders.get(key);
       if(!decoder||gap){decoder=new TextDecoder();terminalDecoders.set(key,decoder);}
       const text=decoder.decode(base64Bytes(result.data),{stream:true});
-      const accumulated=(gap?'':before.terminal)+text;
-      patchView(ref,{terminal:accumulated.slice(-TERMINAL_LIMIT),terminalCursor:result.nextCursor,terminalGap:before.terminalGap||gap||accumulated.length>TERMINAL_LIMIT,loading:false,error:undefined});
+      let screen=terminalScreens.get(key);
+      const fresh=!screen;
+      const hostSession=session(ref);
+      if(!screen||gap){screen?.dispose();screen=new TerminalScreen(hostSession.cols??120,hostSession.rows??40);terminalScreens.set(key,screen);}
+      else screen.resize(hostSession.cols??120,hostSession.rows??40);
+      if(text)await screen.write(text);
+      if(!current(ref.machineId,ticket)||!active||sessionKey(active)!==key||terminalScreens.get(key)!==screen)return;
+      const accumulated=(gap||fresh?'':before.terminal)+text;
+      patchView(ref,{terminal:accumulated.slice(-TERMINAL_LIMIT),terminalLines:screen.lines(),terminalCursor:result.nextCursor,terminalGap:before.terminalGap||gap||accumulated.length>TERMINAL_LIMIT,loading:false,error:undefined});
     } catch(error) {if(current(ref.machineId,ticket)&&active&&sessionKey(active)===key)patchView(ref,{error:errorMessage(error),loading:false});}
   }
   async function control(ref:SessionRef):Promise<number> {
@@ -477,8 +486,23 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       catch(error) {patchView(ref,{error:`session_created: ${errorMessage(error)}`,loading:false});}
       return created;
     },
-    async terminalInput(ref,text) {const leaseEpoch=await control(ref);await write(ref,'terminal.input',{sessionId:ref.sessionId,data:text,leaseEpoch});},
-    async terminalResize(ref,cols,rows) {const leaseEpoch=await control(ref);await write(ref,'terminal.resize',{sessionId:ref.sessionId,cols,rows,leaseEpoch});},
+    async terminalInput(ref,text) {
+      const ticket=gen(ref.machineId),lock=controlGeneration;
+      const leaseEpoch=await control(ref);
+      if(!current(ref.machineId,ticket)||lock!==controlGeneration||!state.controlUnlocked)throw new Error('connection_changed');
+      await write(ref,'terminal.input',{sessionId:ref.sessionId,data:text,leaseEpoch});
+    },
+    async terminalResize(ref,cols,rows) {
+      const ticket=gen(ref.machineId),lock=controlGeneration;
+      const leaseEpoch=await control(ref);
+      if(!current(ref.machineId,ticket)||lock!==controlGeneration||!state.controlUnlocked)throw new Error('control_locked');
+      await write(ref,'terminal.resize',{sessionId:ref.sessionId,cols,rows,leaseEpoch});
+      if(!current(ref.machineId,ticket)||lock!==controlGeneration||!state.controlUnlocked)return;
+      const m=machine(ref.machineId);
+      if(m.snapshot)patchMachine(ref.machineId,{snapshot:{...m.snapshot,sessions:m.snapshot.sessions.map(s=>s.id===ref.sessionId?{...s,cols,rows}:s)}});
+      const screen=terminalScreens.get(sessionKey(ref));
+      if(screen){screen.resize(cols,rows);patchView(ref,{terminalLines:screen.lines()});}
+    },
     read,
     async openPreview(id,url) {ensureReady(id);const parsed=new URL(url);if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password)throw new Error('invalid_preview_url');await native.openPreview(id,url);},
     chooseAttachment:()=>native.chooseAttachment(),
@@ -519,7 +543,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     async dispose() {
       flushDrafts();await storageWrites.catch(noop);disposed=true;foreground=false;
       for(const off of subscriptions)off();listeners.clear();
-      clearTimeout(terminalTimer);clearTimeout(draftTimer);
+      clearTimeout(terminalTimer);clearTimeout(draftTimer);for(const screen of terminalScreens.values())screen.dispose();terminalScreens.clear();terminalDecoders.clear();
       for(const timers of [reconnects,refreshTimers,leaseTimers]){for(const timer of timers.values())clearTimeout(timer);timers.clear();}
       await Promise.allSettled(state.machines.map(m=>native.disconnect(m.id)));
     },

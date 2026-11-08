@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Pressable, StatusBar, StyleSheet, Text, View, useColorScheme } from 'react-native';
+import { Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, StatusBar, StyleSheet, Text, View, useColorScheme } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CompanionProvider, useCompanion } from './src/core/react';
 import type { AttentionItem, SessionRef } from './src/core/types';
@@ -8,9 +8,11 @@ import { ChatListScreen, SessionDetailScreen } from './src/ui/ChatScreen';
 import { NeedsYouScreen } from './src/ui/NeedsYouScreen';
 import { ProjectsScreen, type ProjectRoute } from './src/ui/ProjectsScreen';
 import { ResourceScreen, type ResourceRoute } from './src/ui/ResourceScreen';
+import { isGitTabSwitch } from './src/ui/resourceNavigation';
 import { NewSessionSheet } from './src/ui/NewSessionSheet';
 import { SettingsScreen } from './src/ui/SettingsScreen';
 import { resolveTheme } from './src/ui/theme';
+import { useKeyboardVisible } from './src/ui/keyboard';
 
 type Tab = 'needs' | 'projects' | 'chat' | 'settings';
 type Detail = { kind: 'session'; ref: SessionRef } | { kind: 'resource'; route: ResourceRoute };
@@ -23,6 +25,7 @@ export function CompanionApp() {
   const { state, controller } = useCompanion();
   const theme = resolveTheme(state.preferences.appearance, useColorScheme() ?? 'light');
   const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
   const zh = state.preferences.locale === 'zh-CN';
   const [tab, setTab] = useState<Tab>('needs');
   const [projectRoute, setProjectRoute] = useState<ProjectRoute>({ kind: 'computers' });
@@ -57,7 +60,11 @@ export function CompanionApp() {
   if (detail?.kind === 'session') page = <SessionDetailScreen theme={theme} state={state} controller={controller} ref={detail.ref} onBack={back}
     onFiles={() => openSessionResource('files', detail.ref)} onGit={() => openSessionResource('git', detail.ref)} />;
   else if (detail?.kind === 'resource') page = <ResourceScreen theme={theme} state={state} controller={controller} route={detail.route} onBack={back}
-    onRoute={route => setDetails(current => [...current, { kind: 'resource', route }])} />;
+    onRoute={route => setDetails(current => {
+      const previous = current.at(-1);
+      const keep = previous?.kind === 'resource' && isGitTabSwitch(previous.route, route) ? current.slice(0, -1) : current;
+      return [...keep, { kind: 'resource', route }];
+    })} />;
   else if (tab === 'needs') page = <NeedsYouScreen theme={theme} state={state} controller={controller} onOpenSession={openAttention} onAddComputer={addComputer} />;
   else if (tab === 'projects') page = <ProjectsScreen theme={theme} state={state} controller={controller} route={projectRoute} onRoute={setProjectRoute}
     onOpenSession={openSession} onOpenResource={route => setDetails([{ kind: 'resource', route }])}
@@ -70,12 +77,12 @@ export function CompanionApp() {
     : undefined;
   return <SafeAreaView style={[styles.fill, { backgroundColor: theme.background }]} edges={['top', 'left', 'right']}>
     <StatusBar barStyle={theme.background === '#262624' ? 'light-content' : 'dark-content'} />
-    <KeyboardAvoidingView testID="companion-keyboard" style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={insets.top}>
+    <KeyboardAvoidingView testID="companion-keyboard" style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
     {!!state.error && <Pressable accessibilityRole="button" accessibilityLabel={zh ? '关闭错误提示' : 'Dismiss error'} onPress={() => controller.clearError()} style={[styles.error, { backgroundColor: theme.surface }]}>
       <Text style={{ color: theme.red, flex: 1 }}>{state.error}</Text><Icon name="close" color={theme.red} size={18} />
     </Pressable>}
-    <View style={[styles.page, detail ? { paddingBottom: insets.bottom } : undefined]}>{page}</View>
-    {!detail && <TabBar theme={theme} active={tab} attention={state.attention.length} bottom={insets.bottom} onChange={setTab} />}
+    <Pressable accessible={false} onPress={Keyboard.dismiss} style={[styles.page, detail ? { paddingBottom: keyboardVisible ? 0 : insets.bottom } : undefined]}>{page}</Pressable>
+    {!detail && !keyboardVisible && <TabBar theme={theme} active={tab} attention={state.attention.length} bottom={insets.bottom} onChange={setTab} />}
     {newSession && <NewSessionSheet theme={theme} state={state} controller={controller} visible initial={initial}
       onCreated={openSession} onDismiss={() => setNewSession(false)} />}
     </KeyboardAvoidingView>

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Keyboard,
   Platform,
   Pressable,
   ScrollView,
@@ -39,8 +40,8 @@ import {
   groupCodexTranscript,
   type CodexTurn,
 } from "../../../renderer/src/codexTranscript";
-import { stripAnsi } from "../../../renderer/src/chatContext";
 import { chatOptionsDisabledReason, chatOptionsPermissionRecovery, chatOptionsSummary } from "../core/projection";
+import { terminalCommand, terminalViewportSize } from "../core/terminalScreen";
 import { ChatOptionsSheet } from "./ChatOptionsSheet";
 
 export function ChatListScreen({
@@ -80,10 +81,10 @@ export function ChatListScreen({
           onPress={onNew}
         />
       </View>
-      <View style={styles.filters}>
+      {state.machines.length > 1 && <View style={styles.filters}>
         <Button theme={theme} small tone={!machineFilter ? "primary" : "secondary"} label={locale === "zh-CN" ? "所有电脑" : "All computers"} onPress={() => { setMachineFilter(undefined); setProjectFilter(undefined); }} />
         {state.machines.map(machine => <Button key={machine.id} theme={theme} small tone={machineFilter === machine.id ? "primary" : "secondary"} label={machine.name} onPress={() => { setMachineFilter(machine.id); setProjectFilter(undefined); }} />)}
-      </View>
+      </View>}
       {!!machineFilter && <View style={styles.filters}>{projects.filter(project => project.machineId === machineFilter).map(project => <Button key={project.id} theme={theme} small tone={projectFilter === project.id ? "primary" : "secondary"} label={project.name} onPress={() => setProjectFilter(projectFilter === project.id ? undefined : project.id)} />)}</View>}
       {rows.length ? (
         rows.map(({ m, s }) => (
@@ -102,13 +103,11 @@ export function ChatListScreen({
                 >
                   {s.title}
                 </Text>
-                <Text style={{ color: theme.primary }}>{m.name}</Text>
-                {!!s.projectId && <Text style={{ color: theme.muted }}>{m.snapshot?.projects.find(project => project.id === s.projectId)?.name ?? (locale === "zh-CN" ? "未归属项目" : "Unassigned project")}</Text>}
-                <Text style={{ color: theme.muted }}>
-                  {timeLabel(s.updatedAt, locale)}
+                <Text numberOfLines={1} style={{ color: theme.muted, fontSize: 13 }}>
+                  {m.name}{s.projectId ? ` · ${m.snapshot?.projects.find(project => project.id === s.projectId)?.name ?? (locale === "zh-CN" ? "未归属项目" : "Unassigned project")}` : ''}
                 </Text>
               </View>
-              <StatusDot theme={theme} state={s.status} />
+              <View style={{ alignItems: 'flex-end', gap: 4 }}><StatusDot theme={theme} state={s.status} /><Text style={{ color: theme.muted, fontSize: 12 }}>{timeLabel(s.updatedAt, locale)}</Text></View>
             </Card>
           </Pressable>
         ))
@@ -147,7 +146,6 @@ export function SessionDetailScreen({
   onGit: () => void;
 }) {
   const locale = state.preferences.locale,
-    [mode, setMode] = useState<"chat" | "terminal">("chat"),
     [busy, setBusy] = useState<string>();
   const machine = state.machines.find((m) => m.id === ref.machineId),
     session = machine?.snapshot?.sessions.find((s) => s.id === ref.sessionId),
@@ -163,8 +161,8 @@ export function SessionDetailScreen({
     Alert.alert(
       locale === "zh-CN" ? "接管控制？" : "Take over control?",
       locale === "zh-CN"
-        ? "这会请求接管该会话的现有控制租约。"
-        : "This requests takeover of the existing control lease.",
+        ? "控制权将移到此手机。"
+        : "Control will move to this phone.",
       [
         { text: locale === "zh-CN" ? "取消" : "Cancel", style: "cancel" },
         {
@@ -181,17 +179,12 @@ export function SessionDetailScreen({
       void controller.closeSession().catch(showError(locale));
     };
   }, [controller, ref.machineId, ref.sessionId]);
-  useEffect(() => {
-    if (session?.mode === "terminal") setMode("terminal");
-    if (session?.mode === "chat") setMode("chat");
-  }, [session?.mode]);
   if (!session)
     return (
       <EmptyState
         theme={theme}
         icon="warning"
-        title="Session unavailable"
-        detail="It may have been removed."
+        title={locale === "zh-CN" ? "会话不可用" : "Session unavailable"}
         action={<Button theme={theme} label="Back" onPress={onBack} />}
       />
     );
@@ -228,104 +221,32 @@ export function SessionDetailScreen({
         <IconButton
           theme={theme}
           icon="more"
-          label="Resources"
+          label={locale === "zh-CN" ? "会话操作" : "Session actions"}
           onPress={() =>
-            Alert.alert("Resources", undefined, [
+            Alert.alert(locale === "zh-CN" ? "会话" : "Session", undefined, [
               { text: locale === "zh-CN" ? "文件" : "Files", onPress: onFiles },
               { text: locale === "zh-CN" ? "变更" : "Changes", onPress: onGit },
-              { text: "Cancel", style: "cancel" },
+              ...(canControl ? [
+                { text: locale === "zh-CN" ? "获取控制" : "Control", onPress: () => run("claim", () => controller.claimControl(ref)) },
+                { text: locale === "zh-CN" ? "接管" : "Take over", onPress: takeOver },
+                ...(session.status === "exited" || session.status === "interrupted"
+                  ? [{ text: locale === "zh-CN" ? "恢复" : "Resume", onPress: () => run("resume", () => controller.resume(ref)) }]
+                  : view?.leaseEpoch ? [{ text: locale === "zh-CN" ? "停止" : "Stop", onPress: () => run("stop", () => controller.stop(ref)) }] : []),
+                ...(activeTurnId && view?.leaseEpoch ? [{ text: locale === "zh-CN" ? "取消当前轮次" : "Cancel turn", onPress: () => run("cancel", () => controller.cancelTurn(ref, activeTurnId)) }] : []),
+              ] : []),
+              { text: locale === "zh-CN" ? "取消" : "Cancel", style: "cancel" },
             ])
           }
         />
       </View>
-      <View style={styles.mode}>
-        {session.mode === "chat" && (
-          <Button
-            theme={theme}
-            label="Chat"
-            small
-            tone={mode === "chat" ? "primary" : "secondary"}
-            onPress={() => setMode("chat")}
-          />
-        )}
-        <Button
-          theme={theme}
-          label="Terminal"
-          small
-          tone={mode === "terminal" ? "primary" : "secondary"}
-          disabled={session.mode !== "terminal"}
-          onPress={() => setMode("terminal")}
-        />
-        <StatusDot
-          theme={theme}
-          state={session.status}
-          label={sessionStatusLabel(session.status, locale)}
-        />
+      <View style={{ paddingHorizontal: space.md, paddingBottom: 8 }}>
+        <StatusDot theme={theme} state={session.status} label={sessionStatusLabel(session.status, locale)} />
       </View>
-      {canControl && (
-        <View style={styles.lifecycle}>
-          {!session.readOnly && !view?.leaseEpoch && (
-            <Button
-              theme={theme}
-              label={
-                busy === "claim"
-                  ? "…"
-                  : locale === "zh-CN"
-                    ? "获取控制"
-                    : "Control"
-              }
-              small
-              disabled={!!busy}
-              onPress={() => run("claim", () => controller.claimControl(ref))}
-            />
-          )}
-          {!session.readOnly && !view?.leaseEpoch && (
-            <Button
-              theme={theme}
-              label={locale === "zh-CN" ? "接管" : "Take over"}
-              small
-              tone="secondary"
-              disabled={!!busy}
-              onPress={takeOver}
-            />
-          )}
-          {session.status === "exited" || session.status === "interrupted" ? (
-            <Button
-              theme={theme}
-              label={locale === "zh-CN" ? "恢复" : "Resume"}
-              small
-              disabled={!!busy}
-              onPress={() => run("resume", () => controller.resume(ref))}
-            />
-          ) : (
-            <Button
-              theme={theme}
-              label={locale === "zh-CN" ? "停止" : "Stop"}
-              small
-              tone="destructive"
-              disabled={!!busy || !view?.leaseEpoch}
-              onPress={() => run("stop", () => controller.stop(ref))}
-            />
-          )}
-          {!!activeTurnId && (
-            <Button
-              theme={theme}
-              label={locale === "zh-CN" ? "取消当前轮次" : "Cancel turn"}
-              small
-              tone="secondary"
-              disabled={!!busy || !view?.leaseEpoch}
-              onPress={() =>
-                run("cancel", () => controller.cancelTurn(ref, activeTurnId))
-              }
-            />
-          )}
-        </View>
-      )}
       {(machine?.status !== "connected" || machine.syncing) && (
         <Text style={[styles.lock, { color: theme.amber }]}>
           {locale === "zh-CN"
-            ? "显示上次同步的内容，重新连接后才能操作。"
-            : "Showing the last synchronized content. Reconnect before acting."}
+            ? "重连后可操作。"
+            : "Reconnect to act."}
         </Text>
       )}
       {!!session.run?.url && (
@@ -349,6 +270,7 @@ export function SessionDetailScreen({
           ref={ref}
           view={view}
           session={session}
+          activeTurnId={activeTurnId}
         />
       ) : (
         <Terminal
@@ -370,6 +292,7 @@ function ChatPanel({
   ref,
   view,
   session,
+  activeTurnId,
 }: {
   theme: Theme;
   state: CompanionState;
@@ -377,6 +300,7 @@ function ChatPanel({
   ref: SessionRef;
   view?: SessionView;
   session: Session;
+  activeTurnId?: string;
 }) {
   const locale = state.preferences.locale,
     scroll = useRef<React.ElementRef<typeof ScrollView>>(null),
@@ -454,12 +378,31 @@ function ChatPanel({
         setOperation(undefined);
       });
   };
+  // While a turn runs and nothing is typed, the send button stops the reply (one tap, like the desktop composer).
+  const showStop = !!activeTurnId && !readonly && !draft.trim() && !attachments.length;
+  const cancelTurn = () => {
+    if (operationRef.current || !activeTurnId) return;
+    if (!control) {
+      unlock();
+      return;
+    }
+    operationRef.current = true;
+    setOperation("cancel");
+    void controller
+      .cancelTurn(ref, activeTurnId)
+      .catch(showError(locale))
+      .finally(() => {
+        operationRef.current = false;
+        setOperation(undefined);
+      });
+  };
   return (
     <View style={styles.panel}>
       <ScrollView
         ref={scroll}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
+        onScrollBeginDrag={Keyboard.dismiss}
         onContentSizeChange={() => {
           if (followOutput.current)
             scroll.current?.scrollToEnd({ animated: false });
@@ -473,6 +416,7 @@ function ChatPanel({
         scrollEventThrottle={100}
         contentContainerStyle={styles.transcript}
       >
+        <Pressable testID="transcript-background" accessible={false} onPress={Keyboard.dismiss} style={{ flexGrow: 1, gap: 10 }}>
         {view?.hasOlder && (
           <Button
             theme={theme}
@@ -522,10 +466,10 @@ function ChatPanel({
           <EmptyState
             theme={theme}
             icon="chat"
-            title="No conversation yet"
-            detail="Messages from the agent will appear here."
+            title={locale === "zh-CN" ? "暂无消息" : "No messages yet"}
           />
         )}
+        </Pressable>
       </ScrollView>
       {!control && (
         <View style={[styles.lock, { backgroundColor: `${theme.amber}18` }]}>
@@ -574,8 +518,7 @@ function ChatPanel({
           <Icon name="settings" color={theme.primary} size={18} />
         </Pressable>
         {!!view?.optionPending && <Text style={[styles.optionsHint, { color: theme.muted }]}>{locale === "zh-CN" ? "正在更新选项…" : "Updating options…"}</Text>}
-        {!view?.optionPending && !!view?.optionsError && <Text accessibilityRole="alert" style={[styles.optionsHint, { color: theme.red }]}>{view.optionsError.startsWith("outcome_unknown") ? (locale === "zh-CN" ? "无法确认更改结果，请打开选项查看当前值。" : "Could not confirm the change. Open options to check the current values.") : (locale === "zh-CN" ? "无法更新选项，请打开选项重试。" : "Could not update options. Open options to try again.")}</Text>}
-        {!view?.optionPending && !!optionsReason && <Text style={[styles.optionsHint, { color: theme.amber }]}>{optionsReason}</Text>}
+        {!view?.optionPending && !!view?.optionsError && <Text accessibilityRole="alert" style={[styles.optionsHint, { color: theme.red }]}>{view.optionsError.startsWith("outcome_unknown") ? (locale === "zh-CN" ? "请查看当前选项。" : "Check the current options.") : (locale === "zh-CN" ? "打开选项重试。" : "Open options to retry.")}</Text>}
       </View>
       <View style={[styles.composer, { borderTopColor: theme.line }]}>
         <IconButton
@@ -592,7 +535,7 @@ function ChatPanel({
           editable={!readonly}
           multiline
           placeholder={
-            locale === "zh-CN" ? "给 Agent 发送消息" : "Message the agent"
+            locale === "zh-CN" ? "消息" : "Message"
           }
           placeholderTextColor={theme.faint}
           style={[
@@ -604,15 +547,25 @@ function ChatPanel({
             },
           ]}
         />
-        <IconButton
-          theme={theme}
-          icon="send"
-          label="Send"
-          disabled={
-            !control || !!operation || (!draft.trim() && !attachments.length)
-          }
-          onPress={send}
-        />
+        {showStop ? (
+          <IconButton
+            theme={theme}
+            icon="stop"
+            label={locale === "zh-CN" ? "停止回复" : "Stop response"}
+            disabled={!!operation}
+            onPress={cancelTurn}
+          />
+        ) : (
+          <IconButton
+            theme={theme}
+            icon="send"
+            label="Send"
+            disabled={
+              !control || !!operation || (!draft.trim() && !attachments.length)
+            }
+            onPress={send}
+          />
+        )}
       </View>
       <ChatOptionsSheet theme={theme} locale={locale} visible={optionsOpen} ui={optionsUi} disabledReason={optionsReason} pending={view?.optionPending} error={view?.optionsError} loading={view?.optionsLoading} onDismiss={() => setOptionsOpen(false)} onRefresh={() => void controller.refreshChatOptions(ref).catch(() => {})} onChoose={(optionId, value) => void controller.setChatOption(ref, optionId, value).then(() => setOptionsOpen(false)).catch(() => {})} />
     </View>
@@ -649,6 +602,35 @@ function Terminal({
     !view?.syncing &&
     !!view?.leaseEpoch;
   const locale = state.preferences.locale;
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const [cellWidth, setCellWidth] = useState(8.5);
+  const [resizeFailed, setResizeFailed] = useState(false);
+  const lastResize = useRef('');
+  const resizePending = useRef<Promise<void> | undefined>(undefined);
+  const outputScroll = useRef<React.ElementRef<typeof ScrollView>>(null);
+  const follow = useRef(true);
+  const cols = session?.cols ?? 120, rows = session?.rows ?? 40;
+  const target = terminalViewportSize(viewport.width, viewport.height, cellWidth);
+  const canResize = control && !!machine?.snapshot?.capabilities.methods.includes('terminal.resize');
+  useEffect(() => {
+    if (!canResize || !viewport.width || !viewport.height) { lastResize.current = ''; return; }
+    const size = `${target.cols}:${target.rows}:${view?.leaseEpoch}`;
+    if (lastResize.current === size || (target.cols === cols && target.rows === rows)) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      void (async () => {
+        await resizePending.current?.catch(() => {});
+        if (!alive) return;
+        lastResize.current = size;
+        const pending = controller.terminalResize(ref, target.cols, target.rows);
+        resizePending.current = pending;
+        try { await pending; if (alive) setResizeFailed(false); }
+        catch { if (alive) setResizeFailed(true); }
+        finally { if (resizePending.current === pending) resizePending.current = undefined; }
+      })();
+    }, 200);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [canResize, viewport.width, viewport.height, target.cols, target.rows, cols, rows, view?.leaseEpoch, ref.machineId, ref.sessionId, controller]);
   const claim = (takeover = false) => {
     setBusy(true);
     void controller
@@ -664,8 +646,8 @@ function Terminal({
     Alert.alert(
       locale === "zh-CN" ? "接管终端？" : "Take over terminal?",
       locale === "zh-CN"
-        ? "这会请求接管其他设备的控制租约。"
-        : "This requests takeover of another device's control lease.",
+        ? "控制权将移到此手机。"
+        : "Control will move to this phone.",
       [
         { text: locale === "zh-CN" ? "取消" : "Cancel", style: "cancel" },
         {
@@ -678,34 +660,38 @@ function Terminal({
   return (
     <View style={styles.panel}>
       <ScrollView
+        ref={outputScroll}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
+        onScrollBeginDrag={Keyboard.dismiss}
+        onLayout={({ nativeEvent: { layout } }) => setViewport({ width: Math.max(0, layout.width - 28), height: Math.max(0, layout.height - 28) })}
+        onContentSizeChange={() => { if (follow.current) outputScroll.current?.scrollToEnd({ animated: false }); }}
+        onScroll={({ nativeEvent }) => { follow.current = nativeEvent.layoutMeasurement.height + nativeEvent.contentOffset.y >= nativeEvent.contentSize.height - 40; }}
+        scrollEventThrottle={100}
         style={[styles.terminal, { backgroundColor: theme.terminal }]}
       >
+        <Text accessible={false} allowFontScaling={false} onLayout={({ nativeEvent: { layout } }) => { if (layout.width > 0) setCellWidth(layout.width / 10); }} style={{ position: 'absolute', opacity: 0, fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }), fontSize: 14 }}>0000000000</Text>
         {!!view?.error && <Text style={{ color: theme.red }}>{view.error}</Text>}
+        {resizeFailed && <Text style={{ color: theme.amber }}>{locale === 'zh-CN' ? '无法调整大小，可横向滚动。' : 'Could not resize. Scroll sideways.'}</Text>}
         {view?.terminalGap && (
           <Text style={{ color: theme.amber }}>
             {locale === "zh-CN"
-              ? "部分较早输出不可用。"
-              : "Some earlier output is unavailable."}
+              ? "部分输出缺失。"
+              : "Some output is missing."}
           </Text>
         )}
-        <Text
-          selectable
-          style={{
-            color: theme.terminalText,
-            fontFamily: Platform.select({ ios: "Menlo", default: "monospace" }),
-          }}
-        >
-          {view?.terminal
-            ? stripAnsi(view.terminal).replace(
-                /[\u0000-\u0008\u000B-\u001F\u007F]/g,
-                "",
-              )
-            : locale === "zh-CN"
-              ? "终端输出将显示在这里。"
-              : "Terminal output will appear here."}
-        </Text>
+        <ScrollView horizontal keyboardShouldPersistTaps="handled" onScrollBeginDrag={Keyboard.dismiss} showsHorizontalScrollIndicator>
+          <Pressable accessible={false} onPress={Keyboard.dismiss} style={{ width: Math.max(viewport.width, (cols + 1) * cellWidth), minHeight: viewport.height }}>
+            <View accessible accessibilityLabel={locale === "zh-CN" ? "终端输出" : "Terminal output"}>
+              {(view?.terminalLines?.length ? view.terminalLines : [{text:locale === "zh-CN" ? "等待输出…" : "Waiting for output…"}]).map((line,index) => (
+                <View key={index} style={{ height: 20 }}>
+                  <Text selectable allowFontScaling={false} numberOfLines={1} style={{ color: theme.terminalText, fontFamily: Platform.select({ ios: "Menlo", default: "monospace" }), fontSize: 14, lineHeight: 20 }}>{line.text}</Text>
+                  {line.cursor && <View pointerEvents="none" style={{ position: 'absolute', left: (line.cursorColumn ?? 0) * cellWidth, top: 1, height: 18, borderLeftWidth: 2, borderLeftColor: theme.terminalText }} />}
+                </View>
+              ))}
+            </View>
+          </Pressable>
+        </ScrollView>
       </ScrollView>
       {!control && (
         <View style={styles.lock}>
@@ -756,13 +742,13 @@ function Terminal({
         />
         <Button
           theme={theme}
-          label="Run"
+          label={locale === 'zh-CN' ? '运行' : 'Run'}
           small
           disabled={!control || busy || !text.trim()}
           onPress={() => {
             setBusy(true);
             void controller
-              .terminalInput(ref, `${text}\n`)
+              .terminalInput(ref, terminalCommand(text))
               .then(() => setText(""))
               .catch(showError(state.preferences.locale))
               .finally(() => setBusy(false));
@@ -1017,7 +1003,7 @@ function showError(locale: CompanionState["preferences"]["locale"]) {
     );
 }
 const styles = StyleSheet.create({
-  list: { padding: space.md, paddingBottom: 120, gap: 8 },
+  list: { padding: space.md, paddingBottom: 24, gap: 8 },
   listHead: {
     flexDirection: "row",
     alignItems: "center",
@@ -1051,7 +1037,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   panel: { flex: 1, minHeight: 0 },
-  transcript: { padding: space.md, gap: 10 },
+  transcript: { padding: space.md, flexGrow: 1 },
   message: { gap: 8 },
   bubble: { padding: 12 },
   approval: { padding: 12, gap: 8 },

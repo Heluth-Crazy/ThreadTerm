@@ -339,24 +339,22 @@ async function main() {
   const scratch = await mkdtemp(join(scratchBase, 'threadterm-native-host-smoke-'));
   assert.equal(resolve(dirname(scratch)), scratchBase, 'scratch remains under its requested root');
   const dataDir = join(scratch, 'data');
-  const descriptorFile = join(scratch, 'pairing-descriptor.txt');
-  const readyFile = join(scratch, 'native-ready');
-  const revokedFile = join(scratch, 'native-revoked');
+  const projectDir = join(scratch, 'terminal-project');
   const pipeBase = `\\\\.\\pipe\\threadterm-native-host-${randomUUID()}`;
   const deviceName = `Native host smoke ${randomUUID().slice(0, 12)}`;
   await Promise.all([
     mkdir(dataDir),
     mkdir(join(scratch, 'home'), {recursive: true}),
     mkdir(join(scratch, 'profile'), {recursive: true}),
+    mkdir(projectDir),
   ]);
   const environment = isolatedEnvironment({dataDir, pipeBase, scratch});
 
   let controller;
   let daemon;
-  let native;
+  const natives = [];
   let daemonError = () => '';
-  let nativeOutput = () => '';
-  let nativeError = () => '';
+  const nativeDiagnostics = [];
   const startedAt = Date.now();
   try {
     daemon = spawn(runtimeExecutable, [], {
@@ -374,64 +372,40 @@ async function main() {
     assert.equal(status.port > 0 && status.port <= 65_535, true);
     assert.match(status.tlsFingerprint, /^(?:[0-9a-f]{2}:){31}[0-9a-f]{2}$/iu);
 
-    const offer = await controller.request('device.pairing.create', {
-      permission: 'readonly',
-      profile: 'mobile',
-      operationId: randomUUID(),
-    });
-    assert.match(offer.qrPayload, /^threadterm:\/\/pair\?data=/u);
-    const encoded = offer.qrPayload.slice('threadterm://pair?data='.length);
-    const descriptor = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
-    assert.equal(descriptor.v, 1, 'disabled iroh produces the deterministic TCP descriptor');
-    assert.equal(descriptor.profile, 'mobile');
-    assert.equal(new URL(descriptor.serverUrl).hostname, '127.0.0.1');
-    assert.equal(descriptor.iroh, undefined);
-    assert.equal(descriptor.tlsFingerprint, status.tlsFingerprint);
-    await writeFile(descriptorFile, offer.qrPayload, {encoding: 'utf8', flag: 'wx', mode: 0o600});
-
-    native = spawn(
-      nativeExecutable,
-      [
-        '--descriptor-file',
-        descriptorFile,
-        '--device-name',
-        deviceName,
-        '--ready-file',
-        readyFile,
-        '--revoked-file',
-        revokedFile,
-      ],
-      {
-        cwd: root,
-        env: environment,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    nativeOutput = collectOutput(native.stdout);
-    nativeError = collectOutput(native.stderr);
-
-    await waitForMarker(readyFile, 'READY\n', native, STEP_TIMEOUT_MS);
-    const device = await waitForMobileDevice(controller, deviceName, 10_000);
-    assert.equal(device.permission, 'readonly');
-    assert.equal(device.revokedAt, undefined);
-    await controller.request('device.revoke', {
-      deviceId: device.id,
-      operationId: randomUUID(),
-    });
-    await waitForMarker(revokedFile, 'REVOKED\n', native, 10_000);
-    const nativeExit = await waitForExit(native, 10_000, 'native host smoke');
-    assert.equal(
-      nativeExit.code,
-      0,
-      `native smoke failed (${nativeExit.signal ?? nativeExit.code})\n${nativeOutput()}\n${nativeError()}`,
-    );
-
-    const afterRevoke = (await controller.request('device.list')).find(
-      candidate => candidate.id === device.id,
-    );
-    assert.ok(afterRevoke?.revokedAt, 'host persists the mobile revocation');
-    assert.equal(afterRevoke.connected, false);
+    const project = await controller.request('project.add', {path:projectDir,name:'Native terminal smoke',operationId:randomUUID()});
+    const terminal = await controller.request('session.create', {projectId:project.id,cwd:projectDir,provider:'shell',mode:'terminal',title:'Native terminal smoke',executable:'cmd.exe',args:['/Q','/K'],operationId:randomUUID()});
+    async function runScenario({ permission, terminalSessionId, name }) {
+      const descriptorFile = join(scratch, `pairing-${name}.txt`);
+      const readyFile = join(scratch, `native-${name}-ready`);
+      const revokedFile = join(scratch, `native-${name}-revoked`);
+      const scenarioDeviceName = `${deviceName} ${name}`;
+      const offer = await controller.request('device.pairing.create', {permission, profile:'mobile', operationId:randomUUID()});
+      assert.match(offer.qrPayload, /^threadterm:\/\/pair\?data=/u);
+      const descriptor = JSON.parse(Buffer.from(offer.qrPayload.slice('threadterm://pair?data='.length), 'base64url').toString('utf8'));
+      assert.equal(descriptor.v, 1, 'disabled iroh produces the deterministic TCP descriptor');
+      assert.equal(descriptor.profile, 'mobile');
+      assert.equal(new URL(descriptor.serverUrl).hostname, '127.0.0.1');
+      assert.equal(descriptor.iroh, undefined);
+      assert.equal(descriptor.tlsFingerprint, status.tlsFingerprint);
+      await writeFile(descriptorFile, offer.qrPayload, {encoding:'utf8',flag:'wx',mode:0o600});
+      const args=['--descriptor-file',descriptorFile,'--device-name',scenarioDeviceName,'--ready-file',readyFile,'--revoked-file',revokedFile];
+      if (terminalSessionId) args.push('--terminal-session-id', terminalSessionId);
+      const native = spawn(nativeExecutable,args,{cwd:root,env:environment,windowsHide:true,stdio:['ignore','pipe','pipe']});
+      natives.push(native);
+      const output=collectOutput(native.stdout), error=collectOutput(native.stderr);
+      nativeDiagnostics.push(() => [output(),error()].filter(Boolean).join('\n'));
+      await waitForMarker(readyFile,'READY\n',native,STEP_TIMEOUT_MS);
+      const device=await waitForMobileDevice(controller,scenarioDeviceName,10_000);
+      assert.equal(device.permission,permission);assert.equal(device.revokedAt,undefined);
+      await controller.request('device.revoke',{deviceId:device.id,operationId:randomUUID()});
+      await waitForMarker(revokedFile,'REVOKED\n',native,10_000);
+      const nativeExit=await waitForExit(native,10_000,`native ${name} smoke`);
+      assert.equal(nativeExit.code,0,`native ${name} smoke failed (${nativeExit.signal ?? nativeExit.code})\n${output()}\n${error()}`);
+      const afterRevoke=(await controller.request('device.list')).find(candidate=>candidate.id===device.id);
+      assert.ok(afterRevoke?.revokedAt,'host persists the mobile revocation');assert.equal(afterRevoke.connected,false);
+    }
+    await runScenario({permission:'readonly',name:'readonly'});
+    await runScenario({permission:'fullcontrol',terminalSessionId:terminal.id,name:'control'});
 
     await controller.request('runtime.shutdown', {operationId: randomUUID()});
     const daemonExit = await waitForExit(daemon, 10_000, 'isolated runtime');
@@ -448,23 +422,24 @@ async function main() {
         'mobile v1 loopback pairing descriptor',
         'native certificate pin and retained-stream pairing',
         'mobile snapshot validation',
-        'exact readonly denial',
+        'readonly mutation denial',
+        'full-control native lease, terminal resize, LF refusal, CR input and terminal echo',
         'host device visibility',
         'typed live revocation and closure',
         'durable host revocation',
       ],
     }));
   } catch (error) {
-    const nativeDiagnostics = [nativeOutput(), nativeError()].filter(Boolean).join('\n');
+    const nativeDiagnosticText = nativeDiagnostics.map(read => read()).filter(Boolean).join('\n');
     const runtimeDiagnostics = daemonError();
     throw new Error(
-      [error?.stack ?? String(error), nativeDiagnostics, runtimeDiagnostics]
+      [error?.stack ?? String(error), nativeDiagnosticText, runtimeDiagnostics]
         .filter(Boolean)
         .join('\n'),
     );
   } finally {
     controller?.close();
-    await stopOwnedProcess(native, 'native host smoke');
+    await Promise.all(natives.map(native => stopOwnedProcess(native, 'native host smoke')));
     await stopOwnedProcess(daemon, 'isolated runtime');
     assert.equal(resolve(dirname(scratch)), scratchBase, 'cleanup scratch boundary');
     await rm(scratch, {recursive: true, force: true});

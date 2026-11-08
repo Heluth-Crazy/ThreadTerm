@@ -50,7 +50,7 @@ export function ApprovalCard({ theme, state, controller, sessionRef, item, part 
     {data?.details != null && <Text selectable style={[styles.monospace, { color: theme.muted }]}>{typeof data.details === 'string' ? data.details : JSON.stringify(data.details, null, 2)}</Text>}
     {!pending ? <Text style={{ color: theme.muted }}>{resolvedText}</Text> : data?.interaction === 'plan' ? <>
       <TextInput accessibilityLabel={copy('Plan feedback', '计划反馈')} editable={writable} value={feedback} onChangeText={setFeedback}
-        multiline placeholder={copy('Feedback for changes (optional for approval)', '修改建议（批准时可留空）')} placeholderTextColor={theme.faint}
+        multiline placeholder={copy('Feedback (optional)', '反馈（可选）')} placeholderTextColor={theme.faint}
         style={[styles.input, { color: theme.text, borderColor: theme.line, backgroundColor: theme.input }]} />
       <View style={styles.actions}>
         <Button theme={theme} label={copy('Approve plan', '批准计划')} tone="primary" disabled={!writable || data.submittable === false}
@@ -68,10 +68,10 @@ export function ApprovalCard({ theme, state, controller, sessionRef, item, part 
         {!!choice.description && <Text style={{ color: theme.muted }}>{choice.description}</Text>}
         {choice.scope !== 'unknown' && <Text style={{ color: theme.muted }}>{copy('Scope: ', '范围：')}{choice.scope}</Text>}
       </View>)}
-      {!data?.choices.length && <Text style={{ color: theme.muted }}>{copy('This request has no supported choices. Continue on the computer.', '此请求没有支持的选项，请在电脑上处理。')}</Text>}
+      {!data?.choices.length && <Text style={{ color: theme.muted }}>{copy('Continue on your computer.', '请在电脑上继续。')}</Text>}
     </View>}
-    {pending && machine?.permission !== 'fullcontrol' && <Text style={{ color: theme.muted }}>{copy('This computer granted view-only access.', '这台电脑授予了仅查看权限。')}</Text>}
-    {pending && (machine?.status !== 'connected' || machine.syncing || view?.syncing) && <Text style={{ color: theme.amber }}>{copy('Reconnect and synchronize before acting.', '重新连接并同步后才能操作。')}</Text>}
+    {pending && machine?.permission !== 'fullcontrol' && <Text style={{ color: theme.muted }}>{copy('View only.', '仅查看。')}</Text>}
+    {pending && (machine?.status !== 'connected' || machine.syncing || view?.syncing) && <Text style={{ color: theme.amber }}>{copy('Reconnect to act.', '重连后可操作。')}</Text>}
     {data?.isBlocking === false && <Text style={{ color: theme.muted }}>{copy('The agent can continue while you decide.', '你决定期间，Agent 可以继续工作。')}</Text>}
     {!!error && <Text accessibilityRole="alert" selectable style={{ color: theme.red }}>{error}</Text>}
     {busy && <Text style={{ color: theme.muted }}>{copy('Submitting…', '正在提交…')}</Text>}

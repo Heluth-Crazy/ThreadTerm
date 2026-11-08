@@ -130,6 +130,15 @@ Follow [the native acceptance checklist](scripts/NATIVE-IOS-VALIDATION.md) and
 [the integrated acceptance plan](../docs/mobile-implementation.md). Windows
 checks do not establish that the Apple build or hardware flows pass.
 
+## Terminal
+
+The terminal uses pinned `@xterm/headless` 5.5.0 under Hermes and draws its VT
+buffer, including scrollback and cursor position. Control fits the host PTY to
+the phone's measured cells; View keeps the host dimensions and scrolls sideways.
+Run sends Enter as CR. A reconnect rebuilds from a bounded tail and marks missing
+output. This is JavaScript only and requires a Metro reload, without a native
+rebuild. Session lifecycle actions are in the header's action menu.
+
 ## Host setup
 
 In the desktop application's phone settings, enable mobile access and grant

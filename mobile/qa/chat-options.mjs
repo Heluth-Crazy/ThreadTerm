@@ -8,14 +8,14 @@ import { chromium } from 'playwright';
 
 const root=process.cwd(), app=join(root,'mobile','qa','app'), out=join(app,'.qa-export'), shots=join(root,'.trellis','tasks','11-06-mobile-companion','qa-chat-options');
 mkdirSync(shots,{recursive:true});
-execFileSync(process.platform==='win32'?'cmd.exe':'npx',process.platform==='win32'?['/d','/s','/c','npx expo export --platform web --output-dir .qa-export']:['expo','export','--platform','web','--output-dir','.qa-export'],{cwd:app,stdio:'inherit',windowsHide:true});
+if (!process.env.TT_QA_SKIP_EXPORT) execFileSync(process.platform==='win32'?'cmd.exe':'npx',process.platform==='win32'?['/d','/s','/c','npx expo export --platform web --output-dir .qa-export']:['expo','export','--platform','web','--output-dir','.qa-export'],{cwd:app,stdio:'inherit',windowsHide:true});
 const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.json':'application/json','.woff2':'font/woff2'};
 const server=createServer((req,res)=>{const path=new URL(req.url??'/','http://qa').pathname;const file=normalize(join(out,path==='/'?'index.html':path.slice(1)));if(!file.startsWith(out)||!existsSync(file)){res.writeHead(404);res.end();return;}res.setHeader('content-type',mime[extname(file)]??'application/octet-stream');res.end(readFileSync(file));});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const port=server.address().port,browser=await chromium.launch({headless:true}),page=await browser.newPage({viewport:{width:390,height:844},colorScheme:'light',locale:'en-US'}),errors=[];
 page.setDefaultTimeout(12_000);page.on('pageerror',error=>errors.push(String(error)));
 const overflow=async label=>assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`${label}: horizontal overflow`);
-const shot=name=>page.screenshot({path:join(shots,name),fullPage:true,animations:'disabled'});
+const shot=name=>process.env.TT_QA_NO_SHOTS ? Promise.resolve() : page.screenshot({path:join(shots,name),fullPage:true,animations:'disabled'});
 const calls=()=>page.evaluate(()=>globalThis.__TT_MOBILE_QA_CALLS__);
 async function settleSheet(title) {
   const heading=page.getByText(title,{exact:true}).last();await heading.waitFor();

@@ -32,13 +32,20 @@ performed those operations.
 
 `native-host-smoke.mjs` separately starts a real runtime under a disposable root
 and drives `native-client/examples/host_smoke.rs` through pinned TLS pairing,
-snapshot, exact readonly denial, live revocation and clean shutdown. It uses
+snapshot, exact readonly denial, Control lease and resize, LF refusal followed
+by an executed CR/echo round-trip, live revocation and clean shutdown. It uses
 local authenticated IPC for host administration and never prints/persists the
 issued mobile credential. Build the runtime and native example first, then run:
 
 ```sh
 node mobile/qa/native-host-smoke.mjs
 ```
+
+`round3-navigation.mjs` verifies Git tab replacement, Back from a diff, keyboard
+background dismissal, list actions while focused, and measured terminal resize
+and CR input payloads. Run it from the root. The other injected browser scripts
+accept `TT_QA_SKIP_EXPORT=1` to reuse its export and `TT_QA_NO_SHOTS=1` to run
+without changing screenshots.
 
 All generated web exports and screenshots live in ignored `.qa-*` directories.
 The Apple build, camera/picker/biometrics and native preview/device matrix remain

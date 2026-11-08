@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName, statusColor } from './icons';
 import type { Theme } from './theme';
 import { radius, space } from './theme';
+import { useKeyboardVisible } from './keyboard';
 
 export function Button({ theme, label, onPress, tone = 'secondary', icon, disabled, small = false, accessibilityHint }: {
   theme: Theme; label: string; onPress: () => void; tone?: 'primary' | 'secondary' | 'destructive' | 'plain'; icon?: IconName; disabled?: boolean; small?: boolean; accessibilityHint?: string;
@@ -55,16 +56,17 @@ export function Field({ theme, label, value, onChangeText, placeholder, multilin
   return <View style={styles.fieldWrap}>{!!label && <Text maxFontSizeMultiplier={1.5} style={[styles.fieldLabel, { color: theme.muted }]}>{label}</Text>}<TextInput testID={testID} accessibilityLabel={label ?? placeholder} accessibilityHint={accessibilityHint} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={theme.faint} multiline={multiline} secureTextEntry={secureTextEntry} autoCapitalize={autoCapitalize} style={[styles.field, multiline && styles.fieldMultiline, { backgroundColor: theme.input, borderColor: theme.line, color: theme.text }]} textAlignVertical={multiline ? 'top' : 'center'} /></View>;
 }
 
-export function EmptyState({ theme, icon, title, detail, action }: { theme: Theme; icon: IconName; title: string; detail: string; action?: React.ReactNode }) {
-  return <View style={styles.empty}><View style={[styles.emptyIcon, { backgroundColor: theme.raised }]}><Icon name={icon} color={theme.primary} size={28} /></View><Text maxFontSizeMultiplier={1.5} style={[styles.emptyTitle, { color: theme.text }]}>{title}</Text><Text maxFontSizeMultiplier={1.7} style={[styles.emptyDetail, { color: theme.muted }]}>{detail}</Text>{action}</View>;
+export function EmptyState({ theme, icon, title, detail, action }: { theme: Theme; icon: IconName; title: string; detail?: string; action?: React.ReactNode }) {
+  return <View style={styles.empty}><View style={[styles.emptyIcon, { backgroundColor: theme.raised }]}><Icon name={icon} color={theme.primary} size={28} /></View><Text maxFontSizeMultiplier={1.5} style={[styles.emptyTitle, { color: theme.text }]}>{title}</Text>{!!detail && <Text maxFontSizeMultiplier={1.7} style={[styles.emptyDetail, { color: theme.muted }]}>{detail}</Text>}{action}</View>;
 }
 
 export function Sheet({ theme, visible, title, onDismiss, children, closeLabel = 'Close', dismissLabel = 'Dismiss' }: PropsWithChildren<{ theme: Theme; visible: boolean; title: string; onDismiss: () => void; closeLabel?: string; dismissLabel?: string }>) {
   const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
   return <Modal visible={visible} animationType="slide" transparent onRequestClose={onDismiss} presentationStyle="overFullScreen">
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.sheetAvoidance, { paddingTop: insets.top }]}>
       <Pressable accessibilityRole="button" accessibilityLabel={dismissLabel} onPress={onDismiss} style={[styles.scrim, { backgroundColor: theme.overlay }]} />
-      <View accessibilityViewIsModal style={[styles.sheet, { backgroundColor: theme.background, borderColor: theme.line, paddingBottom: Math.max(space.lg, insets.bottom) }]}>
+      <View accessibilityViewIsModal style={[styles.sheet, { backgroundColor: theme.background, borderColor: theme.line, paddingBottom: keyboardVisible ? space.sm : Math.max(space.lg, insets.bottom) }]}>
         <View style={[styles.grabber, { backgroundColor: theme.faint }]} /><View style={styles.sheetHead}><Text maxFontSizeMultiplier={1.4} style={[styles.sheetTitle, { color: theme.text }]}>{title}</Text><IconButton theme={theme} icon="close" label={closeLabel} onPress={onDismiss} /></View>{children}
       </View>
     </KeyboardAvoidingView>
@@ -83,7 +85,7 @@ const styles = StyleSheet.create({
   statusDotRow: { flexDirection: 'row', alignItems: 'center', gap: 6 }, statusDot: { width: 9, height: 9, borderRadius: 5 }, statusDotText: { fontSize: 13, fontWeight: '700' },
   pill: { alignSelf: 'flex-start', paddingHorizontal: 9, minHeight: 25, borderRadius: radius.pill, justifyContent: 'center' }, pillText: { fontSize: 12, lineHeight: 16, fontWeight: '700' },
   fieldWrap: { gap: 6 }, fieldLabel: { fontSize: 13, fontWeight: '600' }, field: { minHeight: 46, borderRadius: radius.small, borderWidth: 1, paddingHorizontal: 12, fontSize: 16, lineHeight: 22 }, fieldMultiline: { minHeight: 104, paddingTop: 12, paddingBottom: 12 },
-  empty: { alignItems: 'center', paddingHorizontal: 30, paddingVertical: 44, gap: 10 }, emptyIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 2 }, emptyTitle: { fontSize: 18, lineHeight: 24, fontWeight: '800', textAlign: 'center' }, emptyDetail: { fontSize: 15, lineHeight: 22, textAlign: 'center' },
+  empty: { alignItems: 'center', paddingHorizontal: 24, paddingVertical: 28, gap: 8 }, emptyIcon: { width: 52, height: 52, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginBottom: 2 }, emptyTitle: { fontSize: 18, lineHeight: 24, fontWeight: '800', textAlign: 'center' }, emptyDetail: { fontSize: 15, lineHeight: 22, textAlign: 'center' },
   scrim: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }, sheetAvoidance: { flex: 1, justifyContent: 'flex-end' }, sheet: { maxHeight: '90%', flexShrink: 1, paddingBottom: space.lg, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: StyleSheet.hairlineWidth }, grabber: { width: 38, height: 4, borderRadius: 2, alignSelf: 'center', marginTop: 9, marginBottom: 5 }, sheetHead: { flexShrink: 0, minHeight: 54, flexDirection: 'row', paddingLeft: space.md, paddingRight: space.xs, alignItems: 'center', justifyContent: 'space-between' }, sheetTitle: { fontSize: 19, fontWeight: '800' },
   loading: { padding: 32, alignItems: 'center', justifyContent: 'center', gap: 12 },
 });

@@ -50,7 +50,7 @@ export function ChatOptionsSheet({ theme, locale, visible, ui, disabledReason, p
       {showSearch && <TextInput accessibilityLabel={copy(locale, 'Search models', '搜索模型')} value={search} onChangeText={setSearch} placeholder={copy(locale, 'Search models', '搜索模型')} placeholderTextColor={theme.faint} style={[styles.search, { color: theme.text, backgroundColor: theme.input, borderColor: theme.line }]} />}
       {model && <OptionSection theme={theme} locale={locale} option={model} choices={modelChoices} pending={pending} disabled={!!disabledReason} onChoose={choose} />}
       {options.map(option => <OptionSection key={option.id} theme={theme} locale={locale} option={option} pending={pending} disabled={!!disabledReason} onChoose={choose} />)}
-      {!loading && ['ready', 'empty'].includes(ui?.loadState ?? '') && !model && options.length === 0 && <View style={styles.empty}><Text style={{ color: theme.muted }}>{copy(locale, 'This provider has no session options.', '此提供方没有会话选项。')}</Text><Button theme={theme} small label={copy(locale, 'Refresh', '刷新')} onPress={onRefresh} /></View>}
+      {!loading && ['ready', 'empty'].includes(ui?.loadState ?? '') && !model && options.length === 0 && <View style={styles.empty}><Text style={{ color: theme.muted }}>{copy(locale, 'No session options.', '没有会话选项。')}</Text><Button theme={theme} small label={copy(locale, 'Refresh', '刷新')} onPress={onRefresh} /></View>}
     </ScrollView>
   </Sheet>;
 }

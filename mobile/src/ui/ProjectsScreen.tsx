@@ -107,11 +107,6 @@ function Computers({ theme, state, onRoute, onConnect, onAddComputer }: Props) {
       <PageTitle
         theme={theme}
         title={locale === "zh-CN" ? "项目" : "Projects"}
-        subtitle={
-          locale === "zh-CN"
-            ? "电脑上的已登记项目"
-            : "Registered projects on your computers"
-        }
         right={
           <Button
             theme={theme}
@@ -168,8 +163,8 @@ function Computers({ theme, state, onRoute, onConnect, onAddComputer }: Props) {
           title={locale === "zh-CN" ? "还没有电脑" : "No paired computers"}
           detail={
             locale === "zh-CN"
-              ? "在设置中扫描或粘贴配对文本。"
-              : "Scan or paste pairing text in Settings."
+              ? "添加一台电脑开始。"
+              : "Add a computer to start."
           }
         />
       )}
@@ -448,7 +443,7 @@ function SessionRows({
       icon="chat"
       title={locale === "zh-CN" ? "还没有会话" : "No sessions yet"}
       detail={
-        locale === "zh-CN" ? "从上方创建一个会话。" : "Create a session above."
+        locale === "zh-CN" ? "创建一个会话开始。" : "Start a new session."
       }
     />
   );

@@ -29,7 +29,7 @@ try {
  await qa('setPermission','alpha','readonly');await page.getByText('This computer allows viewing only.',{exact:true}).first().waitFor();
  assert.equal(await page.getByRole('button',{name:'Unlock',exact:true}).count(),0);assert.equal(await page.getByRole('button',{name:'Send',exact:true}).isDisabled(),true);
  await qa('setPreferences',{locale:'zh-CN'});await page.getByText('此电脑仅允许查看。',{exact:true}).first().waitFor();
- await page.screenshot({path:join(shots,'05-view-only-zh.png'),fullPage:true});
+ if (!process.env.TT_QA_NO_SHOTS) await page.screenshot({path:join(shots,'05-view-only-zh.png'),fullPage:true});
  await qa('setPreferences',{locale:'en'});await qa('setPermission','alpha','fullcontrol');await page.getByText('This computer allows viewing only.',{exact:true}).first().waitFor({state:'hidden'});
  await page.getByRole('button',{name:'Back',exact:true}).click();
  await page.getByRole('button',{name:'Build terminal',exact:true}).click();await page.getByRole('button',{name:'Control',exact:true}).last().click();
@@ -42,9 +42,9 @@ try {
  await qa('removeMachine','alpha');await qa('removeMachine','beta');await page.getByText('No paired computers',{exact:true}).waitFor();
  assert.equal(await page.getByText('Control PC',{exact:true}).count(),0);
  await page.getByRole('tab',{name:'Needs You',exact:true}).click();
- await page.getByText('Add a computer to see requests that need your attention.',{exact:true}).waitFor();
+ await page.getByText('Add a computer to start.',{exact:true}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Project',exact:true}).count(),0);
- await page.screenshot({path:join(shots,'06-empty-after-removal.png'),fullPage:true});
+ if (!process.env.TT_QA_NO_SHOTS) await page.screenshot({path:join(shots,'06-empty-after-removal.png'),fullPage:true});
  await page.getByRole('button',{name:'Add computer',exact:true}).click();await page.waitForTimeout(500);await page.getByRole('textbox',{name:'Pairing text',exact:true}).fill('threadterm://pair?data=qa');
  await page.setViewportSize({width:390,height:500});await page.getByRole('textbox',{name:'Pairing text',exact:true}).scrollIntoViewIfNeeded();await visible(page.getByRole('textbox',{name:'Pairing text',exact:true}),'pairing paste');
  await page.getByRole('button',{name:'Check pairing',exact:true}).scrollIntoViewIfNeeded();await visible(page.getByRole('button',{name:'Check pairing',exact:true}),'pairing action');

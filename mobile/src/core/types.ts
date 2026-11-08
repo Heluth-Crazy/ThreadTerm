@@ -11,7 +11,7 @@ export interface SessionView {
   ref:SessionRef; items:ChatItem[]; loading:boolean; syncing:boolean; error?:string;
   connection?:ChatConnectionState; chatUi?:ChatUiState; leaseEpoch?:number;
   optionsLoading?:boolean; optionPending?:string; optionsError?:string;
-  terminal:string; terminalCursor:number; terminalGap:boolean; hasOlder:boolean; olderCursor?:string;
+  terminal:string; terminalLines?:{text:string;cursor?:boolean;cursorColumn?:number}[]; terminalCursor:number; terminalGap:boolean; hasOlder:boolean; olderCursor?:string;
 }
 export interface AttentionItem { key:string; ref:SessionRef; machineName:string; session:Session; title:string; createdAt:string; inboxId?:string; turnId?:string; approvalId?:string; approval?:ChatApprovalData; stale:boolean }
 export interface CompanionState {
