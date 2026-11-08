@@ -85,6 +85,9 @@ final class PreviewManager {
       completion(PreviewError.unavailable)
       return
     }
+    // remove(forIdentifier:) crashes (null WebKit main RunLoop) when nothing has initialized WebKit yet,
+    // for example removing a computer whose preview was never opened. Touching the default store initializes it.
+    _ = WKWebsiteDataStore.default()
     WKWebsiteDataStore.remove(forIdentifier: identifier) { error in
       completion(error)
     }
