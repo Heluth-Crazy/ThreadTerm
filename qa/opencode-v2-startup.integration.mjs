@@ -84,7 +84,10 @@ for (const mode of ['normal', 'html-info', 'malformed-info', 'unknown-auth-help'
     const session = await peer.request('session.create', { cwd, title: `V2 ${mode}`, provider: 'opencode', mode: 'chat', operationId: randomUUID() });
     const leaseEpoch = (await peer.request('session.claim', { sessionId: session.id, clientId })).leaseEpoch;
     await assert.rejects(peer.request('chat.connect', { sessionId: session.id, leaseEpoch, operationId: randomUUID() }), error => {
-      assert.equal(error.code, ['normal', 'unknown-auth-help'].includes(mode) ? 'provider_method_unsupported' : 'provider_protocol', `native startup: ${diagnostic}; inspect ${join(root, mode, 'auth-diagnostic.jsonl')}`);
+      // The v2 Chat fence is open, so this is no longer a `provider_method_unsupported`
+      // refusal: a v2 whose recovery reads cannot be validated has to fail the connect
+      // itself, never fall through to a legacy contract.
+      assert.equal(error.code, 'provider_protocol', `native startup: ${diagnostic}; inspect ${join(root, mode, 'auth-diagnostic.jsonl')}`);
       return true;
     });
     const connection = await peer.request('chat.connection', { sessionId: session.id });
@@ -93,14 +96,18 @@ for (const mode of ['normal', 'html-info', 'malformed-info', 'unknown-auth-help'
     assert.equal(snapshot.sessions.find(row => row.id === session.id).nativeId, undefined, 'failed negotiation/fenced v2 must not allocate a replacement identity');
     const requests = (await readFile(requestsFile, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
     assert.ok(requests.some(row => row.path === '/api/info'));
-    assert.ok(requests.every(row => row.method === 'GET' && ['/api/info', '/global/health'].includes(row.path)), 'no create/prompt/legacy-event request before full v2 event support');
+    assert.ok(requests.every(row => row.path.startsWith('/api/')), 'the v2 path never falls back to a legacy route');
+    assert.ok(!requests.some(row => row.path === '/global/event' || row.path.startsWith('/session') || row.path === '/instance/dispose'),
+      'no legacy event, mutation or dispose route is touched');
+    assert.ok(!requests.some(row => /\/(prompt|command|compact|model|agent|interrupt)$/.test(row.path)),
+      'a failed connect admits no prompt, command, next-turn setting or stop');
     const observedProvider = (await readFile(join(root, mode, 'resolved-exe.txt'), 'utf8')).trim();
     assert.equal(resolve(observedProvider).toLowerCase(), resolve(bin, 'opencode.exe').toLowerCase(), 'actual native shim executable must match isolated selection');
     const cli = (await readFile(join(root, mode, 'cli-diagnostic.jsonl'), 'utf8')).trim().split(/\r?\n/).map(JSON.parse);
     const auth = cli.filter(row => row.args.includes('auth') && row.args.includes('list'));
     if (mode === 'unknown-auth-help') assert.equal(auth.length, 0, 'unknown help never starts a potentially persistent auth command');
     else assert.ok(auth.length > 0 && auth.every(row => JSON.stringify(row.args) === JSON.stringify(['--standalone', 'auth', 'list'])), 'discovery uses only the private v2 auth command');
-    console.log(JSON.stringify({ mode, scenario: 'v2-startup-fence', result: 'PASS', runtime, resolvedProvider: observedProvider, nativeRequests: requests.length, authCommands: auth.length, compatibilityClaim: false }));
+    console.log(JSON.stringify({ mode, scenario: 'v2-unvalidated-recovery-fails-the-connect', result: 'PASS', runtime, resolvedProvider: observedProvider, nativeRequests: requests.length, authCommands: auth.length, compatibilityClaim: false }));
   } finally {
     if (peer) {
       await peer.request('runtime.shutdown', { operationId: randomUUID() }).catch(() => {});

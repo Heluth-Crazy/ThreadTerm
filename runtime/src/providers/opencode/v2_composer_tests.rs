@@ -157,6 +157,44 @@ fn drain(receiver: &mut tokio::sync::broadcast::Receiver<crate::providers::Provi
 }
 
 #[test]
+fn v2_catalogues_decode_the_decoded_native_payloads() {
+    // `NativeApi` returns `ResponseShape::LocationData` already unwrapped, so the
+    // adapter sees the payload array, never the raw `{location,data}` envelope.
+    let payload = |case: &str| fixture(case)["data"].clone();
+    let providers = payload("catalogue_provider");
+    let agents = payload("catalogue_agent");
+    let commands = payload("catalogue_command");
+    let models = crate::providers::conformance::fixture("opencode-v2-native-persistence.jsonl")
+        .into_iter()
+        .find(|row| row["case"] == "models")
+        .expect("captured v2 model catalogue")["value"]["data"]
+        .clone();
+    assert!(providers.is_array() && models.is_array() && agents.is_array() && commands.is_array());
+    let mut ui = OpenCodeOptions::from_catalogues_v2(Ok(providers), Ok(models), Ok(agents));
+    assert!(ui.error.is_none(), "decoded payloads are a valid catalogue");
+    assert!(!ui.models.is_empty(), "the decoded model payload is the live shape");
+    assert!(ui.agents.iter().any(|agent| agent["value"] == json!("build")));
+    ui.load_commands_v2(Ok(commands));
+    assert_eq!(ui.commands.iter().map(|command| command["name"].as_str().unwrap()).collect::<Vec<_>>(), vec!["init", "review", "goal"]);
+    assert_eq!(ui.wire()["options"][0]["id"], "next-model");
+    // A refresh of decoded payloads keeps the commands and replaces the options.
+    let payload = |case: &str| fixture(case)["data"].clone();
+    ui.refresh_catalogues_v2(
+        Ok(payload("catalogue_provider")),
+        Ok(crate::providers::conformance::fixture("opencode-v2-native-persistence.jsonl")
+            .into_iter()
+            .find(|row| row["case"] == "models")
+            .expect("captured v2 model catalogue")["value"]["data"]
+            .clone()),
+        Ok(payload("catalogue_agent")),
+        Ok(payload("catalogue_command")),
+    );
+    assert!(ui.error.is_none());
+    assert_eq!(ui.commands.len(), 3, "a decoded command payload is never discarded");
+    assert_eq!(ui.wire()["options"][0]["id"], "next-model");
+}
+
+#[test]
 fn v2_catalogues_decode_the_captured_provider_model_agent_and_command_shapes() {
     let providers = fixture("catalogue_provider");
     let agents = fixture("catalogue_agent");

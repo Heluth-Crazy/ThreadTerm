@@ -145,7 +145,8 @@ impl ProviderAdapter for OpenCodeAdapter {
         // Create through the authenticated local native API. No prompt/turn
         // is sent, and the terminal subsequently opens this exact session.
         let server = OpenCodeServer::start(cwd, "terminal-prepare", crate::provider_events::tap_channel(1).0, "")?;
-        // V2 terminal lifetime/exact-resume verification belongs to P4.
+        // V2 terminal lifetime/exact-resume verification belongs to P4. Chat no
+        // longer shares this fence, so keep the terminal-specific one explicit.
         server.require_legacy_events()?;
         let session = server.native_api().open_session(None)?;
         let id = session.get("id").and_then(Value::as_str).ok_or_else(|| {
@@ -265,9 +266,8 @@ impl ProviderAdapter for OpenCodeAdapter {
             validate_native_id(id)?;
         }
         let server = OpenCodeServer::start(cwd, session_id, self.events.clone(), worker_token)?;
-        // REST compatibility alone cannot establish a usable Chat worker.
-        // Remove this fence only with P2's v2 event/snapshot reconciliation.
-        server.require_legacy_events()?;
+        // Chat is dialect-neutral here: v2 reconciles its own snapshot/events in
+        // `v2::attach`. Terminal preparation and history reads stay fenced.
         let session = server.native_api().open_session(native_id)?;
         let native_id = api::session_identity(&session, native_id)?;
         // The event stream binds only after the native identity is known; a
@@ -776,6 +776,14 @@ impl OpenCodeOptions {
         }
         ui
     }
+    /// `NativeApi` returns the decoded `LocationData` payload, so the live
+    /// catalogue is already the row array. Captured fixtures keep the raw
+    /// `{location,data}` envelope; accept both and never treat one as the other.
+    fn catalogue_rows(value: &Value) -> Option<&Vec<Value>> {
+        value
+            .as_array()
+            .or_else(|| value.get("data").and_then(Value::as_array))
+    }
     /// 2.2.5 splits the catalogue: providers carry display names, models are
     /// a flat location-scoped list, agents are keyed by `id`, and model
     /// `type`/`status` are optional. Nothing here may reuse the legacy
@@ -789,7 +797,7 @@ impl OpenCodeOptions {
         let mut groups = HashMap::new();
         match providers {
             Ok(providers) => {
-                let Some(all) = providers.get("data").and_then(Value::as_array) else {
+                let Some(all) = Self::catalogue_rows(&providers) else {
                     ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid provider catalogue"));
                     return ui;
                 };
@@ -804,7 +812,7 @@ impl OpenCodeOptions {
         }
         match models {
             Ok(models) => {
-                let Some(rows) = models.get("data").and_then(Value::as_array) else {
+                let Some(rows) = Self::catalogue_rows(&models) else {
                     ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid model catalogue"));
                     return ui;
                 };
@@ -833,7 +841,7 @@ impl OpenCodeOptions {
         }
         match agents {
             Ok(agents) => {
-                let Some(rows) = agents.get("data").and_then(Value::as_array) else {
+                let Some(rows) = Self::catalogue_rows(&agents) else {
                     ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid agent catalogue"));
                     return ui;
                 };
@@ -863,7 +871,7 @@ impl OpenCodeOptions {
             // A failed refresh keeps the last usable options (R5).
             return;
         }
-        if !commands.as_ref().ok().is_some_and(|value| value.get("data").is_some_and(Value::is_array)) {
+        if !commands.as_ref().ok().is_some_and(|value| Self::catalogue_rows(value).is_some()) {
             return;
         }
         refreshed.commands = self.commands.clone();
@@ -883,7 +891,7 @@ impl OpenCodeOptions {
         *self = refreshed;
     }
     fn load_commands_v2(&mut self, commands: Result<Value, ProviderError>) {
-        let rows = commands.ok().and_then(|value| value.get("data").and_then(Value::as_array).cloned());
+        let rows = commands.ok().and_then(|value| Self::catalogue_rows(&value).cloned());
         let Some(rows) = rows else { return };
         let mut names = HashSet::new();
         self.commands = rows.iter().filter_map(|command| {
