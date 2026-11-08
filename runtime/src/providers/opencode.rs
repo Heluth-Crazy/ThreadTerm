@@ -1189,6 +1189,9 @@ impl ChatSession for OpenCodeChat {
         choice_id: &str,
         _operation_id: &str,
     ) -> Result<(), ProviderError> {
+        if self.server.dialect == ApiDialect::V2 {
+            return v2::approve(&self.sse_target, turn_id, approval_id, choice_id);
+        }
         validate_native_id(approval_id)?;
         let commit =
             self.server.event_gate.lock().map_err(|_| {
@@ -1264,6 +1267,9 @@ impl ChatSession for OpenCodeChat {
         response: &Value,
         _operation_id: &str,
     ) -> Result<(), ProviderError> {
+        if self.server.dialect == ApiDialect::V2 {
+            return v2::answer(&self.sse_target, turn_id, approval_id, response);
+        }
         validate_native_id(approval_id)?;
         let commit =
             self.server.event_gate.lock().map_err(|_| {

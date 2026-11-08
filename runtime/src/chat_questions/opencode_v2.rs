@@ -239,8 +239,13 @@ pub(super) fn target_policy(form: &Value) -> bool {
 /// preserved unchanged. Nothing is initialized, defaulted or reordered here:
 /// a schema this policy cannot represent fails explicitly instead of losing
 /// semantics.
+///
+/// The result is the card payload only. The native form id and owning session
+/// stay in adapter/approval state beside the approval id, exactly as the 1.18.35
+/// path keeps its question/permission identities, so no native identity is
+/// duplicated into data that cards and the phone receive.
 pub(super) fn canonical_from_info(native: &Value) -> Result<Value, ProviderError> {
-    let id = native
+    native
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
@@ -307,8 +312,7 @@ pub(super) fn canonical_from_info(native: &Value) -> Result<Value, ProviderError
         "kind": "form",
         "message": message,
         "validation": policy_value(),
-        "fields": mapped,
-        "native": {"formID": id}
+        "fields": mapped
     }))
 }
 
@@ -475,6 +479,7 @@ mod tests {
             assert_eq!(canonical["kind"], "form", "{}", row["case"]);
             assert_eq!(canonical["validation"], json!({"semantics":"opencode-v2","patternAndFormat":"native"}));
             assert_eq!(canonical["message"], row["native"]["title"], "{}", row["case"]);
+            assert!(canonical.get("native").is_none(), "{}", row["case"]);
             let native_fields = row["native"]["fields"].as_array().unwrap();
             let fields = canonical["fields"].as_array().unwrap();
             assert_eq!(fields.len(), native_fields.len(), "{}", row["case"]);

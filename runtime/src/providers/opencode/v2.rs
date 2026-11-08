@@ -37,6 +37,10 @@ pub(super) struct State {
     /// Receipts survive a stale pending snapshot, including receipt-before-ask.
     receipts: HashSet<(String, String)>,
     receipt_order: VecDeque<(String, String)>,
+    /// Live cards and the native owner that must receive their reply. The native
+    /// form/permission id is the approval id already; the owning session (root or
+    /// child) is kept here, never inside the card payload.
+    interactions: HashMap<String, Interaction>,
     dispatch: Option<Dispatch>,
     interaction_barrier: bool,
     pending_requests: HashSet<(String, String)>,
@@ -46,6 +50,16 @@ pub(super) struct State {
     unowned_bytes: usize,
     unowned_gap: bool,
     authoritative_only: bool,
+}
+
+#[derive(Clone)]
+struct Interaction {
+    session: String,
+    kind: String,
+    turn: Option<String>,
+    /// The canonical payload the card was created from. A later native summary is
+    /// computed against it, so no schema is re-read from renderer input.
+    payload: Value,
 }
 
 struct Dispatch {
@@ -106,6 +120,10 @@ enum Change {
         session: String,
         id: String,
         kind: String,
+        /// The native receipt payload: `answer` for `form.replied`, `reply` for
+        /// `permission.replied`. It stays in adapter state and never becomes card
+        /// data on its own.
+        data: Value,
     },
 }
 
@@ -137,6 +155,25 @@ impl State {
 
     fn owned(&self, session: &str, root: &str) -> bool {
         session == root || self.children.contains_key(session)
+    }
+
+    /// Retire one card exactly once and remember the receipt, so no later pending
+    /// snapshot can revive it and no reply can be sent twice.
+    fn settle(&mut self, id: &str) -> Option<Interaction> {
+        let interaction = self.interactions.remove(id)?;
+        self.pending_requests
+            .remove(&(interaction.session.clone(), id.to_owned()));
+        self.interaction_barrier = !self.pending_requests.is_empty();
+        let key = (interaction.session.clone(), id.to_owned());
+        if self.receipts.insert(key.clone()) {
+            self.receipt_order.push_back(key);
+            if self.receipt_order.len() > MAX_EVENT_IDS {
+                if let Some(key) = self.receipt_order.pop_front() {
+                    self.receipts.remove(&key);
+                }
+            }
+        }
+        Some(interaction)
     }
 
     fn check_budget(&self) -> Result<(), ProviderError> {
@@ -506,6 +543,7 @@ impl State {
                 session: session.into(),
                 id: request_id.into(),
                 kind: kind.into(),
+                data: data.clone(),
             });
         }
         if session == root
@@ -964,7 +1002,7 @@ pub(super) fn admit_prompt(target: &EventTarget, prompt: &str) -> Result<Value, 
     api(target).admit_prompt(&target.native_id, prompt)
 }
 
-fn publish(target: &EventTarget, state: &State, change: Change) {
+fn publish(target: &EventTarget, state: &mut State, change: Change) {
     let turn = target.active.lock().ok().and_then(|active| active.clone());
     let emit = |kind, data, turn: Option<&str>| {
         emit_scoped(
@@ -1091,22 +1129,127 @@ fn publish(target: &EventTarget, state: &State, change: Change) {
             kind,
             request,
         } => {
-            // P3 owns canonical form/permission normalization. Retain a visible
-            // recovery barrier rather than invent an answerable fallback card.
-            emit(
-                "provider.event",
-                json!({"note":"OpenCode v2 pending interaction requires native normalization","sessionID":session,"requestID":id,"requestType":kind,"request":request}),
-                turn.as_deref(),
+            let subagent = state.children.get(&session).map(|key| {
+                let label = target
+                    .subagents
+                    .lock()
+                    .ok()
+                    .and_then(|state| state.labels.get(key).cloned())
+                    .unwrap_or_else(|| "Subagent".into());
+                (key.clone(), label)
+            });
+            let mut payload = if kind == "form.created" {
+                match crate::chat_questions::canonical_form(&request) {
+                    Ok(form) => json!({"interaction":"question","answerable":true,"form":form}),
+                    // A schema this policy cannot represent stays a diagnostic. It
+                    // never becomes a dismiss-only or partial card.
+                    Err(error) => {
+                        emit(
+                            "provider.event",
+                            json!({"note":"OpenCode v2 form schema cannot be represented","sessionID":session,"requestID":id,"requestType":kind,"reason":error.message,"request":request}),
+                            turn.as_deref(),
+                        );
+                        return;
+                    }
+                }
+            } else {
+                let title = request
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Permission request");
+                approval_payload(
+                    &id,
+                    "opencode",
+                    "permission.asked",
+                    title,
+                    &request,
+                    &allow_deny_choices(),
+                    turn.as_deref(),
+                    true,
+                )
+            };
+            if let Some((key, label)) = subagent {
+                payload["subagent"] = json!({"key":key,"label":label});
+            }
+            if state.interactions.len() >= MAX_EVENT_IDS {
+                // publish already runs under event_gate; expiring the stream here
+                // would deadlock on the same mutex. Admission of pending_requests
+                // fails before this bound, so this is a last-resort diagnostic.
+                emit(
+                    "provider.event",
+                    json!({"note":"OpenCode v2 pending interactions exceeded their bound","sessionID":session,"requestID":id,"requestType":kind}),
+                    turn.as_deref(),
+                );
+                return;
+            }
+            state.interactions.insert(
+                id.clone(),
+                Interaction {
+                    session,
+                    kind: kind.clone(),
+                    turn: turn.clone(),
+                    payload: payload.clone(),
+                },
             );
+            let mut data = json!({
+                "approvalId":id,
+                "request":request,
+                "part":{"type":"approval","approvalId":id,"status":"pending","data":payload}
+            });
+            if payload["interaction"] == "permission" {
+                data["choices"] = json!(allow_deny_choices());
+            }
+            emit("chat.approval", data, turn.as_deref());
         }
-        Change::Receipt { session, id, kind } => {
+        Change::Receipt {
+            session,
+            id,
+            kind,
+            data,
+        } => {
             // A stale list/detail may still contain this ID. State already kept
             // its receipt before publication; recovery must not recreate it.
-            emit(
-                "provider.event",
-                json!({"sessionID":session,"requestID":id,"requestType":kind}),
-                turn.as_deref(),
-            );
+            // Check the owner before settling: a mismatched receipt must not
+            // remove a live card without resolving it.
+            let owner = state
+                .interactions
+                .get(&id)
+                .is_some_and(|one| one.session == session);
+            let Some(interaction) = owner.then(|| state.settle(&id)).flatten() else {
+                emit(
+                    "provider.event",
+                    json!({"sessionID":session,"requestID":id,"requestType":kind}),
+                    turn.as_deref(),
+                );
+                return;
+            };
+            // A receipt for a request that was answered elsewhere still has to
+            // settle its card here, exactly once.
+            let (status, summary) = match kind.as_str() {
+                "form.replied" => (
+                    "answered",
+                    data.get("answer").cloned().map(|answer| {
+                        crate::chat_questions::answer_summary(
+                            &interaction.payload,
+                            &json!({"action":"submit","values":answer}),
+                        )
+                    }),
+                ),
+                "form.cancelled" => ("dismissed", None),
+                _ => (
+                    match data.get("reply").and_then(Value::as_str) {
+                        Some("once" | "always" | "reject") => "resolved",
+                        Some("cancelled" | "canceled") => "expired",
+                        _ => "outcomeUnknown",
+                    },
+                    None,
+                ),
+            };
+            let mut receipt = json!({"approvalId":id,"status":status,"outcome":"native"});
+            if let Some(summary) = summary {
+                receipt["answerSummary"] = summary;
+            }
+            emit("chat.approval.resolved", receipt, interaction.turn.as_deref());
         }
         _ => {}
     }
@@ -1167,7 +1310,7 @@ fn refresh_message(
             return Ok(());
         }
         match state.seed_message(session, &row) {
-            Ok(Some(change)) => publish(target, &state, change),
+            Ok(Some(change)) => publish(target, &mut state, change),
             Ok(None) => {}
             Err(error) if error.code == "native_snapshot_pending" && attempt < 4 => {
                 drop(state);
@@ -1331,7 +1474,7 @@ fn process_event(target: &EventTarget, raw: Value, buffer_during_recovery: bool)
             _ => None,
         };
         if refresh.is_none() {
-            publish(target, &state, change);
+            publish(target, &mut state, change);
         }
         drop(state);
         drop(commit);
@@ -1648,7 +1791,7 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
         );
         for row in rows.iter().rev() {
             if let Some(change) = state.seed_message(&child, row)? {
-                publish(target, &state, change);
+                publish(target, &mut state, change);
             }
             if row.get("type").and_then(Value::as_str) == Some("user") {
                 if let Some(text) = row.get("text").and_then(Value::as_str) {
@@ -1717,7 +1860,7 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
             .collect::<Vec<_>>();
         for raw in receipts {
             let change = state.apply(&target.native_id, &raw)?;
-            publish(target, &state, change);
+            publish(target, &mut state, change);
         }
         for (kind, requests) in [("form.created", &forms), ("permission.asked", &permissions)] {
             for request in list(requests)? {
@@ -1737,7 +1880,7 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
                     state.pending_requests.insert((child.clone(), id.into()));
                     publish(
                         target,
-                        &state,
+                        &mut state,
                         Change::Pending {
                             session: child.clone(),
                             id: id.into(),
@@ -1913,7 +2056,7 @@ fn recover(target: &EventTarget) -> Result<(), ProviderError> {
             .collect::<Result<HashSet<_>, _>>()?;
         for row in &snapshot.messages {
             if let Some(change) = state.seed_message(&target.native_id, row)? {
-                publish(target, &state, change);
+                publish(target, &mut state, change);
             }
         }
         let execution = state
@@ -1932,7 +2075,7 @@ fn recover(target: &EventTarget) -> Result<(), ProviderError> {
         if running {
             publish(
                 target,
-                &state,
+                &mut state,
                 Change::Started {
                     session: target.native_id.clone(),
                 },
@@ -1965,7 +2108,7 @@ fn recover(target: &EventTarget) -> Result<(), ProviderError> {
                 )
             }) {
                 let change = state.apply(&target.native_id, &raw)?;
-                publish(target, &state, change);
+                publish(target, &mut state, change);
             }
         }
         for (kind, entries) in [
@@ -1995,7 +2138,7 @@ fn recover(target: &EventTarget) -> Result<(), ProviderError> {
                     state.pending_requests.insert((session.into(), id.into()));
                     publish(
                         target,
-                        &state,
+                        &mut state,
                         Change::Pending {
                             session: session.into(),
                             id: id.into(),
@@ -2046,6 +2189,191 @@ fn recover(target: &EventTarget) -> Result<(), ProviderError> {
     Ok(())
 }
 
+/// One card's native owner, resolved under the event gate. A reply may only go
+/// to the session that asked (root or proven child) and only for the turn that
+/// the card belongs to.
+fn pending(
+    target: &EventTarget,
+    id: &str,
+    kind: &str,
+    turn_id: &str,
+) -> Result<Interaction, ProviderError> {
+    let _commit = target
+        .event_gate
+        .lock()
+        .map_err(|_| protocol("OpenCode event gate poisoned"))?;
+    if !current(target) {
+        return Err(ProviderError::new(
+            "provider_disconnected",
+            "OpenCode event stream is disconnected",
+        ));
+    }
+    let state = target
+        .v2
+        .lock()
+        .map_err(|_| protocol("OpenCode v2 state lock poisoned"))?;
+    let interaction = state
+        .interactions
+        .get(id)
+        .filter(|one| one.kind == kind)
+        .cloned()
+        .ok_or_else(|| {
+            ProviderError::new(
+                "approval_not_pending",
+                "OpenCode interaction is no longer pending",
+            )
+        })?;
+    if !state.owned(&interaction.session, &target.native_id) {
+        return Err(protocol("OpenCode v2 interaction has an unproven owner"));
+    }
+    if interaction.turn.as_deref() != Some(turn_id) {
+        return Err(ProviderError::new(
+            "approval_not_pending",
+            "OpenCode interaction belongs to another turn",
+        ));
+    }
+    Ok(interaction)
+}
+
+/// Retire one card, optionally publishing the receipt that settles it. The
+/// native write already reached its owner, so the card is settled even when the
+/// receipt says nothing about who answered it.
+fn settle_card(
+    target: &EventTarget,
+    id: &str,
+    receipt: Option<Value>,
+) -> Result<(), ProviderError> {
+    let settled = {
+        let _commit = target
+            .event_gate
+            .lock()
+            .map_err(|_| protocol("OpenCode event gate poisoned"))?;
+        let mut state = target
+            .v2
+            .lock()
+            .map_err(|_| protocol("OpenCode v2 state lock poisoned"))?;
+        state.settle(id)
+    };
+    if let (Some(interaction), Some(receipt)) = (settled, receipt) {
+        emit_scoped(
+            &target.events,
+            "opencode",
+            &target.threadterm_session,
+            Some(&target.native_id),
+            interaction.turn.as_deref(),
+            "chat.approval.resolved",
+            receipt,
+            Some(&target.worker_token),
+        );
+    }
+    Ok(())
+}
+
+/// Map a native write failure onto the shared interaction contract.
+///
+/// `400` is definite: the native form is still pending and the card stays
+/// editable, so the next attempt uses a new operation id. An already settled or
+/// missing request retires the card. Anything else may already have reached the
+/// native side, so the card becomes read-only and the stream is fenced: an
+/// uncertain answer is never resent.
+fn native_write_error(
+    target: &EventTarget,
+    id: &str,
+    error: ProviderError,
+    action: &str,
+) -> ProviderError {
+    let status = error
+        .details
+        .as_ref()
+        .and_then(|details| details["httpStatus"].as_u64());
+    match status {
+        Some(400) => ProviderError::new(
+            "answer_invalid",
+            "OpenCode rejected this answer; review the field and submit a new operation",
+        ),
+        Some(404 | 409) => {
+            let _ = settle_card(
+                target,
+                id,
+                Some(json!({"approvalId":id,"status":"expired","outcome":"native",
+                    "message":"The native request was already settled."})),
+            );
+            ProviderError::new(
+                "approval_not_pending",
+                "The native request was already settled; the card is now read-only",
+            )
+        }
+        _ => {
+            let _ = settle_card(
+                target,
+                id,
+                Some(json!({"approvalId":id,"status":"outcomeUnknown","outcome":"unknown",
+                    "message":format!("The native {action} outcome is unknown; reconcile before retrying.")})),
+            );
+            expire_stream(
+                target,
+                "v2_interaction_outcome_unknown",
+                "OpenCode v2 interaction outcome is unknown after event-stream loss",
+            );
+            ProviderError::new(
+                "approval_outcome_unknown",
+                format!("The native {action} outcome is unknown and was not resent"),
+            )
+        }
+    }
+}
+
+/// Answer (submit) or dismiss one emitted 2.2.5 form on the session that asked.
+/// Values are the typed answers the stored card already validated; the native
+/// service remains the authority on patterns, formats and settlement.
+pub(super) fn answer(
+    target: &EventTarget,
+    turn_id: &str,
+    approval_id: &str,
+    response: &Value,
+) -> Result<(), ProviderError> {
+    validate_native_id(approval_id)?;
+    let interaction = pending(target, approval_id, "form.created", turn_id)?;
+    let dismiss = response.get("action").and_then(Value::as_str) == Some("dismiss");
+    let sent = if dismiss {
+        api(target).form_cancel(&interaction.session, approval_id)
+    } else {
+        let values = response.get("values").cloned().ok_or_else(|| {
+            ProviderError::new("answer_invalid", "OpenCode form answer has no values")
+        })?;
+        api(target).form_reply(&interaction.session, approval_id, &values)
+    };
+    match sent {
+        // The service records the answer receipt and its summary; the adapter
+        // only retires its own pending state so nothing is written twice.
+        Ok(()) => settle_card(target, approval_id, None),
+        Err(error) => Err(native_write_error(target, approval_id, error, "answer")),
+    }
+}
+
+/// Reply once or reject one emitted 2.2.5 permission request on its owner.
+pub(super) fn approve(
+    target: &EventTarget,
+    turn_id: &str,
+    approval_id: &str,
+    choice_id: &str,
+) -> Result<(), ProviderError> {
+    validate_native_id(approval_id)?;
+    let decision = match map_allow_deny_choice(choice_id)? {
+        "allow" => "once",
+        _ => "reject",
+    };
+    let interaction = pending(target, approval_id, "permission.asked", turn_id)?;
+    match api(target).permission_reply(&interaction.session, approval_id, decision) {
+        Ok(()) => settle_card(
+            target,
+            approval_id,
+            Some(json!({"approvalId":approval_id,"status":"resolved","outcome":decision})),
+        ),
+        Err(error) => Err(native_write_error(target, approval_id, error, "approval")),
+    }
+}
+
 #[cfg(test)]
 #[path = "v2_tests.rs"]
 mod tests;
@@ -2061,3 +2389,7 @@ mod snapshot_tests;
 #[cfg(test)]
 #[path = "v2_child_recovery_tests.rs"]
 mod child_recovery_tests;
+
+#[cfg(test)]
+#[path = "v2_interaction_tests.rs"]
+mod interaction_tests;

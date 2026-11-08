@@ -173,7 +173,7 @@ fn recovery_buffer_receipt_wins_over_later_pending_snapshot_and_blocks_send() {
         state.recovering = false;
         for raw in std::mem::take(&mut state.buffered) {
             let change = state.apply("ses-root", &raw).unwrap();
-            publish(&target, &state, change);
+            publish(&target, &mut state, change);
         }
         let pending = json!({"id":"evt-pending","created":2,"type":"form.created","data":{"form":{
             "id":"form-1","sessionID":"ses-root","title":"later snapshot","fields":[]

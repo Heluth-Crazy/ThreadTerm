@@ -286,6 +286,80 @@ impl NativeApi {
         };
         self.json_request(Method::GET, &format!("{prefix}/{name}"), None, shape)
     }
+
+    /// Target-only interaction writes. Each one addresses the session that owns
+    /// the request, never the root by default, and a 204 is the whole receipt.
+    pub(super) fn form_reply(
+        &self,
+        session: &str,
+        form: &str,
+        answer: &Value,
+    ) -> Result<(), ProviderError> {
+        self.interaction_write(
+            Method::POST,
+            session,
+            "form",
+            form,
+            "reply",
+            Some(json!({"answer":answer})),
+        )
+    }
+
+    pub(super) fn form_cancel(&self, session: &str, form: &str) -> Result<(), ProviderError> {
+        self.interaction_write(Method::DELETE, session, "form", form, "", None)
+    }
+
+    pub(super) fn permission_reply(
+        &self,
+        session: &str,
+        permission: &str,
+        decision: &str,
+    ) -> Result<(), ProviderError> {
+        if !matches!(decision, "once" | "reject") {
+            return Err(ProviderError::new(
+                "approval_choice_invalid",
+                "OpenCode 2.x accepts once or reject for this approval",
+            ));
+        }
+        self.interaction_write(
+            Method::POST,
+            session,
+            "permission",
+            permission,
+            "reply",
+            Some(json!({"decision":decision})),
+        )
+    }
+
+    // The kind comes from the stored request, not the id: 2.2.5 requires `frm_`
+    // for forms but only `per` for permissions.
+    fn interaction_write(
+        &self,
+        method: Method,
+        session: &str,
+        kind: &str,
+        request: &str,
+        action: &str,
+        body: Option<Value>,
+    ) -> Result<(), ProviderError> {
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("Native interaction writes require the v2 dialect"));
+        }
+        validate_native_id(session)?;
+        validate_native_id(request)?;
+        let suffix = if action.is_empty() {
+            String::new()
+        } else {
+            format!("/{action}")
+        };
+        self.json_request(
+            method,
+            &format!("{}/{kind}/{request}{suffix}", self.dialect.session_path(Some(session))),
+            body,
+            ResponseShape::NoContent,
+        )?;
+        Ok(())
+    }
 }
 
 pub(super) fn decode_response(

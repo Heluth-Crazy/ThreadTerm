@@ -7,6 +7,13 @@ fn invalid(message: &str) -> ProviderError {
     ProviderError::new("answer_invalid", message)
 }
 
+/// Adapter boundary for the 2.2.5 form contract: map a native `Info` onto the
+/// stored canonical form that cards, validation and summaries all share. Native
+/// identities stay in the adapter; the returned payload carries none.
+pub(crate) fn canonical_form(native: &Value) -> Result<Value, ProviderError> {
+    opencode_v2::canonical_from_info(native)
+}
+
 pub(crate) fn validate_response(data: &Value, response: &Value) -> Result<(), ProviderError> {
     let object = response.as_object().ok_or_else(|| invalid("Expected an answer response"))?;
     if response.get("action").and_then(Value::as_str) == Some("dismiss") {
