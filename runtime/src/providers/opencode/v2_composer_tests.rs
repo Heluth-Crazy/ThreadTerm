@@ -482,3 +482,64 @@ fn v2_usage_title_and_retry_are_normalized_without_inventing_missing_values() {
     drop(state);
     assert!(drain(&mut events).iter().all(|one| one.kind != "chat.item"), "no compaction reply");
 }
+
+#[test]
+fn v2_answering_model_comes_from_the_native_step_not_from_a_selection() {
+    // Run-8 gap: without an assistant snapshot (`Change::Message`) or a forced
+    // refresh, `ui.effective_model` stayed empty, so a live 2.2.5 turn emitted
+    // `chat.context` with usage only and `ChatItem.turnModel` stayed null.
+    // `session.step.started` names the model that actually answered.
+    let (target, mut events) = target("");
+    let started = root_event(fixture("step_started"));
+    {
+        let mut state = target.v2.lock().unwrap();
+        let change = state.apply(&target.native_id, &started).unwrap();
+        publish(&target, &mut state, change);
+    }
+    assert!(drain(&mut events).is_empty(), "a step start is not a chat event on its own");
+    let ended = root_event(fixture("step_ended"));
+    {
+        let mut state = target.v2.lock().unwrap();
+        let change = state.apply(&target.native_id, &ended).unwrap();
+        publish(&target, &mut state, change);
+    }
+    let context = drain(&mut events)
+        .into_iter()
+        .find(|one| one.kind == "chat.context")
+        .expect("usage");
+    // The projection turns this `model` into `ChatItem.turnModel` for the turn.
+    assert_eq!(context.data["model"], "qa-commandcode/deepseek-v4.1-flash-fast");
+    assert_eq!(context.data["model"].as_str().is_some(), true);
+    assert_eq!(context.data["turnUsage"]["outputTokens"], 12);
+    // A child step may name its own model, but it never becomes the root footer.
+    let mut child = root_event(fixture("step_started"));
+    child["id"] = json!("evt_step_started_child");
+    child["data"]["sessionID"] = json!("ses-child");
+    child["data"]["model"] = json!({"id":"child-model","providerID":"child-provider"});
+    child["durable"]["seq"] = json!(30);
+    let mut state = target.v2.lock().unwrap();
+    let change = state.apply(&target.native_id, &child).unwrap();
+    publish(&target, &mut state, change);
+    assert_eq!(
+        state.actual_model,
+        Some(json!({"providerID":"qa-commandcode","modelID":"deepseek-v4.1-flash-fast"}))
+    );
+}
+
+#[test]
+fn v2_missing_native_model_evidence_stays_missing() {
+    // No step start and no assistant row means no evidence. The footer must stay
+    // empty rather than echo the next-turn selection.
+    let (target, mut events) = target("");
+    let mut ended = root_event(fixture("step_ended"));
+    ended["data"].as_object_mut().unwrap().remove("model");
+    let mut state = target.v2.lock().unwrap();
+    let change = state.apply(&target.native_id, &ended).unwrap();
+    publish(&target, &mut state, change);
+    assert!(state.actual_model.is_none());
+    assert!(target.ui.lock().unwrap().effective_model.is_none());
+    drop(state);
+    for event in drain(&mut events) {
+        assert!(event.data.get("model").is_none(), "a missing model is not filled in");
+    }
+}

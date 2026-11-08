@@ -599,6 +599,18 @@ impl State {
         if let Some(message_id) = data.get("assistantMessageID").and_then(Value::as_str) {
             validate_native_id(message_id)?;
         }
+        if kind == "session.step.started" && session == root {
+            // `session.step.started` names the model that is actually answering
+            // this assistant message; `session.step.ended` carries tokens only.
+            // This is native evidence, never the next-turn selection, and a
+            // child session's model never becomes the root footer.
+            if let (Some(provider), Some(model)) = (
+                data.pointer("/model/providerID").and_then(Value::as_str),
+                data.pointer("/model/id").and_then(Value::as_str),
+            ) {
+                self.actual_model = Some(json!({"providerID":provider,"modelID":model}));
+            }
+        }
         if kind == "session.usage.updated" {
             return Ok(Change::Usage {
                 session: session.into(),
@@ -1523,7 +1535,12 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
             // The context window is only known for a catalogue model that the
             // native assistant row proved it actually answered with.
             let actual = target.ui.lock().ok().and_then(|ui| {
-                let model = ui.effective_model.clone()?;
+                // A concrete native step/assistant row outranks the cached UI
+                // model; neither is ever the next-turn selection.
+                let model = state
+                    .actual_model
+                    .clone()
+                    .or_else(|| ui.effective_model.clone())?;
                 let provider = model.get("providerID")?.as_str()?.to_owned();
                 let id = model.get("modelID")?.as_str()?.to_owned();
                 let limit = ui.model_window(&provider, &id);

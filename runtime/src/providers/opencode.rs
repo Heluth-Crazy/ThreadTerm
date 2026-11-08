@@ -151,11 +151,11 @@ impl ProviderAdapter for OpenCodeAdapter {
         resume_id: Option<&str>,
         assign_id: Option<&str>,
     ) -> Result<TerminalCommand, ProviderError> {
-        let mut args = Vec::new();
-        if let Some(id) = resume_id.or(assign_id) {
+        let id = resume_id.or(assign_id);
+        if let Some(id) = id {
             validate_native_id(id)?;
-            args.extend(["--session".to_owned(), id.to_owned()]);
         }
+        let args = opencode_terminal_args(id, opencode_history_is_native());
         let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
         let spec = CommandSpec::provider("opencode", &refs)?;
         Ok(TerminalCommand {
@@ -169,13 +169,24 @@ impl ProviderAdapter for OpenCodeAdapter {
         super::TerminalCapture::PreAssigned
     }
 
+    /// A 2.x terminal resume proves the exact ID before anything is launched.
+    /// `opencode --session <id>` creates the session when the ID is unknown
+    /// (live 2.2.5 `--help`), so an unknown ID would otherwise look like a
+    /// silent new conversation. 1.18.35 keeps its unchanged CLI contract.
+    fn preflight_terminal_resume(&self, cwd: &str, native_id: &str) -> Result<(), ProviderError> {
+        validate_native_id(native_id)?;
+        if !opencode_history_is_native() {
+            return Ok(());
+        }
+        opencode_v2_resume_preflight(cwd, native_id)
+    }
+
     fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
         // Create through the authenticated local native API. No prompt/turn
         // is sent, and the terminal subsequently opens this exact session.
+        // Both dialects create here: 1.18.35 with the legacy body, 2.x with the
+        // native `location` body (verified live on 2.2.5 in run 10).
         let server = OpenCodeServer::start(cwd, "terminal-prepare", crate::provider_events::tap_channel(1).0, "")?;
-        // V2 terminal lifetime/exact-resume verification belongs to P4. Chat no
-        // longer shares this fence, so keep the terminal-specific one explicit.
-        server.require_legacy_events()?;
         let session = server.native_api().open_session(None)?;
         let id = session.get("id").and_then(Value::as_str).ok_or_else(|| {
             ProviderError::new("provider_protocol", "OpenCode returned no session id")
@@ -236,12 +247,11 @@ impl ProviderAdapter for OpenCodeAdapter {
             ],
         )?;
         let output = command_output(&spec, Duration::from_secs(15))?;
-        let value: Value = serde_json::from_str(&output).map_err(|error| {
-            ProviderError::new(
-                "provider_protocol",
-                format!("OpenCode returned invalid session JSON: {error}"),
-            )
-        })?;
+        // 1.18.35 exits 0 with no stdout at all for an empty store; that is an
+        // empty page, not a protocol failure (run 10).
+        let Some(value) = opencode_legacy_history_json(&output)? else {
+            return Ok(history_page(Vec::new(), None));
+        };
         let rows = value
             .as_array()
             .or_else(|| value.get("sessions").and_then(Value::as_array))
@@ -3622,6 +3632,20 @@ fn opencode_chat_part(part: &Value) -> Value {
     normalized
 }
 
+/// 1.18.35 exits 0 and prints nothing at all for an empty store. An empty
+/// output is therefore an empty listing, while malformed output stays an error.
+fn opencode_legacy_history_json(output: &str) -> Result<Option<Value>, ProviderError> {
+    if output.trim().is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str(output).map(Some).map_err(|error| {
+        ProviderError::new(
+            "provider_protocol",
+            format!("OpenCode returned invalid session JSON: {error}"),
+        )
+    })
+}
+
 fn opencode_history_item(row: &Value, cwd: Option<&str>) -> Option<Value> {
     if row.get("parentID").is_some_and(|value| !value.is_null()) {
         return None;
@@ -3796,6 +3820,54 @@ where
         "provider_protocol",
         "OpenCode session history exceeds the readable bound",
     ))
+}
+
+/// Terminal arguments for both dialects. A 2.x TUI gets `--standalone` so it
+/// owns a private stdio server: the plain launch attaches to (or starts) the
+/// user's persistent background service, which an owned terminal must never
+/// leave behind (live 2.2.5 in run 10 left `serve --service` running). 1.18.35
+/// has no such flag and keeps its unchanged `--session <id>`.
+fn opencode_terminal_args(id: Option<&str>, private_server: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(id) = id {
+        args.extend(["--session".to_owned(), id.to_owned()]);
+    }
+    if private_server {
+        args.push("--standalone".to_owned());
+    }
+    args
+}
+
+/// A 2.x terminal resume is only valid for the exact native ID that exists
+/// right now. An unknown ID is refused before any PTY exists; there is no
+/// "latest session" or "create on resume" fallback.
+fn opencode_v2_resume_preflight(cwd: &str, native_id: &str) -> Result<(), ProviderError> {
+    let server = opencode_v2_history_server(cwd, "terminal-resume-preflight")?;
+    match server.native_api().open_session(Some(native_id)) {
+        Ok(_) => Ok(()),
+        Err(error) if v2_session_is_missing(&error) => Err(v2_missing_session_error(native_id)),
+        Err(error) => Err(error),
+    }
+}
+
+/// Only a native 404 proves the exact ID is gone. Any other failure stays the
+/// real transport/protocol error: an unverified resume is never reported as a
+/// missing conversation.
+fn v2_session_is_missing(error: &ProviderError) -> bool {
+    error
+        .details
+        .as_ref()
+        .and_then(|details| details["httpStatus"].as_u64())
+        == Some(404)
+}
+
+fn v2_missing_session_error(native_id: &str) -> ProviderError {
+    ProviderError::new(
+        "session_has_no_native_history",
+        format!(
+            "OpenCode has no session with the exact ID {native_id}; refusing to start a new conversation as a resume",
+        ),
+    )
 }
 
 /// A 2.x fork is native and non-idempotent: every uncertain outcome is an

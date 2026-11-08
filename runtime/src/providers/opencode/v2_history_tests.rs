@@ -218,3 +218,59 @@ fn v2_fork_never_reports_an_uncertain_outcome_as_unsupported() {
         "operation_outcome_unknown"
     );
 }
+
+#[test]
+fn v2_terminal_resume_refuses_a_missing_exact_id_and_never_picks_latest() {
+    // 2.2.5 documents `--session` as "Session ID to continue, or to create if
+    // it does not exist", so a naive resume of an unknown ID would create a new
+    // conversation that looks like a resume. Only a native 404 proves the exact
+    // ID is gone, and the refusal must name that ID.
+    let missing = v2_missing_session_error("ses_known_missing");
+    assert_eq!(missing.code, "session_has_no_native_history");
+    assert!(missing.message.contains("ses_known_missing"), "the exact ID is reported");
+    assert!(!missing.message.contains("latest"), "no latest-session wording");
+    assert!(v2_session_is_missing(
+        &ProviderError::new("provider_error", "OpenCode returned 404 Not Found")
+            .with_details(json!({"httpStatus":404}))
+    ));
+    for other in [
+        ProviderError::new("provider_error", "server error").with_details(json!({"httpStatus":500})),
+        ProviderError::new("provider_error", "unauthorized").with_details(json!({"httpStatus":401})),
+        ProviderError::new("provider_disconnected", "timed out"),
+        ProviderError::new("provider_protocol", "malformed"),
+    ] {
+        assert!(!v2_session_is_missing(&other), "only a 404 is a missing session");
+    }
+    // The resume command stays exact-ID only: no `--continue`, no bare launch,
+    // and 2.x always asks for a private server so no background service is
+    // started or adopted by an owned terminal.
+    let exact = opencode_terminal_args(Some("ses_exact"), true);
+    assert_eq!(exact, vec!["--session", "ses_exact", "--standalone"]);
+    let prepared = opencode_terminal_args(Some("ses_prepared"), true);
+    assert!(prepared.iter().any(|arg| arg == "ses_prepared"));
+    for args in [&exact, &prepared] {
+        assert!(!args.iter().any(|arg| arg == "--continue" || arg == "-c"));
+        assert!(args.iter().any(|arg| arg == "--standalone"), "2.x owns its server");
+    }
+    // 1.18.35 has no `--standalone` flag; its launch stays byte-for-byte.
+    assert_eq!(
+        opencode_terminal_args(Some("ses_exact"), false),
+        vec!["--session", "ses_exact"]
+    );
+    assert!(opencode_terminal_args(None, false).is_empty());
+}
+
+#[test]
+fn legacy_empty_session_list_is_an_empty_page_not_a_protocol_error() {
+    // 1.18.35 exits 0 with empty stdout on an empty store (verified live in
+    // run 9/10). Whitespace-only output is the same empty page.
+    assert!(opencode_legacy_history_json("").unwrap().is_none());
+    assert!(opencode_legacy_history_json("  \r\n").unwrap().is_none());
+    let rows = opencode_legacy_history_json("[{\"id\":\"ses_one\"}]").unwrap().unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    // Malformed output stays an explicit error: never an empty history.
+    assert_eq!(
+        opencode_legacy_history_json("{not json").unwrap_err().code,
+        "provider_protocol"
+    );
+}
