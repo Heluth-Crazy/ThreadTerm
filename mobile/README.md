@@ -95,15 +95,36 @@ For an existing generated iOS project, run `(cd ios && pod install)` from
 For subsequent UI edits, start Metro with `npm run mobile:start` from the root.
 Rebuild the native library and development app after Rust or Swift changes.
 
-The app config sets `expo-build-properties`' `ios.usePrecompiledModules` to
-`false`. With the pinned Expo 58 / React Native 0.88.1 versions, ThreadTerm's
-Release build crashed during Fabric view registration with precompiled Expo
-modules. Compiling them locally avoided that crash while keeping React Native
-core, its third-party dependencies, and Hermes prebuilt. This adds Expo module
-compilation time, but does not require a full React Native source build. Keep
-this setting when regenerating iOS with `expo prebuild --clean`; validate both
-Release cold launch and Debug with Metro before removing it or changing the
-pinned versions.
+The app uses the SDK defaults for precompiled Expo modules and React Native.
+The earlier `ios.usePrecompiledModules: false` workaround was not a device fix.
+Matching Release artifacts pass Simulator checks with either source-built or
+precompiled Expo modules; a Release Expo / Debug React combination reproduces
+the recorded Fabric `Props::Props +68` crash. See the mobile task's Mac
+validation, Round 7.
+
+For normal builds, remove test-only local artifact overrides before regenerating
+iOS in a copy with no other native build running:
+
+```sh
+unset RCT_TESTONLY_RNCORE_TARBALL_PATH RCT_USE_LOCAL_RN_DEP HERMES_ENGINE_TARBALL_PATH
+npx expo prebuild --clean --platform ios
+```
+
+Local tarball overrides deliberately disable automatic Debug/Release artifact
+switching. If using them for offline builds, select matching core, dependencies
+and Hermes tarballs for the configuration, then run this from `mobile/ios`:
+
+```sh
+pod update React-Core-prebuilt ReactNativeDependencies hermes-engine --no-repo-update
+```
+
+Changing environment variables followed by plain `pod install` can retain the
+previous cached podspec and framework flavor. Verify the **built app's**
+`Frameworks/React.framework/React` with `xcrun dwarfdump --uuid` against the
+intended artifact. `Props::getDebugProps` / `Sealable` constructor symbols in
+that framework identify the Debug ABI; Release source flags such as `-DNDEBUG`
+do not identify the vendored binary. Verify both Release and Debug with Metro;
+Simulator success alone does not establish that the signed device crash is fixed.
 
 Follow [the native acceptance checklist](scripts/NATIVE-IOS-VALIDATION.md) and
 [the integrated acceptance plan](../docs/mobile-implementation.md). Windows

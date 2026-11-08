@@ -18,7 +18,7 @@
       }
     },
     "plugins": [
-      ["expo-build-properties", { "ios": { "deploymentTarget": "17.0", "usePrecompiledModules": false } }],
+      ["expo-build-properties", { "ios": { "deploymentTarget": "17.0" } }],
       ["expo-camera", { "cameraPermission": "Scan a ThreadTerm computer pairing code.", "microphonePermission": false, "recordAudioAndroid": false }]
     ],
     "web": { "bundler": "metro", "name": "ThreadTerm Mobile" }
