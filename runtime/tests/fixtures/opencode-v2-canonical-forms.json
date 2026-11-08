@@ -1,0 +1,1466 @@
+{
+  "status": "Source-derived canonical contract fixtures; not native or end-to-end acceptance",
+  "canonicalTargetValidation": {
+    "semantics": "opencode-v2",
+    "patternAndFormat": "native"
+  },
+  "notes": [
+    "Canonical stored form fixtures for the bounded P3a shared-contract/runtime checkpoint; no adapter emits them until later bridge/UI work.",
+    "Target constraints use the pinned v2.2.5 core behavior: UTF-16 string length, numeric/item bounds, closed options when custom is false, duplicate multiselect acceptance, and native pattern/format adjudication.",
+    "Pinned core validateFields deliberately permits empty keys, impossible minimum/maximum combinations, arbitrary external URL strings, and defaults outside constraints/options. Those are not marked malformed here.",
+    "Legacy rows preserve existing form semantics and are paired only where a target difference is intentional."
+  ],
+  "vectors": [
+    {
+      "id": "v2-and-cascade-active-omits-inactive",
+      "form": {
+        "kind": "form",
+        "message": "cascade",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "enabled",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "id": "mode",
+            "type": "string",
+            "required": true,
+            "options": [
+              {
+                "value": "go",
+                "label": "Go"
+              }
+            ],
+            "custom": false
+          },
+          {
+            "id": "detail",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "enabled",
+                "op": "eq",
+                "value": true
+              },
+              {
+                "key": "mode",
+                "op": "eq",
+                "value": "go"
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "enabled": false,
+        "mode": "go"
+      },
+      "expectedValid": true,
+      "activeIds": [
+        "enabled",
+        "mode"
+      ],
+      "provenance": "source-derived pinned v2.2.5 core Form.isActive/matches; captured run2 valid_answer omits inactive conditional",
+      "note": "All conditions are AND; inactive required detail is absent from the wire answer."
+    },
+    {
+      "id": "v2-cascade-rejects-inactive-key",
+      "form": {
+        "kind": "form",
+        "message": "cascade",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "enabled",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "id": "detail",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "enabled",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "enabled": false,
+        "detail": "leak"
+      },
+      "expectedValid": false,
+      "activeIds": [
+        "enabled"
+      ],
+      "provenance": "captured native constraints conditional_inactive_key",
+      "note": "An inactive answer is invalid, rather than silently discarded by the runtime."
+    },
+    {
+      "id": "v2-unanswered-predecessor-makes-neq-inactive",
+      "form": {
+        "kind": "form",
+        "message": "neq",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "optional",
+            "type": "string",
+            "required": false
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "optional",
+                "op": "neq",
+                "value": "no"
+              }
+            ]
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": true,
+      "activeIds": [
+        "optional"
+      ],
+      "provenance": "source-derived pinned v2.2.5 core Form.matches",
+      "note": "Missing predecessor is false for both eq and neq; it is not treated as unequal."
+    },
+    {
+      "id": "v2-multiselect-condition-is-membership",
+      "form": {
+        "kind": "form",
+        "message": "membership",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "tags",
+            "type": "multiselect",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              },
+              {
+                "value": "c",
+                "label": "C"
+              }
+            ],
+            "custom": false
+          },
+          {
+            "id": "has-a",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "tags",
+                "op": "eq",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "id": "not-c",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "tags",
+                "op": "neq",
+                "value": "c"
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "tags": [
+          "a",
+          "b"
+        ],
+        "has-a": "yes",
+        "not-c": "yes"
+      },
+      "expectedValid": true,
+      "activeIds": [
+        "tags",
+        "has-a",
+        "not-c"
+      ],
+      "provenance": "source-derived pinned v2.2.5 core Form.matches"
+    },
+    {
+      "id": "v2-condition-number-one-matches-one-point-zero",
+      "form": {
+        "kind": "form",
+        "message": "number equality",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "count",
+            "type": "number",
+            "required": true
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "count",
+                "op": "eq",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "count": 1.0,
+        "later": "shown"
+      },
+      "expectedValid": true,
+      "activeIds": [
+        "count",
+        "later"
+      ],
+      "provenance": "source-derived JavaScript strict numeric equality; JSON 1 and 1.0 are numbers"
+    },
+    {
+      "id": "v2-condition-boolean-false-does-not-match-zero",
+      "form": {
+        "kind": "form",
+        "message": "typed equality",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "flag",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "flag",
+                "op": "eq",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "flag": false
+      },
+      "expectedValid": false,
+      "provenance": "malformed supported metadata: condition value type must match earlier boolean field",
+      "note": "Schema validation must reject this form before response validation; false must never coerce to zero."
+    },
+    {
+      "id": "v2-preserves-false-zero-empty-and-missing",
+      "form": {
+        "kind": "form",
+        "message": "values",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "flag",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "id": "zero",
+            "type": "integer",
+            "required": true,
+            "minimum": 0
+          },
+          {
+            "id": "empty",
+            "type": "string",
+            "required": false
+          },
+          {
+            "id": "missing",
+            "type": "string",
+            "required": false
+          }
+        ]
+      },
+      "values": {
+        "flag": false,
+        "zero": 0,
+        "empty": ""
+      },
+      "expectedValid": true,
+      "activeIds": [
+        "flag",
+        "zero",
+        "empty",
+        "missing"
+      ],
+      "provenance": "captured run2 edge_valid_false_zero_empty and Mini default receipts",
+      "note": "Only missing is omitted; no truthiness normalization."
+    },
+    {
+      "id": "v2-closed-string-option-rejects-custom-value",
+      "form": {
+        "kind": "form",
+        "message": "closed string",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "choice",
+            "type": "string",
+            "required": true,
+            "options": [
+              {
+                "value": "fixed",
+                "label": "Fixed"
+              }
+            ],
+            "custom": false
+          }
+        ]
+      },
+      "values": {
+        "choice": "other"
+      },
+      "expectedValid": false,
+      "provenance": "captured native constraints multi_closed analogue; source-derived core string closed-option rule"
+    },
+    {
+      "id": "v2-custom-string-accepts-custom-value",
+      "form": {
+        "kind": "form",
+        "message": "custom string",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "choice",
+            "type": "string",
+            "required": true,
+            "options": [
+              {
+                "value": "fixed",
+                "label": "Fixed"
+              }
+            ],
+            "custom": true
+          }
+        ]
+      },
+      "values": {
+        "choice": "custom-value"
+      },
+      "expectedValid": true,
+      "provenance": "captured run2 unicode_valid_custom_explicit_default"
+    },
+    {
+      "id": "v2-duplicate-multiselect-is-valid",
+      "form": {
+        "kind": "form",
+        "message": "duplicates",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "many",
+            "type": "multiselect",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              }
+            ],
+            "custom": false,
+            "minItems": 1,
+            "maxItems": 2
+          }
+        ]
+      },
+      "values": {
+        "many": [
+          "a",
+          "a"
+        ]
+      },
+      "expectedValid": true,
+      "provenance": "captured native constraints multi_duplicate",
+      "note": "Target policy intentionally differs from legacy multiEnum duplicate rejection."
+    },
+    {
+      "id": "v2-utf16-length-and-numeric-item-bounds",
+      "form": {
+        "kind": "form",
+        "message": "bounds",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "emoji",
+            "type": "string",
+            "required": true,
+            "maxLength": 1
+          },
+          {
+            "id": "n",
+            "type": "integer",
+            "required": true,
+            "minimum": 0,
+            "maximum": 1
+          },
+          {
+            "id": "many",
+            "type": "multiselect",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ],
+            "maxItems": 1
+          }
+        ]
+      },
+      "values": {
+        "emoji": "😀",
+        "n": 0,
+        "many": [
+          "a",
+          "b"
+        ]
+      },
+      "expectedValid": false,
+      "provenance": "captured native constraints emoji_length and multi_max",
+      "note": "String length follows native JavaScript UTF-16 units; a single astral emoji has length 2."
+    },
+    {
+      "id": "v2-required-default-is-not-server-filled",
+      "form": {
+        "kind": "form",
+        "message": "default",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "required-default",
+            "type": "string",
+            "required": true,
+            "default": "d"
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "captured run2 unicode_omitted_required_default",
+      "note": "Runtime validation does not insert defaults; UI initialization is separate and occurs once per new request."
+    },
+    {
+      "id": "v2-hidden-explicit-default-value-is-accepted-but-not-summarized",
+      "form": {
+        "kind": "form",
+        "message": "hidden",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "hidden",
+            "type": "string",
+            "required": true,
+            "hidden": true,
+            "default": "H"
+          }
+        ]
+      },
+      "values": {
+        "hidden": "H"
+      },
+      "expectedValid": true,
+      "activeIds": [
+        "hidden"
+      ],
+      "provenance": "captured run2 edge_valid_false_zero_empty and Mini all-hidden explicit action",
+      "note": "Hidden controls display and summary only; it is not secret metadata and must be omitted from summary."
+    },
+    {
+      "id": "v2-hidden-required-without-value-remains-invalid",
+      "form": {
+        "kind": "form",
+        "message": "hidden missing",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "hidden",
+            "type": "string",
+            "required": true,
+            "hidden": true
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "captured native constraints hidden_required_missing and Mini hidden_required_without_default",
+      "note": "Do not turn an unsatisfiable native field into dismiss-only success or automatic submission."
+    },
+    {
+      "id": "v2-multiple-external-require-literal-true",
+      "form": {
+        "kind": "form",
+        "message": "external",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "open-a",
+            "type": "external",
+            "url": "not-a-url"
+          },
+          {
+            "id": "open-b",
+            "type": "external",
+            "url": "https://example.test/b"
+          }
+        ]
+      },
+      "values": {
+        "open-a": true,
+        "open-b": true
+      },
+      "expectedValid": true,
+      "activeIds": [
+        "open-a",
+        "open-b"
+      ],
+      "provenance": "captured native constraints two_external_missing; pinned schema accepts any string URL",
+      "note": "Opening is a UI action, while the wire acknowledgement is literal true under each own key."
+    },
+    {
+      "id": "v2-external-false-is-invalid",
+      "form": {
+        "kind": "form",
+        "message": "external false",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "open",
+            "type": "external",
+            "url": "https://example.test"
+          }
+        ]
+      },
+      "values": {
+        "open": false
+      },
+      "expectedValid": false,
+      "provenance": "captured run2 invalid_answer and native constraints two_external_missing"
+    },
+    {
+      "id": "v2-pattern-and-format-remain-native-only",
+      "form": {
+        "kind": "form",
+        "message": "native constraints",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "pattern",
+            "type": "string",
+            "required": true,
+            "pattern": "["
+          },
+          {
+            "id": "mail",
+            "type": "string",
+            "required": true,
+            "format": "email"
+          },
+          {
+            "id": "uri",
+            "type": "string",
+            "required": true,
+            "format": "uri"
+          }
+        ]
+      },
+      "values": {
+        "pattern": "anything",
+        "mail": "bad",
+        "uri": "not-a-url"
+      },
+      "expectedValid": true,
+      "expectedNativeValid": false,
+      "provenance": "captured native constraints regex_invalid/email/uri; source-derived proposed stored native-only policy",
+      "note": "Structurally answerable locally; native reply decides pattern/format and a rejection must keep the draft editable."
+    },
+    {
+      "id": "v2-malformed-forward-condition-reference",
+      "form": {
+        "kind": "form",
+        "message": "bad ref",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "first",
+            "type": "string",
+            "required": false,
+            "when": [
+              {
+                "key": "later",
+                "op": "eq",
+                "value": "x"
+              }
+            ]
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": false
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "source-derived pinned core validateFields",
+      "note": "Condition references must be earlier fields; do not infer a future value."
+    },
+    {
+      "id": "v2-malformed-condition-targets-external",
+      "form": {
+        "kind": "form",
+        "message": "bad external ref",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "opened",
+            "type": "external",
+            "url": "x"
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": false,
+            "when": [
+              {
+                "key": "opened",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "opened": true
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned core validateFields",
+      "note": "External fields are excluded from earlier condition targets."
+    },
+    {
+      "id": "v2-malformed-closed-option-condition",
+      "form": {
+        "kind": "form",
+        "message": "bad condition option",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "choice",
+            "type": "string",
+            "required": false,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              }
+            ],
+            "custom": false
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": false,
+            "when": [
+              {
+                "key": "choice",
+                "op": "eq",
+                "value": "b"
+              }
+            ]
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "source-derived pinned core validateWhen"
+    },
+    {
+      "id": "v2-pinned-permissive-metadata-empty-key-and-url",
+      "form": {
+        "kind": "form",
+        "message": "permissive metadata",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "",
+            "type": "external",
+            "url": ""
+          },
+          {
+            "id": "n",
+            "type": "number",
+            "required": false,
+            "minimum": 5,
+            "maximum": 1,
+            "default": 0
+          }
+        ]
+      },
+      "values": {
+        "": true
+      },
+      "expectedValid": true,
+      "activeIds": [
+        "",
+        "n"
+      ],
+      "provenance": "source-derived pinned core validateFields",
+      "note": "Do not add stricter canonical schema rejection for metadata that the pinned native core accepts."
+    },
+    {
+      "id": "legacy-multienum-duplicate-stays-invalid",
+      "form": {
+        "kind": "form",
+        "message": "legacy duplicates",
+        "fields": [
+          {
+            "id": "many",
+            "type": "multiEnum",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "many": [
+          "a",
+          "a"
+        ]
+      },
+      "expectedValid": false,
+      "provenance": "existing runtime chat_questions validate_field",
+      "note": "Legacy behavior must not inherit target duplicate acceptance."
+    },
+    {
+      "id": "legacy-required-whitespace-stays-invalid",
+      "form": {
+        "kind": "form",
+        "message": "legacy whitespace",
+        "fields": [
+          {
+            "id": "name",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "values": {
+        "name": "   "
+      },
+      "expectedValid": false,
+      "provenance": "existing runtime chat_questions validate_field",
+      "note": "Legacy required-string trim behavior remains unchanged."
+    },
+    {
+      "id": "v2-required-whitespace-is-valid",
+      "form": {
+        "kind": "form",
+        "message": "target whitespace",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "name",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "values": {
+        "name": "   "
+      },
+      "expectedValid": true,
+      "provenance": "captured run2 native constraints whitespace_required",
+      "note": "The target's native required rule is empty-string based, not trimmed-whitespace based."
+    },
+    {
+      "id": "v2-utf16-emoji-maxlength-two-is-valid",
+      "form": {
+        "kind": "form",
+        "message": "utf16 positive",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "emoji",
+            "type": "string",
+            "required": true,
+            "maxLength": 2
+          }
+        ]
+      },
+      "values": {
+        "emoji": "😀"
+      },
+      "expectedValid": true,
+      "provenance": "source-derived pinned v2.2.5 core string length semantics",
+      "note": "One astral emoji is two UTF-16 code units."
+    },
+    {
+      "id": "v2-utf16-emoji-maxlength-one-is-invalid",
+      "form": {
+        "kind": "form",
+        "message": "utf16 negative",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "emoji",
+            "type": "string",
+            "required": true,
+            "maxLength": 1
+          }
+        ]
+      },
+      "values": {
+        "emoji": "😀"
+      },
+      "expectedValid": false,
+      "provenance": "captured run2 native constraints emoji_length"
+    },
+    {
+      "id": "legacy-scalar-emoji-maxlength-one-is-valid",
+      "form": {
+        "kind": "form",
+        "message": "legacy scalar length",
+        "fields": [
+          {
+            "id": "emoji",
+            "type": "string",
+            "required": true,
+            "maxLength": 1
+          }
+        ]
+      },
+      "values": {
+        "emoji": "😀"
+      },
+      "expectedValid": true,
+      "provenance": "existing runtime chat_questions validate_field uses Unicode scalar count",
+      "note": "Legacy behavior remains intentionally different from target UTF-16 length."
+    },
+    {
+      "id": "v2-number-minimum-bound",
+      "form": {
+        "kind": "form",
+        "message": "number min",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "n",
+            "type": "number",
+            "required": true,
+            "minimum": 1
+          }
+        ]
+      },
+      "values": {
+        "n": 0.5
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core numeric bounds"
+    },
+    {
+      "id": "v2-number-maximum-bound",
+      "form": {
+        "kind": "form",
+        "message": "number max",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "n",
+            "type": "number",
+            "required": true,
+            "maximum": 1
+          }
+        ]
+      },
+      "values": {
+        "n": 1.5
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core numeric bounds"
+    },
+    {
+      "id": "v2-integer-rejects-fraction",
+      "form": {
+        "kind": "form",
+        "message": "integer",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "n",
+            "type": "integer",
+            "required": true
+          }
+        ]
+      },
+      "values": {
+        "n": 1.5
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core integer validation"
+    },
+    {
+      "id": "v2-multiselect-minitems-bound",
+      "form": {
+        "kind": "form",
+        "message": "min items",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "many",
+            "type": "multiselect",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ],
+            "minItems": 2
+          }
+        ]
+      },
+      "values": {
+        "many": [
+          "a"
+        ]
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core item bounds"
+    },
+    {
+      "id": "v2-multiselect-maxitems-bound",
+      "form": {
+        "kind": "form",
+        "message": "max items",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "many",
+            "type": "multiselect",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              },
+              {
+                "value": "b",
+                "label": "B"
+              }
+            ],
+            "maxItems": 1
+          }
+        ]
+      },
+      "values": {
+        "many": [
+          "a",
+          "b"
+        ]
+      },
+      "expectedValid": false,
+      "provenance": "captured run2 native constraints multi_max"
+    },
+    {
+      "id": "v2-three-level-inactive-value-cannot-activate-descendant",
+      "form": {
+        "kind": "form",
+        "message": "three level cascade",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "root",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "id": "middle",
+            "type": "string",
+            "required": false,
+            "when": [
+              {
+                "key": "root",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          },
+          {
+            "id": "leaf",
+            "type": "string",
+            "required": true,
+            "when": [
+              {
+                "key": "middle",
+                "op": "eq",
+                "value": "go"
+              }
+            ]
+          }
+        ]
+      },
+      "values": {
+        "root": false,
+        "middle": "go",
+        "leaf": "must-not-activate"
+      },
+      "expectedValid": false,
+      "activeIds": [
+        "root"
+      ],
+      "provenance": "source-derived pinned v2.2.5 core isActive/matches",
+      "note": "Inactive drafts are not effective answers and cannot make later fields active."
+    },
+    {
+      "id": "v2-custom-multiselect-accepts-unoffered-value",
+      "form": {
+        "kind": "form",
+        "message": "custom multi",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "many",
+            "type": "multiselect",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              }
+            ],
+            "custom": true
+          }
+        ]
+      },
+      "values": {
+        "many": [
+          "a",
+          "custom"
+        ]
+      },
+      "expectedValid": true,
+      "provenance": "captured run2 unicode_valid_custom_explicit_default"
+    },
+    {
+      "id": "v2-closed-multiselect-rejects-unoffered-value",
+      "form": {
+        "kind": "form",
+        "message": "closed multi",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "many",
+            "type": "multiselect",
+            "required": true,
+            "options": [
+              {
+                "value": "a",
+                "label": "A"
+              }
+            ],
+            "custom": false
+          }
+        ]
+      },
+      "values": {
+        "many": [
+          "custom"
+        ]
+      },
+      "expectedValid": false,
+      "provenance": "captured run2 native constraints multi_closed"
+    },
+    {
+      "id": "v2-required-empty-string-is-invalid",
+      "form": {
+        "kind": "form",
+        "message": "required empty",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "v",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "values": {
+        "v": ""
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core required-string validation"
+    },
+    {
+      "id": "v2-optional-empty-string-is-valid",
+      "form": {
+        "kind": "form",
+        "message": "optional empty",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "v",
+            "type": "string",
+            "required": false
+          }
+        ]
+      },
+      "values": {
+        "v": ""
+      },
+      "expectedValid": true,
+      "provenance": "captured run2 edge_valid_false_zero_empty"
+    },
+    {
+      "id": "v2-unknown-wire-key-is-invalid",
+      "form": {
+        "kind": "form",
+        "message": "unknown key",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "known",
+            "type": "string",
+            "required": false
+          }
+        ]
+      },
+      "values": {
+        "unknown": "x"
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core validateAnswer"
+    },
+    {
+      "id": "v2-malformed-validation-metadata",
+      "form": {
+        "kind": "form",
+        "message": "bad validation policy",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "local"
+        },
+        "fields": [
+          {
+            "id": "v",
+            "type": "string",
+            "required": false
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "source-derived proposed canonical stored-policy contract",
+      "note": "Target pattern/format must be explicitly native; unknown policy is not caller-controlled fallback."
+    },
+    {
+      "id": "v2-malformed-multiselect-missing-options",
+      "form": {
+        "kind": "form",
+        "message": "missing multi options",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "many",
+            "type": "multiselect",
+            "required": false
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 schema MultiselectField"
+    },
+    {
+      "id": "v2-malformed-duplicate-field-keys",
+      "form": {
+        "kind": "form",
+        "message": "duplicate keys",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "same",
+            "type": "string",
+            "required": false
+          },
+          {
+            "id": "same",
+            "type": "boolean",
+            "required": false
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core validateFields"
+    },
+    {
+      "id": "v2-external-missing-is-invalid",
+      "form": {
+        "kind": "form",
+        "message": "external missing",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "open",
+            "type": "external",
+            "url": "x"
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "captured run2 native constraints two_external_missing"
+    },
+    {
+      "id": "v2-external-string-true-is-invalid",
+      "form": {
+        "kind": "form",
+        "message": "external type",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "open",
+            "type": "external",
+            "url": "x"
+          }
+        ]
+      },
+      "values": {
+        "open": "true"
+      },
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core external acknowledgement validation"
+    },
+    {
+      "id": "v2-malformed-numeric-condition-with-boolean-value",
+      "form": {
+        "kind": "form",
+        "message": "numeric condition type",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "n",
+            "type": "number",
+            "required": false
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": false,
+            "when": [
+              {
+                "key": "n",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 core validateWhen"
+    },
+    {
+      "id": "v2-malformed-unknown-condition-op",
+      "form": {
+        "kind": "form",
+        "message": "unknown condition op",
+        "validation": {
+          "semantics": "opencode-v2",
+          "patternAndFormat": "native"
+        },
+        "fields": [
+          {
+            "id": "a",
+            "type": "string",
+            "required": false
+          },
+          {
+            "id": "later",
+            "type": "string",
+            "required": false,
+            "when": [
+              {
+                "key": "a",
+                "op": "contains",
+                "value": "x"
+              }
+            ]
+          }
+        ]
+      },
+      "values": {},
+      "expectedValid": false,
+      "provenance": "source-derived pinned v2.2.5 schema When"
+    }
+  ]
+}

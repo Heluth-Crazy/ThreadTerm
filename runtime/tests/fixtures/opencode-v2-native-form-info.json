@@ -1,0 +1,41 @@
+{
+  "provenance": "captured-native @opencode/cli@2.2.5 isolated scratch server, credential-free HTTP form creation (native-capture-forms-run2.jsonl, case create_form); scrubbed of session identity",
+  "forms": [
+    {
+      "case": "all_field_types",
+      "native": {
+        "id": "frm_p0run2a",
+        "sessionID": "ses_captured",
+        "title": "P0 all field types",
+        "fields": [
+          {"key": "name", "title": "Name", "required": true, "type": "string", "minLength": 3, "maxLength": 8, "pattern": "^[A-Z]+$"},
+          {"key": "count", "required": true, "type": "integer", "minimum": 1, "maximum": 3},
+          {"key": "enabled", "type": "boolean", "default": false},
+          {"key": "mode", "required": true, "type": "multiselect", "options": [{"value": "red", "label": "Red"}, {"value": "blue", "label": "Blue"}], "minItems": 1, "maxItems": 2},
+          {"key": "conditional", "required": true, "when": [{"key": "enabled", "op": "eq", "value": true}], "type": "string"},
+          {"key": "external", "type": "external", "url": "https://example.invalid/p0", "title": "Confirm"}
+        ]
+      },
+      "validAnswer": {"name": "ABC", "count": 2, "enabled": false, "mode": ["red"], "external": true},
+      "inactiveAnswer": {"name": "ABC", "count": 2, "enabled": false, "mode": ["red"], "external": true, "conditional": "inactive"},
+      "summary": {"name": "ABC", "count": "2", "enabled": "false", "mode": "red", "external": "true"}
+    },
+    {
+      "case": "hidden_zero_empty_custom",
+      "native": {
+        "id": "frm_p0run2edges",
+        "sessionID": "ses_captured",
+        "title": "P0 edge constraints",
+        "fields": [
+          {"key": "hidden", "type": "string", "required": true, "hidden": true, "default": "H"},
+          {"key": "zero", "type": "integer", "required": true, "minimum": 0, "maximum": 1, "default": 0},
+          {"key": "empty", "type": "string", "required": false, "default": ""},
+          {"key": "custom", "type": "string", "required": true, "options": [{"value": "fixed", "label": "Fixed", "description": "one option"}], "custom": true},
+          {"key": "many", "type": "multiselect", "required": true, "minItems": 1, "maxItems": 2, "options": [{"value": "x", "label": "X"}, {"value": "y", "label": "Y"}], "custom": true}
+        ]
+      },
+      "validAnswer": {"hidden": "H", "zero": 0, "empty": "", "custom": "typed in", "many": ["x", "y"]},
+      "summary": {"zero": "0", "empty": "", "custom": "typed in", "many": "x, y"}
+    }
+  ]
+}

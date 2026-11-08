@@ -396,16 +396,26 @@ export interface ChatQuestion {
  /** The exact command being approved. Only the run approval sets it; agent input cannot. */
  command?:string;
 }
+/** Conditions reference earlier input ids. Missing/inactive answers satisfy neither operation. */
+export interface ChatFormCondition { key:string; op:'eq'|'neq'; value:string|number|boolean }
+/** Stored adapter policy; it is never supplied as part of an answer response. */
+export interface ChatFormValidation { semantics:'opencode-v2'; patternAndFormat:'native' }
 export interface ChatFormField {
  id:string; title?:string; description?:string;
- type:'string'|'number'|'integer'|'boolean'|'enum'|'multiEnum'; required:boolean;
- options?:{value:string;label:string}[]; default?:unknown; secret?:boolean; multiline?:boolean;
+ type:'string'|'number'|'integer'|'boolean'|'enum'|'multiEnum'|'multiselect'|'external'; required?:boolean;
+ options?:{value:string;label:string;description?:string}[]; default?:unknown; secret?:boolean; multiline?:boolean;
+ /** Target string choices retain their string type, exact values and custom policy. */
+ custom?:boolean; hidden?:boolean; when?:ChatFormCondition[]; placeholder?:string;
+ /** Patterns/formats remain native-authoritative under the stored target policy. */
+ pattern?:string;
+ /** Each external field submits literal true under its id; opening alone does not acknowledge it. */
+ url?:string;
  minimum?:number; maximum?:number; minLength?:number; maxLength?:number;
  minItems?:number; maxItems?:number; format?:'email'|'uri'|'date'|'date-time';
 }
 export type ChatInteractionForm =
  | {kind:'questions';questions:ChatQuestion[]}
- | {kind:'form';message:string;fields:ChatFormField[]}
+ | {kind:'form';message:string;fields:ChatFormField[];validation?:ChatFormValidation}
  | {kind:'url';message:string;url:string};
 export type ChatAnswerResponse =
  | {action:'submit';values:Record<string,string[]|string|number|boolean>}

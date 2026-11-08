@@ -1,6 +1,7 @@
 //! Validation and display summaries for questions sharing the approval lifecycle.
 use crate::providers::ProviderError;
 use serde_json::{json, Map, Value};
+mod opencode_v2;
 
 fn invalid(message: &str) -> ProviderError {
     ProviderError::new("answer_invalid", message)
@@ -46,6 +47,11 @@ pub(crate) fn validate_response(data: &Value, response: &Value) -> Result<(), Pr
             Ok(())
         }
         Some("form") => {
+            // Select semantics only from the stored approval, never the answer.
+            // Unknown policies fail explicitly instead of loosening legacy checks.
+            if form.get("validation").is_some() {
+                return opencode_v2::validate(form, values);
+            }
             let fields = form["fields"].as_array().ok_or_else(|| invalid("Invalid form"))?;
             known_ids(fields, values)?;
             for field in fields {
@@ -114,17 +120,28 @@ fn valid_format(format: Option<&str>, value: &str) -> bool {
     }
 }
 
-pub(crate) fn answer_summary(data: &Value, response: &Value) -> Value {
-    let mut summary = Map::new();
-    if let Some(values) = response["values"].as_object() {
-        for (id, value) in values {
+fn legacy_strings(values: &Map<String, Value>) -> Map<String, Value> {
+    values
+        .iter()
+        .map(|(id, value)| {
             let text = if let Some(values) = value.as_array() {
                 values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
             } else if let Some(value) = value.as_str() { value.to_owned() }
             else { value.to_string() };
-            summary.insert(id.clone(), json!(text));
+            (id.clone(), json!(text))
+        })
+        .collect()
+}
+
+pub(crate) fn answer_summary(data: &Value, response: &Value) -> Value {
+    let summary = response["values"].as_object().map_or_else(Map::new, |values| {
+        // Target forms filter on typed values first: activation is decided from
+        // the answer, never reconstructed from a displayed string.
+        match data.pointer("/form") {
+            Some(form) if opencode_v2::target_policy(form) => opencode_v2::typed_summary(form, values),
+            _ => legacy_strings(values),
         }
-    }
+    });
     mask_answer_summary(data, &Value::Object(summary))
 }
 
@@ -138,6 +155,7 @@ pub(crate) fn mask_answer_summary(data: &Value, summary: &Value) -> Value {
     let mut masked = Map::new();
     if let (Some(fields), Some(summary)) = (fields.and_then(Value::as_array), summary.as_object()) {
         for field in fields {
+            if field["hidden"] == true { continue; }
             if let Some(id) = field["id"].as_str() {
                 if let Some(value) = summary.get(id).filter(|value| value.is_string()) {
                     masked.insert(id.to_owned(), if field["secret"] == true { json!("••••") } else { value.clone() });
@@ -161,5 +179,47 @@ mod tests {
             assert_eq!(answer_summary(&data, &response), json!({"public":"Red, Blue","private":"••••"}));
             assert_eq!(mask_answer_summary(&data, &json!({"private":"raw secret"})), json!({"private":"••••"}));
         }
+    }
+
+    #[test]
+    fn opencode_v2_form_contract_vectors_preserve_native_and_legacy_semantics() {
+        let corpus: Value = serde_json::from_str(include_str!("../tests/fixtures/opencode-v2-canonical-forms.json")).unwrap();
+        let mut mismatches = Vec::new();
+        for row in corpus["vectors"].as_array().unwrap() {
+            let data = json!({"answerable":true,"form":row["form"]});
+            let response = json!({"action":"submit","values":row["values"]});
+            let original = response.clone();
+            let actual = validate_response(&data, &response);
+            if actual.is_ok() != row["expectedValid"].as_bool().unwrap() {
+                mismatches.push(format!("{} expected {}, got {:?}", row["id"], row["expectedValid"], actual));
+            }
+            assert_eq!(response, original, "validation must not insert defaults, strip keys or coerce values");
+            assert!(validate_response(&data, &json!({"action":"dismiss"})).is_ok(), "malformed schemas remain dismissible");
+            if let Some(expected) = row.get("activeIds") {
+                let fields = opencode_v2::active_fields(&row["form"], row["values"].as_object().unwrap()).unwrap();
+                assert_eq!(json!(fields.iter().map(|field| field["id"].as_str().unwrap()).collect::<Vec<_>>()), *expected, "{} active fields", row["id"]);
+            }
+        }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    }
+
+    #[test]
+    fn hidden_answers_are_omitted_while_secrets_remain_masked_at_both_summary_boundaries() {
+        let data = json!({"form":{"kind":"form","fields":[
+            {"id":"hidden","type":"string","hidden":true},
+            {"id":"secret","type":"string","secret":true},
+            {"id":"public","type":"string"}
+        ]}});
+        let response = json!({"action":"submit","values":{"hidden":"never display","secret":"private","public":"visible"}});
+        assert_eq!(answer_summary(&data,&response), json!({"secret":"••••","public":"visible"}));
+        assert_eq!(mask_answer_summary(&data,&json!({"hidden":"never display","secret":"private","public":"visible"})), json!({"secret":"••••","public":"visible"}));
+    }
+
+    #[test]
+    fn caller_answer_metadata_cannot_select_target_form_validation() {
+        let data = json!({"answerable":true,"form":{"kind":"form","fields":[{"id":"value","type":"string","required":true}]}});
+        let response = json!({"action":"submit","values":{"value":"   "},"validation":{"semantics":"opencode-v2","patternAndFormat":"native"}});
+        assert!(validate_response(&data,&response).is_err());
+        assert!(validate_response(&data,&json!({"action":"submit","values":{"value":"   "}})).is_err());
     }
 }
