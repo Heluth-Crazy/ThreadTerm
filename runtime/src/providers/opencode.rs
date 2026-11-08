@@ -80,23 +80,25 @@ impl OpenCodeAdapter {
         limit: u32,
         cwd: Option<&str>,
     ) -> Result<Value, ProviderError> {
-        let server = opencode_v2_history_server(cwd.unwrap_or("."), "history-list")?;
-        let payload = server
-            .native_api()
-            .list_sessions_page(limit, cursor, cwd)?;
-        v2_history_page(&payload)
+        v2_with_history_server(cwd.unwrap_or("."), |server| {
+            let payload = server
+                .native_api()
+                .list_sessions_page(limit, cursor, cwd)?;
+            v2_history_page(&payload)
+        })
     }
 
     /// P4: exact-ID reads walk the bounded native message pages and then use the
     /// same canonical conversion as the live snapshot, so a re-opened history is
     /// the transcript the stream would have produced.
     fn v2_history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
-        let server = opencode_v2_history_server(".", "history-read")?;
-        let api = server.native_api();
-        let rows = v2_history_collect(|cursor| {
-            api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
-        })?;
-        Ok(Value::Array(v2::history_transcript(native_id, &rows)?))
+        v2_with_history_server(".", |server| {
+            let api = server.native_api();
+            let items = v2_history_transcript(native_id, |cursor| {
+                api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
+            })?;
+            Ok(Value::Array(items))
+        })
     }
 }
 
@@ -3710,8 +3712,18 @@ fn opencode_transcript(raw: &Value) -> Vec<Value> {
 
 // ---- P4: 2.x native history and forks -------------------------------------
 const V2_HISTORY_PAGE: u32 = 200;
-const V2_HISTORY_MAX_PAGES: usize = 10;
-const V2_HISTORY_MAX_MESSAGES: usize = 2000;
+// The reader walks native pages until the transcript reaches the same 8 MiB
+// frame bound the runtime already enforces on import/repair, so a long session
+// stays readable while memory stays bounded. Both limits are explicit errors,
+// never a silently truncated transcript.
+const V2_HISTORY_MAX_PAGES: usize = 64;
+const V2_HISTORY_MAX_MESSAGES: usize = 20_000;
+const V2_HISTORY_MAX_BYTES: usize = 8 * 1024 * 1024;
+// One idle-owned history server is reused across consecutive pages/reads so a
+// page turn does not pay a ~2 s server start each time. The lifetime is bounded
+// by the idle window; a different project replaces it. It is always an owned
+// `serve` process (own port and password), never the user's background service.
+const V2_HISTORY_SERVER_IDLE: Duration = Duration::from_secs(30);
 
 /// Only a CLI that is not 2.x may use the legacy `session list`/`export` reader.
 /// A 2.x version probe can never authorize those commands.
@@ -3766,6 +3778,141 @@ fn opencode_v2_history_server(cwd: &str, threadterm_session: &str) -> Result<Ope
     Ok(server)
 }
 
+/// Bounded one-entry cache of an owned 2.x history server, keyed by project.
+/// Pure so the reuse/expiry rules are testable without spawning a process.
+struct V2HistoryCache<T> {
+    idle: Duration,
+    entry: Option<(String, Instant, T)>,
+    /// A reaper thread is running; it alone retires an expired entry when no
+    /// further read arrives, so an idle server never outlives its window.
+    reaping: bool,
+}
+
+impl<T: Clone> V2HistoryCache<T> {
+    fn new(idle: Duration) -> Self {
+        Self { idle, entry: None, reaping: false }
+    }
+
+    /// Removes an entry whose idle window has passed so the caller can shut it
+    /// down outside the lock.
+    fn take_expired(&mut self, now: Instant) -> Option<T> {
+        let (_, at, _) = self.entry.as_ref()?;
+        if now.saturating_duration_since(*at) < self.idle {
+            return None;
+        }
+        self.entry.take().map(|(_, _, value)| value)
+    }
+
+    /// A live entry for this key is handed out again (and its idle window
+    /// restarts); an expired one is dropped by the caller's replacement.
+    fn get(&mut self, key: &str, now: Instant) -> Option<T> {
+        let (cached, at, value) = self.entry.as_mut()?;
+        if cached != key || now.saturating_duration_since(*at) >= self.idle {
+            return None;
+        }
+        *at = now;
+        Some(value.clone())
+    }
+
+    fn put(&mut self, key: &str, value: T, now: Instant) {
+        self.entry = Some((key.to_owned(), now, value));
+    }
+
+    /// Every failure of an owned history request drops the entry so the next
+    /// call starts a fresh server instead of reusing a dead one.
+    fn invalidate(&mut self, key: &str) {
+        if self.entry.as_ref().is_some_and(|(cached, _, _)| cached == key) {
+            self.entry = None;
+        }
+    }
+}
+
+type V2HistoryServers = Mutex<Option<V2HistoryCache<Arc<OpenCodeServer>>>>;
+
+fn v2_history_cache() -> &'static V2HistoryServers {
+    static CACHE: V2HistoryServers = Mutex::new(None);
+    &CACHE
+}
+
+/// The shared owned history server. A dead or restarted server is never served
+/// from the cache after a failure: the error is reported and the entry dropped.
+fn v2_history_server(cwd: &str) -> Result<Arc<OpenCodeServer>, ProviderError> {
+    let now = Instant::now();
+    if let Ok(mut guard) = v2_history_cache().lock() {
+        let cache = guard.get_or_insert_with(|| V2HistoryCache::new(V2_HISTORY_SERVER_IDLE));
+        if let Some(server) = cache.get(cwd, now) {
+            return Ok(server);
+        }
+    }
+    // The lock is not held across the launch: starting a server is slow and
+    // must never block another read's cache lookup.
+    let server = Arc::new(opencode_v2_history_server(cwd, "history")?);
+    if let Ok(mut guard) = v2_history_cache().lock() {
+        let cache = guard.get_or_insert_with(|| V2HistoryCache::new(V2_HISTORY_SERVER_IDLE));
+        cache.put(cwd, Arc::clone(&server), now);
+        if !cache.reaping {
+            cache.reaping = v2_spawn_history_reaper();
+        }
+    }
+    Ok(server)
+}
+
+/// Retires the cached history server once its idle window passes, then exits
+/// when the cache is empty. `reaping` changes only under the cache lock, so a
+/// new entry always has a reaper.
+fn v2_spawn_history_reaper() -> bool {
+    std::thread::Builder::new()
+        .name("opencode-history-reaper".into())
+        .spawn(|| loop {
+            std::thread::sleep(V2_HISTORY_SERVER_IDLE);
+            let (expired, done) = match v2_history_cache().lock() {
+                Ok(mut guard) => match guard.as_mut() {
+                    Some(cache) => {
+                        let expired = cache.take_expired(Instant::now());
+                        let done = cache.entry.is_none();
+                        if done {
+                            cache.reaping = false;
+                        }
+                        (expired, done)
+                    }
+                    None => (None, true),
+                },
+                Err(_) => (None, true),
+            };
+            // Shutting the server down can take a moment; never under the lock.
+            drop(expired);
+            if done {
+                return;
+            }
+        })
+        .is_ok()
+}
+
+fn v2_forget_history_server(cwd: &str) {
+    if let Ok(mut guard) = v2_history_cache().lock() {
+        if let Some(cache) = guard.as_mut() {
+            cache.invalidate(cwd);
+        }
+    }
+}
+
+/// Run one native read on the shared owned server. Any failure drops the cached
+/// server, so a dead or replaced process is never reused and the error stays
+/// the real one.
+fn v2_with_history_server<T>(
+    cwd: &str,
+    run: impl FnOnce(&OpenCodeServer) -> Result<T, ProviderError>,
+) -> Result<T, ProviderError> {
+    let server = v2_history_server(cwd)?;
+    match run(&server) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            v2_forget_history_server(cwd);
+            Err(error)
+        }
+    }
+}
+
 /// One native history page. Read errors are errors: they never become an empty
 /// listing, and the cursor is carried through unchanged.
 fn v2_history_page(payload: &Value) -> Result<Value, ProviderError> {
@@ -3797,28 +3944,90 @@ fn v2_message_page(page: &Value) -> Result<(Vec<Value>, Option<String>), Provide
     ))
 }
 
-/// Bounded page walk. A non-advancing cursor ends the walk; exceeding the
-/// message bound is an explicit error, never a silently truncated transcript.
-fn v2_history_collect<F>(mut fetch: F) -> Result<Vec<Value>, ProviderError>
+/// Bounded page walk that converts each page to canonical transcript items
+/// immediately, so native rows for earlier pages are not retained. Exceeding
+/// the message or byte bound is an explicit error, never a truncated read.
+fn v2_history_transcript<F>(
+    native_id: &str,
+    mut fetch: F,
+) -> Result<Vec<Value>, ProviderError>
 where
     F: FnMut(Option<&str>) -> Result<Value, ProviderError>,
 {
-    let mut rows: Vec<Value> = Vec::new();
+    let mut items: Vec<Value> = Vec::new();
+    let mut bytes = 0usize;
     let mut cursor: Option<String> = None;
     for _ in 0..V2_HISTORY_MAX_PAGES {
-        let (page, next) = v2_message_page(&fetch(cursor.as_deref())?)?;
-        rows.extend(page);
-        if rows.len() > V2_HISTORY_MAX_MESSAGES {
-            break;
+        let (rows, next) = v2_message_page(&fetch(cursor.as_deref())?)?;
+        for item in v2::history_transcript(native_id, &rows)? {
+            bytes = bytes.saturating_add(
+                serde_json::to_vec(&item)
+                    .map_err(|error| ProviderError::new("provider_protocol", error.to_string()))?
+                    .len(),
+            );
+            if bytes > V2_HISTORY_MAX_BYTES || items.len() >= V2_HISTORY_MAX_MESSAGES {
+                return Err(v2_history_too_large(items.len() + 1, bytes));
+            }
+            items.push(item);
         }
         match next.filter(|next| cursor.as_deref() != Some(next.as_str())) {
             Some(next) => cursor = Some(next),
-            None => return Ok(rows),
+            None => return Ok(items),
         }
     }
-    Err(ProviderError::new(
+    Err(v2_history_too_large(items.len(), bytes))
+}
+
+fn v2_history_too_large(messages: usize, bytes: usize) -> ProviderError {
+    ProviderError::new(
         "provider_protocol",
-        "OpenCode session history exceeds the readable bound",
+        format!(
+            "OpenCode session history exceeds the readable bound ({messages} messages, {bytes} bytes; limit {} messages or {} bytes)",
+            V2_HISTORY_MAX_MESSAGES, V2_HISTORY_MAX_BYTES
+        ),
+    )
+}
+
+/// Streaming fork-boundary scan: pages are fed in order and only the row after
+/// the selected reply is retained, so a long session forks in O(1) memory.
+/// A non-advancing cursor ends the walk; an anchor that is not found is
+/// uncertain (no fork was attempted), never a copy/repost fallback.
+fn v2_fork_cutoff<F>(
+    anchor_message: &str,
+    mut fetch: F,
+) -> Result<Option<String>, ProviderError>
+where
+    F: FnMut(Option<&str>) -> Result<Value, ProviderError>,
+{
+    let mut seen = false;
+    let mut cursor: Option<String> = None;
+    for _ in 0..V2_HISTORY_MAX_PAGES {
+        let (rows, next) = v2_message_page(&fetch(cursor.as_deref())?)?;
+        for row in &rows {
+            let id = row.get("id").and_then(Value::as_str);
+            if seen {
+                let next = id.ok_or_else(|| {
+                    ProviderError::new("operation_outcome_unknown", "OpenCode fork boundary is unreadable")
+                })?;
+                validate_native_id(next)?;
+                return Ok(Some(next.to_owned()));
+            }
+            if id == Some(anchor_message) {
+                seen = true;
+            }
+        }
+        match next.filter(|next| cursor.as_deref() != Some(next.as_str())) {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    if seen {
+        // The selected reply is the last row: the full history is the boundary.
+        return Ok(None);
+    }
+    Err(ProviderError::new(
+        "operation_outcome_unknown",
+        "OpenCode no longer has the selected message, so no fork was attempted",
     ))
 }
 
@@ -3842,12 +4051,11 @@ fn opencode_terminal_args(id: Option<&str>, private_server: bool) -> Vec<String>
 /// right now. An unknown ID is refused before any PTY exists; there is no
 /// "latest session" or "create on resume" fallback.
 fn opencode_v2_resume_preflight(cwd: &str, native_id: &str) -> Result<(), ProviderError> {
-    let server = opencode_v2_history_server(cwd, "terminal-resume-preflight")?;
-    match server.native_api().open_session(Some(native_id)) {
+    v2_with_history_server(cwd, |server| match server.native_api().open_session(Some(native_id)) {
         Ok(_) => Ok(()),
         Err(error) if v2_session_is_missing(&error) => Err(v2_missing_session_error(native_id)),
         Err(error) => Err(error),
-    }
+    })
 }
 
 /// Only a native 404 proves the exact ID is gone. Any other failure stays the
@@ -3881,7 +4089,7 @@ fn opencode_v2_fork(
     if anchor.is_none() && !is_latest {
         return Ok(None);
     }
-    let server = opencode_v2_history_server(cwd, "native-fork")?;
+    let server = v2_history_server(cwd)?;
     let api = server.native_api();
     let before = match anchor {
         None => None,
@@ -3893,10 +4101,9 @@ fn opencode_v2_fork(
                 return Ok(None);
             };
             validate_native_id(message)?;
-            let rows = v2_history_collect(|cursor| {
+            v2_fork_cutoff(message, |cursor| {
                 api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
-            })?;
-            v2_fork_before(message, &rows)?
+            })?
         }
     };
     let result = api.fork_before(native_id, before.as_deref()).map_err(|error| {
@@ -3920,31 +4127,6 @@ fn opencode_v2_fork(
         })?;
     validate_native_id(id).map_err(|error| ProviderError::new("operation_outcome_unknown", error.message))?;
     Ok(Some(id.to_owned()))
-}
-
-/// The native `before` is exclusive: the row after the selected reply is the
-/// cutoff, so that reply is included and later content is not.
-fn v2_fork_before(anchor_message: &str, rows: &[Value]) -> Result<Option<String>, ProviderError> {
-    let index = rows
-        .iter()
-        .position(|row| row.get("id").and_then(Value::as_str) == Some(anchor_message))
-        .ok_or_else(|| {
-            ProviderError::new(
-                "operation_outcome_unknown",
-                "OpenCode no longer has the selected message, so no fork was attempted",
-            )
-        })?;
-    match rows.get(index + 1) {
-        Some(row) => {
-            let next = row.get("id").and_then(Value::as_str).ok_or_else(|| {
-                ProviderError::new("operation_outcome_unknown", "OpenCode fork boundary is unreadable")
-            })?;
-            validate_native_id(next)?;
-            Ok(Some(next.to_owned()))
-        }
-        // The selected reply is the last row: the full history is the boundary.
-        None => Ok(None),
-    }
 }
 
 #[cfg(test)]
