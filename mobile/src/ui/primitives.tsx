@@ -29,7 +29,7 @@ export function Card({ theme, children, style }: PropsWithChildren<{ theme: Them
 
 export function PageTitle({ theme, title, subtitle, left, right }: { theme: Theme; title: string; subtitle?: string; left?: React.ReactNode; right?: React.ReactNode }) {
   return <View style={styles.pageTitle}>
-    <View style={styles.titleLine}>{left}<View style={styles.titleCopy}><Text maxFontSizeMultiplier={1.45} style={[styles.largeTitle, { color: theme.text }]}>{title}</Text>{subtitle && <Text maxFontSizeMultiplier={1.6} style={[styles.subtitle, { color: theme.muted }]}>{subtitle}</Text>}</View>{right}</View>
+    <View style={styles.titleLine}>{left}<View style={styles.titleCopy}><Text maxFontSizeMultiplier={1.45} style={[styles.largeTitle, { color: theme.text }]}>{title}</Text>{!!subtitle && <Text maxFontSizeMultiplier={1.6} style={[styles.subtitle, { color: theme.muted }]}>{subtitle}</Text>}</View>{right}</View>
   </View>;
 }
 
@@ -39,7 +39,7 @@ export function SectionTitle({ theme, children, action }: PropsWithChildren<{ th
 
 export function StatusDot({ theme, state, label }: { theme: Theme; state?: string; label?: string }) {
   const color = statusColor(theme, state);
-  return <View style={styles.statusDotRow}><View style={[styles.statusDot, { backgroundColor: color }]} />{label && <Text maxFontSizeMultiplier={1.5} style={[styles.statusDotText, { color }]}>{label}</Text>}</View>;
+  return <View style={styles.statusDotRow}><View style={[styles.statusDot, { backgroundColor: color }]} />{!!label && <Text maxFontSizeMultiplier={1.5} style={[styles.statusDotText, { color }]}>{label}</Text>}</View>;
 }
 
 export function Pill({ theme, children, tone = 'neutral' }: PropsWithChildren<{ theme: Theme; tone?: 'neutral' | 'primary' | 'success' | 'warning' | 'danger' }>) {
@@ -52,7 +52,7 @@ export function Separator({ theme }: { theme: Theme }) { return <View style={{ h
 export function Field({ theme, label, value, onChangeText, placeholder, multiline, secureTextEntry, autoCapitalize = 'sentences', accessibilityHint, testID }: {
   theme: Theme; label?: string; value: string; onChangeText: (value: string) => void; placeholder?: string; multiline?: boolean; secureTextEntry?: boolean; autoCapitalize?: TextInputProps['autoCapitalize']; accessibilityHint?: string; testID?: string;
 }) {
-  return <View style={styles.fieldWrap}>{label && <Text maxFontSizeMultiplier={1.5} style={[styles.fieldLabel, { color: theme.muted }]}>{label}</Text>}<TextInput testID={testID} accessibilityLabel={label ?? placeholder} accessibilityHint={accessibilityHint} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={theme.faint} multiline={multiline} secureTextEntry={secureTextEntry} autoCapitalize={autoCapitalize} style={[styles.field, multiline && styles.fieldMultiline, { backgroundColor: theme.input, borderColor: theme.line, color: theme.text }]} textAlignVertical={multiline ? 'top' : 'center'} /></View>;
+  return <View style={styles.fieldWrap}>{!!label && <Text maxFontSizeMultiplier={1.5} style={[styles.fieldLabel, { color: theme.muted }]}>{label}</Text>}<TextInput testID={testID} accessibilityLabel={label ?? placeholder} accessibilityHint={accessibilityHint} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={theme.faint} multiline={multiline} secureTextEntry={secureTextEntry} autoCapitalize={autoCapitalize} style={[styles.field, multiline && styles.fieldMultiline, { backgroundColor: theme.input, borderColor: theme.line, color: theme.text }]} textAlignVertical={multiline ? 'top' : 'center'} /></View>;
 }
 
 export function EmptyState({ theme, icon, title, detail, action }: { theme: Theme; icon: IconName; title: string; detail: string; action?: React.ReactNode }) {
@@ -62,7 +62,7 @@ export function EmptyState({ theme, icon, title, detail, action }: { theme: Them
 export function Sheet({ theme, visible, title, onDismiss, children, closeLabel = 'Close', dismissLabel = 'Dismiss' }: PropsWithChildren<{ theme: Theme; visible: boolean; title: string; onDismiss: () => void; closeLabel?: string; dismissLabel?: string }>) {
   const insets = useSafeAreaInsets();
   return <Modal visible={visible} animationType="slide" transparent onRequestClose={onDismiss} presentationStyle="overFullScreen">
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.sheetAvoidance}>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.sheetAvoidance, { paddingTop: insets.top }]}>
       <Pressable accessibilityRole="button" accessibilityLabel={dismissLabel} onPress={onDismiss} style={[styles.scrim, { backgroundColor: theme.overlay }]} />
       <View accessibilityViewIsModal style={[styles.sheet, { backgroundColor: theme.background, borderColor: theme.line, paddingBottom: Math.max(space.lg, insets.bottom) }]}>
         <View style={[styles.grabber, { backgroundColor: theme.faint }]} /><View style={styles.sheetHead}><Text maxFontSizeMultiplier={1.4} style={[styles.sheetTitle, { color: theme.text }]}>{title}</Text><IconButton theme={theme} icon="close" label={closeLabel} onPress={onDismiss} /></View>{children}
@@ -84,6 +84,6 @@ const styles = StyleSheet.create({
   pill: { alignSelf: 'flex-start', paddingHorizontal: 9, minHeight: 25, borderRadius: radius.pill, justifyContent: 'center' }, pillText: { fontSize: 12, lineHeight: 16, fontWeight: '700' },
   fieldWrap: { gap: 6 }, fieldLabel: { fontSize: 13, fontWeight: '600' }, field: { minHeight: 46, borderRadius: radius.small, borderWidth: 1, paddingHorizontal: 12, fontSize: 16, lineHeight: 22 }, fieldMultiline: { minHeight: 104, paddingTop: 12, paddingBottom: 12 },
   empty: { alignItems: 'center', paddingHorizontal: 30, paddingVertical: 44, gap: 10 }, emptyIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 2 }, emptyTitle: { fontSize: 18, lineHeight: 24, fontWeight: '800', textAlign: 'center' }, emptyDetail: { fontSize: 15, lineHeight: 22, textAlign: 'center' },
-  scrim: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }, sheetAvoidance: { flex: 1, justifyContent: 'flex-end' }, sheet: { maxHeight: '90%', paddingBottom: space.lg, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: StyleSheet.hairlineWidth }, grabber: { width: 38, height: 4, borderRadius: 2, alignSelf: 'center', marginTop: 9, marginBottom: 5 }, sheetHead: { minHeight: 54, flexDirection: 'row', paddingLeft: space.md, paddingRight: space.xs, alignItems: 'center', justifyContent: 'space-between' }, sheetTitle: { fontSize: 19, fontWeight: '800' },
+  scrim: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }, sheetAvoidance: { flex: 1, justifyContent: 'flex-end' }, sheet: { maxHeight: '90%', flexShrink: 1, paddingBottom: space.lg, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: StyleSheet.hairlineWidth }, grabber: { width: 38, height: 4, borderRadius: 2, alignSelf: 'center', marginTop: 9, marginBottom: 5 }, sheetHead: { flexShrink: 0, minHeight: 54, flexDirection: 'row', paddingLeft: space.md, paddingRight: space.xs, alignItems: 'center', justifyContent: 'space-between' }, sheetTitle: { fontSize: 19, fontWeight: '800' },
   loading: { padding: 32, alignItems: 'center', justifyContent: 'center', gap: 12 },
 });

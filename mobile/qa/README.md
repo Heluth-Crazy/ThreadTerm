@@ -57,3 +57,12 @@ four screenshots live in `.trellis/tasks/11-06-mobile-companion/qa-chat-options/
 Inspect the captures after rendering; browser injection does not exercise Swift
 permission gates, biometrics or a real provider. A Swift allowlist change requires
 a rebuilt signed iPhone app even when the JavaScript is served by Metro.
+
+`device-fixes.mjs` checks the real UI with injected live permission changes,
+English/Chinese permission messages, Control/View action gates, chat/terminal
+inputs in reduced and landscape viewports, session/pairing sheets, removal of the
+final computer, and direct Add computer guidance. It captures raw-text console
+errors as well as page errors. Run `node mobile/qa/device-fixes.mjs` from the root.
+Its two web screenshots live in the task's `qa-device-fixes/` beside the native
+Simulator keyboard before/after captures. Browser viewport reduction supplements
+native keyboard validation; it does not synthesize an iOS keyboard or Face ID.

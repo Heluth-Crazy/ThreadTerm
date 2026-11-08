@@ -33,6 +33,7 @@ const optionUi = (machineId:string):ChatUiState => ({ options:[
   {id:'fast',name:'Fast mode',value:'false',choices:[{value:'false',name:'Off'},{value:'true',name:'On'}],kind:'boolean',category:'other'},
 ],commands:[],loadState:'ready',inputCapabilities:{} });
 const optionStates = new Map(machines.map(machine => [machine.id,optionUi(machine.id)]));
+const runtimeListeners = new Set<Parameters<NativePort['onRuntimeEvent']>[0]>();
 const native: NativePort = {
   available: true, listMachines: async () => machines,
   connect: async (id: string) => { const m = machines.find(row => row.id === id)!; return { epoch: `epoch-${id}`, permission: m.permission }; }, disconnect: async () => {},
@@ -53,8 +54,16 @@ const native: NativePort = {
     }
     return JSON.stringify(responses[method] ?? null);
   },
-  unlockControl: async () => true, lockControl: async () => {}, onRuntimeEvent: () => () => {}, onConnectionState: () => () => {}, onControlLock: () => () => {},
-  preparePairing: async () => { throw Error('fixture_unavailable'); }, confirmPairing: async () => { throw Error('fixture_unavailable'); }, cancelPairing: async () => {}, removeMachine: async () => {}, renameMachine: async () => {}, openPreview: async () => {}, chooseAttachment: async () => null, readAttachment: async () => '',
+  unlockControl: async () => true, lockControl: async () => {}, onRuntimeEvent: listener => { runtimeListeners.add(listener); return () => { runtimeListeners.delete(listener); }; }, onConnectionState: () => () => {}, onControlLock: () => () => {},
+  preparePairing: async () => { throw Error('fixture_unavailable'); }, confirmPairing: async () => { throw Error('fixture_unavailable'); }, cancelPairing: async () => {}, removeMachine: async id => { const index = machines.findIndex(item => item.id === id); if (index >= 0) machines.splice(index, 1); }, renameMachine: async () => {}, openPreview: async () => {}, chooseAttachment: async () => null, readAttachment: async () => '',
 };
 const store = createCompanion(native, { getItem: async () => null, setItem: async () => {} }, () => 'qa');
+Object.defineProperty(globalThis, '__TT_MOBILE_QA__', { value: {
+  controller: store.controller,
+  setPermission: (id: string, permission: 'readonly' | 'fullcontrol') => {
+    const machine = machines.find(item => item.id === id)!; machine.permission = permission;
+    const revision = Date.now();
+    for (const listener of runtimeListeners) listener({machineId:id,eventJson:JSON.stringify({v:1,event:'mobile.changed',epoch:`epoch-${id}`,seq:revision,data:{permissionChanged:true}})});
+  },
+} });
 export default function QaApp() { return <SafeAreaProvider><CompanionProvider store={store}><CompanionApp /></CompanionProvider></SafeAreaProvider>; }

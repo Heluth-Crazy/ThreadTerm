@@ -2127,6 +2127,9 @@
     "RequestResult<\"device.rename\">": {
       "$ref": "#/definitions/PairedDevice"
     },
+    "RequestResult<\"device.permission.set\">": {
+      "$ref": "#/definitions/PairedDevice"
+    },
     "RequestResult<\"device.renew\">": {
       "$ref": "#/definitions/PairedDevice"
     },
@@ -12019,6 +12022,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22device.rename%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.permission.set"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22device.permission.set%22%3E"
         }
       },
       "required": [

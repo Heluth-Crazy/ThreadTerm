@@ -32,7 +32,7 @@ use std::{
     io::{BufReader, Write},
     net::{IpAddr, Ipv4Addr, TcpListener as StdTcpListener, UdpSocket},
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, RwLock, Weak},
+    sync::{Arc, Condvar, Mutex, RwLock, RwLockReadGuard, Weak},
     time::Duration,
 };
 use tokio::{
@@ -213,6 +213,17 @@ pub struct RemoteAccess {
 }
 
 impl RemoteAccess {
+    pub(crate) fn access_read(&self) -> Result<RwLockReadGuard<'_, ()>> {
+        self.access_gate
+            .read()
+            .map_err(|_| anyhow!("remote access gate poisoned"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn access_writer_available(&self) -> bool {
+        self.access_gate.try_write().is_ok()
+    }
+
     pub fn new(
         service: Weak<RuntimeService>,
         db: Arc<Database>,
@@ -367,6 +378,30 @@ impl RemoteAccess {
                     &request.name,
                     &request.operation_id,
                 )?)?
+            }
+            "device.permission.set" => {
+                let request: SetDevicePermission = parse(params)?;
+                // Local dispatch already holds the relocation gate. Serialize
+                // the durable authorization change with every in-flight remote
+                // action before publishing it to live mobile connection groups.
+                let _barrier = self
+                    .access_gate
+                    .write()
+                    .map_err(|_| anyhow!("remote access gate poisoned"))?;
+                let receipt = self.devices.set_permission(
+                    &request.device_id,
+                    request.permission,
+                    &request.operation_id,
+                )?;
+                // A replay is deliberately returned from its original receipt,
+                // which may describe a superseded permission. Live authority
+                // always follows the durable row, never that historical value.
+                let current = self.devices.device(&request.device_id)?;
+                if current.profile == DeviceProfile::Mobile {
+                    self.mobiles
+                        .set_permission(&current.id, current.permission, &self.db)?;
+                }
+                serde_json::to_value(receipt)?
             }
             "device.renew" => {
                 let request: RenewDevice = parse(params)?;
@@ -1277,6 +1312,14 @@ struct RenameDevice {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetDevicePermission {
+    device_id: String,
+    permission: DevicePermission,
+    operation_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RenewDevice {
     device_id: String,
     operation_id: String,
@@ -2030,6 +2073,7 @@ mod tests {
             "device.pairing.cancel",
             "device.rename",
             "device.renew",
+            "device.permission.set",
         ] {
             assert!(
                 remote

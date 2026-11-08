@@ -1180,6 +1180,26 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"device.permission.set\">": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string"
+        },
+        "permission": {
+          "$ref": "#/definitions/DevicePermission"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceId",
+        "permission",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"device.renew\">": {
       "type": "object",
       "properties": {
@@ -7731,6 +7751,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22device.rename%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.permission.set"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.permission.set%22%3E"
         }
       },
       "required": [

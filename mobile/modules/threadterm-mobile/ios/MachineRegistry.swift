@@ -126,6 +126,14 @@ final class MachineRegistry {
     }
   }
 
+  func updateSnapshot(id: String, resultJson: String) throws {
+    guard let snapshot = try JSONSerialization.jsonObject(with: Data(resultJson.utf8)) as? [String: Any],
+          let permission = snapshot["permission"] as? String else {
+      throw SecureStoreError.invalidRegistry("invalid snapshot permission")
+    }
+    try updateConnection(id: id, permission: permission)
+  }
+
   func updateConnection(id: String, permission: String) throws {
     guard permission == "readonly" || permission == "fullcontrol" else {
       throw SecureStoreError.invalidRegistry("invalid machine permission")
@@ -135,6 +143,7 @@ final class MachineRegistry {
         throw SecureStoreError.invalidRegistry("machine is unavailable")
       }
       var next = machines
+      if next[index].permission == permission { return }
       next[index].permission = permission
       try save(next)
       machines = next

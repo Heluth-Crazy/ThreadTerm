@@ -419,7 +419,7 @@ fn trace_method(method: &str) -> &'static str {
         "chat.snapshot", "chat.subagent.read", "data.backup", "data.relocation.cancel",
         "data.relocation.prepare", "data.relocation.status", "data.status", "device.disable",
         "device.enable", "device.list", "device.pairing.cancel", "device.pairing.create",
-        "device.rename", "device.renew", "device.revoke", "draft.delete", "draft.put",
+        "device.permission.set", "device.rename", "device.renew", "device.revoke", "draft.delete", "draft.put",
         "filesystem.create", "filesystem.delete", "filesystem.image", "filesystem.rename",
         "filesystem.resolve", "filesystem.write", "git.branch.delete", "git.checkout",
         "git.commit", "git.commit.selected", "git.discard", "git.fetch", "git.index.write",
@@ -1419,6 +1419,7 @@ mod decoder_tests {
             "agentReview.start",
             "codeReview.start",
             "data.backup",
+            "device.permission.set",
             "git.stash.apply",
             "git.cherryPick",
         ] {

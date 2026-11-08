@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, StatusBar, StyleSheet, Text, View, useColorScheme } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, StatusBar, StyleSheet, Text, View, useColorScheme } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CompanionProvider, useCompanion } from './src/core/react';
 import type { AttentionItem, SessionRef } from './src/core/types';
@@ -28,6 +28,8 @@ export function CompanionApp() {
   const [projectRoute, setProjectRoute] = useState<ProjectRoute>({ kind: 'computers' });
   const [details, setDetails] = useState<Detail[]>([]);
   const [newSession, setNewSession] = useState(false);
+  const [pairingRequest, setPairingRequest] = useState(0);
+  const addComputer = () => { setTab('settings'); setPairingRequest(value => value + 1); };
   const detail = details.at(-1);
   const back = () => setDetails(current => current.slice(0, -1));
   const openSession = (ref: SessionRef) => setDetails([{ kind: 'session', ref }]);
@@ -56,25 +58,27 @@ export function CompanionApp() {
     onFiles={() => openSessionResource('files', detail.ref)} onGit={() => openSessionResource('git', detail.ref)} />;
   else if (detail?.kind === 'resource') page = <ResourceScreen theme={theme} state={state} controller={controller} route={detail.route} onBack={back}
     onRoute={route => setDetails(current => [...current, { kind: 'resource', route }])} />;
-  else if (tab === 'needs') page = <NeedsYouScreen theme={theme} state={state} controller={controller} onOpenSession={openAttention} />;
+  else if (tab === 'needs') page = <NeedsYouScreen theme={theme} state={state} controller={controller} onOpenSession={openAttention} onAddComputer={addComputer} />;
   else if (tab === 'projects') page = <ProjectsScreen theme={theme} state={state} controller={controller} route={projectRoute} onRoute={setProjectRoute}
     onOpenSession={openSession} onOpenResource={route => setDetails([{ kind: 'resource', route }])}
-    onConnect={machineId => void controller.connect(machineId).catch(showError)} onAddComputer={() => setTab('settings')} onNewSession={() => setNewSession(true)} />;
+    onConnect={machineId => void controller.connect(machineId).catch(showError)} onAddComputer={addComputer} onNewSession={() => setNewSession(true)} />;
   else if (tab === 'chat') page = <ChatListScreen theme={theme} state={state} controller={controller} onOpenSession={openSession} onNew={() => setNewSession(true)} />;
-  else page = <SettingsScreen theme={theme} state={state} controller={controller} />;
+  else page = <SettingsScreen theme={theme} state={state} controller={controller} pairingRequest={pairingRequest} onPairingOpened={() => setPairingRequest(0)} />;
 
   const initial = tab === 'projects' && projectRoute.kind !== 'computers'
     ? { machineId: projectRoute.machineId, ...('projectId' in projectRoute ? { projectId: projectRoute.projectId } : {}), ...('worktreeId' in projectRoute ? { worktreeId: projectRoute.worktreeId } : {}) }
     : undefined;
   return <SafeAreaView style={[styles.fill, { backgroundColor: theme.background }]} edges={['top', 'left', 'right']}>
     <StatusBar barStyle={theme.background === '#262624' ? 'light-content' : 'dark-content'} />
-    {state.error && <Pressable accessibilityRole="button" accessibilityLabel={zh ? '关闭错误提示' : 'Dismiss error'} onPress={() => controller.clearError()} style={[styles.error, { backgroundColor: theme.surface }]}>
+    <KeyboardAvoidingView testID="companion-keyboard" style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={insets.top}>
+    {!!state.error && <Pressable accessibilityRole="button" accessibilityLabel={zh ? '关闭错误提示' : 'Dismiss error'} onPress={() => controller.clearError()} style={[styles.error, { backgroundColor: theme.surface }]}>
       <Text style={{ color: theme.red, flex: 1 }}>{state.error}</Text><Icon name="close" color={theme.red} size={18} />
     </Pressable>}
     <View style={[styles.page, detail ? { paddingBottom: insets.bottom } : undefined]}>{page}</View>
     {!detail && <TabBar theme={theme} active={tab} attention={state.attention.length} bottom={insets.bottom} onChange={setTab} />}
     {newSession && <NewSessionSheet theme={theme} state={state} controller={controller} visible initial={initial}
       onCreated={openSession} onDismiss={() => setNewSession(false)} />}
+    </KeyboardAvoidingView>
   </SafeAreaView>;
 }
 

@@ -68,3 +68,15 @@ Like desktop, `chat_permission_restore_failed` offers only the host's permission
 (`category: mode`) choices even while the provider is failed. This exception
 retains every Control, unlock, synchronization and lease check; other option load
 errors and disconnected providers remain display-only.
+
+## Changing a paired device's access
+
+Local desktop administration may call `device.permission.set` with
+`{deviceId,permission,operationId}` and receives the persisted `PairedDevice`.
+View/Control changes apply to already connected mobile groups. A downgrade expires
+that device's control leases and the next control request returns `mobile_readonly`;
+an upgrade needs a fresh lease. The device change event resynchronizes desktop and
+phone. This method is never part of the mobile or remote desktop allowlists.
+The native bridge refreshes its permission cache from authenticated mobile
+snapshots before handing them to JavaScript. A Face ID unlock only removes the
+local lock on Control already granted by the computer.

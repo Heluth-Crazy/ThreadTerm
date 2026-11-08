@@ -173,7 +173,12 @@ public final class ThreadTermMobileModule: Module {
             throw ModuleError("control_locked: unlock control with biometrics")
           }
         }
-        return try environment.core.request(machineId: machineId, method: method, paramsJson: paramsJson)
+        let result = try environment.core.request(machineId: machineId, method: method, paramsJson: paramsJson)
+        if method == "mobile.snapshot" {
+          // Only an authenticated host response can change the native Control ceiling.
+          try environment.registry.updateSnapshot(id: machineId, resultJson: result)
+        }
+        return result
       }
     }.runOnQueue(nativeQueue)
 

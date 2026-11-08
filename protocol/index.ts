@@ -883,6 +883,7 @@ export interface RequestMap {
  'device.pairing.cancel': [{pairingId:string;operationId:string},null];
  'device.list': [{},PairedDevice[]];
  'device.rename': [{deviceId:string;name:string;operationId:string},PairedDevice];
+ 'device.permission.set': [{deviceId:string;permission:DevicePermission;operationId:string},PairedDevice];
  'device.renew': [{deviceId:string;operationId:string},PairedDevice];
  'device.revoke': [{deviceId:string;operationId:string},null];
  'terminal.read': [{sessionId:string;cursor?:number;limit?:number;tail?:boolean},{sessionId:string;fromCursor:number;nextCursor:number;truncated:boolean;encoding:'base64';data:string;/** Set while durable recording is degraded or output was lost; live degradation means the process keeps running. */storageDegraded?:{reason:string;cursor:number;pendingBytes?:number}}];
@@ -1224,6 +1225,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 // The legacy list predates review-draft RPCs; extend it here so old callers of
 // `validateRequest` accept the additive methods without rebuilding that list.
 (METHODS as unknown as string[]).unshift(
+ 'device.permission.set',
  'editorNavigation.configuration','editorNavigation.configure','editorNavigation.prepare','editorNavigation.status','editorNavigation.sync','editorNavigation.definition','editorNavigation.documentSymbols','editorNavigation.cancel','editorNavigation.release',
  'filesystem.browse','filesystem.preview.read','attachment.upload','attachment.read',
  'filesystem.external.readWindow','filesystem.readWindow',
@@ -1254,7 +1256,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.resume':['sessionId','operationId'],
  'session.organize':['sessionId','operationId'],'git.merge':['projectId','operationId'],'git.merge.abort':['projectId','operationId'],
  'project.update':['id','operationId'],'worktree.branches':['projectId'],'worktree.relocate':['id','path','operationId'],
- 'device.tailscaleOnly.set':['operationId'],'device.iroh.set':['operationId'],'device.peer.dial':['endpointId'],'device.enable':['operationId'],'device.disable':['operationId'],'device.identity.reset':['operationId'],'device.pairing.create':['permission','operationId'],'device.pairing.cancel':['pairingId','operationId'],'device.rename':['deviceId','name','operationId'],'device.renew':['deviceId','operationId'],'device.revoke':['deviceId','operationId'],
+ 'device.tailscaleOnly.set':['operationId'],'device.iroh.set':['operationId'],'device.peer.dial':['endpointId'],'device.enable':['operationId'],'device.disable':['operationId'],'device.identity.reset':['operationId'],'device.pairing.create':['permission','operationId'],'device.pairing.cancel':['pairingId','operationId'],'device.rename':['deviceId','name','operationId'],'device.permission.set':['deviceId','permission','operationId'],'device.renew':['deviceId','operationId'],'device.revoke':['deviceId','operationId'],
  'terminal.read':['sessionId'],'session.lookup':['operationId'],'session.present':['sessionId','placement','presentation','operationId'],
  'chat.read':['sessionId'],
  'chat.subagent.read':['sessionId','key'],
@@ -1424,7 +1426,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(typeof params[key]!=='string'||(key!=='data'&&!imageOnlyText&&params[key]==='')) throw new Error(`Invalid ${key}`);
  }
  if(m==='filesystem.external.open'&&params.sessionId!==undefined&&(typeof params.sessionId!=='string'||params.sessionId==='')) throw new Error('Invalid sessionId');
- if(m==='device.pairing.create'&&!['readonly','fullcontrol'].includes(String(params.permission))) throw new Error('Invalid device permission');
+ if((m==='device.pairing.create'||m==='device.permission.set')&&!['readonly','fullcontrol'].includes(String(params.permission))) throw new Error('Invalid device permission');
  if(m==='device.pairing.create'&&params.profile!==undefined&&!['phone','desktop','mobile'].includes(String(params.profile))) throw new Error('Invalid device profile');
  if(m==='catalog.visibility.update') {
   if(!['project','worktree','session'].includes(String(params.kind))) throw new Error('Invalid catalog kind');

@@ -32,6 +32,7 @@ pub(crate) const DENIED_METHODS: &[&str] = &[
     "device.rename",
     "device.renew",
     "device.revoke",
+    "device.permission.set",
     "runtime.shutdown",
     "data.status",
     "data.backup",

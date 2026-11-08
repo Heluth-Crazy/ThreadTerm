@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -34,7 +33,7 @@ import {
 } from "./primitives";
 import type { Theme } from "./theme";
 import { space } from "./theme";
-import { sessionStatusLabel, timeLabel } from "./format";
+import { controlPermissionNotice, sessionStatusLabel, timeLabel } from "./format";
 import { ApprovalCard } from "./ApprovalCard";
 import {
   groupCodexTranscript,
@@ -104,7 +103,7 @@ export function ChatListScreen({
                   {s.title}
                 </Text>
                 <Text style={{ color: theme.primary }}>{m.name}</Text>
-                {s.projectId && <Text style={{ color: theme.muted }}>{m.snapshot?.projects.find(project => project.id === s.projectId)?.name ?? (locale === "zh-CN" ? "未归属项目" : "Unassigned project")}</Text>}
+                {!!s.projectId && <Text style={{ color: theme.muted }}>{m.snapshot?.projects.find(project => project.id === s.projectId)?.name ?? (locale === "zh-CN" ? "未归属项目" : "Unassigned project")}</Text>}
                 <Text style={{ color: theme.muted }}>
                   {timeLabel(s.updatedAt, locale)}
                 </Text>
@@ -210,10 +209,7 @@ export function SessionDetailScreen({
     ? session.activity?.turnId
     : undefined;
   return (
-    <KeyboardAvoidingView
-      style={[styles.detail, { backgroundColor: theme.background }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
+    <View style={[styles.detail, { backgroundColor: theme.background }]}>
       <View style={styles.head}>
         <IconButton
           theme={theme}
@@ -311,7 +307,7 @@ export function SessionDetailScreen({
               onPress={() => run("stop", () => controller.stop(ref))}
             />
           )}
-          {activeTurnId && (
+          {!!activeTurnId && (
             <Button
               theme={theme}
               label={locale === "zh-CN" ? "取消当前轮次" : "Cancel turn"}
@@ -332,7 +328,7 @@ export function SessionDetailScreen({
             : "Showing the last synchronized content. Reconnect before acting."}
         </Text>
       )}
-      {session.run?.url && (
+      {!!session.run?.url && (
         <Button
           theme={theme}
           label={locale === "zh-CN" ? "打开网页预览" : "Open web preview"}
@@ -363,7 +359,7 @@ export function SessionDetailScreen({
           view={view}
         />
       )}
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -386,6 +382,7 @@ function ChatPanel({
     scroll = useRef<React.ElementRef<typeof ScrollView>>(null),
     draft = state.drafts[sessionKey(ref)] ?? "",
     attachments = state.attachments[sessionKey(ref)] ?? [];
+  const machinePermission = state.machines.find(m => m.id === ref.machineId)?.permission;
   const readonly =
     session.readOnly ||
     session.archived ||
@@ -461,6 +458,8 @@ function ChatPanel({
     <View style={styles.panel}>
       <ScrollView
         ref={scroll}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => {
           if (followOutput.current)
             scroll.current?.scrollToEnd({ animated: false });
@@ -504,7 +503,7 @@ function ChatPanel({
             />
           </Card>
         )}
-        {view?.error && (
+        {!!view?.error && (
           <Card theme={theme} style={styles.error}>
             <Text style={{ color: theme.red }}>{view.error}</Text>
           </Card>
@@ -528,20 +527,21 @@ function ChatPanel({
           />
         )}
       </ScrollView>
-      {!control && !readonly && (
+      {!control && (
         <View style={[styles.lock, { backgroundColor: `${theme.amber}18` }]}>
           <Text style={{ color: theme.amber, flex: 1 }}>
-            {locale === "zh-CN"
-              ? "查看模式：解锁后可控制。"
-              : "View mode: unlock to control."}
+            {session.readOnly || session.archived
+              ? (locale === "zh-CN" ? "此会话仅允许查看。" : "This session is read-only.")
+              : controlPermissionNotice(machinePermission, state.controlUnlocked, locale)}
           </Text>
-          <Button
+          {!readonly && <Button
             theme={theme}
-            label="Unlock"
+            label={state.controlUnlocked ? (locale === "zh-CN" ? "获取控制" : "Control") : (locale === "zh-CN" ? "解锁" : "Unlock")}
             small
             tone="plain"
+            disabled={!ready}
             onPress={unlock}
-          />
+          />}
         </View>
       )}
       {!!operation && (
@@ -678,9 +678,11 @@ function Terminal({
   return (
     <View style={styles.panel}>
       <ScrollView
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         style={[styles.terminal, { backgroundColor: theme.terminal }]}
       >
-        {view?.error && <Text style={{ color: theme.red }}>{view.error}</Text>}
+        {!!view?.error && <Text style={{ color: theme.red }}>{view.error}</Text>}
         {view?.terminalGap && (
           <Text style={{ color: theme.amber }}>
             {locale === "zh-CN"
@@ -708,19 +710,15 @@ function Terminal({
       {!control && (
         <View style={styles.lock}>
           <Text style={{ color: theme.amber, flex: 1 }}>
-            {permitted
-              ? locale === "zh-CN"
-                ? "需获得控制权后输入。"
-                : "Acquire control to enter input."
-              : locale === "zh-CN"
-                ? "仅查看终端输出。"
-                : "Viewing terminal output only."}
+            {machine?.permission !== "fullcontrol" || permitted
+              ? controlPermissionNotice(machine?.permission, state.controlUnlocked, locale)
+              : (locale === "zh-CN" ? "此会话仅允许查看。" : "This session is read-only.")}
           </Text>
           {permitted && (
             <>
               <Button
                 theme={theme}
-                label={locale === "zh-CN" ? "解锁" : "Unlock"}
+                label={state.controlUnlocked ? (locale === "zh-CN" ? "获取控制" : "Control") : (locale === "zh-CN" ? "解锁" : "Unlock")}
                 small
                 disabled={
                   busy || machine?.status !== "connected" || machine.syncing
@@ -743,6 +741,7 @@ function Terminal({
       )}
       <View style={styles.composer}>
         <TextInput
+          accessibilityLabel={locale === "zh-CN" ? "终端输入" : "Terminal input"}
           value={text}
           onChangeText={setText}
           editable={control}

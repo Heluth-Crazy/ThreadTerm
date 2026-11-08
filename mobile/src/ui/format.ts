@@ -25,3 +25,10 @@ export function shortPath(path: string | undefined) {
   if (!path) return '';
   return path.replace(/\\/g, '/').split('/').filter(Boolean).slice(-2).join(' / ');
 }
+
+
+export function controlPermissionNotice(permission: 'readonly' | 'fullcontrol' | undefined, unlocked: boolean, locale: 'en' | 'zh-CN') {
+  if (permission !== 'fullcontrol') return locale === 'zh-CN' ? '此电脑仅允许查看。' : 'This computer allows viewing only.';
+  if (!unlocked) return locale === 'zh-CN' ? '已锁定 — 通过 Face ID 解锁以控制。' : 'Locked — unlock with Face ID to control.';
+  return locale === 'zh-CN' ? '获取会话控制权后即可输入。' : 'Acquire session control to enter input.';
+}

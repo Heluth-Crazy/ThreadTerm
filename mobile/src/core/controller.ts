@@ -23,6 +23,7 @@ const isChatItem=(value:unknown):value is ChatItem=>record(value)&&typeof value.
 export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:()=>string,options:{initialLocale?:'en'|'zh-CN';retryDelay?:number}={}) {
   let state:CompanionState={initialized:false,nativeAvailable:native.available,machines:[],sessions:{},drafts:{},attachments:{},attention:[],controlUnlocked:false,preferences:{locale:options.initialLocale??'en',appearance:'system'}};
   const listeners=new Set<()=>void>();
+  const permissionGeneration=new Map<string,number>();
   const generation=new Map<string,number>(),sequences=new Map<string,number>(),attempts=new Map<string,number>();
   const connectingEvents=new Map<string,RuntimeEvent[]>();
   const reconnects=new Map<string,Timer>(),refreshTimers=new Map<string,Timer>();
@@ -57,6 +58,10 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
   }
   function flushDrafts() {clearTimeout(draftTimer);draftTimer=undefined;persist(DRAFTS_KEY,state.drafts);persist(ATTACHMENTS_KEY,state.attachments);}
   function clearLease(ref:SessionRef) {const key=sessionKey(ref);clearTimeout(leaseTimers.get(key));leaseTimers.delete(key);patchView(ref,{leaseEpoch:undefined});}
+  function fencePermission(id:string) {
+    permissionGeneration.set(id,(permissionGeneration.get(id)??0)+1);
+    for(const entry of Object.values(state.sessions))if(entry.ref.machineId===id)clearLease(entry.ref);
+  }
   function invalidate(id:string) {
     generation.set(id,gen(id)+1);
     connectingEvents.delete(id);
@@ -149,7 +154,10 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
           invalidate(id);patchMachine(id,{syncing:true,error:'runtime_changed'});
           await native.disconnect(id).catch(noop);retry(id);return;
         }
-        if(!m.snapshot||snapshot.revision>=m.snapshot.revision)patchMachine(id,{snapshot,permission:snapshot.permission,syncedAt:Date.now(),error:undefined});
+        if(!m.snapshot||snapshot.revision>=m.snapshot.revision) {
+          if(m.permission!==snapshot.permission)fencePermission(id);
+          patchMachine(id,{snapshot,permission:snapshot.permission,syncedAt:Date.now(),error:undefined});
+        }
         await refreshAttention(id);
       } while(refreshAgain.has(id)&&current(id,ticket));
     })().catch(error=>{if(current(id,ticket))patchMachine(id,{error:errorMessage(error)});throw error;}).finally(()=>{if(refreshes.get(id)===pending)refreshes.delete(id);});
@@ -269,8 +277,11 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       const ticket=gen(id);patchMachine(id,{syncing:true});
       void refreshOne(id).then(async()=>{if(!current(id,ticket))return;if(active?.machineId===id)await syncSession(active).catch(noop);if(current(id,ticket))patchMachine(id,{syncing:false});}).catch(noop);return;
     }
-    if(event.event==='mobile.changed'||event.event==='state.changed')scheduleRefresh(id);
     const data=record(event.data)?event.data:{};
+    // Several permission transitions can collapse into one final snapshot.
+    // Retire old control replies/leases before waiting for that read.
+    if(event.event==='mobile.changed'&&data.permissionChanged===true)fencePermission(id);
+    if(event.event==='mobile.changed'||event.event==='state.changed')scheduleRefresh(id);
     if(typeof data.sessionId!=='string')return;
     const ref={machineId:id,sessionId:data.sessionId},key=sessionKey(ref),currentView=state.sessions[key];
     if(!currentView)return;
@@ -322,9 +333,9 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     const m=ensureReady(ref.machineId);
     if(!CONTROL_METHODS.has(method)||m.permission!=='fullcontrol'||!state.controlUnlocked)throw new Error('control_locked');
     if(!m.snapshot?.capabilities.methods.includes(method))throw new Error(`mobile_unsupported: ${method}`);
-    const ticket=gen(ref.machineId);
+    const ticket=gen(ref.machineId),authority=permissionGeneration.get(ref.machineId)??0;
     const result=await raw(ref.machineId,method,params);
-    if(!current(ref.machineId,ticket))throw new Error('outcome_unknown: Reconnected before the result could be confirmed. Check the computer before trying again.');
+    if(!current(ref.machineId,ticket)||authority!==(permissionGeneration.get(ref.machineId)??0))throw new Error('outcome_unknown: Connection or permission changed before the result could be confirmed. Check the computer before trying again.');
     return result;
   }
   async function attachmentImage(ref:SessionRef,file:UploadedAttachment):Promise<string> {

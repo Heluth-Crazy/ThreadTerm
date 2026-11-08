@@ -169,6 +169,37 @@ impl ConnectionGroups {
             Ok(())
         })
     }
+
+    /// Changes authority without tearing down the view connection. A downgrade
+    /// fences every outstanding mobile lease before the next guarded request.
+    pub(crate) fn set_permission(
+        &self,
+        device: &str,
+        permission: DevicePermission,
+        db: &Database,
+    ) -> Result<()> {
+        let mut groups = self
+            .groups
+            .lock()
+            .map_err(|_| anyhow!("mobile groups poisoned"))?;
+        for ((id, _), group) in groups.iter_mut() {
+            if id == device {
+                group.permission = permission;
+            }
+        }
+        drop(groups);
+        if permission == DevicePermission::Readonly {
+            let prefix = format!("mobile:{device}:");
+            db.transaction(|tx| {
+                tx.execute(
+                    "UPDATE leases SET expires_at=? WHERE substr(client_id,1,length(?))=?",
+                    rusqlite::params![chrono::Utc::now().to_rfc3339(), prefix, prefix],
+                )?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
 }
 
 struct ControlLifetime {
@@ -460,6 +491,9 @@ pub(crate) fn project_event(
     data: &Value,
     subscribed: &BTreeSet<String>,
 ) -> Option<(String, Value)> {
+    if event == "device.changed" {
+        return Some(("mobile.changed".into(), json!({"permissionChanged":true})));
+    }
     if event == "runtime.degraded" {
         let mut safe = Map::new();
         for key in ["reason", "snapshotRequired", "oldestCursor"] {
@@ -707,9 +741,10 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
         .ok_or_else(|| anyhow!("credential required"))?
         .to_owned();
     let devices = remote.devices.clone();
+    let credential_for_auth = credential.clone();
     let auth_iroh = iroh_endpoint_id.clone();
     let device = match tokio::task::spawn_blocking(move || {
-        devices.authenticate_mobile(&credential, auth_iroh.as_deref())
+        devices.authenticate_mobile(&credential_for_auth, auth_iroh.as_deref())
     })
     .await?
     {
@@ -723,47 +758,59 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
         write_json(&mut stream, &authentication_failed()).await?;
         return Ok(());
     }
-    remote.record_peer_address(&device.id, &address)?;
-    let epoch = service.db.epoch()?;
-    let key = (device.id.clone(), client.to_owned());
-    let mut lifetime = None;
-    let mut closed = {
-        let mut groups = remote
-            .mobiles
-            .groups
-            .lock()
-            .map_err(|_| anyhow!("mobile groups poisoned"))?;
-        if channel == "control" {
-            if auth.get("epoch") != Some(&Value::Null) {
-                bail!("control epoch must be null")
+    // Do not hold this synchronous barrier across I/O. It serializes the
+    // current credential/permission read and group publication with an admin
+    // permission change, so an old authentication result cannot become a new
+    // Fullcontrol group after a completed downgrade.
+    let (device, epoch, mut closed, lifetime) = {
+        let _access = remote.access_read()?;
+        let device = remote
+            .devices
+            .authenticate_mobile(&credential, iroh_endpoint_id.as_deref())?;
+        remote.devices.validate_mobile(&device.id)?;
+        remote.record_peer_address(&device.id, &address)?;
+        let epoch = service.db.epoch()?;
+        let key = (device.id.clone(), client.to_owned());
+        let mut lifetime = None;
+        let closed = {
+            let mut groups = remote
+                .mobiles
+                .groups
+                .lock()
+                .map_err(|_| anyhow!("mobile groups poisoned"))?;
+            if channel == "control" {
+                if auth.get("epoch") != Some(&Value::Null) {
+                    bail!("control epoch must be null")
+                }
+                if groups.contains_key(&key) {
+                    bail!("control already connected")
+                }
+                let (sender, receiver) = watch::channel(false);
+                groups.insert(
+                    key.clone(),
+                    Group {
+                        epoch: epoch.clone(),
+                        permission: device.permission,
+                        closed: sender,
+                    },
+                );
+                lifetime = Some(ControlLifetime {
+                    groups: Arc::clone(&remote.mobiles.groups),
+                    key,
+                    db: Arc::clone(&service.db),
+                });
+                receiver
+            } else {
+                let group = groups
+                    .get(&key)
+                    .ok_or_else(|| anyhow!("live control required"))?;
+                if auth.get("epoch").and_then(Value::as_str) != Some(group.epoch.as_str()) {
+                    bail!("control epoch mismatch")
+                }
+                group.closed.subscribe()
             }
-            if groups.contains_key(&key) {
-                bail!("control already connected")
-            }
-            let (sender, receiver) = watch::channel(false);
-            groups.insert(
-                key.clone(),
-                Group {
-                    epoch: epoch.clone(),
-                    permission: device.permission,
-                    closed: sender,
-                },
-            );
-            lifetime = Some(ControlLifetime {
-                groups: Arc::clone(&remote.mobiles.groups),
-                key,
-                db: Arc::clone(&service.db),
-            });
-            receiver
-        } else {
-            let group = groups
-                .get(&key)
-                .ok_or_else(|| anyhow!("live control required"))?;
-            if auth.get("epoch").and_then(Value::as_str) != Some(group.epoch.as_str()) {
-                bail!("control epoch mismatch")
-            }
-            group.closed.subscribe()
-        }
+        };
+        (device, epoch, closed, lifetime)
     };
     let principal = format!("mobile:{}:{client}", device.id);
     drop(handshake_permit);
@@ -1054,7 +1101,10 @@ mod tests {
             ),
             Some(("mobile.changed".into(), json!({})))
         );
-        assert!(project_event(&db, "device.changed", &json!({"token":"x"}), &subscribed).is_none());
+        assert_eq!(
+            project_event(&db, "device.changed", &json!({"token":"x"}), &subscribed),
+            Some(("mobile.changed".into(), json!({"permissionChanged":true})))
+        );
         assert!(project_event(
             &db,
             "chat.context",
@@ -1265,8 +1315,10 @@ mod tests {
             );
             format!("mobile:{}:fixture", device.id)
         };
-        let readonly = connect_group(&paired(DevicePermission::Readonly, "readonly-options"));
-        let control = connect_group(&paired(DevicePermission::Fullcontrol, "control-options"));
+        let readonly_device = paired(DevicePermission::Readonly, "readonly-options");
+        let control_device = paired(DevicePermission::Fullcontrol, "control-options");
+        let readonly = connect_group(&readonly_device);
+        let control = connect_group(&control_device);
         let request = |principal: &str, method: &str, params: Value| {
             service.dispatch(
                 principal,
@@ -1320,6 +1372,115 @@ mod tests {
         );
         let changed = request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-b","leaseEpoch":lease,"operationId":"valid-lease"})).unwrap();
         assert_eq!(changed["options"][0]["value"], "host-model-b");
+        assert_eq!(
+            request(&control, "device.permission.set", json!({"deviceId":control_device.id,"permission":"readonly","operationId":"mobile-admin-denied"}))
+                .unwrap_err()
+                .code,
+            "mobile_forbidden",
+            "a connected mobile principal cannot administer paired devices"
+        );
+        let set = |permission, operation_id: &str| {
+            remote
+                .dispatch(
+                    "device.permission.set",
+                    &json!({"deviceId":control_device.id,"permission":permission,"operationId":operation_id}),
+                )
+                .unwrap()
+                .unwrap()
+        };
+        // Hold group lookup after the real service dispatch has acquired the
+        // access read side. The permission writer must wait for that in-flight
+        // mobile effect, then fence the next one.
+        let groups = remote.mobiles.groups.lock().unwrap();
+        let effect_service = Arc::clone(&service);
+        let effect_principal = control.clone();
+        let effect_session = session.id.clone();
+        let (effect_done, effect_result) = std::sync::mpsc::channel();
+        let effect = std::thread::spawn(move || {
+            let result = effect_service.dispatch(
+                &effect_principal,
+                RpcRequest {
+                    v: 1,
+                    id: "in-flight-mobile-effect".into(),
+                    method: "chat.option.set".into(),
+                    params: json!({"sessionId":effect_session,"optionId":"model","value":"host-model-a","leaseEpoch":lease,"operationId":"in-flight-mobile-effect"}),
+                },
+            );
+            effect_done.send(result).unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while remote.access_writer_available() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            !remote.access_writer_available(),
+            "the actual mobile dispatch acquired the access read barrier"
+        );
+        let writer_remote = Arc::clone(&remote);
+        let writer_device = control_device.id.clone();
+        let (writer_done, writer_result) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let result = writer_remote.dispatch(
+                "device.permission.set",
+                &json!({"deviceId":writer_device,"permission":"readonly","operationId":"writer-after-mobile-effect"}),
+            );
+            writer_done.send(result).unwrap();
+        });
+        assert!(
+            writer_result
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "permission writer waits for an already-authorized mobile effect"
+        );
+        drop(groups);
+        effect_result
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        effect.join().unwrap();
+        writer_result
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-a","leaseEpoch":lease,"operationId":"after-writer-drain"}))
+                .unwrap_err()
+                .code,
+            "mobile_readonly",
+            "the next full mobile dispatch sees the completed downgrade"
+        );
+        set("fullcontrol", "after-writer-upgrade");
+        set("readonly", "live-permission-first-downgrade");
+        assert_eq!(
+            request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-a","leaseEpoch":lease,"operationId":"post-downgrade"}))
+                .unwrap_err()
+                .code,
+            "mobile_readonly",
+            "the full dispatch path observes a live downgrade"
+        );
+        set("fullcontrol", "live-permission-upgrade");
+        set("readonly", "live-permission-second-downgrade");
+        let replay = set("fullcontrol", "live-permission-upgrade");
+        assert_eq!(replay["permission"], "fullcontrol", "the operation keeps its historical receipt");
+        assert_eq!(
+            remote.mobiles.permission(&control_device.id, "fixture"),
+            Some(DevicePermission::Readonly),
+            "replaying a superseded upgrade cannot restore live authority"
+        );
+        assert_eq!(
+            request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-a","leaseEpoch":lease,"operationId":"post-replay"}))
+                .unwrap_err()
+                .code,
+            "mobile_readonly"
+        );
+        set("fullcontrol", "restore-control-for-scope");
+        let upgraded_lease = service.leases.claim(&db, &session.id, &control).unwrap();
+        assert!(
+            request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-a","leaseEpoch":upgraded_lease,"operationId":"post-upgrade"}))
+                .is_ok(),
+            "a live upgrade permits a newly claimed control request"
+        );
 
         let escaped = db
             .create_session(CreateSession {
@@ -1528,5 +1689,75 @@ mod tests {
                 "data":{"reason":"credential_expired"},
             }),
         );
+    }
+
+    #[test]
+    fn live_permission_change_downgrades_and_upgrades_without_reconnecting() {
+        let (_directory, db, project, _worktree, _outside) = scope_fixture();
+        let session = db
+            .create_session(CreateSession {
+                project_id: Some(&project),
+                title: Some("Live permission"),
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "live-permission-session",
+            })
+            .unwrap();
+        let groups = ConnectionGroups::default();
+        let (closed, closed_rx) = watch::channel(false);
+        groups.groups.lock().unwrap().insert(
+            ("phone".into(), "client".into()),
+            Group {
+                epoch: "epoch".into(),
+                permission: DevicePermission::Fullcontrol,
+                closed,
+            },
+        );
+        let principal = "mobile:phone:client";
+        let lease = chrono::Utc::now() + chrono::Duration::minutes(5);
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO leases(session_id,client_id,epoch,expires_at) VALUES(?,?,1,?)",
+                rusqlite::params![session.id, principal, lease.to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        groups
+            .set_permission("phone", DevicePermission::Readonly, &db)
+            .unwrap();
+        assert_eq!(
+            authorize_method(groups.permission("phone", "client").unwrap(), "terminal.input")
+                .unwrap_err()
+                .code,
+            "mobile_readonly",
+            "the next request observes the stored live permission"
+        );
+        assert!(!*closed_rx.borrow(), "downgrade keeps the connection available for viewing");
+        let expired = chrono::DateTime::parse_from_rfc3339(
+            &db.lease(&session.id).unwrap().unwrap().2,
+        )
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+        assert!(expired <= chrono::Utc::now(), "downgrade releases the control lease");
+
+        groups
+            .set_permission("phone", DevicePermission::Fullcontrol, &db)
+            .unwrap();
+        assert!(authorize_method(
+            groups.permission("phone", "client").unwrap(),
+            "terminal.input"
+        )
+        .is_ok());
+        assert_eq!(
+            authorize_method(DevicePermission::Fullcontrol, "device.permission.set")
+                .unwrap_err()
+                .code,
+            "mobile_forbidden",
+            "device administration stays unavailable to mobile principals"
+        );
+        assert!(!*closed_rx.borrow(), "upgrade takes effect on the same connection");
     }
 }

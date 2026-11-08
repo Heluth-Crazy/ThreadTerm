@@ -991,6 +991,58 @@ impl DeviceManager {
         })
     }
 
+    pub fn set_permission(
+        &self,
+        device_id: &str,
+        permission: DevicePermission,
+        operation_id: &str,
+    ) -> Result<PairedDevice> {
+        if device_id.is_empty() || operation_id.is_empty() {
+            bail!("invalid_device_permission")
+        }
+        self.db.transaction(|tx| {
+            if let Some(prior) = operation_value(tx, operation_id)? {
+                return serde_json::from_value(prior)
+                    .context("decoding device.permission.set replay");
+            }
+            let mut device =
+                paired_device(tx, device_id)?.ok_or_else(|| anyhow::anyhow!("device_not_found"))?;
+            if device.revoked_at.is_some() {
+                bail!("device_revoked")
+            }
+            if device.profile == DeviceProfile::Desktop && permission != DevicePermission::Fullcontrol {
+                bail!("invalid_desktop_permission")
+            }
+            tx.execute(
+                "UPDATE paired_devices SET permission=? WHERE id=? AND revoked_at IS NULL",
+                params![permission.to_string(), device_id],
+            )?;
+            if permission == DevicePermission::Readonly {
+                // Legacy phone RPCs carry their leases under device:<id>.
+                // Mobile groups use their own mobile:<id>:* prefix when their
+                // live permission is updated by RemoteAccess.
+                tx.execute(
+                    "UPDATE leases SET expires_at=? WHERE client_id=?",
+                    params![timestamp(Utc::now()), format!("device:{device_id}")],
+                )?;
+            }
+            device.permission = permission;
+            let result = serde_json::to_value(&device)?;
+            complete_operation(tx, operation_id, "device.permission.set", &result)?;
+            emit_device_change(tx, "device.permission.changed")?;
+            Ok(device)
+        })
+    }
+
+    pub fn device(&self, device_id: &str) -> Result<PairedDevice> {
+        if device_id.is_empty() {
+            bail!("device_not_found")
+        }
+        self.db.transaction(|tx| {
+            paired_device(tx, device_id)?.ok_or_else(|| anyhow::anyhow!("device_not_found"))
+        })
+    }
+
     pub fn renew(&self, device_id: &str, operation_id: &str) -> Result<PairedDevice> {
         self.renew_at(device_id, operation_id, Utc::now())
     }
@@ -1979,5 +2031,112 @@ mod tests {
                 .optional()?
                 .is_some()))
             .unwrap());
+    }
+
+    #[test]
+    fn permission_change_persists_replays_and_rejects_revoked_devices() {
+        let (_directory, manager) = manager();
+        manager
+            .set_remote_access_preference(true, None, None)
+            .unwrap();
+        let offer = manager
+            .create_pairing_with_profile(
+                DevicePermission::Fullcontrol,
+                DeviceProfile::Mobile,
+                "permission-mobile",
+                "https://x",
+                "AA",
+                None,
+            )
+            .unwrap();
+        let paired = manager.pair(&offer.id, &offer.code, "Phone", None).unwrap();
+        let leased = manager
+            .db
+            .create_session(crate::db::CreateSession {
+                project_id: None,
+                title: Some("Permission lease"),
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "permission-lease",
+            })
+            .unwrap();
+        let other = manager
+            .db
+            .create_session(crate::db::CreateSession {
+                project_id: None,
+                title: Some("Other lease"),
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "other-permission-lease",
+            })
+            .unwrap();
+        let future = timestamp(Utc::now() + Duration::hours(1));
+        manager
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO leases(session_id,client_id,epoch,expires_at) VALUES(?,?,1,?)",
+                    params![leased.id, format!("device:{}", paired.device.id), future],
+                )?;
+                tx.execute(
+                    "INSERT INTO leases(session_id,client_id,epoch,expires_at) VALUES(?,?,1,?)",
+                    params![other.id, "device:unaffected", future],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let changed = manager
+            .set_permission(
+                &paired.device.id,
+                DevicePermission::Readonly,
+                "permission-readonly",
+            )
+            .unwrap();
+        assert_eq!(changed.permission, DevicePermission::Readonly);
+        assert_eq!(
+            manager
+                .set_permission(
+                    &paired.device.id,
+                    DevicePermission::Readonly,
+                    "permission-readonly",
+                )
+                .unwrap(),
+            changed,
+            "the operation result is safe to replay"
+        );
+        assert_eq!(manager.list().unwrap()[0].permission, DevicePermission::Readonly);
+        let target_expiry: String = manager
+            .db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT expires_at FROM leases WHERE session_id=?",
+                    [&leased.id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        let other_expiry: String = manager
+            .db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT expires_at FROM leases WHERE session_id=?",
+                    [&other.id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(parse_timestamp(&target_expiry).unwrap() <= Utc::now());
+        assert_eq!(other_expiry, future, "only this device's legacy lease expires");
+        manager.revoke(&paired.device.id, "permission-revoke").unwrap();
+        assert!(manager
+            .set_permission(
+                &paired.device.id,
+                DevicePermission::Fullcontrol,
+                "permission-after-revoke",
+            )
+            .is_err());
     }
 }

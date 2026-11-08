@@ -1497,7 +1497,23 @@ impl RuntimeService {
                 "data relocation is awaiting activation or cancellation",
             ));
         }
-        if crate::mobile::is_principal(principal) {
+        let mobile_principal = crate::mobile::is_principal(principal);
+        // A permission downgrade takes RemoteAccess's write side. Retain the
+        // read side for the whole mobile authorization and synchronous effect,
+        // so an action admitted as Control cannot take effect after that
+        // downgrade commits. `dispatch` already holds the relocation gate.
+        let _mobile_access = if mobile_principal {
+            Some(
+                self.remote
+                    .get()
+                    .ok_or_else(|| error("mobile_revoked", "Mobile connection is unavailable"))?
+                    .access_read()
+                    .map_err(|_| error("runtime_error", "remote access gate poisoned"))?,
+            )
+        } else {
+            None
+        };
+        if mobile_principal {
             crate::mobile::guard_request(self, principal, &request.method, &request.params)?;
             match self.dispatch_mobile(principal, &request.method, &request.params) {
                 Ok(Some(value)) => return Ok(value),

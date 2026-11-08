@@ -63,3 +63,16 @@ test('Phones offers the mobile profile with checked pairing details and keeps le
   const legacyList = source.slice(source.indexOf('function LegacyPhoneList'));
   assert.match(legacyList, /24 hours/);
 });
+
+test('paired mobile apps have a persisted View or Control action, while the pairing selector applies only to the next device', () => {
+  const source = readFileSync(resolve('renderer/src/components/DeviceSettings.tsx'), 'utf8');
+  assert.match(source, /New device access \(next pairing only\)/);
+  assert.match(source, /This setting applies only to the next pairing code\./);
+  assert.match(source, /request\("device\.permission\.set", \{ deviceId: device\.id, permission: next, operationId: operationId\(\) \}\)/);
+  const mobileList = source.slice(source.indexOf('function MobileDeviceList'), source.indexOf('function LegacyPhoneList'));
+  assert.match(mobileList, /View access for \$\{device\.name\}/);
+  assert.match(mobileList, /Control access for \$\{device\.name\}/);
+  assert.match(mobileList, /onPermission/);
+  const legacyList = source.slice(source.indexOf('function LegacyPhoneList'));
+  assert.doesNotMatch(legacyList, /device\.permission\.set/);
+});

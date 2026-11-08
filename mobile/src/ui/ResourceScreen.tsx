@@ -609,7 +609,7 @@ function GitBody({
                   })
                 }
               />
-            )}{" "}
+            )}
             {!!c.worktreeStatus && c.worktreeStatus !== " " && (
               <Button
                 theme={theme}

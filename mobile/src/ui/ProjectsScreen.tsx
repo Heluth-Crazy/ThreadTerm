@@ -152,7 +152,7 @@ function Computers({ theme, state, onRoute, onConnect, onAddComputer }: Props) {
                   label={machineSummary(machine.status, locale)}
                 />
                 {machine.status !== "connected" && machine.snapshot && <Text style={{ color: theme.muted }}>{locale === "zh-CN" ? `缓存数据${synced ? ` · ${synced}` : ""}` : `Cached${synced ? ` · ${synced}` : ""}`}</Text>}
-                {machine.error && (
+                {!!machine.error && (
                   <Text style={{ color: theme.red }}>{machine.error}</Text>
                 )}
               </View>
@@ -195,7 +195,7 @@ function Machine({
         title={machine?.name ?? "Computer"}
         onBack={() => onRoute({ kind: "computers" })}
       />
-      {machine?.error && (
+      {!!machine?.error && (
         <Text style={[styles.error, { color: theme.red }]}>
           {machine.error}
         </Text>

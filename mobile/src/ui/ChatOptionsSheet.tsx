@@ -38,7 +38,7 @@ export function ChatOptionsSheet({ theme, locale, visible, ui, disabledReason, p
   const options = [thinking, mode, ...extras].filter((value): value is ChatSessionOption => !!value && value.choices.length > 0);
 
   return <Sheet theme={theme} visible={visible} title={heading} onDismiss={onDismiss} closeLabel={copy(locale, 'Close', '关闭')} dismissLabel={copy(locale, 'Dismiss', '收起')}>
-    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <ScrollView contentContainerStyle={styles.content} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
       {(loading || ui?.loadState === 'loading' || ui?.loadState === 'idle') && <Loading theme={theme} label={copy(locale, 'Loading options…', '正在加载选项…')} />}
       {!!(error ?? ui?.error?.message) && <View style={[styles.notice, { backgroundColor: `${theme.red}16` }]}>
         <Text style={{ color: theme.red, flex: 1 }}>{error ?? ui?.error?.message}</Text>
@@ -67,7 +67,7 @@ function OptionSection({ theme, locale, option, choices = option.choices, pendin
   const withHeaders = groups.some(group => group.key);
   return <View style={styles.option}>
     <SectionLabel theme={theme}>{optionTitle(option, (en, zh) => copy(locale, en, zh))}</SectionLabel>
-    {option.description && <Text style={[styles.description, { color: theme.muted }]}>{option.description}</Text>}
+    {!!option.description && <Text style={[styles.description, { color: theme.muted }]}>{option.description}</Text>}
     {groups.map(group => <View key={group.key || 'choices'}>
       {withHeaders && !!group.key && <Text style={[styles.group, { color: theme.muted }]}>{group.key}</Text>}
       {group.choices.map(choice => <ChoiceRow key={choice.value} theme={theme} locale={locale} option={option} choice={choice} pending={pending} disabled={disabled} onChoose={onChoose} />)}
@@ -79,7 +79,7 @@ function OptionSection({ theme, locale, option, choices = option.choices, pendin
 function ChoiceRow({ theme, locale, option, choice, pending, disabled, onChoose }: { theme: Theme; locale: Locale; option: ChatSessionOption; choice: ChatSessionChoice; pending?: string; disabled: boolean; onChoose: (option: ChatSessionOption, choice: ChatSessionChoice) => void }) {
   const selected = option.value === choice.value, busy = pending === option.id;
   return <Pressable accessibilityRole="radio" accessibilityLabel={choiceText(option, choice, locale === 'zh-CN')} accessibilityState={{ checked: selected, selected, disabled: disabled || !!pending || selected, busy }} disabled={disabled || !!pending || selected} onPress={() => onChoose(option, choice)} style={({ pressed }) => [styles.choice, { borderColor: selected ? theme.primary : theme.line, backgroundColor: selected ? theme.chip : theme.surface, opacity: pending && !busy ? .55 : pressed ? .72 : 1 }]}>
-    <View style={styles.choiceCopy}><Text maxFontSizeMultiplier={1.5} style={{ color: theme.text, fontWeight: selected ? '800' : '600' }}>{choiceText(option, choice, locale === 'zh-CN')}</Text>{choice.description && <Text maxFontSizeMultiplier={1.6} style={{ color: theme.muted }}>{choice.description}</Text>}</View>
+    <View style={styles.choiceCopy}><Text maxFontSizeMultiplier={1.5} style={{ color: theme.text, fontWeight: selected ? '800' : '600' }}>{choiceText(option, choice, locale === 'zh-CN')}</Text>{!!choice.description && <Text maxFontSizeMultiplier={1.6} style={{ color: theme.muted }}>{choice.description}</Text>}</View>
     {busy ? <Text style={{ color: theme.text }}>…</Text> : selected ? <Text accessibilityLabel={copy(locale, 'Selected', '已选择')} style={{ color: theme.primary, fontWeight: '800' }}>✓</Text> : isRecommended(option, choice) ? <Text style={[styles.recommended, { color: theme.text }]}>{copy(locale, 'Recommended', '推荐')}</Text> : null}
   </Pressable>;
 }

@@ -139,3 +139,57 @@ test('image read failure preserves attachments and does not dispatch chat.send',
   const {native,app}=await ready([record('a')]);const ref={machineId:'a',sessionId:'same'};await app.controller.openSession(ref);await app.controller.uploadAttachment(ref,{name:'pic.gif',size:1,uri:'private://pic'});native.attachmentChunks=['@@@'];
   await assert.rejects(app.controller.send(ref));assert.equal(native.calls.filter(call=>call.method==='chat.send').length,0);assert.equal(app.getSnapshot().attachments[sessionKey(ref)]?.length,1);await app.dispose();
 });
+
+test('removing the final paired computer clears its session, draft, attention and lease', async()=>{
+  const {native,app}=await ready([record('only')]);const ref={machineId:'only',sessionId:'same'};
+  await app.controller.openSession(ref);await app.controller.claimControl(ref);app.controller.setDraft(ref,'private draft');
+  await app.controller.removeMachine('only');
+  const state=app.getSnapshot();
+  assert.deepEqual(native.removed,['only']);assert.deepEqual(state.machines,[]);assert.deepEqual(state.attention,[]);
+  assert.equal(state.sessions[sessionKey(ref)],undefined);assert.equal(state.drafts[sessionKey(ref)],undefined);
+  assert.equal(state.initialized,true);await app.dispose();
+});
+
+test('live permission downgrade clears cached leases and upgrade requires a fresh claim', async()=>{
+  const {native,app}=await ready([record('a')]);const ref={machineId:'a',sessionId:'same'};
+  await app.controller.openSession(ref);await app.controller.claimControl(ref);
+  assert.equal(app.getSnapshot().sessions[sessionKey(ref)].leaseEpoch,7);
+  app.controller.setDraft(ref,'permission regression');
+  native.snapshots.set('a',{...snapshot('a','readonly'),revision:2});
+  await app.controller.refresh('a');
+  assert.equal(app.getSnapshot().machines[0].permission,'readonly');
+  assert.equal(app.getSnapshot().sessions[sessionKey(ref)].leaseEpoch,undefined);
+  await assert.rejects(app.controller.send(ref),/mobile_readonly/);
+  native.snapshots.set('a',{...snapshot('a','fullcontrol'),revision:3});
+  await app.controller.refresh('a');await app.controller.send(ref);
+  assert.equal(native.calls.filter(call=>call.method==='session.claim').length,2);
+  await app.dispose();
+});
+
+test('a late control claim cannot restore a lease after a downgrade and upgrade',async()=>{
+  const {native,app}=await ready([record('a')]);const ref={machineId:'a',sessionId:'same'};
+  try {
+    await app.controller.openSession(ref);await app.controller.unlockControl();
+    const held=native.hold('a','session.claim');const claiming=app.controller.claimControl(ref);await tick();
+    native.snapshots.set('a',{...snapshot('a','readonly'),revision:2});await app.controller.refresh('a');
+    native.snapshots.set('a',{...snapshot('a','fullcontrol'),revision:3});await app.controller.refresh('a');
+    held.resolve(JSON.stringify({leaseEpoch:7}));
+    await assert.rejects(claiming,/outcome_unknown|permission_changed/);
+    assert.equal(app.getSnapshot().sessions[sessionKey(ref)].leaseEpoch,undefined);
+    native.deferred.delete('a:session.claim');app.controller.setDraft(ref,'fresh authority');await app.controller.send(ref);
+    assert.equal(native.calls.filter(call=>call.method==='session.claim').length,2,'next action takes a fresh lease');
+  } finally {await app.dispose();}
+});
+
+test('a permission-change event fences a late claim even when snapshots coalesce back to Control',async()=>{
+  const {native,app}=await ready([record('a')]);const ref={machineId:'a',sessionId:'same'};
+  try {
+    await app.controller.openSession(ref);await app.controller.unlockControl();
+    const held=native.hold('a','session.claim');const claiming=app.controller.claimControl(ref);await tick();
+    native.emitEvent('a',{v:1,event:'mobile.changed',epoch:'epoch-a',seq:2,data:{permissionChanged:true}});
+    native.snapshots.set('a',{...snapshot('a','fullcontrol'),revision:3});await app.controller.refresh('a');
+    held.resolve(JSON.stringify({leaseEpoch:7}));
+    await assert.rejects(claiming,/outcome_unknown/);
+    assert.equal(app.getSnapshot().sessions[sessionKey(ref)].leaseEpoch,undefined);
+  } finally {await app.dispose();}
+});

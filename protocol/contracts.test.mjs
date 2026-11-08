@@ -61,6 +61,14 @@ test('all four tool switches remain optional boolean portable settings',()=>{
 });
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('paired device permission updates have a complete, bounded contract', () => {
+ const device={id:'device-1',name:'Phone',permission:'readonly',profile:'mobile',createdAt:'2026-01-01T00:00:00Z',expiresAt:'2026-02-01T00:00:00Z'};
+ assert.ok(METHODS.includes('device.permission.set'));
+ validateRequest('device.permission.set',{deviceId:device.id,permission:'fullcontrol',operationId:'permission-1'});
+ validateResult('device.permission.set',{...device,permission:'fullcontrol'});
+ for(const patch of [{deviceId:''},{permission:'admin'},{operationId:''},{extra:true}]) assert.throws(()=>validateRequest('device.permission.set',{deviceId:device.id,permission:'readonly',operationId:'permission-1',...patch}));
+});
+
 test('push preview and explicit lease contracts preserve plain push and reject unsafe force requests',()=>{
  const scope={projectId:'p'},oid='a'.repeat(40),plain={...scope,operationId:'push'};
  validateRequest('git.push',plain);
