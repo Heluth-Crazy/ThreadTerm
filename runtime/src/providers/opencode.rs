@@ -70,6 +70,34 @@ impl OpenCodeAdapter {
     pub fn new(events: crate::provider_events::Sender) -> Self {
         Self { events }
     }
+
+    /// P4: 2.x history is read through the owned server's read-only native API.
+    /// No CLI enumeration and no project-only listing: the native endpoint takes
+    /// a directory filter (project scope) or none (global scope).
+    fn v2_history_list(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+        cwd: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        let server = opencode_v2_history_server(cwd.unwrap_or("."), "history-list")?;
+        let payload = server
+            .native_api()
+            .list_sessions_page(limit, cursor, cwd)?;
+        v2_history_page(&payload)
+    }
+
+    /// P4: exact-ID reads walk the bounded native message pages and then use the
+    /// same canonical conversion as the live snapshot, so a re-opened history is
+    /// the transcript the stream would have produced.
+    fn v2_history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
+        let server = opencode_v2_history_server(".", "history-read")?;
+        let api = server.native_api();
+        let rows = v2_history_collect(|cursor| {
+            api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
+        })?;
+        Ok(Value::Array(v2::history_transcript(native_id, &rows)?))
+    }
 }
 
 impl ProviderAdapter for OpenCodeAdapter {
@@ -158,6 +186,9 @@ impl ProviderAdapter for OpenCodeAdapter {
 
     fn fork_session(&self, cwd: &str, native_id: &str, anchor: Option<&crate::domain::NativeForkAnchor>, is_latest: bool) -> Result<Option<String>, ProviderError> {
         validate_native_id(native_id)?;
+        if opencode_history_is_native() {
+            return opencode_v2_fork(cwd, native_id, anchor, is_latest);
+        }
         let server = OpenCodeServer::start(cwd, "native-fork", self.events.clone(), "")?;
         let messages = if anchor.is_some() {
             server.json(server.request(reqwest::Method::GET, &format!("/session/{native_id}/message"), None)?)?
@@ -180,6 +211,11 @@ impl ProviderAdapter for OpenCodeAdapter {
         limit: u32,
         cwd: Option<&str>,
     ) -> Result<Value, ProviderError> {
+        // A 2.x CLI has no reader for these commands; 1.18.35 keeps its CLI
+        // path unchanged and never starts a server for a listing.
+        if opencode_history_is_native() {
+            return self.v2_history_list(cursor, limit, cwd);
+        }
         let offset = cursor
             .map(str::parse::<usize>)
             .transpose()
@@ -231,6 +267,9 @@ impl ProviderAdapter for OpenCodeAdapter {
 
     fn history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(native_id)?;
+        if opencode_history_is_native() {
+            return self.v2_history_read(native_id);
+        }
         let spec = CommandSpec::provider("opencode", &["export", native_id, "--pure"])?;
         let output = command_output(&spec, Duration::from_secs(30))?;
         let raw: Value = serde_json::from_str(&output).map_err(|error| {
@@ -3588,7 +3627,12 @@ fn opencode_history_item(row: &Value, cwd: Option<&str>) -> Option<Value> {
         return None;
     }
     let id = row.get("id")?.as_str()?;
-    let directory = row.get("directory").and_then(Value::as_str);
+    // 1.x rows carry `directory` at the top level; 2.x nests it under
+    // `location`, so both shapes keep the same project scope here.
+    let directory = row
+        .get("directory")
+        .or_else(|| row.pointer("/location/directory"))
+        .and_then(Value::as_str);
     if cwd.is_some() && directory != cwd {
         return None;
     }
@@ -3638,6 +3682,197 @@ fn opencode_transcript(raw: &Value) -> Vec<Value> {
         }
         Some(item)
     }).collect()
+}
+
+// ---- P4: 2.x native history and forks -------------------------------------
+const V2_HISTORY_PAGE: u32 = 200;
+const V2_HISTORY_MAX_PAGES: usize = 10;
+const V2_HISTORY_MAX_MESSAGES: usize = 2000;
+
+/// Only a CLI that is not 2.x may use the legacy `session list`/`export` reader.
+/// A 2.x version probe can never authorize those commands.
+fn opencode_history_is_native() -> bool {
+    // The probe spawns the CLI; history pages and forks reuse a recent answer.
+    static RECENT: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    if let Some((at, native)) = RECENT.lock().ok().and_then(|recent| *recent) {
+        if at.elapsed() < Duration::from_secs(60) {
+            return native;
+        }
+    }
+    let (installed, version, _) = version_probe("opencode");
+    let native = opencode_history_uses_native_api(installed, version.as_deref());
+    if let Ok(mut recent) = RECENT.lock() {
+        *recent = Some((Instant::now(), native));
+    }
+    native
+}
+
+fn opencode_history_uses_native_api(installed: bool, version: Option<&str>) -> bool {
+    installed && version.and_then(opencode_version_major).is_some_and(|major| major >= 2)
+}
+
+/// `opencode --version` prints `1.18.35` on 1.x and `opencode v2.2.5` on 2.x, so
+/// the major version is the first numeric token, not the first token.
+fn opencode_version_major(version: &str) -> Option<u32> {
+    version.split_whitespace().find_map(|token| {
+        token
+            .trim_start_matches('v')
+            .split('.')
+            .next()?
+            .parse()
+            .ok()
+    })
+}
+
+fn opencode_v2_history_server(cwd: &str, threadterm_session: &str) -> Result<OpenCodeServer, ProviderError> {
+    let server = OpenCodeServer::start(
+        cwd,
+        threadterm_session,
+        crate::provider_events::tap_channel(1).0,
+        "",
+    )?;
+    // The version probe selected this path; the negotiated dialect has to agree
+    // before any read is attempted.
+    if server.dialect != ApiDialect::V2 {
+        return Err(ProviderError::new(
+            "provider_protocol",
+            "OpenCode reported a 2.x version but did not expose the 2.x native API",
+        ));
+    }
+    Ok(server)
+}
+
+/// One native history page. Read errors are errors: they never become an empty
+/// listing, and the cursor is carried through unchanged.
+fn v2_history_page(payload: &Value) -> Result<Value, ProviderError> {
+    let rows = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ProviderError::new("provider_protocol", "OpenCode returned malformed session history"))?;
+    let items = rows
+        .iter()
+        .filter_map(|row| opencode_history_item(row, None))
+        .collect::<Vec<_>>();
+    let next = payload
+        .pointer("/cursor/next")
+        .and_then(Value::as_str)
+        .map(|cursor| json!(cursor));
+    Ok(history_page(items, next))
+}
+
+fn v2_message_page(page: &Value) -> Result<(Vec<Value>, Option<String>), ProviderError> {
+    let rows = page
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ProviderError::new("provider_protocol", "OpenCode returned malformed session messages"))?;
+    Ok((
+        rows.clone(),
+        page.pointer("/cursor/next")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    ))
+}
+
+/// Bounded page walk. A non-advancing cursor ends the walk; exceeding the
+/// message bound is an explicit error, never a silently truncated transcript.
+fn v2_history_collect<F>(mut fetch: F) -> Result<Vec<Value>, ProviderError>
+where
+    F: FnMut(Option<&str>) -> Result<Value, ProviderError>,
+{
+    let mut rows: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..V2_HISTORY_MAX_PAGES {
+        let (page, next) = v2_message_page(&fetch(cursor.as_deref())?)?;
+        rows.extend(page);
+        if rows.len() > V2_HISTORY_MAX_MESSAGES {
+            break;
+        }
+        match next.filter(|next| cursor.as_deref() != Some(next.as_str())) {
+            Some(next) => cursor = Some(next),
+            None => return Ok(rows),
+        }
+    }
+    Err(ProviderError::new(
+        "provider_protocol",
+        "OpenCode session history exceeds the readable bound",
+    ))
+}
+
+/// A 2.x fork is native and non-idempotent: every uncertain outcome is an
+/// error, so it can never fall through to copy/repost.
+fn opencode_v2_fork(
+    cwd: &str,
+    native_id: &str,
+    anchor: Option<&crate::domain::NativeForkAnchor>,
+    is_latest: bool,
+) -> Result<Option<String>, ProviderError> {
+    if anchor.is_none() && !is_latest {
+        return Ok(None);
+    }
+    let server = opencode_v2_history_server(cwd, "native-fork")?;
+    let api = server.native_api();
+    let before = match anchor {
+        None => None,
+        Some(anchor) => {
+            if anchor.native_id != native_id {
+                return Ok(None);
+            }
+            let Some(message) = anchor.message_id.as_deref() else {
+                return Ok(None);
+            };
+            validate_native_id(message)?;
+            let rows = v2_history_collect(|cursor| {
+                api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
+            })?;
+            v2_fork_before(message, &rows)?
+        }
+    };
+    let result = api.fork_before(native_id, before.as_deref()).map_err(|error| {
+        ProviderError::new(
+            "operation_outcome_unknown",
+            format!(
+                "OpenCode fork was not confirmed; do not retry this operation: {}",
+                error.message
+            ),
+        )
+    })?;
+    let id = result
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| *id != native_id)
+        .ok_or_else(|| {
+            ProviderError::new(
+                "operation_outcome_unknown",
+                "OpenCode fork returned no distinct session identity",
+            )
+        })?;
+    validate_native_id(id).map_err(|error| ProviderError::new("operation_outcome_unknown", error.message))?;
+    Ok(Some(id.to_owned()))
+}
+
+/// The native `before` is exclusive: the row after the selected reply is the
+/// cutoff, so that reply is included and later content is not.
+fn v2_fork_before(anchor_message: &str, rows: &[Value]) -> Result<Option<String>, ProviderError> {
+    let index = rows
+        .iter()
+        .position(|row| row.get("id").and_then(Value::as_str) == Some(anchor_message))
+        .ok_or_else(|| {
+            ProviderError::new(
+                "operation_outcome_unknown",
+                "OpenCode no longer has the selected message, so no fork was attempted",
+            )
+        })?;
+    match rows.get(index + 1) {
+        Some(row) => {
+            let next = row.get("id").and_then(Value::as_str).ok_or_else(|| {
+                ProviderError::new("operation_outcome_unknown", "OpenCode fork boundary is unreadable")
+            })?;
+            validate_native_id(next)?;
+            Ok(Some(next.to_owned()))
+        }
+        // The selected reply is the last row: the full history is the boundary.
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]

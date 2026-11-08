@@ -1043,9 +1043,15 @@ fn merge_final(message: &mut Message, event: &Value) -> Result<(), ProviderError
 }
 
 fn canonical_parts(message: &Message) -> Result<Vec<Value>, ProviderError> {
-    let parts = message
-        .content
-        .values()
+    let content = message.content.values().cloned().collect::<Vec<_>>();
+    canonical_content(&content)
+}
+
+/// The single canonical conversion for 2.x assistant content: live snapshots and
+/// P4 history both go through it, so a re-opened transcript matches the stream.
+fn canonical_content(content: &[Value]) -> Result<Vec<Value>, ProviderError> {
+    let parts = content
+        .iter()
         .filter(|part| part.get("name").and_then(Value::as_str) != Some("subagent"))
         .map(|part| {
             let mut normalized = match part.get("type").and_then(Value::as_str) {
@@ -1080,6 +1086,83 @@ fn canonical_parts(message: &Message) -> Result<Vec<Value>, ProviderError> {
         ));
     }
     Ok(parts)
+}
+
+/// P4 exact-ID history: the native message rows go through the same canonical
+/// conversion as live snapshots. Unknown or unreadable rows are an explicit
+/// error, never an empty or partial transcript.
+pub(super) fn history_transcript(
+    session: &str,
+    rows: &[Value],
+) -> Result<Vec<Value>, ProviderError> {
+    let mut items = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let id = text(row, "id")?;
+        validate_native_id(id)?;
+        let created = opencode_message_created_at(row).unwrap_or_else(|| Utc::now().to_rfc3339());
+        match row.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                let mut part = json!({
+                    "type":"text",
+                    "text":row.get("text").and_then(Value::as_str).unwrap_or_default()
+                });
+                let images = row
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|file| {
+                        file.get("uri")
+                            .or_else(|| file.get("url"))
+                            .and_then(Value::as_str)
+                    })
+                    .filter(|uri| uri.starts_with("data:image/"))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if !images.is_empty() {
+                    part["data"] = json!({"images":images});
+                }
+                items.push(json!({
+                    "id":id,
+                    "role":"user",
+                    "parts":[part],
+                    "createdAt":created,
+                    "turnOrigin":"history"
+                }));
+            }
+            Some("assistant") => {
+                let content = row
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| protocol("OpenCode v2 history assistant content is missing"))?;
+                let parts = canonical_content(content)?;
+                let mut item = json!({
+                    "id":id,
+                    "role":"assistant",
+                    "parts":parts,
+                    "createdAt":created,
+                    "turnOrigin":"history",
+                    "forkAnchor":{"nativeId":session,"messageId":id}
+                });
+                // An idle row is the native terminal transition for the turn;
+                // a finish reason is the same evidence inside the row.
+                let settled = row.get("finish").is_some()
+                    || rows[index + 1..]
+                        .iter()
+                        .any(|row| row.get("type").and_then(Value::as_str) == Some("idle"));
+                if settled {
+                    item["turnStatus"] = json!("completed");
+                }
+                items.push(item);
+            }
+            Some(
+                "idle" | "agent-switched" | "model-switched" | "location-switched" | "synthetic"
+                | "system" | "skill" | "shell" | "compaction",
+            ) => {}
+            _ => return Err(protocol("OpenCode v2 history has an unknown message type")),
+        }
+    }
+    Ok(items)
 }
 
 fn api(target: &EventTarget) -> NativeApi {
@@ -2656,3 +2739,7 @@ mod interaction_tests;
 #[cfg(test)]
 #[path = "v2_composer_tests.rs"]
 mod composer_tests;
+
+#[cfg(test)]
+#[path = "v2_history_tests.rs"]
+mod history_tests;

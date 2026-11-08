@@ -170,6 +170,19 @@ impl NativeApi {
         body: Option<Value>,
         shape: ResponseShape,
     ) -> Result<Value, ProviderError> {
+        self.json_request_query(method, path, &[], body, shape)
+    }
+
+    /// Same contract as [`Self::json_request`], with additional endpoint-owned
+    /// query parameters (history filters and native cursors).
+    pub(super) fn json_request_query(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+        shape: ResponseShape,
+    ) -> Result<Value, ProviderError> {
         let mut request = self
             .client
             .request(method, format!("{}{path}", self.base_url))
@@ -181,6 +194,9 @@ impl NativeApi {
             "/api/location" | "/api/provider" | "/api/model" | "/api/agent" | "/api/command"
         ) {
             request = request.query(&[("location[directory]", &self.cwd)]);
+        }
+        if !query.is_empty() {
+            request = request.query(query);
         }
         if let Some(body) = body {
             request = request.json(&body);
@@ -270,6 +286,90 @@ impl NativeApi {
         }
         // This is an inbox receipt, never execution completion.
         Ok(receipt)
+    }
+
+    /// Read-only history listing. `parentID=null` keeps roots only, `directory`
+    /// scopes one project (omitted is the global list) and the cursor is the
+    /// native opaque one, passed through unchanged.
+    pub(super) fn list_sessions_page(
+        &self,
+        limit: u32,
+        cursor: Option<&str>,
+        directory: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("V2 session listing requires the v2 dialect"));
+        }
+        let mut query: Vec<(&str, String)> = vec![
+            ("limit", limit.to_string()),
+            ("parentID", "null".to_owned()),
+        ];
+        if let Some(directory) = directory {
+            query.push(("directory", directory.to_owned()));
+        }
+        if let Some(cursor) = cursor {
+            query.push(("cursor", cursor.to_owned()));
+        }
+        self.json_request_query(
+            Method::GET,
+            &self.dialect.session_path(None),
+            &query,
+            None,
+            ResponseShape::Direct,
+        )
+    }
+
+    /// One bounded page of the exact-ID projected message timeline. The native
+    /// contract forbids combining `order` with `cursor`.
+    pub(super) fn messages_page(
+        &self,
+        id: &str,
+        limit: u32,
+        order: &str,
+        cursor: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("V2 message reads require the v2 dialect"));
+        }
+        validate_native_id(id)?;
+        let mut query: Vec<(&str, String)> = vec![("limit", limit.to_string())];
+        match cursor {
+            Some(cursor) => query.push(("cursor", cursor.to_owned())),
+            None => query.push(("order", order.to_owned())),
+        }
+        self.json_request_query(
+            Method::GET,
+            &format!("{}/message", self.dialect.session_path(Some(id))),
+            &query,
+            None,
+            ResponseShape::Direct,
+        )
+    }
+
+    /// 2.2.5 forks by copying projected history *before* an exclusive message
+    /// id; omitting it copies the full history.
+    pub(super) fn fork_before(
+        &self,
+        id: &str,
+        before: Option<&str>,
+    ) -> Result<Value, ProviderError> {
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("V2 forks require the v2 dialect"));
+        }
+        validate_native_id(id)?;
+        if let Some(before) = before {
+            validate_native_id(before)?;
+        }
+        let body = match before {
+            Some(before) => json!({"before":before}),
+            None => json!({}),
+        };
+        self.json_request(
+            Method::POST,
+            &format!("{}/fork", self.dialect.session_path(Some(id))),
+            Some(body),
+            ResponseShape::Data,
+        )
     }
 
     pub(super) fn read_session(&self, id: &str) -> Result<Value, ProviderError> {
