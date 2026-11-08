@@ -76,7 +76,7 @@ export function ChatApprovalCard({
       {subagent && <span className="chat-subagent-chip">{copy("Subagent", "子代理")} · {subagent.label || copy("Subagent", "子代理")}</span>}
       {(resolved || expired) && <span className="chat-question-status">{expired ? copy("Inactive", "已失效") : part.status === "dismissed" ? copy("Dismissed", "已忽略") : copy("Answered", "已回答")}</span>}
     </div>
-    <ChatQuestionCard form={question.form} answerable={question.answerable !== false} resolved={resolved} dismissed={part.status === "dismissed"} summary={question.answerSummary} writable={writable && !expired} submitting={Boolean(submitting)} onAnswer={onAnswer} copy={copy} nonBlocking={question.isBlocking === false} autoResolutionMs={question.autoResolutionMs} inactiveMessage={expired ? copy("This question is no longer active.", "此问题已失效。") : undefined} />
+    <ChatQuestionCard key={part.approvalId} form={question.form} answerable={question.answerable !== false} resolved={resolved} dismissed={part.status === "dismissed"} summary={question.answerSummary} writable={writable && !expired} submitting={Boolean(submitting)} onAnswer={onAnswer} copy={copy} nonBlocking={question.isBlocking === false} autoResolutionMs={question.autoResolutionMs} inactiveMessage={expired ? copy("This question is no longer active.", "此问题已失效。") : undefined} />
   </div>;
   return (
     <div className={`chat-approval-card ${part.status ?? "pending"}${delegation?.route === "parent" ? " is-delegated" : ""}`}>

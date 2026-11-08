@@ -1,11 +1,125 @@
-import type { ChatAnswerResponse, ChatInteractionForm, ChatQuestion } from "@threadterm/protocol";
+import type { ChatAnswerResponse, ChatFormCondition, ChatFormField, ChatInteractionForm, ChatQuestion } from "@threadterm/protocol";
 
 export type { ChatInteractionForm } from "@threadterm/protocol";
 type QuestionSubmit = Extract<ChatAnswerResponse, { action: "submit" }>;
 export type QuestionValue = QuestionSubmit["values"][string];
 export type QuestionResponse = ChatAnswerResponse;
+/** The stored form semantics a card must render. Only an explicit target policy leaves the legacy path. */
+export type FormPolicy = "opencode-v2" | "unsupported" | "legacy";
+export type TargetForm = Extract<ChatInteractionForm, { kind: "form" }>;
+export type FormIssue =
+  | "required" | "acknowledge" | "invalid" | "unoffered"
+  | "too-short" | "too-long" | "too-few" | "too-many" | "out-of-range";
+
+/**
+ * `validation` is adapter-written stored policy, never caller input. A form that carries any
+ * other policy is not legacy: the runtime refuses it, so the card must not silently treat it as one.
+ */
+export function formPolicy(form: ChatInteractionForm): FormPolicy {
+  if (form.kind !== "form" || form.validation === undefined) return "legacy";
+  return form.validation.semantics === "opencode-v2" && form.validation.patternAndFormat === "native" ? "opencode-v2" : "unsupported";
+}
+
+function conditionHolds(condition: ChatFormCondition, value: QuestionValue | undefined): boolean {
+  if (value === undefined) return false;
+  const match = Array.isArray(value) ? value.some(item => item === condition.value) : value === condition.value;
+  return condition.op === "eq" ? match : !match;
+}
+
+/**
+ * Active fields in declared order (F2). Only an earlier ACTIVE typed answer can activate a later
+ * field, so an inactive draft never reaches its dependants. A missing predecessor satisfies
+ * neither `eq` nor `neq`; multiselect equality is membership; comparisons stay typed.
+ */
+export function activeFormFields(form: TargetForm, values: Record<string, QuestionValue>): ChatFormField[] {
+  const effective: Record<string, QuestionValue> = {};
+  const active: ChatFormField[] = [];
+  for (const field of form.fields) {
+    if (field.when && !field.when.every(condition => conditionHolds(condition, effective[condition.key]))) continue;
+    active.push(field);
+    if (values[field.id] !== undefined) effective[field.id] = values[field.id];
+  }
+  return active;
+}
+
+/** The outgoing answer: active fields only, in declared order, with false/zero/empty kept (F2/F3). */
+export function formAnswerValues(form: TargetForm, values: Record<string, QuestionValue>): Record<string, QuestionValue> {
+  const answer: Record<string, QuestionValue> = {};
+  for (const field of activeFormFields(form, values)) {
+    const value = values[field.id];
+    if (value !== undefined) answer[field.id] = value;
+  }
+  return answer;
+}
+
+/**
+ * Target-policy issues for the fields that are active right now (F4). Pattern and format are
+ * deliberately absent: the stored policy keeps them native-authoritative, so the card never
+ * rejects input the native service may accept.
+ */
+export function formFieldIssues(form: TargetForm, values: Record<string, QuestionValue>): Record<string, FormIssue> {
+  const issues: Record<string, FormIssue> = {};
+  for (const field of activeFormFields(form, values)) {
+    const issue = fieldIssue(field, values[field.id]);
+    if (issue) issues[field.id] = issue;
+  }
+  return issues;
+}
+
+/** Active fields the card cannot show (hidden) and cannot answer, so cancel is the only honest action. */
+export function blockedFormFields(form: TargetForm, values: Record<string, QuestionValue>): ChatFormField[] {
+  return activeFormFields(form, values).filter(field => field.hidden === true && fieldIssue(field, values[field.id]) !== undefined);
+}
+
+function offered(field: ChatFormField, value: QuestionValue): boolean {
+  return field.options !== undefined && field.options.some(option => option.value === value);
+}
+
+/** Mirrors the stored target policy: closed options unless custom, UTF-16 lengths, no whitespace trim. */
+function fieldIssue(field: ChatFormField, value: QuestionValue | undefined): FormIssue | undefined {
+  if (field.type === "external") return value === true ? undefined : "acknowledge";
+  if (value === undefined) return field.required ? "required" : undefined;
+  if (field.type === "boolean") return typeof value === "boolean" ? undefined : "invalid";
+  if (field.type === "multiselect") {
+    if (!Array.isArray(value) || !value.every(item => typeof item === "string")) return "invalid";
+    if (value.length === 0) return field.required ? "required" : field.minItems != null && value.length < field.minItems ? "too-few" : undefined;
+    if (field.minItems != null && value.length < field.minItems) return "too-few";
+    if (field.maxItems != null && value.length > field.maxItems) return "too-many";
+    if (field.custom !== true && value.some(item => !offered(field, item))) return "unoffered";
+    return undefined;
+  }
+  if (field.type === "string") {
+    if (typeof value !== "string") return "invalid";
+    if (field.required && value.length === 0) return "required";
+    if (field.minLength != null && value.length < field.minLength) return "too-short";
+    if (field.maxLength != null && value.length > field.maxLength) return "too-long";
+    if (field.custom !== true && field.options !== undefined && !offered(field, value)) return "unoffered";
+    return undefined;
+  }
+  if (field.type !== "number" && field.type !== "integer") return "invalid";
+  if (typeof value !== "number" || !Number.isFinite(value) || (field.type === "integer" && !Number.isInteger(value))) return "invalid";
+  if ((field.minimum != null && value < field.minimum) || (field.maximum != null && value > field.maximum)) return "out-of-range";
+  return undefined;
+}
+
+/**
+ * Declared defaults initialize a new request once (F3). Legacy and target cards share this rule:
+ * only a declared default or a required boolean (a checkbox has no third state) starts filled.
+ */
+export function initialFormValues(form: ChatInteractionForm): Record<string, QuestionValue> {
+  if (form.kind !== "form") return {};
+  return Object.fromEntries(form.fields.filter(field => field.default !== undefined || (field.type === "boolean" && field.required)).map(field => [field.id, field.default === undefined ? false : field.default as QuestionValue]));
+}
+
+/** The answer a target-policy card sends: the active draft, never the inactive one. */
+export function targetFormValid(form: TargetForm, values: Record<string, QuestionValue>): boolean {
+  const answer = formAnswerValues(form, values);
+  const active = new Set(activeFormFields(form, values).map(field => field.id));
+  return Object.keys(values).every(id => active.has(id)) && Object.keys(formFieldIssues(form, answer)).length === 0;
+}
 
 export function validQuestionValues(form: ChatInteractionForm, values: Record<string, QuestionValue>): boolean {
+  if (form.kind === "form" && formPolicy(form) === "opencode-v2") return targetFormValid(form, values);
   if (form.kind === "url") return Object.keys(values).length === 0;
   if (form.kind === "questions") return Object.keys(values).every(id => form.questions.some(question => question.id === id)) && form.questions.every(question => {
     const answer = values[question.id];
@@ -37,9 +151,11 @@ function validFormat(format: "email" | "uri" | "date" | "date-time" | undefined,
 
 export function questionSummary(form: ChatInteractionForm, values: Record<string, unknown>, copy: (en: string, zh: string) => string): string {
   if (form.kind === "url") return copy("Completed", "已完成");
+  // A hidden field is prompt-only visibility, so its answer never enters a summary (F3).
+  const visible = form.kind === "form" && formPolicy(form) !== "legacy" ? form.fields.filter(field => field.hidden !== true) : form.kind === "form" ? form.fields : undefined;
   const labels = form.kind === "questions"
     ? form.questions.map(question => [question.header || question.question, question.secret ? "••••" : summaryValue(values[question.id])])
-    : form.fields.map(field => [field.title || field.id, field.secret ? "••••" : summaryValue(values[field.id])]);
+    : (visible ?? []).map(field => [field.title || field.id, field.secret ? "••••" : summaryValue(values[field.id])]);
   return labels.filter(([, value]) => value).map(([label, value]) => summaryLine(label, value)).join(" · ") || copy("No answer provided", "未提供答案");
 }
 

@@ -46,3 +46,53 @@ test('a delegation widening card names the gap and offers only once-scoped choic
     assert.match(html, /Allow once/);
   assert.match(html, /Deny/);
 });
+
+// A 2.2.5 card carries the stored form policy; these assertions pin what the user can see and send.
+const targetForm = {
+  kind: "form" as const, message: "Deployment details", validation: { semantics: "opencode-v2" as const, patternAndFormat: "native" as const },
+  fields: [
+    { id: "hidden", type: "string" as const, title: "Hidden value", required: true, hidden: true, default: "H" },
+    { id: "name", type: "string" as const, title: "Release name", required: true, placeholder: "e.g. Atlas" },
+    { id: "mode", type: "multiselect" as const, title: "Regions", required: true, custom: true, options: [{ value: "eu", label: "Europe", description: "Frankfurt" }, { value: "us", label: "United States" }] },
+    { id: "tone", type: "string" as const, title: "Tone", required: true, custom: true, options: [{ value: "calm", label: "Calm", description: "Quiet and low-key" }] },
+    { id: "docs", type: "external" as const, title: "Read the runbook", url: "https://example.test/runbook" },
+    { id: "window", type: "string" as const, title: "Window", when: [{ key: "name" as const, op: "eq" as const, value: "Atlas" }] },
+  ],
+};
+function targetCard(extra: Record<string, unknown> = {}, status = 'pending') {
+  const part: ChatPart = {type:'approval',approvalId:'v2-form',status:status as ChatPart['status'],data:{
+    approvalId:'v2-form',interaction:'question',answerable:true,form:targetForm,...extra,
+  }};
+  return renderToStaticMarkup(createElement(ChatApprovalCard,{part,writable:true,onChoose:()=>{},onAnswer:()=>{},copy}));
+}
+test('a form with the stored policy renders choices, custom entry and external steps without jargon', () => {
+  const html = targetCard();
+  assert.match(html, /Europe/);
+  assert.match(html, /Frankfurt/, 'option descriptions are shown');
+  assert.match(html, /Quiet and low-key/);
+  assert.match(html, /Open link/);
+  assert.match(html, /I finished this step/, 'the acknowledgement is separate from Open');
+  assert.match(html, /https:\/\/example.test\/runbook/);
+  assert.match(html, /Other answer/);
+  assert.doesNotMatch(html, /Hidden value|>H</, 'a hidden field is neither rendered nor summarized');
+  assert.doesNotMatch(html, /Enter a value\./, 'a pristine form does not paint errors before an attempt');
+  assert.doesNotMatch(html, /\b(native|policy|schema)\b/i, 'visible text never names the stored contract');
+  assert.doesNotMatch(html, /Window/, 'a conditional field stays hidden until its earlier answer activates it');
+  assert.match(html, /type="submit"/);
+});
+test('an answered policy card summarizes only the visible answers', () => {
+  const html = targetCard({answerSummary:{hidden:'H',name:'Atlas',mode:'eu',docs:'true'}}, 'answered');
+  assert.match(html, /Release name: Atlas/);
+  assert.doesNotMatch(html, /Hidden value|>H</);
+  assert.match(html, /Read the runbook/);
+});
+test('a legacy form card keeps its own markup', () => {
+  const part: ChatPart = {type:'approval',approvalId:'legacy',status:'pending',data:{
+    approvalId:'legacy',interaction:'question',answerable:true,
+    form:{kind:'form',message:'Complete each field.',fields:[{id:'tone',title:'Tone',type:'enum',required:true,options:[{value:'calm',label:'Calm'}]},{id:'tags',title:'Tags',type:'multiEnum',required:false,options:[{value:'a',label:'A'}]}]},
+  }};
+  const html = renderToStaticMarkup(createElement(ChatApprovalCard,{part,writable:true,onChoose:()=>{},onAnswer:()=>{},copy}));
+  assert.match(html, /<select/, 'the legacy enum stays a select');
+  assert.match(html, /type="checkbox"/);
+  assert.doesNotMatch(html, /Open link|I finished this step/);
+});
