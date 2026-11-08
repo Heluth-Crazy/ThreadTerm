@@ -234,7 +234,12 @@ impl NativeApi {
         Ok(())
     }
 
-    pub(super) fn admit_prompt(&self, id: &str, text: &str) -> Result<Value, ProviderError> {
+    pub(super) fn admit_prompt(
+        &self,
+        id: &str,
+        text: &str,
+        files: &[Value],
+    ) -> Result<Value, ProviderError> {
         validate_native_id(id)?;
         if self.dialect != ApiDialect::V2 {
             return Err(protocol("V2 prompt admission requires the v2 dialect"));
@@ -242,10 +247,16 @@ impl NativeApi {
         // The native service must load the location before it can admit work;
         // storing a location in session/create alone does not initialize it.
         self.resolve_location()?;
+        let mut body = json!({"text":text});
+        if !files.is_empty() {
+            // `parts`/`content` are silently dropped by 2.2.5; only `files`
+            // carries inline attachments, and each needs a data-URL `uri`.
+            body["files"] = json!(files);
+        }
         let receipt = self.json_request(
             Method::POST,
             &format!("{}/prompt", self.dialect.session_path(Some(id))),
-            Some(json!({"text":text})),
+            Some(body),
             ResponseShape::Data,
         )?;
         if receipt
@@ -258,6 +269,98 @@ impl NativeApi {
             return Err(protocol("OpenCode returned malformed prompt admission"));
         }
         // This is an inbox receipt, never execution completion.
+        Ok(receipt)
+    }
+
+    pub(super) fn read_session(&self, id: &str) -> Result<Value, ProviderError> {
+        validate_native_id(id)?;
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("V2 session reads require the v2 dialect"));
+        }
+        let session = self.json_request(
+            Method::GET,
+            &self.dialect.session_path(Some(id)),
+            None,
+            ResponseShape::Data,
+        )?;
+        session_identity(&session, Some(id))?;
+        Ok(session)
+    }
+
+    /// V2 applies next-turn settings to the session itself. A 204 is the whole
+    /// receipt; 2.2.5 accepts an unknown model/agent with the same 204, so the
+    /// caller must confirm against a read, never this status alone.
+    pub(super) fn switch_model(&self, session: &str, model: &Value) -> Result<(), ProviderError> {
+        self.session_setting(session, "model", json!({"model":model}))
+    }
+
+    pub(super) fn switch_agent(&self, session: &str, agent: &str) -> Result<(), ProviderError> {
+        self.session_setting(session, "agent", json!({"agent":agent}))
+    }
+
+    fn session_setting(
+        &self,
+        session: &str,
+        action: &str,
+        body: Value,
+    ) -> Result<(), ProviderError> {
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("Native session settings require the v2 dialect"));
+        }
+        validate_native_id(session)?;
+        self.json_request(
+            Method::POST,
+            &format!("{}/{action}", self.dialect.session_path(Some(session))),
+            Some(body),
+            ResponseShape::NoContent,
+        )?;
+        Ok(())
+    }
+
+    /// `name` plus the prompt input fields; 2.2.5 rejects `arguments`.
+    pub(super) fn run_command(
+        &self,
+        session: &str,
+        name: &str,
+        text: &str,
+        files: &[Value],
+    ) -> Result<(), ProviderError> {
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("V2 command admission requires the v2 dialect"));
+        }
+        validate_native_id(session)?;
+        let mut body = json!({"name":name,"text":text});
+        if !files.is_empty() {
+            body["files"] = json!(files);
+        }
+        self.json_request(
+            Method::POST,
+            &format!("{}/command", self.dialect.session_path(Some(session))),
+            Some(body),
+            ResponseShape::NoContent,
+        )?;
+        Ok(())
+    }
+
+    /// The native reply is an enqueued inbox compaction item. It proves
+    /// admission only; completion is a separate `session.compaction.*` event.
+    pub(super) fn compact(&self, session: &str) -> Result<Value, ProviderError> {
+        if self.dialect != ApiDialect::V2 {
+            return Err(protocol("V2 compaction requires the v2 dialect"));
+        }
+        validate_native_id(session)?;
+        let receipt = self.json_request(
+            Method::POST,
+            &format!("{}/compact", self.dialect.session_path(Some(session))),
+            Some(json!({})),
+            ResponseShape::Data,
+        )?;
+        if receipt.get("type").and_then(Value::as_str) != Some("compaction")
+            || receipt.get("sessionID").and_then(Value::as_str) != Some(session)
+            || receipt.get("id").and_then(Value::as_str).is_none_or(str::is_empty)
+        {
+            return Err(protocol("OpenCode returned malformed compaction admission"));
+        }
         Ok(receipt)
     }
 

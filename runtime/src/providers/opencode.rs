@@ -714,6 +714,7 @@ struct OpenCodeModel {
     group: String,
     variants: Vec<String>,
     images: bool,
+    limit: Option<u64>,
 }
 #[derive(Clone, Default)]
 struct OpenCodeOptions {
@@ -750,6 +751,7 @@ impl OpenCodeOptions {
                                 model: json!({"providerID":id,"modelID":model_id}),
                                 name: format!("{group} \u{00b7} {name}"), group: group.to_owned(), variants,
                                 images: model.pointer("/capabilities/input/image").and_then(Value::as_bool) == Some(true),
+                                limit: model.pointer("/limit/context").and_then(Value::as_u64),
                             });
                         }
                     }
@@ -773,6 +775,124 @@ impl OpenCodeOptions {
             Err(error) => ui.error = Some(error),
         }
         ui
+    }
+    /// 2.2.5 splits the catalogue: providers carry display names, models are
+    /// a flat location-scoped list, agents are keyed by `id`, and model
+    /// `type`/`status` are optional. Nothing here may reuse the legacy
+    /// `all`/`connected` shape.
+    fn from_catalogues_v2(
+        providers: Result<Value, ProviderError>,
+        models: Result<Value, ProviderError>,
+        agents: Result<Value, ProviderError>,
+    ) -> Self {
+        let mut ui = Self::default();
+        let mut groups = HashMap::new();
+        match providers {
+            Ok(providers) => {
+                let Some(all) = providers.get("data").and_then(Value::as_array) else {
+                    ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid provider catalogue"));
+                    return ui;
+                };
+                for provider in all {
+                    let Some(id) = provider.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else { continue };
+                    if provider.get("activation").and_then(Value::as_str) == Some("disabled") { continue; }
+                    let name = provider.get("name").and_then(Value::as_str).unwrap_or(id);
+                    groups.insert(id.to_owned(), name.to_owned());
+                }
+            }
+            Err(error) => ui.error = Some(error),
+        }
+        match models {
+            Ok(models) => {
+                let Some(rows) = models.get("data").and_then(Value::as_array) else {
+                    ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid model catalogue"));
+                    return ui;
+                };
+                for model in rows {
+                    let Some(provider) = model.get("providerID").and_then(Value::as_str).filter(|id| !id.is_empty()) else { continue };
+                    let Some(id) = model.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else { continue };
+                    if model.get("enabled").and_then(Value::as_bool) == Some(false) { continue; }
+                    if matches!(model.get("status").and_then(Value::as_str), Some("unavailable" | "disabled")) { continue; }
+                    let name = model.get("name").and_then(Value::as_str).unwrap_or(id);
+                    let variants = model.get("variants").and_then(Value::as_array).map(|variants| variants.iter()
+                        .filter_map(|variant| variant.get("id").and_then(Value::as_str)).map(str::to_owned).collect()).unwrap_or_default();
+                    let group = groups.get(provider).cloned().unwrap_or_else(|| provider.to_owned());
+                    let images = model.pointer("/capabilities/input").and_then(Value::as_array)
+                        .is_some_and(|input| input.iter().any(|kind| kind.as_str() == Some("image")));
+                    ui.models.push(OpenCodeModel {
+                        value: format!("{{\"providerID\":{},\"modelID\":{}}}", json!(provider), json!(id)),
+                        model: json!({"providerID":provider,"id":id}),
+                        name: format!("{group} \u{00b7} {name}"), group,
+                        variants,
+                        images,
+                        limit: model.pointer("/limit/context").and_then(Value::as_u64),
+                    });
+                }
+            }
+            Err(error) => ui.error = Some(error),
+        }
+        match agents {
+            Ok(agents) => {
+                let Some(rows) = agents.get("data").and_then(Value::as_array) else {
+                    ui.error = Some(ProviderError::new("provider_protocol", "OpenCode returned an invalid agent catalogue"));
+                    return ui;
+                };
+                for agent in rows {
+                    if agent.get("hidden").and_then(Value::as_bool) == Some(true)
+                        || !matches!(agent.get("mode").and_then(Value::as_str), Some("primary" | "all")) { continue; }
+                    let Some(id) = agent.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else { continue };
+                    let label = agent.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()).unwrap_or(id);
+                    let mut choice = json!({"value":id,"name":label});
+                    if let Some(description) = agent.get("description").and_then(Value::as_str) { choice["description"] = json!(description); }
+                    ui.agents.push(choice);
+                }
+            }
+            Err(error) => ui.error = Some(error),
+        }
+        ui
+    }
+    fn refresh_catalogues_v2(
+        &mut self,
+        providers: Result<Value, ProviderError>,
+        models: Result<Value, ProviderError>,
+        agents: Result<Value, ProviderError>,
+        commands: Result<Value, ProviderError>,
+    ) {
+        let mut refreshed = Self::from_catalogues_v2(providers, models, agents);
+        if refreshed.error.is_some() {
+            // A failed refresh keeps the last usable options (R5).
+            return;
+        }
+        if !commands.as_ref().ok().is_some_and(|value| value.get("data").is_some_and(Value::is_array)) {
+            return;
+        }
+        refreshed.commands = self.commands.clone();
+        refreshed.load_commands_v2(commands);
+        refreshed.effective_model = self.effective_model.clone();
+        if !self.model.is_empty() && refreshed.models.iter().all(|model| model.value != self.model) {
+            refreshed.selection_error = Some(ProviderError::new("chat_option_invalid", "OpenCode no longer offers the selected model. It was not applied; the available next-turn selections are shown below. / OpenCode 不再提供所选模型。未应用该选择；下方显示下一轮可用选项。"));
+        } else {
+            refreshed.model = self.model.clone();
+            if refreshed.selected_model().is_some_and(|model| model.variants.iter().any(|variant| variant == &self.variant)) {
+                refreshed.variant = self.variant.clone();
+            }
+        }
+        if !self.agent.is_empty() && refreshed.agents.iter().any(|agent| agent["value"].as_str() == Some(self.agent.as_str())) {
+            refreshed.agent = self.agent.clone();
+        }
+        *self = refreshed;
+    }
+    fn load_commands_v2(&mut self, commands: Result<Value, ProviderError>) {
+        let rows = commands.ok().and_then(|value| value.get("data").and_then(Value::as_array).cloned());
+        let Some(rows) = rows else { return };
+        let mut names = HashSet::new();
+        self.commands = rows.iter().filter_map(|command| {
+            let name = command.get("name")?.as_str()?;
+            if name.is_empty() || name.chars().any(char::is_whitespace) || name.starts_with('/') || matches!(name, "compact" | "summarize") || !names.insert(name) { return None; }
+            let mut entry = json!({"name":name});
+            if let Some(description) = command.get("description").and_then(Value::as_str) { entry["description"] = json!(description); }
+            Some(entry)
+        }).collect();
     }
     fn refresh_catalogues(
         &mut self,
@@ -866,6 +986,38 @@ impl OpenCodeOptions {
         Ok(("prompt_async", body))
     }
     fn selected_model(&self) -> Option<&OpenCodeModel> { self.models.iter().find(|model| model.value == self.model) }
+    /// 2.2.5 routes: text plus `files`, `command` = name + prompt text, and
+    /// compaction is a separate admission that proves nothing by itself.
+    fn dispatch_v2(&self, text: &str, images: &[String]) -> Result<(&'static str, Value), ProviderError> {
+        let slash = opencode_slash(text);
+        if slash.is_some_and(|(name, _)| matches!(name, "compact" | "summarize")) {
+            if !images.is_empty() || slash.is_some_and(|(_, args)| !args.is_empty()) {
+                return Err(ProviderError::new("command_arguments_invalid", "Compact conversation accepts no arguments or images"));
+            }
+            return Ok(("compact", json!({})));
+        }
+        self.validate_image_capability(images)?;
+        let files = opencode_image_files(images)?;
+        if let Some((name, arguments)) = slash.filter(|(name, _)| self.commands.iter().any(|command| command["name"] == *name)) {
+            let mut body = json!({"name":name,"text":arguments});
+            if !files.is_empty() { body["files"] = json!(files); }
+            return Ok(("command", body));
+        }
+        let mut body = json!({"text":text});
+        if !files.is_empty() { body["files"] = json!(files); }
+        Ok(("prompt", body))
+    }
+    /// The native model reference for the next turn, including the selected
+    /// variant. An empty variant keeps the native default.
+    fn model_ref(&self) -> Option<Value> {
+        let model = self.selected_model()?;
+        let mut reference = model.model.clone();
+        if !self.variant.is_empty() { reference["variant"] = json!(self.variant); }
+        Some(reference)
+    }
+    fn model_window(&self, provider: &str, id: &str) -> Option<u64> {
+        self.models.iter().find(|model| model.model["providerID"].as_str() == Some(provider) && model.model["id"].as_str() == Some(id)).and_then(|model| model.limit)
+    }
     fn select(&mut self, id: &str, value: &str) -> Result<(), ProviderError> {
         let valid = match id {
             "next-model" => value.is_empty() || self.models.iter().any(|model| model.value == value),
@@ -938,6 +1090,11 @@ fn opencode_image_mime(image: &str) -> Result<&str, ProviderError> {
 }
 fn opencode_image_parts(images: &[String]) -> Result<Vec<Value>, ProviderError> {
     images.iter().map(|image| Ok(json!({"type":"file","mime":opencode_image_mime(image)?,"url":image}))).collect()
+}
+// 2.2.5 requires `uri` (a data URL stays an inline attachment) and ignores an
+// unknown `parts`/`content` array silently, so a wrong key loses the image.
+fn opencode_image_files(images: &[String]) -> Result<Vec<Value>, ProviderError> {
+    images.iter().map(|image| Ok(json!({"type":"file","mime":opencode_image_mime(image)?,"uri":image}))).collect()
 }
 // The root SDK declares only an optional messageID, without boundary semantics.
 // Assume an exclusive cutoff. Resolve the *following* native message so a
@@ -1042,10 +1199,11 @@ impl ChatSession for OpenCodeChat {
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> { self.send_with_images(text, &[], operation_id) }
     fn send_with_images(&mut self, text: &str, images: &[String], operation_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(operation_id)?;
-        let (route, prompt) = self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.dispatch(text, images)?;
-        if self.server.dialect == ApiDialect::V2 && (route != "prompt_async" || !images.is_empty() || ["model", "agent", "variant"].iter().any(|key| prompt.get(key).is_some())) {
-            return Err(ProviderError::new("provider_method_unsupported", "OpenCode 2.x composer settings, images and commands require the compatibility migration"));
-        }
+        let (route, prompt) = if self.server.dialect == ApiDialect::V2 {
+            self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.dispatch_v2(text, images)?
+        } else {
+            self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.dispatch(text, images)?
+        };
         {
             let _commit = self.server.event_gate.lock().map_err(|_| {
                 ProviderError::new("provider_internal", "OpenCode event gate poisoned")
@@ -1067,7 +1225,7 @@ impl ChatSession for OpenCodeChat {
             }
             if self.server.dialect == ApiDialect::V2 { v2::reserve_prompt(&self.sse_target, operation_id)?; }
             *active = Some(operation_id.to_owned());
-            if route == "summarize" {
+            if matches!(route, "summarize" | "compact") {
                 *self.sse_target.compact_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode compact lock poisoned"))? = Some(OpenCodeCompact { turn: operation_id.to_owned(), confirmed: false, idle_observed: false });
             }
             self.sse_target
@@ -1093,7 +1251,7 @@ impl ChatSession for OpenCodeChat {
         // the next turn's native_turn_observed state. Keep this acceptance
         // boundary until dispatch and per-request outcome fencing are explicit.
         let sent = if self.server.dialect == ApiDialect::V2 {
-            v2::admit_prompt(&self.sse_target, text)
+            v2::dispatch_v2(&self.sse_target, route, &prompt)
         } else {
             self.server.request(
                 reqwest::Method::POST,
@@ -1101,8 +1259,12 @@ impl ChatSession for OpenCodeChat {
                 Some(prompt),
             ).and_then(|response| if route == "summarize" { self.server.json(response) } else { Ok(Value::Null) })
         };
-        if route == "summarize" {
+        if matches!(route, "summarize" | "compact") {
             let result = sent.and_then(|value| {
+                if route == "compact" {
+                    // api::compact already validated the admission receipt.
+                    return Ok(());
+                }
                 if value == json!(true) { Ok(()) } else { Err(ProviderError::new("compact_not_confirmed", "OpenCode did not confirm conversation compaction").with_details(json!({"httpStatus":400}))) }
             });
             self.sse_target.finish_compact(operation_id, result)?;
@@ -1122,10 +1284,41 @@ impl ChatSession for OpenCodeChat {
         let session_id = self.session_id.clone();
         let native_id = self.native_id.clone();
         let worker_token = self.worker_token.clone();
+        let vertical = self.server.dialect == ApiDialect::V2;
         spawn_ui_options_refresh(&gate, move || {
-            let providers = requester.get_json("/provider");
-            let agents = requester.get_json("/agent");
-            let commands = requester.get_json("/command");
+            if vertical {
+                let (providers, models, agents, commands) = (
+                    requester.get_json("/provider"),
+                    requester.get_json("/model"),
+                    requester.get_json("/agent"),
+                    requester.get_json("/command"),
+                );
+                let (providers, models, agents, commands) = match (providers, models, agents, commands) {
+                    (Ok(providers), Ok(models), Ok(agents), Ok(commands)) => (providers, models, agents, commands),
+                    (providers, models, agents, commands) => {
+                        let error = providers.err().or_else(|| models.err()).or_else(|| agents.err()).or_else(|| commands.err()).expect("catalogue error checked");
+                        eprintln!("[opencode-options] catalogue refresh unavailable ({})", error.code);
+                        return;
+                    }
+                };
+                if target.stopped.load(Ordering::SeqCst) || !target.liveness.load(Ordering::SeqCst) {
+                    return;
+                }
+                let state = match target.ui.lock() {
+                    Ok(mut ui) => {
+                        ui.refresh_catalogues_v2(Ok(providers), Ok(models), Ok(agents), Ok(commands));
+                        ui.wire()
+                    }
+                    Err(_) => return,
+                };
+                emit_scoped(&events, "opencode", &session_id, Some(&native_id), None, "chat.ui", state, Some(&worker_token));
+                return;
+            }
+            let (providers, agents, commands) = (
+                requester.get_json("/provider"),
+                requester.get_json("/agent"),
+                requester.get_json("/command"),
+            );
             let (providers, agents, commands) = match (providers, agents, commands) {
                 (Ok(providers), Ok(agents), Ok(commands)) => (providers, agents, commands),
                 (providers, agents, commands) => {
@@ -2409,6 +2602,55 @@ impl EventTarget {
             emit_scoped(&self.events, "opencode", &self.threadterm_session, Some(&self.native_id), Some(operation_id), "chat.item",
                 json!({"item":{"id":format!("compact:{operation_id}")},"parts":[{"type":"text","text":"Conversation compacted by OpenCode.","data":{"kind":"commandResult","command":"compact"}}]}), Some(&self.worker_token));
             self.complete_turn("completed", json!({"compacted":true}));
+        }
+    }
+    /// V2 compaction lifecycle. Admission alone never completes the turn: only
+    /// `session.compaction.ended` does, and a native failure is reported as a
+    /// failure rather than a finished command.
+    fn compact_event(&self, phase: &str, turn: Option<&str>, data: Value) {
+        let Some(turn) = turn else { return };
+        let mut pending = match self.compact_pending.lock() {
+            Ok(pending) => pending,
+            Err(_) => return,
+        };
+        let own = pending.as_mut().filter(|compact| compact.turn == turn);
+        match phase {
+            "ended" => {
+                // OpenCode also compacts on its own in the middle of a turn; only
+                // the user's pending compaction may complete the turn here.
+                let Some(compact) = own else { return };
+                compact.idle_observed = true;
+                if !compact.confirmed {
+                    // Receipt-before-response: the HTTP reply completes it.
+                    return;
+                }
+                *pending = None;
+                drop(pending);
+                self.complete_compact(turn);
+            }
+            "failed" => {
+                if own.is_none() {
+                    return;
+                }
+                *pending = None;
+                drop(pending);
+                let message = data
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenCode did not complete conversation compaction");
+                emit_scoped(
+                    &self.events,
+                    "opencode",
+                    &self.threadterm_session,
+                    Some(&self.native_id),
+                    Some(turn),
+                    "chat.error",
+                    json!({"reason":"compact_failed","message":message,"raw":data}),
+                    Some(&self.worker_token),
+                );
+                self.complete_turn("failed", json!({"compacted":false}));
+            }
+            _ => {}
         }
     }
     // After attachment, called under event_gate. Replace one stable retry item.

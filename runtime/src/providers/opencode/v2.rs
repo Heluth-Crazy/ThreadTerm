@@ -50,6 +50,9 @@ pub(super) struct State {
     unowned_bytes: usize,
     unowned_gap: bool,
     authoritative_only: bool,
+    /// The model an authoritative native assistant row proved it used. The
+    /// footer shows this, never the next-turn selection.
+    actual_model: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -123,6 +126,29 @@ enum Change {
         /// The native receipt payload: `answer` for `form.replied`, `reply` for
         /// `permission.replied`. It stays in adapter state and never becomes card
         /// data on its own.
+        data: Value,
+    },
+    /// Reported native accounting. Missing fields stay missing.
+    Usage {
+        session: String,
+        tokens: Value,
+        /// Only a `session.step.ended` figure belongs to this turn; the
+        /// session-level `session.usage.updated` total does not.
+        step: bool,
+    },
+    Title {
+        session: String,
+        title: String,
+    },
+    Retry {
+        session: String,
+        attempt: u64,
+        at: u64,
+        message: String,
+    },
+    Compact {
+        session: String,
+        phase: &'static str,
         data: Value,
     },
 }
@@ -257,6 +283,12 @@ impl State {
             .get("content")
             .and_then(Value::as_array)
             .ok_or_else(|| protocol("OpenCode v2 assistant snapshot has no content"))?;
+        if let (Some(provider), Some(model)) = (
+            row.pointer("/model/providerID").and_then(Value::as_str),
+            row.pointer("/model/id").and_then(Value::as_str),
+        ) {
+            self.actual_model = Some(json!({"providerID":provider,"modelID":model}));
+        }
         let previous = self.messages.get(&(session.into(), id.into())).cloned();
         let mut message = Message {
             seeded: true,
@@ -563,6 +595,68 @@ impl State {
             }
             self.inbox_pending = !self.inbox_items.is_empty();
             return Ok(Change::Activity);
+        }
+        if let Some(message_id) = data.get("assistantMessageID").and_then(Value::as_str) {
+            validate_native_id(message_id)?;
+        }
+        if kind == "session.usage.updated" {
+            return Ok(Change::Usage {
+                session: session.into(),
+                tokens: data.get("tokens").cloned().unwrap_or(Value::Null),
+                step: false,
+            });
+        }
+        if kind == "session.step.ended" {
+            return Ok(match data.get("tokens").filter(|tokens| tokens.is_object()) {
+                Some(tokens) => Change::Usage {
+                    session: session.into(),
+                    tokens: tokens.clone(),
+                    step: true,
+                },
+                None => Change::Activity,
+            });
+        }
+        if kind == "session.retry.scheduled" {
+            let error = data.get("error").unwrap_or(&Value::Null);
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.get("type").and_then(Value::as_str))
+                .unwrap_or("native retry scheduled");
+            return Ok(Change::Retry {
+                session: session.into(),
+                attempt: data.get("attempt").and_then(Value::as_u64).unwrap_or(0),
+                at: data.get("at").and_then(Value::as_u64).unwrap_or(0),
+                message: message.into(),
+            });
+        }
+        if let Some(phase) = kind.strip_prefix("session.compaction.") {
+            let phase = match phase {
+                "started" => "started",
+                "ended" => "ended",
+                "failed" => "failed",
+                // Deltas are implementation text; they never reach the reply.
+                _ => return Ok(Change::Activity),
+            };
+            return Ok(Change::Compact {
+                session: session.into(),
+                phase,
+                data: data.clone(),
+            });
+        }
+        if matches!(kind, "session.created" | "session.renamed") {
+            let title = data
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|title| !title.is_empty());
+            return Ok(match title {
+                Some(title) => Change::Title {
+                    session: session.into(),
+                    title: title.into(),
+                },
+                None => Change::None,
+            });
         }
         let Some(message_id) = data.get("assistantMessageID").and_then(Value::as_str) else {
             return Ok(Change::None);
@@ -998,8 +1092,87 @@ fn api(target: &EventTarget) -> NativeApi {
     )
 }
 
-pub(super) fn admit_prompt(target: &EventTarget, prompt: &str) -> Result<Value, ProviderError> {
-    api(target).admit_prompt(&target.native_id, prompt)
+/// V2 composer dispatch. Next-turn settings are applied and confirmed against a
+/// native read *before* any prompt/command/compaction admission, because 2.2.5
+/// answers 204 even for an unknown model or agent.
+pub(super) fn dispatch_v2(
+    target: &EventTarget,
+    route: &str,
+    body: &Value,
+) -> Result<Value, ProviderError> {
+    let api = api(target);
+    apply_settings(target, &api)?;
+    let files = body
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    match route {
+        "command" => {
+            let name = body
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| protocol("OpenCode v2 command has no name"))?;
+            let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
+            api.run_command(&target.native_id, name, text, &files)?;
+            Ok(json!({}))
+        }
+        // The receipt proves admission of an inbox item, never completion.
+        "compact" => api.compact(&target.native_id),
+        _ => {
+            let text = body
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| protocol("OpenCode v2 prompt has no text"))?;
+            api.admit_prompt(&target.native_id, text, &files)
+        }
+    }
+}
+
+/// Model then agent, each with its own native write. A partial success is
+/// reported as such: what applied stays applied and is never rolled back or
+/// replayed, and the caller fails before admitting the prompt.
+fn apply_settings(target: &EventTarget, api: &NativeApi) -> Result<(), ProviderError> {
+    let (model, agent) = {
+        let ui = target
+            .ui
+            .lock()
+            .map_err(|_| protocol("OpenCode options lock poisoned"))?;
+        (ui.model_ref(), ui.agent.clone())
+    };
+    let mut applied: Vec<&str> = Vec::new();
+    if let Some(model) = model {
+        api.switch_model(&target.native_id, &model)?;
+        let stored = api.read_session(&target.native_id)?;
+        let stored = stored.get("model").cloned().unwrap_or(Value::Null);
+        let wanted_variant = model.get("variant").and_then(Value::as_str);
+        let matches = stored.get("providerID").and_then(Value::as_str)
+            == model.get("providerID").and_then(Value::as_str)
+            && stored.get("id").and_then(Value::as_str) == model.get("id").and_then(Value::as_str)
+            && wanted_variant
+                .is_none_or(|variant| stored.get("variant").and_then(Value::as_str) == Some(variant));
+        if !matches {
+            return Err(not_applied(&applied, "model"));
+        }
+        applied.push("model");
+    }
+    if !agent.is_empty() {
+        api.switch_agent(&target.native_id, &agent)?;
+        let stored = api.read_session(&target.native_id)?;
+        if stored.get("agent").and_then(Value::as_str) != Some(agent.as_str()) {
+            return Err(not_applied(&applied, "agent"));
+        }
+        applied.push("agent");
+    }
+    Ok(())
+}
+
+fn not_applied(applied: &[&str], failed: &str) -> ProviderError {
+    ProviderError::new(
+        "chat_option_not_applied",
+        format!("OpenCode did not apply the selected {failed}; nothing was sent"),
+    )
+    .with_details(json!({"applied":applied,"failed":failed,"rolledBack":false}))
 }
 
 fn publish(target: &EventTarget, state: &mut State, change: Change) {
@@ -1023,6 +1196,13 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
             parts,
             created_at,
         } => {
+            if session == target.native_id {
+                if let Some(actual) = state.actual_model.clone() {
+                    if let Ok(mut ui) = target.ui.lock() {
+                        ui.effective_model = Some(actual);
+                    }
+                }
+            }
             if let Some(message) = state.messages.get(&(session.clone(), id.clone())) {
                 for tool in message
                     .content
@@ -1251,6 +1431,73 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
             }
             emit("chat.approval.resolved", receipt, interaction.turn.as_deref());
         }
+        // Accounting, title, retry and compaction are root-session facts. A
+        // child's figures must never be presented as the root turn's.
+        Change::Usage { session, tokens, step } => {
+            if session != target.native_id {
+                return;
+            }
+            // The context window is only known for a catalogue model that the
+            // native assistant row proved it actually answered with.
+            let actual = target.ui.lock().ok().and_then(|ui| {
+                let model = ui.effective_model.clone()?;
+                let provider = model.get("providerID")?.as_str()?.to_owned();
+                let id = model.get("modelID")?.as_str()?.to_owned();
+                let limit = ui.model_window(&provider, &id);
+                Some((provider, id, limit))
+            });
+            let mut info = json!({"tokens":tokens});
+            if let Some((provider, id, limit)) = &actual {
+                info["providerID"] = json!(provider);
+                info["modelID"] = json!(id);
+                if let Some(limit) = limit {
+                    info["model"] = json!({"limit":{"context":limit}});
+                }
+            }
+            let Some(usage) = opencode_context_usage(&info, &HashMap::new()) else {
+                // Missing stays missing; never invent zero usage.
+                return;
+            };
+            let mut data = json!({"usage":usage});
+            if step && turn.is_some() {
+                data["turnUsage"] = usage;
+                if let Some((provider, id, _)) = &actual {
+                    data["model"] = json!(format!("{provider}/{id}"));
+                }
+            }
+            emit("chat.context", data, turn.as_deref());
+        }
+        Change::Title { session, title } => {
+            if session != target.native_id {
+                return;
+            }
+            emit("chat.title", json!({"title":title}), None);
+        }
+        Change::Retry {
+            session,
+            attempt,
+            at,
+            message,
+        } => {
+            if session != target.native_id {
+                return;
+            }
+            target.retry_status(
+                Some(&json!({"type":"retry","attempt":attempt,"message":message,"next":at})),
+                turn.as_deref(),
+            );
+        }
+        Change::Compact {
+            session,
+            phase,
+            data,
+        } => {
+            if session != target.native_id {
+                return;
+            }
+            let operation = turn.clone();
+            target.compact_event(phase, operation.as_deref(), data);
+        }
         _ => {}
     }
 }
@@ -1294,6 +1541,18 @@ fn refresh_message(
         };
         if row.get("id").and_then(Value::as_str) != Some(message) {
             return Err(protocol("OpenCode v2 returned a different native message"));
+        }
+        // The native assistant row is the only evidence of the model that
+        // actually answered; the selection is a request, never a claim.
+        if row.get("type").and_then(Value::as_str) == Some("assistant") {
+            if let (Some(provider), Some(id)) = (
+                row.pointer("/model/providerID").and_then(Value::as_str),
+                row.pointer("/model/id").and_then(Value::as_str),
+            ) {
+                if let Ok(mut ui) = target.ui.lock() {
+                    ui.effective_model = Some(json!({"providerID":provider,"modelID":id}));
+                }
+            }
         }
         let _commit = target
             .event_gate
@@ -2393,3 +2652,7 @@ mod child_recovery_tests;
 #[cfg(test)]
 #[path = "v2_interaction_tests.rs"]
 mod interaction_tests;
+
+#[cfg(test)]
+#[path = "v2_composer_tests.rs"]
+mod composer_tests;

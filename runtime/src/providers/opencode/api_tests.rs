@@ -383,7 +383,7 @@ fn v2_prompt_is_one_admission_after_location_and_never_a_completion() {
         ApiDialect::V2,
     );
     assert_eq!(
-        api.admit_prompt("ses_exact_native", "hello").unwrap(),
+        api.admit_prompt("ses_exact_native", "hello", &[]).unwrap(),
         receipt
     );
     let requests = worker.join().unwrap();
@@ -415,8 +415,7 @@ fn failed_location_never_dispatches_a_prompt_or_creates_a_session() {
         let result = if create {
             api.open_session(None)
         } else {
-            api.admit_prompt("ses_exact_native", "hello")
-        };
+            api.admit_prompt("ses_exact_native", "hello", &[])        };
         assert!(result.is_err());
         let requests = worker.join().unwrap();
         assert_eq!(requests.len(), 1);

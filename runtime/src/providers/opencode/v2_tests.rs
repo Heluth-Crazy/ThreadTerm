@@ -152,9 +152,10 @@ fn step_end_does_not_settle_execution_but_durable_execution_does() {
         11,
         json!({"sessionID":root,"assistantMessageID":"msg-a","finish":"stop","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}),
     );
+    // Usage is reported, but a step end never settles the execution.
     assert!(matches!(
         state.apply(root, &step).unwrap(),
-        Change::Activity
+        Change::Usage { step: true, .. }
     ));
     assert!(state.executions[root].running);
     let terminal = durable(
