@@ -14,7 +14,7 @@ attention items and conversations retain their computer and project identity.
 - Chat transcripts, paging, provider connection state, permission choices,
   structured questions/forms, plans, attachments, new sessions, and stop/resume.
 - Terminal output with bounded cursors/gap indicators, input, and explicit
-  control takeover. The terminal surface is a text mirror, not a full VT emulator.
+  control takeover. The terminal uses the desktop VT renderer in a local WebView.
 - Read-only project files and Git status/diffs/history/branches, plus native
   per-computer WebKit preview through authenticated host-loopback tunnels.
 - English/Chinese, light/dark/system appearance, accessible controls, biometric
@@ -132,12 +132,30 @@ checks do not establish that the Apple build or hardware flows pass.
 
 ## Terminal
 
-The terminal uses pinned `@xterm/headless` 5.5.0 under Hermes and draws its VT
-buffer, including scrollback and cursor position. Control fits the host PTY to
-the phone's measured cells; View keeps the host dimensions and scrolls sideways.
-Run sends Enter as CR. A reconnect rebuilds from a bounded tail and marks missing
-output. This is JavaScript only and requires a Metro reload, without a native
-rebuild. Session lifecycle actions are in the header's action menu.
+The terminal embeds pinned `@xterm/xterm` 6.0.0 in `react-native-webview`
+14.0.1 (Expo SDK 58's supported version). Its JavaScript, CSS and MIT license
+are bundled locally; there are no CDN requests. Regenerate the offline asset
+with `node mobile/scripts/bundle-terminal.mjs` after an intentional xterm update.
+It shares the desktop's default palette, font stack, 13px starting size and VT
+options. The phone keeps the host columns/rows, reduces only the font to a 10px
+minimum, and allows horizontal panning. A rebuilt Windows runtime supplies the
+actual ConPTY build/host compatibility in the mobile snapshot, matching desktop
+wrap inference; older hosts without that optional value keep standard VT defaults.
+Keyboard changes and rotation never
+resize the shared desktop PTY. There is no automatic or manual phone resize.
+
+Control types directly into xterm: Return sends CR; the key bar provides Esc,
+Tab, sticky Ctrl, arrows and Ctrl-C. View and locked/reconnecting sessions cannot
+send data. Raw chunks retain byte offsets and bridge sequences across React
+renders and reconnects; only actual storage/host discontinuities show a small
+notice. Uncertain input is never replayed. Chat Return remains multiline and
+its Send button sends; typing during a running turn restores Send from Stop.
+
+Rebuild the iPhone app in Xcode after adding the WebView native dependency;
+Metro reload alone cannot link it. On the Mac run `npx expo install
+react-native-webview`, retain the exact 14.0.1 pin, and run `pod install` with the
+existing matching Debug artifact environment before building Debug. Do not
+switch those local artifacts to Release for this device test.
 
 ## Host setup
 

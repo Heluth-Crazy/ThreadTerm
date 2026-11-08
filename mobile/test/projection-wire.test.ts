@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { attentionItems } from '../src/core/projection';
 import { validateMobileRequest, mobileResult } from '../src/core/wire';
+import { isMobileSnapshot } from '@threadterm/protocol/mobile';
 
 const now='2026-11-06T00:00:00.000Z';
 const session={id:'same',title:'Needs approval',provider:'codex',mode:'chat',status:'waiting',createdAt:now,updatedAt:now,activity:{state:'awaiting_approval',revision:1}};
@@ -21,6 +22,16 @@ test('wire contract caps detailed subscriptions and rejects desktop-only authori
   assert.throws(()=>validateMobileRequest('mobile.events.subscribe',{sessionIds:['a','b','c','d','e']}),/invalid_subscription/);
   assert.throws(()=>validateMobileRequest('runtime.shutdown' as never,{}),/mobile_forbidden/);
   assert.throws(()=>mobileResult('mobile.snapshot' as const,{epoch:'e',revision:1,permission:'fullcontrol',capabilities:{contract:1,methods:[]},projects:[],worktrees:[],sessions:[],inbox:[],providers:[],settings:{}}),/invalid_mobile_snapshot/);
+});
+
+test('mobile snapshot accepts only the optional closed ConPTY metadata shape',()=>{
+  const snapshot={epoch:'e',revision:1,permission:'fullcontrol',capabilities:{contract:1 as const,methods:[]},projects:[],worktrees:[],sessions:[],inbox:[],providers:[]};
+  assert.equal(isMobileSnapshot(snapshot),true,'older hosts omit the additive field');
+  assert.equal(isMobileSnapshot({...snapshot,capabilities:{...snapshot.capabilities,windowsPty:{backend:'conpty',buildNumber:19041}}}),true);
+  assert.equal(isMobileSnapshot({...snapshot,capabilities:{...snapshot.capabilities,windowsPty:{backend:'winpty',buildNumber:19041}}}),false);
+  assert.equal(isMobileSnapshot({...snapshot,capabilities:{...snapshot.capabilities,windowsPty:{backend:'conpty',buildNumber:-1}}}),false);
+  assert.equal(isMobileSnapshot({...snapshot,capabilities:{...snapshot.capabilities,windowsPty:{backend:'conpty',buildNumber:19041,extra:true}}}),false);
+  assert.equal(isMobileSnapshot({...snapshot,capabilities:{...snapshot.capabilities,unexpected:true}}),false);
 });
 
 test('pending-looking approval from an earlier or settled turn cannot authorize an attention action',()=>{

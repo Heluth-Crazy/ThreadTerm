@@ -73,3 +73,34 @@ errors as well as page errors. Run `node mobile/qa/device-fixes.mjs` from the ro
 Its two web screenshots live in the task's `qa-device-fixes/` beside the native
 Simulator keyboard before/after captures. Browser viewport reduction supplements
 native keyboard validation; it does not synthesize an iOS keyboard or Face ID.
+
+## Offline terminal WebView (round 4)
+
+From the repository root, run `node mobile/qa/terminal-webview.mjs`. It executes
+our bundled xterm document in Chromium and checks byte-sequence dedupe, ten
+keyboard-sized viewport changes, rotation without changing host geometry, ANSI
+colors/Chinese, CR Return, sticky Ctrl, View-only denial, stale input tokens,
+horizontal panning, host ConPTY option propagation and a bottom-row prompt in a
+short viewport. It does not replace native keyboard acceptance.
+
+`mobile/qa/tui-host-fixture.mjs --log <absolute-jsonl>` runs under a PTY, renders a
+colored Codex-like banner/prompt, redraws on SIGWINCH and records exact stdin
+bytes. The private Simulator harness and assertions are retained under task
+`11-06-mobile-companion/qa-round4/`; its final receipt demonstrates ten actual
+native keyboard show/hide cycles with no resize or banner replay.
+
+The native-host smoke now also sends to a private offline Codex provider and
+asserts the actual `turn/start` message. To use existing binaries, set
+`THREADTERM_MOBILE_HOST_SMOKE_CLIENT_EXE` to the built host_smoke executable and
+`THREADTERM_QA_RUNTIME_EXE` to a fresh runtime binary. The default client build
+invokes Cargo, so the machine-wide lock and memory rules in AGENTS apply.
+
+If a live test executable holds the default Rust output directory, preserve the
+process and select a separate output cache for the full gate:
+
+```powershell
+npm run check -- --working-tree --test-threads=1 --rust-target-dir=runtime/target
+```
+
+This runs the same locked Cargo suite and leaves the default path and existing
+processes untouched; hold the machine-wide lock while it runs.

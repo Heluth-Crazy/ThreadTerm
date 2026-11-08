@@ -5,6 +5,7 @@
 // By default the gate verifies the committed tree: HEAD is exported into runtime/target-check/check-head and every
 // step runs there, so uncommitted scratch files (renderer/src/mockBridge.ts and its dev-only import) cannot make a
 // release look green or red. Pass --working-tree to verify uncommitted edits before committing them.
+// --rust-target-dir=<path> selects a separate Cargo output cache when the default contains live test executables.
 //
 // Every step has a timeout. A failing step is reported but the remaining steps still run, so one run shows the whole
 // picture; the exit code is non-zero when any step failed.
@@ -26,6 +27,9 @@ const only = ([...flags].find(flag => flag.startsWith('--only=')) ?? '').slice('
 const testThreads = ([...flags].find(flag => flag.startsWith('--test-threads=')) ?? '--test-threads=2').slice('--test-threads='.length);
 if (!/^[1-9][0-9]?$/.test(testThreads)) throw new Error('--test-threads must be a positive integer');
 const targetRoot = join(repo, 'runtime', 'target-check');
+const rustTargetFlag = [...flags].find(flag => flag.startsWith('--rust-target-dir='));
+if (rustTargetFlag === '--rust-target-dir=') throw new Error('--rust-target-dir requires a nonempty path');
+const rustTargetDir = rustTargetFlag ? resolve(repo, rustTargetFlag.slice('--rust-target-dir='.length)) : join(targetRoot, 'rust');
 
 if (release && process.env.THREADTERM_SKIP_CHECK === '1') {
   console.log('!'.repeat(100));
@@ -393,8 +397,9 @@ if (!fast) {
   const cargo = onPath('cargo');
   if (!cargo) fail('cargo is required for the full gate; install Rust (rustup) or run npm run check:fast');
   if (!workingTree) notes.push('rust tests always run on the working tree of runtime/');
+  notes.push(`Rust build output: ${rustTargetDir}`);
   for (const note of notes) console.log(`     ${note}`);
-  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
+  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', rustTargetDir, '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
   for (const skip of skips) rustArgs.push('--skip', skip);
   // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
   // The explicit --test-threads argument above still enforces the caller's concurrency limit.

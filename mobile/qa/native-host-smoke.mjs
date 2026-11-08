@@ -274,7 +274,22 @@ async function waitForMobileDevice(controller, deviceName, timeoutMs) {
   throw new Error('paired mobile did not appear as a connected device');
 }
 
-function isolatedEnvironment({dataDir, pipeBase, scratch}) {
+async function waitFor(check, label, timeoutMs = STEP_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const result = await check();
+      if (result) return result;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(POLL_MS);
+  }
+  throw new Error(`timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}`);
+}
+
+function isolatedEnvironment({dataDir, pipeBase, scratch, fixtureBin, chatLog}) {
   const removed = new Set([
     'path',
     'temp',
@@ -291,7 +306,7 @@ function isolatedEnvironment({dataDir, pipeBase, scratch}) {
     Object.entries(process.env).filter(([key]) => !removed.has(key.toLowerCase())),
   );
   Object.assign(environment, {
-    Path: [dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';'),
+    PATH: [fixtureBin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';'),
     TEMP: scratch,
     TMP: scratch,
     HOME: join(scratch, 'home'),
@@ -301,6 +316,10 @@ function isolatedEnvironment({dataDir, pipeBase, scratch}) {
     THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
     THREADTERM_V3_PIPE: pipeBase,
     THREADTERM_QA_REMOTE_BIND: '127.0.0.1',
+    THREADTERM_QA_MOBILE_CHAT_LOG: chatLog,
+    // Debug runtime discovery deliberately ignores ambient PATH for built-in
+    // CLIs. Keep the fake provider explicit and confined to this smoke run.
+    THREADTERM_QA_PROVIDER_BIN: fixtureBin,
   });
   assert.equal(
     Object.keys(environment).filter(key => key.toLowerCase() === 'path').length,
@@ -340,6 +359,8 @@ async function main() {
   assert.equal(resolve(dirname(scratch)), scratchBase, 'scratch remains under its requested root');
   const dataDir = join(scratch, 'data');
   const projectDir = join(scratch, 'terminal-project');
+  const fixtureBin = join(scratch, 'bin');
+  const chatLog = join(scratch, 'mobile-chat-provider.jsonl');
   const pipeBase = `\\\\.\\pipe\\threadterm-native-host-${randomUUID()}`;
   const deviceName = `Native host smoke ${randomUUID().slice(0, 12)}`;
   await Promise.all([
@@ -347,8 +368,17 @@ async function main() {
     mkdir(join(scratch, 'home'), {recursive: true}),
     mkdir(join(scratch, 'profile'), {recursive: true}),
     mkdir(projectDir),
+    mkdir(fixtureBin),
   ]);
-  const environment = isolatedEnvironment({dataDir, pipeBase, scratch});
+  const codexFixture = join(root, 'mobile', 'qa', 'fake-codex-mobile-smoke.cjs');
+  assert.ok(existsSync(codexFixture), `missing offline mobile Codex fixture: ${codexFixture}`);
+  await writeFile(
+    join(fixtureBin, 'codex.cmd'),
+    `@echo off\r\n@"${process.execPath}" "${codexFixture}" %*\r\n`,
+    {encoding: 'utf8', flag: 'wx'},
+  );
+  await writeFile(chatLog, '', {encoding: 'utf8', flag: 'wx'});
+  const environment = isolatedEnvironment({dataDir, pipeBase, scratch, fixtureBin, chatLog});
 
   let controller;
   let daemon;
@@ -374,7 +404,17 @@ async function main() {
 
     const project = await controller.request('project.add', {path:projectDir,name:'Native terminal smoke',operationId:randomUUID()});
     const terminal = await controller.request('session.create', {projectId:project.id,cwd:projectDir,provider:'shell',mode:'terminal',title:'Native terminal smoke',executable:'cmd.exe',args:['/Q','/K'],operationId:randomUUID()});
-    async function runScenario({ permission, terminalSessionId, name }) {
+    let providers = [];
+    try {
+      await waitFor(async () => {
+        providers = await controller.request('provider.list');
+        return providers.some(provider => provider.id === 'codex' && provider.chat);
+      }, 'offline Codex provider discovery');
+    } catch (error) {
+      throw new Error(`${error.message}; last provider.list: ${JSON.stringify(providers)}`);
+    }
+    const chat = await controller.request('session.create', {projectId:project.id,cwd:projectDir,provider:'codex',mode:'chat',title:'Native chat smoke',operationId:randomUUID()});
+    async function runScenario({ permission, terminalSessionId, chatSessionId, name }) {
       const descriptorFile = join(scratch, `pairing-${name}.txt`);
       const readyFile = join(scratch, `native-${name}-ready`);
       const revokedFile = join(scratch, `native-${name}-revoked`);
@@ -390,11 +430,18 @@ async function main() {
       await writeFile(descriptorFile, offer.qrPayload, {encoding:'utf8',flag:'wx',mode:0o600});
       const args=['--descriptor-file',descriptorFile,'--device-name',scenarioDeviceName,'--ready-file',readyFile,'--revoked-file',revokedFile];
       if (terminalSessionId) args.push('--terminal-session-id', terminalSessionId);
+      if (chatSessionId) args.push('--chat-session-id', chatSessionId);
       const native = spawn(nativeExecutable,args,{cwd:root,env:environment,windowsHide:true,stdio:['ignore','pipe','pipe']});
       natives.push(native);
       const output=collectOutput(native.stdout), error=collectOutput(native.stderr);
       nativeDiagnostics.push(() => [output(),error()].filter(Boolean).join('\n'));
       await waitForMarker(readyFile,'READY\n',native,STEP_TIMEOUT_MS);
+      if (chatSessionId) {
+        await waitFor(async () => {
+          const lines = (await readFile(chatLog, 'utf8')).trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse);
+          return lines.some(entry => entry.method === 'turn/start' && entry.text === 'MOBILE_NATIVE_CHAT_SEND');
+        }, 'native chat.send reached offline provider');
+      }
       const device=await waitForMobileDevice(controller,scenarioDeviceName,10_000);
       assert.equal(device.permission,permission);assert.equal(device.revokedAt,undefined);
       await controller.request('device.revoke',{deviceId:device.id,operationId:randomUUID()});
@@ -405,7 +452,7 @@ async function main() {
       assert.ok(afterRevoke?.revokedAt,'host persists the mobile revocation');assert.equal(afterRevoke.connected,false);
     }
     await runScenario({permission:'readonly',name:'readonly'});
-    await runScenario({permission:'fullcontrol',terminalSessionId:terminal.id,name:'control'});
+    await runScenario({permission:'fullcontrol',terminalSessionId:terminal.id,chatSessionId:chat.id,name:'control'});
 
     await controller.request('runtime.shutdown', {operationId: randomUUID()});
     const daemonExit = await waitForExit(daemon, 10_000, 'isolated runtime');
@@ -424,6 +471,7 @@ async function main() {
         'mobile snapshot validation',
         'readonly mutation denial',
         'full-control native lease, terminal resize, LF refusal, CR input and terminal echo',
+        'full-control native chat.send delivered to the isolated offline provider',
         'host device visibility',
         'typed live revocation and closure',
         'durable host revocation',

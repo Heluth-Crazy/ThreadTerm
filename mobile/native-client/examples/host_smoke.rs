@@ -53,6 +53,7 @@ struct Options {
     ready_marker: PathBuf,
     revoked_marker: PathBuf,
     terminal_session_id: Option<String>,
+    chat_session_id: Option<String>,
     revoke_timeout: Duration,
 }
 
@@ -88,7 +89,7 @@ fn exercise(
     let prepared = client.prepare_pairing(descriptor)?;
     println!("CHECK_CODE {}", prepared.check_code);
     let completed = client.confirm_pairing(prepared.pending_id, options.device_name.clone())?;
-    let expected = if options.terminal_session_id.is_some() {
+    let expected = if options.terminal_session_id.is_some() || options.chat_session_id.is_some() {
         "fullcontrol"
     } else {
         "readonly"
@@ -116,7 +117,7 @@ fn exercise(
         return Err(smoke_error("mobile.snapshot did not return a JSON object"));
     }
 
-    let Some(session_id) = options.terminal_session_id.as_deref() else {
+    if options.terminal_session_id.is_none() && options.chat_session_id.is_none() {
         match client.request(machine_id.clone(), "chat.send".into(), "{}".into()) {
             Err(ClientError::Remote(message))
                 if message == "mobile_readonly: This phone has view-only access" => {}
@@ -128,6 +129,41 @@ fn exercise(
             Ok(_) => return Err(smoke_error("readonly connection accepted chat.send")),
         }
         write_marker(&options.ready_marker, b"READY\n")?;
+        wait_for_revoked(&state_events, &machine_id, options.revoke_timeout)?;
+        write_marker(&options.revoked_marker, b"REVOKED\n")?;
+        return Ok(());
+    }
+
+    if let Some(session_id) = options.chat_session_id.as_deref() {
+        let claim: serde_json::Value = serde_json::from_str(&client.request(
+            machine_id.clone(),
+            "session.claim".into(),
+            serde_json::json!({"sessionId":session_id}).to_string(),
+        )?)?;
+        let lease_epoch = claim["leaseEpoch"]
+            .as_i64()
+            .ok_or_else(|| smoke_error("chat claim omitted leaseEpoch"))?;
+        let connection: serde_json::Value = serde_json::from_str(&client.request(
+            machine_id.clone(),
+            "chat.connect".into(),
+            serde_json::json!({"sessionId":session_id,"leaseEpoch":lease_epoch,"operationId":"native-host-smoke-connect"}).to_string(),
+        )?)?;
+        if connection["phase"].as_str() != Some("ready") {
+            return Err(smoke_error("native chat.connect did not become ready"));
+        }
+        let sent: serde_json::Value = serde_json::from_str(&client.request(
+            machine_id.clone(),
+            "chat.send".into(),
+            serde_json::json!({"sessionId":session_id,"text":"MOBILE_NATIVE_CHAT_SEND","leaseEpoch":lease_epoch,"operationId":"native-host-smoke-send"}).to_string(),
+        )?)?;
+        if sent["turnId"].as_str().is_none() {
+            return Err(smoke_error("native chat.send omitted turnId"));
+        }
+    }
+
+    let Some(session_id) = options.terminal_session_id.as_deref() else {
+        write_marker(&options.ready_marker, b"READY\n")?;
+        println!("READY");
         wait_for_revoked(&state_events, &machine_id, options.revoke_timeout)?;
         write_marker(&options.revoked_marker, b"REVOKED\n")?;
         return Ok(());
@@ -249,6 +285,7 @@ fn options() -> Result<Options, Box<dyn Error>> {
     let mut ready_marker = None;
     let mut revoked_marker = None;
     let mut terminal_session_id = None;
+    let mut chat_session_id = None;
     while let Some(flag) = args.next() {
         let value = args.next().ok_or_else(|| usage(&program))?;
         match flag.to_str() {
@@ -269,6 +306,13 @@ fn options() -> Result<Options, Box<dyn Error>> {
                     value
                         .into_string()
                         .map_err(|_| smoke_error("terminal session id is not UTF-8"))?,
+                )
+            }
+            Some("--chat-session-id") if chat_session_id.is_none() => {
+                chat_session_id = Some(
+                    value
+                        .into_string()
+                        .map_err(|_| smoke_error("chat session id is not UTF-8"))?,
                 )
             }
             _ => return Err(usage(&program)),
@@ -304,6 +348,7 @@ fn options() -> Result<Options, Box<dyn Error>> {
         ready_marker: ready_marker.ok_or_else(|| usage(&program))?,
         revoked_marker: revoked_marker.ok_or_else(|| usage(&program))?,
         terminal_session_id,
+        chat_session_id,
         revoke_timeout: Duration::from_secs(timeout),
     };
     if options.ready_marker == options.revoked_marker {
@@ -314,7 +359,7 @@ fn options() -> Result<Options, Box<dyn Error>> {
 
 fn usage(program: &OsString) -> Box<dyn Error> {
     smoke_error(format!(
-        "usage: {} --descriptor-file <path> --device-name <unique> --ready-file <new-path> --revoked-file <new-path> [--terminal-session-id <id>]",
+        "usage: {} --descriptor-file <path> --device-name <unique> --ready-file <new-path> --revoked-file <new-path> [--terminal-session-id <id>] [--chat-session-id <id>]",
         Path::new(program).display()
     ))
 }

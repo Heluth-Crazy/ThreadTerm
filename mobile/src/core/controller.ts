@@ -8,7 +8,7 @@ import type { CompanionController, CompanionState, MachineState, SessionRef, Ses
 import { sessionKey } from './types';
 import { attentionItems, chatOptionsPermissionRecovery, emptySession, errorMessage } from './projection';
 import { base64Bytes, CONTROL_METHODS, READ_METHODS, mobileResult, validateMobileRequest } from './wire';
-import { TerminalScreen } from './terminalScreen';
+import { appendTerminalChunk } from './terminalStream';
 
 export interface LocalStoragePort { getItem(key:string):Promise<string|null>;setItem(key:string,value:string):Promise<void> }
 type Timer=ReturnType<typeof setTimeout>;
@@ -35,7 +35,8 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
   const optionRevisions=new Map<string,number>(),optionWrites=new Set<string>();
   const optionReads=new Map<string,{transport:number;promise:Promise<void>}>();
   const terminalDecoders=new Map<string,TextDecoder>();
-  const terminalScreens=new Map<string,TerminalScreen>();
+  const terminalReads=new Map<string,number>();
+  const terminalInputs=new Map<string,Promise<void>>();
   let foreground=true,disposed=false,initialized:Promise<void>|undefined,active:SessionRef|undefined,terminalTimer:Timer|undefined;
   let draftTimer:Timer|undefined,storageWrites:Promise<void>=Promise.resolve(),unlocking:Promise<boolean>|undefined;
   let controlGeneration=0;
@@ -69,9 +70,9 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     connectingEvents.delete(id);
     refreshes.delete(id);refreshAgain.delete(id);
     for(const entry of Object.values(state.sessions)) if(entry.ref.machineId===id) {
-      const key=sessionKey(entry.ref);clearTimeout(leaseTimers.get(key));leaseTimers.delete(key);resyncs.delete(key);terminalScreens.get(key)?.dispose();terminalScreens.delete(key);terminalDecoders.delete(key);sessionTickets.set(key,(sessionTickets.get(key)??0)+1);
+      const key=sessionKey(entry.ref);clearTimeout(leaseTimers.get(key));leaseTimers.delete(key);resyncs.delete(key);sessionTickets.set(key,(sessionTickets.get(key)??0)+1);
     }
-    emit({sessions:Object.fromEntries(Object.entries(state.sessions).map(([key,value])=>[key,value.ref.machineId===id?{...value,syncing:true,leaseEpoch:undefined,optionsLoading:false,terminalCursor:0,terminalGap:value.terminalCursor>0||value.terminalGap}:value]))});
+    emit({machines:state.machines.map(m=>m.id===id?{...m,connectionGeneration:gen(id),syncing:true}:m),sessions:Object.fromEntries(Object.entries(state.sessions).map(([key,value])=>[key,value.ref.machineId===id?{...value,syncing:true,leaseEpoch:undefined,optionsLoading:false}:value]))});
     clearTimeout(refreshTimers.get(id));refreshTimers.delete(id);
   }
   async function raw<M extends MobileMethod>(id:string,method:M,params:MobileParams<M>):Promise<MobileResult<M>> {
@@ -109,7 +110,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       if(disposed||!foreground||manualDisconnect.has(id)||!state.machines.some(m=>m.id===id))return;
       return connect(id);
     }
-    const ticket=gen(id)+1;generation.set(id,ticket);connectingEvents.set(id,[]);patchMachine(id,{status:'connecting',syncing:true,error:undefined});
+    const ticket=gen(id)+1;generation.set(id,ticket);connectingEvents.set(id,[]);patchMachine(id,{status:'connecting',syncing:true,connectionGeneration:ticket,error:undefined});
     connectionTickets.set(id,ticket);
     const promise=(async()=>{
       try {
@@ -309,24 +310,34 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     terminalTimer=setTimeout(()=>{void readTerminal(ref,key).finally(scheduleTerminal);},400);
   }
   async function readTerminal(ref:SessionRef,key:string) {
-    const ticket=gen(ref.machineId),before=view(ref);
+    const ticket=gen(ref.machineId);
+    if(terminalReads.get(key)===ticket)return;
+    terminalReads.set(key,ticket);
+    const before=view(ref),hostEpoch=machine(ref.machineId).snapshot?.epoch;
+    const restarted=!!before.terminalHostEpoch&&before.terminalHostEpoch!==hostEpoch;
     try {
-      const result=await raw(ref.machineId,'terminal.read',{sessionId:ref.sessionId,...(before.terminalCursor?{cursor:before.terminalCursor,limit:64*1024}:{tail:true,limit:8192})});
+      let result=await raw(ref.machineId,'terminal.read',{sessionId:ref.sessionId,...(before.terminalCursor&&!restarted?{cursor:before.terminalCursor,limit:64*1024}:{tail:true,limit:8192})});
       if(!current(ref.machineId,ticket)||!active||sessionKey(active)!==key)return;
-      const gap=!!result.storageDegraded||result.truncated||(before.terminalCursor>0&&result.fromCursor>before.terminalCursor)||result.nextCursor<before.terminalCursor;
+      const rewound=result.nextCursor<before.terminalCursor;
+      if(rewound){
+        // A request beyond a restarted stream can return no bytes. Rebuild from
+        // its actual bounded tail, rather than clearing a readable screen forever.
+        result=await raw(ref.machineId,'terminal.read',{sessionId:ref.sessionId,tail:true,limit:8192});
+        if(!current(ref.machineId,ticket)||!active||sessionKey(active)!==key)return;
+      }
+      // The byte cursor belongs to the session, not a React render or connection.
+      // A repeated/overlapping page is sliced before both decoder and WebView.
+      const reset=restarted||rewound||(before.terminalCursor>0&&result.fromCursor>before.terminalCursor);
+      const skip=reset?0:Math.max(0,before.terminalCursor-result.fromCursor);
+      const bytes=base64Bytes(result.data).subarray(skip);
       let decoder=terminalDecoders.get(key);
-      if(!decoder||gap){decoder=new TextDecoder();terminalDecoders.set(key,decoder);}
-      const text=decoder.decode(base64Bytes(result.data),{stream:true});
-      let screen=terminalScreens.get(key);
-      const fresh=!screen;
-      const hostSession=session(ref);
-      if(!screen||gap){screen?.dispose();screen=new TerminalScreen(hostSession.cols??120,hostSession.rows??40);terminalScreens.set(key,screen);}
-      else screen.resize(hostSession.cols??120,hostSession.rows??40);
-      if(text)await screen.write(text);
-      if(!current(ref.machineId,ticket)||!active||sessionKey(active)!==key||terminalScreens.get(key)!==screen)return;
-      const accumulated=(gap||fresh?'':before.terminal)+text;
-      patchView(ref,{terminal:accumulated.slice(-TERMINAL_LIMIT),terminalLines:screen.lines(),terminalCursor:result.nextCursor,terminalGap:before.terminalGap||gap||accumulated.length>TERMINAL_LIMIT,loading:false,error:undefined});
+      if(!decoder||reset){decoder=new TextDecoder();terminalDecoders.set(key,decoder);}
+      const text=decoder.decode(bytes,{stream:true});
+      const accumulated=(reset?'':before.terminal)+text;
+      const stream=appendTerminalChunk(before.terminalStream,bytes,result.fromCursor+skip,result.nextCursor,reset);
+      patchView(ref,{terminal:accumulated.slice(-TERMINAL_LIMIT),terminalStream:stream,terminalHostEpoch:hostEpoch,terminalCursor:result.nextCursor,terminalGap:before.terminalGap||reset||!!result.storageDegraded||result.truncated,loading:false,error:undefined});
     } catch(error) {if(current(ref.machineId,ticket)&&active&&sessionKey(active)===key)patchView(ref,{error:errorMessage(error),loading:false});}
+    finally {if(terminalReads.get(key)===ticket)terminalReads.delete(key);}
   }
   async function control(ref:SessionRef):Promise<number> {
     const m=ensureReady(ref.machineId);
@@ -486,11 +497,19 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       catch(error) {patchView(ref,{error:`session_created: ${errorMessage(error)}`,loading:false});}
       return created;
     },
-    async terminalInput(ref,text) {
-      const ticket=gen(ref.machineId),lock=controlGeneration;
-      const leaseEpoch=await control(ref);
-      if(!current(ref.machineId,ticket)||lock!==controlGeneration||!state.controlUnlocked)throw new Error('connection_changed');
-      await write(ref,'terminal.input',{sessionId:ref.sessionId,data:text,leaseEpoch});
+    terminalInput(ref,text,expected) {
+      const ticket=gen(ref.machineId),lock=controlGeneration,key=sessionKey(ref);
+      const valid=()=>current(ref.machineId,ticket)&&lock===controlGeneration&&(!expected||(expected.connectionGeneration===ticket&&expected.leaseEpoch===view(ref).leaseEpoch));
+      const pending=(terminalInputs.get(key)??Promise.resolve()).then(async()=>{
+        if(!valid())throw new Error('connection_changed');
+        const leaseEpoch=await control(ref);
+        if(!valid()||!state.controlUnlocked)throw new Error('connection_changed');
+        await write(ref,'terminal.input',{sessionId:ref.sessionId,data:text,leaseEpoch});
+      });
+      terminalInputs.set(key,pending);
+      const complete=()=>{if(terminalInputs.get(key)===pending)terminalInputs.delete(key);};
+      void pending.then(complete,complete);
+      return pending;
     },
     async terminalResize(ref,cols,rows) {
       const ticket=gen(ref.machineId),lock=controlGeneration;
@@ -500,8 +519,6 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       if(!current(ref.machineId,ticket)||lock!==controlGeneration||!state.controlUnlocked)return;
       const m=machine(ref.machineId);
       if(m.snapshot)patchMachine(ref.machineId,{snapshot:{...m.snapshot,sessions:m.snapshot.sessions.map(s=>s.id===ref.sessionId?{...s,cols,rows}:s)}});
-      const screen=terminalScreens.get(sessionKey(ref));
-      if(screen){screen.resize(cols,rows);patchView(ref,{terminalLines:screen.lines()});}
     },
     read,
     async openPreview(id,url) {ensureReady(id);const parsed=new URL(url);if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password)throw new Error('invalid_preview_url');await native.openPreview(id,url);},
@@ -543,7 +560,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     async dispose() {
       flushDrafts();await storageWrites.catch(noop);disposed=true;foreground=false;
       for(const off of subscriptions)off();listeners.clear();
-      clearTimeout(terminalTimer);clearTimeout(draftTimer);for(const screen of terminalScreens.values())screen.dispose();terminalScreens.clear();terminalDecoders.clear();
+      clearTimeout(terminalTimer);clearTimeout(draftTimer);terminalDecoders.clear();
       for(const timers of [reconnects,refreshTimers,leaseTimers]){for(const timer of timers.values())clearTimeout(timer);timers.clear();}
       await Promise.allSettled(state.machines.map(m=>native.disconnect(m.id)));
     },

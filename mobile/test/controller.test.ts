@@ -54,7 +54,38 @@ test('terminal input claims the terminal session and writes its CR payload with 
   } finally {await app.dispose();}
 });
 
-test('terminal rendering uses host columns and a confirmed resize updates the replica',async()=>{
+test('terminal bytes serialize in arrival order and reject a stale displayed connection before dispatch',async()=>{
+  const {native,app}=await ready([record('a')]);const ref={machineId:'a',sessionId:'same'};
+  native.snapshots.get('a').capabilities.methods.push('terminal.input');await app.controller.refresh('a');
+  await app.controller.openSession(ref);await app.controller.claimControl(ref);
+  const expected={connectionGeneration:app.getSnapshot().machines[0].connectionGeneration!,leaseEpoch:7};
+  const held=native.hold('a','terminal.input');
+  const first=app.controller.terminalInput(ref,'testmsg',expected),second=app.controller.terminalInput(ref,'\r',expected);
+  try {
+    await tick();assert.equal(native.calls.filter(call=>call.method==='terminal.input').length,1);
+    native.deferred.delete('a:terminal.input');held.resolve('null');await Promise.all([first,second]);
+    assert.deepEqual(native.calls.filter(call=>call.method==='terminal.input').map(call=>call.params.data),['testmsg','\r']);
+    await assert.rejects(app.controller.terminalInput(ref,'stale\r',{...expected,connectionGeneration:expected.connectionGeneration-1}),/connection_changed/);
+    assert.equal(native.calls.filter(call=>call.method==='terminal.input').length,2);
+  } finally {await app.dispose();}
+});
+
+test('terminal input queued before reconnect cannot submit after an uncertain preceding write',async()=>{
+  const {native,app}=await ready([record('a')]);const ref={machineId:'a',sessionId:'same'};
+  native.snapshots.get('a').capabilities.methods.push('terminal.input');await app.controller.refresh('a');
+  await app.controller.openSession(ref);await app.controller.claimControl(ref);
+  const held=native.hold('a','terminal.input');
+  const first=app.controller.terminalInput(ref,'testmsg'),second=app.controller.terminalInput(ref,'\r');
+  const settled=Promise.allSettled([first,second]);
+  try {
+    await tick();await app.controller.disconnect('a');await app.controller.connect('a');
+    held.resolve('null');
+    assert.deepEqual((await settled).map(result=>result.status),['rejected','rejected']);
+    assert.equal(native.calls.filter(call=>call.method==='terminal.input').length,1,'queued Return is not replayed on a new connection');
+  } finally {await app.dispose();}
+});
+
+test('terminal output keeps raw bytes and host dimensions until an explicit resize',async()=>{
   const native=new MockNative([record('a')]);
   native.snapshots.set('a',snapshot('a','fullcontrol',[{...chat(),mode:'terminal',cols:5,rows:3}]));
   native.snapshots.get('a').capabilities.methods.push('terminal.resize');
@@ -63,7 +94,7 @@ test('terminal rendering uses host columns and a confirmed resize updates the re
   try {
     await app.controller.initialize();const ref={machineId:'a',sessionId:'same'};
     await app.controller.openSession(ref);await new Promise(resolve=>setTimeout(resolve,450));
-    assert.deepEqual(app.getSnapshot().sessions[sessionKey(ref)].terminalLines?.map(line=>line.text),['abcde','f']);
+    assert.deepEqual(app.getSnapshot().sessions[sessionKey(ref)].terminal,'abcdef');
     await app.controller.terminalResize(ref,40,10);
     assert.deepEqual(native.calls.find(call=>call.method==='terminal.resize')?.params,{sessionId:'same',cols:40,rows:10,leaseEpoch:7});
     const session=app.getSnapshot().machines[0].snapshot?.sessions[0];
@@ -71,7 +102,62 @@ test('terminal rendering uses host columns and a confirmed resize updates the re
   } finally {await app.dispose();}
 });
 
-test('terminal reconnect retains readable output and rebuilds from a fresh tail',async()=>{
+test('terminal overlap and reconnect preserve exactly-once raw output without a self-created gap',async()=>{
+  const native=new MockNative([record('a')]);
+  native.snapshots.set('a',snapshot('a','fullcontrol',[{...chat(),mode:'terminal',cols:120,rows:40}]));
+  const banner='\x1b[36mOpenAI Codex\x1b[0m\r\n',bytes=Buffer.from(banner);
+  native.terminalResults.push({sessionId:'same',fromCursor:0,nextCursor:bytes.length,truncated:false,encoding:'base64',data:bytes.toString('base64')});
+  const app=createCompanion(native,new MemoryStorage(),()=> 'operation'),ref={machineId:'a',sessionId:'same'};
+  try {
+    await app.controller.initialize();await app.controller.openSession(ref);await new Promise(resolve=>setTimeout(resolve,450));
+    await app.setForeground(false);
+    native.terminalResults.push({sessionId:'same',fromCursor:0,nextCursor:bytes.length+2,truncated:false,encoding:'base64',data:Buffer.concat([bytes,Buffer.from('> ')]).toString('base64')});
+    await app.setForeground(true);await new Promise(resolve=>setTimeout(resolve,450));
+    const view=app.getSnapshot().sessions[sessionKey(ref)];
+    assert.equal(view.terminal,banner+'> ');
+    assert.equal(view.terminalGap,false);
+    assert.equal(view.terminalStream?.epoch,0);
+    assert.equal(Buffer.concat(view.terminalStream!.chunks.map(chunk=>Buffer.from(chunk.data,'base64'))).toString(),banner+'> ');
+    assert.equal(native.calls.filter(call=>call.method==='terminal.read').at(-1)?.params.cursor,bytes.length);
+    assert.equal(native.calls.some(call=>call.method==='terminal.resize'),false);
+  } finally {await app.dispose();}
+});
+
+test('a host epoch change restarts the terminal stream instead of joining unrelated offsets',async()=>{
+  const native=new MockNative([record('a')]);
+  native.snapshots.set('a',snapshot('a','fullcontrol',[{...chat(),mode:'terminal'}]));
+  native.terminalResults.push({sessionId:'same',fromCursor:0,nextCursor:3,truncated:false,encoding:'base64',data:Buffer.from('old').toString('base64')});
+  const app=createCompanion(native,new MemoryStorage(),()=> 'operation'),ref={machineId:'a',sessionId:'same'};
+  try {
+    await app.controller.initialize();await app.controller.openSession(ref);await new Promise(resolve=>setTimeout(resolve,450));
+    await app.setForeground(false);native.snapshots.get('a').epoch='new-host-epoch';
+    native.terminalResults.push({sessionId:'same',fromCursor:0,nextCursor:4,truncated:false,encoding:'base64',data:Buffer.from('new!').toString('base64')});
+    await app.setForeground(true);await new Promise(resolve=>setTimeout(resolve,450));
+    const view=app.getSnapshot().sessions[sessionKey(ref)];
+    assert.equal(view.terminal,'new!');assert.equal(view.terminalStream?.epoch,1);
+    assert.equal(native.calls.filter(call=>call.method==='terminal.read').at(-1)?.params.tail,true);
+  } finally {await app.dispose();}
+});
+
+test('an empty page after cursor rewind rebuilds from the actual tail instead of leaving a blank terminal',async()=>{
+  const native=new MockNative([record('a')]);
+  native.snapshots.set('a',snapshot('a','fullcontrol',[{...chat(),mode:'terminal'}]));
+  native.terminalResults.push(
+    {sessionId:'same',fromCursor:0,nextCursor:10,truncated:false,encoding:'base64',data:Buffer.from('old stream').toString('base64')},
+    {sessionId:'same',fromCursor:10,nextCursor:3,truncated:false,encoding:'base64',data:''},
+    {sessionId:'same',fromCursor:0,nextCursor:3,truncated:false,encoding:'base64',data:Buffer.from('new').toString('base64')},
+  );
+  const app=createCompanion(native,new MemoryStorage(),()=> 'operation'),ref={machineId:'a',sessionId:'same'};
+  try {
+    await app.controller.initialize();await app.controller.openSession(ref);await new Promise(resolve=>setTimeout(resolve,900));
+    const view=app.getSnapshot().sessions[sessionKey(ref)];
+    assert.equal(view.terminal,'new');assert.equal(view.terminalGap,true);assert.equal(view.terminalStream?.epoch,1);
+    const reads=native.calls.filter(call=>call.method==='terminal.read');
+    assert.equal(reads[1].params.cursor,10);assert.equal(reads[2].params.tail,true);
+  } finally {await app.dispose();}
+});
+
+test('terminal reconnect retains readable output and continues from its retained cursor and marks actual storage gaps',async()=>{
   const native=new MockNative([record('a')]);
   native.snapshots.set('a',snapshot('a','fullcontrol',[{...chat(),mode:'terminal'}]));
   native.terminalResults.push({sessionId:'same',fromCursor:0,nextCursor:3,truncated:false,encoding:'base64',data:Buffer.from('old').toString('base64')});
@@ -80,12 +166,12 @@ test('terminal reconnect retains readable output and rebuilds from a fresh tail'
     await app.controller.initialize();const ref={machineId:'a',sessionId:'same'};
     await app.controller.openSession(ref);await new Promise(resolve=>setTimeout(resolve,450));
     await app.setForeground(false);
-    assert.equal(app.getSnapshot().sessions[sessionKey(ref)].terminalLines?.[0].text,'old');
+    assert.equal(app.getSnapshot().sessions[sessionKey(ref)].terminal,'old');
     native.terminalResults.push({sessionId:'same',fromCursor:10,nextCursor:13,truncated:true,encoding:'base64',data:Buffer.from('new').toString('base64')});
     await app.setForeground(true);await new Promise(resolve=>setTimeout(resolve,450));
     const reads=native.calls.filter(call=>call.method==='terminal.read');
-    assert.equal(reads.at(-1)?.params.tail,true);
-    assert.deepEqual(app.getSnapshot().sessions[sessionKey(ref)].terminalLines?.map(line=>line.text),['new']);
+    assert.equal(reads.at(-1)?.params.cursor,3);
+    assert.deepEqual(app.getSnapshot().sessions[sessionKey(ref)].terminal,'new');
     assert.equal(app.getSnapshot().sessions[sessionKey(ref)].terminalGap,true);
   } finally {await app.dispose();}
 });
@@ -140,7 +226,7 @@ test('a truncated terminal page marks a gap and preserves split UTF-8 decoding a
     {sessionId:'same',fromCursor:2,nextCursor:4,truncated:false,encoding:'base64',data:'gqw='},
   );
   try {const ref={machineId:'a',sessionId:'same'};await app.controller.openSession(ref);await new Promise(resolve=>setTimeout(resolve,900));
-    const view=app.getSnapshot().sessions[sessionKey(ref)]!;assert.ok(native.calls.some(call=>call.method==='terminal.read'),JSON.stringify({machine:app.getSnapshot().machines[0],calls:native.calls}));assert.equal(view.terminal,'€');assert.equal(view.terminalLines?.map(line=>line.text).join('\n'),'€');assert.equal(view.terminalGap,true,'truncated output is an explicit durable gap');
+    const view=app.getSnapshot().sessions[sessionKey(ref)]!;assert.ok(native.calls.some(call=>call.method==='terminal.read'),JSON.stringify({machine:app.getSnapshot().machines[0],calls:native.calls}));assert.equal(view.terminal,'€');assert.equal(view.terminalGap,true,'truncated output is an explicit durable gap');
   } finally {await app.dispose();}
 });
 

@@ -4,11 +4,13 @@ import { validateResult } from './index';
 export const MOBILE_CONTRACT = 1 as const;
 export const MOBILE_ALPN = 'threadterm-mobile/1';
 export type MobileProvider = Pick<ProviderCapability, 'id'|'name'|'installed'|'terminal'|'chat'|'auth'|'reason'|'version'>;
+export interface MobileWindowsPty { backend: 'conpty'; buildNumber: number; }
+export interface MobileCapabilities { contract: 1; methods: string[]; windowsPty?: MobileWindowsPty; }
 export interface MobileSnapshot {
   epoch: string;
   revision: number;
   permission: DevicePermission;
-  capabilities: { contract: 1; methods: string[] };
+  capabilities: MobileCapabilities;
   projects: ProjectCatalogItem[];
   worktrees: Worktree[];
   sessions: Session[];
@@ -48,7 +50,9 @@ const record = (v: unknown): v is Record<string, unknown> => v !== null && typeo
 export function isMobileSnapshot(v: unknown): v is MobileSnapshot {
   if (!record(v) || typeof v.epoch !== 'string' || !v.epoch || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !['readonly', 'fullcontrol'].includes(String(v.permission))) return false;
   if (Object.keys(v).some(key => !['epoch','revision','permission','capabilities','projects','worktrees','sessions','inbox','providers','warnings'].includes(key))) return false;
-  if (!record(v.capabilities) || v.capabilities.contract !== MOBILE_CONTRACT || !Array.isArray(v.capabilities.methods) || !v.capabilities.methods.every(m => typeof m === 'string')) return false;
+  if (!record(v.capabilities) || Object.keys(v.capabilities).some(key => !['contract','methods','windowsPty'].includes(key)) || v.capabilities.contract !== MOBILE_CONTRACT || !Array.isArray(v.capabilities.methods) || !v.capabilities.methods.every(m => typeof m === 'string')) return false;
+  const windowsPty=v.capabilities.windowsPty;
+  if (windowsPty !== undefined && (!record(windowsPty) || Object.keys(windowsPty).some(key => !['backend','buildNumber'].includes(key)) || windowsPty.backend !== 'conpty' || !Number.isSafeInteger(windowsPty.buildNumber) || Number(windowsPty.buildNumber) < 0)) return false;
   for (const key of ['projects', 'worktrees', 'sessions', 'inbox', 'providers']) if (!Array.isArray(v[key]) || !(v[key] as unknown[]).every(row => record(row) && typeof row.id === 'string')) return false;
   try {
     validateResult('project.catalog.list',v.projects);

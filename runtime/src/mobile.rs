@@ -580,11 +580,15 @@ pub(crate) fn snapshot(
     if permission == DevicePermission::Fullcontrol {
         methods.extend(CONTROL_METHODS.iter().map(|method| (*method).to_owned()));
     }
+    let mut capabilities = json!({"contract":CONTRACT,"methods":methods});
+    if let Some(build_number) = crate::conpty::windows_pty_build() {
+        capabilities["windowsPty"] = json!({"backend":"conpty","buildNumber":build_number});
+    }
     let mut result = json!({
         "epoch":base.epoch,
         "revision":base.revision,
         "permission":permission,
-        "capabilities":{"contract":CONTRACT,"methods":methods},
+        "capabilities":capabilities,
         "projects":projects,
         "worktrees":worktrees,
         "sessions":sessions,

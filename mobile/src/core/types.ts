@@ -5,13 +5,13 @@ export type Locale = 'en' | 'zh-CN';
 export type Appearance = 'system' | 'light' | 'dark';
 export interface MachineRecord { id:string; name:string; color:string; transport:'iroh'|'tls'; endpoint:string; tlsFingerprint:string; permission:'readonly'|'fullcontrol'; expiresAt:string }
 export type ConnectionStatus = 'connecting'|'connected'|'disconnected'|'incompatible'|'pin-mismatch'|'revoked';
-export interface MachineState extends MachineRecord { status:ConnectionStatus; syncing:boolean; snapshot?:MobileSnapshot; error?:string; syncedAt?:number }
+export interface MachineState extends MachineRecord { status:ConnectionStatus; syncing:boolean; connectionGeneration?:number; snapshot?:MobileSnapshot; error?:string; syncedAt?:number }
 export interface SessionRef { machineId:string; sessionId:string }
 export interface SessionView {
   ref:SessionRef; items:ChatItem[]; loading:boolean; syncing:boolean; error?:string;
   connection?:ChatConnectionState; chatUi?:ChatUiState; leaseEpoch?:number;
   optionsLoading?:boolean; optionPending?:string; optionsError?:string;
-  terminal:string; terminalLines?:{text:string;cursor?:boolean;cursorColumn?:number}[]; terminalCursor:number; terminalGap:boolean; hasOlder:boolean; olderCursor?:string;
+  terminal:string; terminalStream?:import('./terminalStream').TerminalStream; terminalHostEpoch?:string; terminalCursor:number; terminalGap:boolean; hasOlder:boolean; olderCursor?:string;
 }
 export interface AttentionItem { key:string; ref:SessionRef; machineName:string; session:Session; title:string; createdAt:string; inboxId?:string; turnId?:string; approvalId?:string; approval?:ChatApprovalData; stale:boolean }
 export interface CompanionState {
@@ -49,7 +49,7 @@ export interface CompanionController {
   cancelTurn(ref:SessionRef,turnId:string):Promise<void>;
   resume(ref:SessionRef):Promise<void>;
   createSession(machineId:string,params:Omit<MobileSessionCreate,'operationId'>):Promise<Session>;
-  terminalInput(ref:SessionRef,text:string):Promise<void>;
+  terminalInput(ref:SessionRef,text:string,expected?:{connectionGeneration:number;leaseEpoch:number}):Promise<void>;
   terminalResize(ref:SessionRef,cols:number,rows:number):Promise<void>;
   read<M extends MobileMethod>(machineId:string,method:M,params:MobileParams<M>):Promise<MobileResult<M>>;
   openPreview(machineId:string,url:string):Promise<void>;

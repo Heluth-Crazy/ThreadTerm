@@ -6,8 +6,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
 
-const root = process.cwd(), app = join(root, 'mobile', 'qa', 'app'), out = join(app, '.qa-export'), shots = join(root, 'mobile', '.qa-injected-shots');
-mkdirSync(shots, { recursive: true });
+const root = process.cwd(), app = join(root, 'mobile', 'qa', 'app'), out = join(app, '.qa-export'), shots = join(root, 'mobile', '.qa-injected-shots'), round4 = join(root, '.trellis', 'tasks', '11-06-mobile-companion', 'qa-round4');
+mkdirSync(shots, { recursive: true }); mkdirSync(round4, { recursive: true });
 if (!process.env.TT_QA_SKIP_EXPORT) execFileSync(process.platform === 'win32' ? 'cmd.exe' : 'npx', process.platform === 'win32' ? ['/d', '/s', '/c', 'npx expo export --platform web --output-dir .qa-export'] : ['expo', 'export', '--platform', 'web', '--output-dir', '.qa-export'], { cwd: app, stdio: 'inherit', windowsHide: true });
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2' };
 const server = createServer((req, res) => { const pathname = new URL(req.url ?? '/', 'http://qa').pathname, file = normalize(join(out, pathname === '/' ? 'index.html' : pathname.slice(1))); if (!file.startsWith(out) || !existsSync(file)) { res.writeHead(404); res.end(); return; } res.setHeader('content-type', mime[extname(file)] ?? 'application/octet-stream'); res.end(readFileSync(file)); });
@@ -16,6 +16,7 @@ const port = server.address().port, browser = await chromium.launch({ headless: 
 page.setDefaultTimeout(8_000);
 page.on('pageerror', error => errors.push(String(error)));
 const shot = name => process.env.TT_QA_NO_SHOTS ? Promise.resolve() : page.screenshot({ path: join(shots, `${name}-390x844.png`), fullPage: true });
+const round4Shot = name => page.screenshot({ path: join(round4, name), fullPage: true });
 const noOverflow = async step => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${step}: no horizontal overflow`);
 try {
   await page.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
@@ -26,11 +27,41 @@ try {
   await page.getByRole('button', { name: 'Changes' }).click(); await page.getByRole('button', { name: 'Working' }).click(); await page.getByText('after').waitFor(); await noOverflow('git-diff'); await shot('git-diff');
   await page.getByRole('button', { name: 'Back' }).click(); await page.getByText('Changes').waitFor(); await page.getByRole('button', { name: 'Back' }).click(); await page.getByText('Project alpha').waitFor();
   await page.getByRole('button', { name: 'Review alpha' }).click(); await page.getByText('Which verification mode should run?').last().waitFor(); await page.getByRole('button', { name: 'Unlock' }).click(); await page.getByText('Safe').waitFor(); await noOverflow('control-question'); await shot('control-question');
+  const longUser = page.getByText('请检查这段很长的代码标识符：ThreadTermMobileCompanionRoundFourVisualRegression');
+  await longUser.evaluate(node => { for (let element = node.parentElement; element; element = element.parentElement) if (element.scrollHeight > element.clientHeight) { element.scrollTop = 0; break; } });
+  const longBounds = await longUser.evaluate(node => { const box = node.getBoundingClientRect(); return { right: box.right, width: box.width, viewport: innerWidth }; });
+  assert.ok(longBounds.right <= longBounds.viewport + 0.5, `long user text stays inside the viewport (${longBounds.right}/${longBounds.viewport})`);
+  const shortAlignment = await page.getByTestId('chat-item-user-short-alpha').evaluate(node => { const bubble = node.getBoundingClientRect(), transcript = document.querySelector('[data-testid="chat-transcript"]')?.getBoundingClientRect(); return { bubbleRight: bubble.right, transcriptRight: transcript?.right ?? 0 }; });
+  assert.ok(shortAlignment.bubbleRight <= shortAlignment.transcriptRight + 0.5 && shortAlignment.transcriptRight - shortAlignment.bubbleRight <= 24, `short user bubble stays right aligned (${shortAlignment.bubbleRight}/${shortAlignment.transcriptRight})`);
+  assert.equal((await page.locator('body').innerText()).includes('```'), false, 'fence markers are not rendered');
+  const fonts = await page.getByTestId('chat-prose-request-alpha-0').evaluate((prose, code) => ({ prose: getComputedStyle(prose).fontFamily, code: getComputedStyle(code).fontFamily, codeRight: code.getBoundingClientRect().right, viewport: innerWidth }), await page.getByTestId('chat-code-request-alpha-1').elementHandle());
+  assert.notEqual(fonts.prose, fonts.code, 'assistant prose and code use distinct fonts');
+  assert.match(fonts.code, /monospace/i, 'code uses the web monospace fallback');
+  assert.ok(fonts.codeRight <= fonts.viewport + 0.5, `long code stays inside the bubble (${fonts.codeRight}/${fonts.viewport})`);
+  await round4Shot('03-chat-light.png');
+  await page.emulateMedia({colorScheme:'dark'}); await page.evaluate(() => globalThis.__TT_MOBILE_QA__.controller.setPreferences({appearance:'dark',locale:'zh-CN'})); await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('*')].some(element => getComputedStyle(element).backgroundColor === 'rgb(38, 38, 36)')), true, 'dark appearance preference reaches the rendered app');
+  await round4Shot('04-chat-dark-zh.png');
+  await page.emulateMedia({colorScheme:'light'}); await page.evaluate(() => globalThis.__TT_MOBILE_QA__.controller.setPreferences({appearance:'system',locale:'en'})); await page.waitForTimeout(100);
+  // Chat uses a multiline composer: Return is content, while a focused first
+  // Send tap submits. A typed draft also replaces the running-turn Stop action.
+  const composer = page.getByRole('textbox', { name: 'Message' });
+  await composer.fill('first line'); await composer.press('Enter'); await composer.type('second line');
+  assert.equal(await composer.inputValue(), 'first line\nsecond line', 'chat Return retains a newline');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await page.waitForFunction(() => globalThis.__TT_MOBILE_QA_CALLS__.some(call => call.method === 'chat.send'));
+  const sent = await page.evaluate(() => globalThis.__TT_MOBILE_QA_CALLS__.find(call => call.method === 'chat.send'));
+  assert.equal(sent.id, 'alpha'); assert.equal(sent.params.sessionId, 'same-chat');
   await page.getByRole('radio',{name:'Safe',exact:true}).click();await page.getByRole('button',{name:'Submit answer',exact:true}).click();
   await page.waitForFunction(()=>globalThis.__TT_MOBILE_QA_CALLS__.some(call=>call.method==='chat.answer'));
   const answer=await page.evaluate(()=>globalThis.__TT_MOBILE_QA_CALLS__.find(call=>call.method==='chat.answer'));
   assert.equal(answer.id,'alpha');assert.equal(answer.params.turnId,'turn-alpha');assert.equal(answer.params.approvalId,'question-alpha');assert.deepEqual(answer.params.response,{action:'submit',values:{mode:['Safe']}});
-  await page.getByRole('button', { name: 'Back' }).click(); await page.getByRole('button', { name: 'Build terminal' }).click(); await page.getByText('qa shell build passed').waitFor(); await noOverflow('terminal'); await shot('terminal');
+  await page.getByRole('button', { name: 'Back' }).click(); await page.getByRole('button', { name: 'Build terminal' }).click();
+  const terminalFrame = await page.locator('iframe[title="Terminal"]').elementHandle().then(handle => handle?.contentFrame());
+  assert.ok(terminalFrame, 'terminal WebView iframe is present');
+  await terminalFrame.locator('.xterm-screen').waitFor();
+  await terminalFrame.waitForFunction(() => Array.from({ length: window.__ttTerminal.buffer.active.length }, (_, index) => window.__ttTerminal.buffer.active.getLine(index)?.translateToString(true) ?? '').join('\n').includes('qa shell build passed'));
+  await noOverflow('terminal'); await shot('terminal');
   await page.getByRole('button', { name: 'Back' }).click(); await page.getByRole('button', { name: 'Back' }).click(); await page.getByRole('button', { name: 'Back' }).click(); await page.getByRole('button', { name: 'Readonly PC' }).click(); await page.getByRole('button', { name: 'Project beta' }).click(); await page.getByRole('button', { name: 'Review beta' }).click(); await page.getByText('Readonly question').waitFor();
   assert.equal(await page.getByRole('button', { name: 'Send' }).isDisabled(), true, 'readonly machine cannot send'); await noOverflow('readonly'); await shot('readonly-question');assert.equal(await page.getByRole('button',{name:'Submit answer',exact:true}).isDisabled(),true);
   assert.equal(await page.evaluate(()=>globalThis.__TT_MOBILE_QA_CALLS__.filter(call=>call.id==='beta'&&['chat.answer','chat.send','session.claim'].includes(call.method)).length),0);

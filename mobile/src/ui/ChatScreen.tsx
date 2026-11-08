@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  type TextStyle,
   View,
 } from "react-native";
 import type {
@@ -41,8 +42,32 @@ import {
   type CodexTurn,
 } from "../../../renderer/src/codexTranscript";
 import { chatOptionsDisabledReason, chatOptionsPermissionRecovery, chatOptionsSummary } from "../core/projection";
-import { terminalCommand, terminalViewportSize } from "../core/terminalScreen";
 import { ChatOptionsSheet } from "./ChatOptionsSheet";
+import { TerminalPanel as Terminal } from "./TerminalPanel";
+
+// React Native's web Text output needs these CSS properties for an unbroken
+// identifier. Native already wraps Text inside its constrained parent.
+const webAnywhere = Platform.OS === "web"
+  ? ({ overflowWrap: "anywhere", wordBreak: "break-word" } as TextStyle & { overflowWrap: string; wordBreak: string })
+  : undefined;
+const mono = Platform.select({ ios: "Menlo", web: "monospace", default: "monospace" });
+type MessageBlock = { kind: "prose" | "code"; text: string };
+
+/** Keep markdown fences out of the transcript while a streaming final fence is absent. */
+function messageBlocks(text: string): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  let code = false, lines: string[] = [];
+  const flush = () => {
+    if (lines.length) blocks.push({ kind: code ? "code" : "prose", text: lines.join("\n") });
+    lines = [];
+  };
+  for (const line of text.split("\n")) {
+    if (/^\s*```/.test(line)) { flush(); code = !code; continue; }
+    lines.push(line);
+  }
+  flush();
+  return blocks;
+}
 
 export function ChatListScreen({
   theme,
@@ -399,6 +424,7 @@ function ChatPanel({
   return (
     <View style={styles.panel}>
       <ScrollView
+        testID="chat-transcript"
         ref={scroll}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
@@ -571,207 +597,6 @@ function ChatPanel({
     </View>
   );
 }
-function Terminal({
-  theme,
-  state,
-  controller,
-  ref,
-  view,
-}: {
-  theme: Theme;
-  state: CompanionState;
-  controller: CompanionController;
-  ref: SessionRef;
-  view?: SessionView;
-}) {
-  const [text, setText] = useState(""),
-    [busy, setBusy] = useState(false);
-  const machine = state.machines.find((m) => m.id === ref.machineId);
-  const session = machine?.snapshot?.sessions.find(
-    (s) => s.id === ref.sessionId,
-  );
-  const permitted =
-    machine?.permission === "fullcontrol" &&
-    !session?.readOnly &&
-    !session?.archived;
-  const control =
-    state.controlUnlocked &&
-    permitted &&
-    machine?.status === "connected" &&
-    !machine.syncing &&
-    !view?.syncing &&
-    !!view?.leaseEpoch;
-  const locale = state.preferences.locale;
-  const [viewport, setViewport] = useState({ width: 0, height: 0 });
-  const [cellWidth, setCellWidth] = useState(8.5);
-  const [resizeFailed, setResizeFailed] = useState(false);
-  const lastResize = useRef('');
-  const resizePending = useRef<Promise<void> | undefined>(undefined);
-  const outputScroll = useRef<React.ElementRef<typeof ScrollView>>(null);
-  const follow = useRef(true);
-  const cols = session?.cols ?? 120, rows = session?.rows ?? 40;
-  const target = terminalViewportSize(viewport.width, viewport.height, cellWidth);
-  const canResize = control && !!machine?.snapshot?.capabilities.methods.includes('terminal.resize');
-  useEffect(() => {
-    if (!canResize || !viewport.width || !viewport.height) { lastResize.current = ''; return; }
-    const size = `${target.cols}:${target.rows}:${view?.leaseEpoch}`;
-    if (lastResize.current === size || (target.cols === cols && target.rows === rows)) return;
-    let alive = true;
-    const timer = setTimeout(() => {
-      void (async () => {
-        await resizePending.current?.catch(() => {});
-        if (!alive) return;
-        lastResize.current = size;
-        const pending = controller.terminalResize(ref, target.cols, target.rows);
-        resizePending.current = pending;
-        try { await pending; if (alive) setResizeFailed(false); }
-        catch { if (alive) setResizeFailed(true); }
-        finally { if (resizePending.current === pending) resizePending.current = undefined; }
-      })();
-    }, 200);
-    return () => { alive = false; clearTimeout(timer); };
-  }, [canResize, viewport.width, viewport.height, target.cols, target.rows, cols, rows, view?.leaseEpoch, ref.machineId, ref.sessionId, controller]);
-  const claim = (takeover = false) => {
-    setBusy(true);
-    void controller
-      .unlockControl()
-      .then((ok) => {
-        if (!ok) throw new Error("control_locked");
-        return controller.claimControl(ref, takeover);
-      })
-      .catch(showError(locale))
-      .finally(() => setBusy(false));
-  };
-  const takeover = () =>
-    Alert.alert(
-      locale === "zh-CN" ? "接管终端？" : "Take over terminal?",
-      locale === "zh-CN"
-        ? "控制权将移到此手机。"
-        : "Control will move to this phone.",
-      [
-        { text: locale === "zh-CN" ? "取消" : "Cancel", style: "cancel" },
-        {
-          text: locale === "zh-CN" ? "接管" : "Take over",
-          style: "destructive",
-          onPress: () => claim(true),
-        },
-      ],
-    );
-  return (
-    <View style={styles.panel}>
-      <ScrollView
-        ref={outputScroll}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        onScrollBeginDrag={Keyboard.dismiss}
-        onLayout={({ nativeEvent: { layout } }) => setViewport({ width: Math.max(0, layout.width - 28), height: Math.max(0, layout.height - 28) })}
-        onContentSizeChange={() => { if (follow.current) outputScroll.current?.scrollToEnd({ animated: false }); }}
-        onScroll={({ nativeEvent }) => { follow.current = nativeEvent.layoutMeasurement.height + nativeEvent.contentOffset.y >= nativeEvent.contentSize.height - 40; }}
-        scrollEventThrottle={100}
-        style={[styles.terminal, { backgroundColor: theme.terminal }]}
-      >
-        <Text accessible={false} allowFontScaling={false} onLayout={({ nativeEvent: { layout } }) => { if (layout.width > 0) setCellWidth(layout.width / 10); }} style={{ position: 'absolute', opacity: 0, fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }), fontSize: 14 }}>0000000000</Text>
-        {!!view?.error && <Text style={{ color: theme.red }}>{view.error}</Text>}
-        {resizeFailed && <Text style={{ color: theme.amber }}>{locale === 'zh-CN' ? '无法调整大小，可横向滚动。' : 'Could not resize. Scroll sideways.'}</Text>}
-        {view?.terminalGap && (
-          <Text style={{ color: theme.amber }}>
-            {locale === "zh-CN"
-              ? "部分输出缺失。"
-              : "Some output is missing."}
-          </Text>
-        )}
-        <ScrollView horizontal keyboardShouldPersistTaps="handled" onScrollBeginDrag={Keyboard.dismiss} showsHorizontalScrollIndicator>
-          <Pressable accessible={false} onPress={Keyboard.dismiss} style={{ width: Math.max(viewport.width, (cols + 1) * cellWidth), minHeight: viewport.height }}>
-            <View accessible accessibilityLabel={locale === "zh-CN" ? "终端输出" : "Terminal output"}>
-              {(view?.terminalLines?.length ? view.terminalLines : [{text:locale === "zh-CN" ? "等待输出…" : "Waiting for output…"}]).map((line,index) => (
-                <View key={index} style={{ height: 20 }}>
-                  <Text selectable allowFontScaling={false} numberOfLines={1} style={{ color: theme.terminalText, fontFamily: Platform.select({ ios: "Menlo", default: "monospace" }), fontSize: 14, lineHeight: 20 }}>{line.text}</Text>
-                  {line.cursor && <View pointerEvents="none" style={{ position: 'absolute', left: (line.cursorColumn ?? 0) * cellWidth, top: 1, height: 18, borderLeftWidth: 2, borderLeftColor: theme.terminalText }} />}
-                </View>
-              ))}
-            </View>
-          </Pressable>
-        </ScrollView>
-      </ScrollView>
-      {!control && (
-        <View style={styles.lock}>
-          <Text style={{ color: theme.amber, flex: 1 }}>
-            {machine?.permission !== "fullcontrol" || permitted
-              ? controlPermissionNotice(machine?.permission, state.controlUnlocked, locale)
-              : (locale === "zh-CN" ? "此会话仅允许查看。" : "This session is read-only.")}
-          </Text>
-          {permitted && (
-            <>
-              <Button
-                theme={theme}
-                label={state.controlUnlocked ? (locale === "zh-CN" ? "获取控制" : "Control") : (locale === "zh-CN" ? "解锁" : "Unlock")}
-                small
-                disabled={
-                  busy || machine?.status !== "connected" || machine.syncing
-                }
-                onPress={() => claim()}
-              />
-              <Button
-                theme={theme}
-                label={locale === "zh-CN" ? "接管" : "Take over"}
-                small
-                tone="secondary"
-                disabled={
-                  busy || machine?.status !== "connected" || machine.syncing
-                }
-                onPress={takeover}
-              />
-            </>
-          )}
-        </View>
-      )}
-      <View style={styles.composer}>
-        <TextInput
-          accessibilityLabel={locale === "zh-CN" ? "终端输入" : "Terminal input"}
-          value={text}
-          onChangeText={setText}
-          editable={control}
-          style={[
-            styles.input,
-            {
-              color: theme.text,
-              backgroundColor: theme.input,
-              borderColor: theme.line,
-            },
-          ]}
-        />
-        <Button
-          theme={theme}
-          label={locale === 'zh-CN' ? '运行' : 'Run'}
-          small
-          disabled={!control || busy || !text.trim()}
-          onPress={() => {
-            setBusy(true);
-            void controller
-              .terminalInput(ref, terminalCommand(text))
-              .then(() => setText(""))
-              .catch(showError(state.preferences.locale))
-              .finally(() => setBusy(false));
-          }}
-        />
-        <Button
-          theme={theme}
-          label="Ctrl-C"
-          small
-          tone="destructive"
-          disabled={!control || busy}
-          onPress={() => {
-            setBusy(true);
-            void controller
-              .terminalInput(ref, "\u0003")
-              .catch(showError(locale))
-              .finally(() => setBusy(false));
-          }}
-        />
-      </View>
-    </View>
-  );
-}
 function Turn({
   group,
   theme,
@@ -863,41 +688,40 @@ function Message({
     .map((p) => p.text)
     .filter(Boolean)
     .join("\n");
+  const isUser = item.role === "user";
+  const isTool = item.role === "tool";
+  const blocks = messageBlocks(text);
+  const role = isUser
+    ? zh ? "你" : "You"
+    : item.role === "assistant"
+      ? "Agent"
+      : item.role === "tool"
+        ? zh ? "工具" : "Tool"
+        : zh ? "系统" : "System";
   return (
-    <View style={styles.message}>
+    <View testID={`chat-item-${item.id}`} style={[styles.message, isUser && styles.userMessage]}>
       {!!text && (
-        <Card
-          theme={theme}
-          style={[
-            styles.bubble,
-            item.role === "user" ? { backgroundColor: theme.chip } : undefined,
-          ]}
-        >
-          <Text style={{ color: theme.muted, fontSize: 12, marginBottom: 6 }}>
-            {item.role === "user"
-              ? zh
-                ? "你"
-                : "You"
-              : item.role === "assistant"
-                ? "Agent"
-                : item.role === "tool"
-                  ? zh
-                    ? "工具"
-                    : "Tool"
-                  : zh
-                    ? "系统"
-                    : "System"}
+        <Card theme={theme} style={[
+          styles.bubble,
+          isTool ? styles.activityBubble : isUser ? styles.userBubble : styles.agentBubble,
+          isUser ? { backgroundColor: theme.primary } : undefined,
+        ]}>
+          <Text style={[styles.messageMeta, { color: isUser ? theme.primaryText : theme.muted }]}>
+            {role} · {timeLabel(item.createdAt, zh ? "zh-CN" : "en")}
           </Text>
-          <Text
-            selectable
-            style={{
-              color: item.parts.some((p) => p.type === "error")
-                ? theme.red
-                : theme.text,
-            }}
-          >
-            {text}
-          </Text>
+          {blocks.map((block, index) => block.kind === "code" ? (
+            <Text key={index} testID={`chat-code-${item.id}-${index}`} selectable style={[
+              styles.codeBlock,
+              webAnywhere,
+              { color: item.parts.some((p) => p.type === "error") ? theme.red : isUser ? theme.primaryText : theme.text, backgroundColor: isUser ? `${theme.primaryText}1c` : theme.raised },
+            ]}>{block.text}</Text>
+          ) : (
+            <Text key={index} testID={`chat-prose-${item.id}-${index}`} selectable style={[
+              styles.messageText,
+              webAnywhere,
+              { color: item.parts.some((p) => p.type === "error") ? theme.red : isUser ? theme.primaryText : theme.text },
+            ]}>{block.text}</Text>
+          ))}
         </Card>
       )}
       {item.parts
@@ -956,7 +780,7 @@ function ActivityPart({
       : (part.text ??
         (part.data === undefined ? "" : JSON.stringify(part.data, null, 2)));
   return (
-    <Card theme={theme} style={styles.bubble}>
+    <Card theme={theme} style={styles.activityBubble}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded }}
@@ -987,7 +811,7 @@ function ActivityPart({
       {expanded && (
         <Text
           selectable
-          style={{ color: theme.muted, fontFamily: "Menlo", fontSize: 13 }}
+          style={[styles.activityDetails, { color: theme.muted }, webAnywhere]}
         >
           {details}
         </Text>
@@ -1037,9 +861,17 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   panel: { flex: 1, minHeight: 0 },
-  transcript: { padding: space.md, flexGrow: 1 },
-  message: { gap: 8 },
-  bubble: { padding: 12 },
+  transcript: { padding: space.md, flexGrow: 1, gap: 14 },
+  message: { alignSelf: "stretch", gap: 8, minWidth: 0, alignItems: "flex-start" },
+  userMessage: { alignItems: "flex-end" },
+  bubble: { paddingVertical: 10, paddingHorizontal: 14, minWidth: 0 },
+  userBubble: { maxWidth: "82%", alignSelf: "flex-end", borderRadius: 18, borderWidth: 0 },
+  agentBubble: { maxWidth: "100%", alignSelf: "flex-start", borderRadius: 14 },
+  messageMeta: { fontSize: 12, lineHeight: 16, marginBottom: 4, opacity: 0.82 },
+  messageText: { fontSize: 15, lineHeight: 23, flexShrink: 1, minWidth: 0, maxWidth: "100%" },
+  codeBlock: { alignSelf: "stretch", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontFamily: mono, fontSize: 13, lineHeight: 20, flexShrink: 1, minWidth: 0, maxWidth: "100%" },
+  activityBubble: { width: "100%", padding: 12, gap: 8 },
+  activityDetails: { fontFamily: mono, fontSize: 13, lineHeight: 19, flexShrink: 1, minWidth: 0, maxWidth: "100%" },
   approval: { padding: 12, gap: 8 },
   error: { padding: 12 },
   lock: { padding: 10, flexDirection: "row", alignItems: "center" },
@@ -1068,5 +900,4 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
-  terminal: { flex: 1, padding: 14 },
 });

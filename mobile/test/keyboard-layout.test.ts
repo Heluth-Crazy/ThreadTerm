@@ -22,8 +22,8 @@ test('input sheets stay inside safe areas and their scroll views dismiss the key
     assert.match(source(file), /keyboardShouldPersistTaps="handled"/);
   }
   const chat = source('src/ui/ChatScreen.tsx');
-  assert.equal((chat.match(/keyboardDismissMode="interactive"/g) ?? []).length, 2,
-    'both transcript and terminal output support drag dismissal');
+  assert.equal((chat.match(/keyboardDismissMode="interactive"/g) ?? []).length, 1,
+    'chat supports drag dismissal; xterm owns terminal scrolling inside WebView');
 });
 
 test('native dismissal has explicit drag and unhandled-background fallbacks', () => {

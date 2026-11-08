@@ -33,11 +33,61 @@ impl Backend {
 /// Answer to the host's startup DA1 query (a VT100-class terminal, like other terminals send).
 pub const DA1_REPLY: &[u8] = b"\x1b[?61c";
 
+/// First ConPTY build whose wrap reporting xterm can trust. Keep this in step
+/// with the desktop terminal host compatibility value.
+pub const MODERN_CONPTY_BUILD: u32 = 21_376;
+
 static ACTIVE: OnceLock<Backend> = OnceLock::new();
 
 /// The host in use (`System` until [`initialize`] ran, e.g. in tests).
 pub fn active() -> Backend {
     ACTIVE.get().copied().unwrap_or(Backend::System)
+}
+
+/// The real Windows ConPTY compatibility build for xterm, if this is a Windows
+/// host. A bundled OpenConsole reports itself as modern even when Windows' own
+/// ConPTY is older; the system host always retains the actual OS build.
+pub fn windows_pty_build() -> Option<u32> {
+    windows_pty_build_for(active(), actual_windows_build())
+}
+
+fn windows_pty_build_for(host: Backend, os_build: Option<u32>) -> Option<u32> {
+    os_build.map(|build| {
+        if host == Backend::Bundled {
+            build.max(MODERN_CONPTY_BUILD)
+        } else {
+            build
+        }
+    })
+}
+
+#[cfg(windows)]
+fn actual_windows_build() -> Option<u32> {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform_id: u32,
+        csd_version: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(version: *mut OsVersionInfoW) -> i32;
+    }
+
+    // RtlGetVersion is intentionally used instead of the manifest-sensitive
+    // GetVersionEx APIs: xterm needs the host's actual build, never a guess.
+    let mut version: OsVersionInfoW = unsafe { std::mem::zeroed() };
+    version.size = std::mem::size_of::<OsVersionInfoW>() as u32;
+    (unsafe { RtlGetVersion(&mut version) } == 0).then_some(version.build)
+}
+
+#[cfg(not(windows))]
+fn actual_windows_build() -> Option<u32> {
+    None
 }
 
 /// The preferred host: `THREADTERM_V3_CONPTY` (QA, `system` | `bundled`) over the `conptyHost` setting.
@@ -200,6 +250,23 @@ mod tests {
         assert_eq!(preference(&json!({"conptyHost":"bundled"})), Backend::Bundled);
         assert_eq!(preference(&json!({"conptyHost":"system"})), Backend::System);
         assert_eq!(preference(&json!({"conptyHost":"anything"})), Backend::Bundled);
+    }
+
+    #[test]
+    fn xterm_compatibility_uses_the_real_system_build_unless_openconsole_is_bundled() {
+        assert_eq!(
+            windows_pty_build_for(Backend::System, Some(19_041)),
+            Some(19_041)
+        );
+        assert_eq!(
+            windows_pty_build_for(Backend::Bundled, Some(19_041)),
+            Some(MODERN_CONPTY_BUILD)
+        );
+        assert_eq!(
+            windows_pty_build_for(Backend::Bundled, Some(22_631)),
+            Some(22_631)
+        );
+        assert_eq!(windows_pty_build_for(Backend::System, None), None);
     }
 
     #[test]
