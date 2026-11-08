@@ -16,15 +16,21 @@ const machines = [
   { id: 'beta', name: 'Readonly PC', color: '#8c887f', transport: 'tls' as const, endpoint: '127.0.0.1:9001', tlsFingerprint: 'BB', permission: 'readonly' as const, expiresAt: '2099-01-01T00:00:00.000Z' },
 ];
 const chat = (machineId: string, readOnly = false): Session => ({ id: 'same-chat', title: `Review ${machineId}`, projectId: 'same-project', worktreePath: `C:/${machineId}/project`, provider: 'codex', mode: 'chat', status: 'waiting', readOnly, createdAt: now, updatedAt: now, activity: { state: 'awaiting_input' as const, revision: 1, turnId: `turn-${machineId}` } });
+// Regression fixture: Codex settles a turn with awaiting_input to invite a
+// reply. It is not a pending request, even though the reply inbox row is unread.
+const finishedReply: Session = { id: 'finished-reply', title: 'Completed reply', projectId: 'same-project', worktreePath: 'C:/alpha/project', provider: 'codex', mode: 'chat', status: 'idle', readOnly: false, createdAt: now, updatedAt: now, activity: { state: 'awaiting_input' as const, revision: 2, turnId: 'turn-finished-reply' } };
 const terminal: Session = { id: 'same-shell', title: 'Build terminal', projectId: 'same-project', worktreePath: 'C:/alpha/project', provider: 'codex', mode: 'terminal', status: 'running', readOnly: false, createdAt: now, updatedAt: now, activity: { state: 'running' as const, revision: 1, turnId: 'turn-shell' } };
 const snapshot = (machine: typeof machines[number]): MobileSnapshot => ({
   epoch: `epoch-${machine.id}`, revision: 1, permission: machine.permission,
   capabilities: { contract: 1, methods: ['mobile.snapshot', 'mobile.events.subscribe', 'chat.snapshot', 'chat.options', 'chat.connection', 'terminal.read', 'filesystem.files', 'filesystem.read', 'git.status', 'git.diff', 'git.log', 'git.branches', 'session.claim', 'session.release', 'chat.answer', 'chat.approve', 'chat.send', 'terminal.input', 'terminal.resize', ...(machine.id === 'alpha' ? ['chat.option.set'] : [])] },
   projects: [{ id: 'same-project', name: `Project ${machine.id}`, path: `C:/${machine.id}/project`, createdAt: now, revision: 1, pinned: false, sortOrder: 0, git: { available: true, branch: 'main' } }],
-  worktrees: [], sessions: machine.id === 'alpha' ? [chat(machine.id), terminal] : [chat(machine.id, true)], inbox: [], providers: [],
+  worktrees: [], sessions: machine.id === 'alpha' ? [chat(machine.id), finishedReply, terminal] : [chat(machine.id, true)], inbox: machine.id === 'alpha' ? [{ id: 'reply-finished', sessionId: finishedReply.id, kind: 'reply', title: 'Completed reply is unread', createdAt: now, read: false }] : [], providers: [],
 });
 const approval: ChatApprovalData = { approvalId: 'question-alpha', turnId: 'turn-alpha', title: 'Choose QA mode', interaction: 'question', choices: [], form: { kind: 'questions', questions: [{ id: 'mode', question: 'Which verification mode should run?', options: [{ label: 'Safe', description: 'Read-only fixture.' }, { label: 'Full', description: 'Exercise controls.' }], multiSelect: false, allowOther: false, secret: false }] } };
-const chatSnapshot = (machineId: string): RequestMap['chat.snapshot'][1] => ({ items: [
+const chatSnapshot = (machineId: string, sessionId = 'same-chat'): RequestMap['chat.snapshot'][1] => sessionId === finishedReply.id ? ({ items: [
+  { id: 'finished-user', turnId: 'turn-finished-reply', role: 'user', createdAt: now, parts: [{ type: 'text', text: 'Please finish this task.' }] },
+  { id: 'finished-answer', turnId: 'turn-finished-reply', role: 'assistant', createdAt: now, parts: [{ type: 'text', text: 'Finished reply from Codex.' }] },
+], revision: 2, repair: {offered:false,degraded:false}, hasEarlier: false }) : ({ items: [
   { id: `user-short-${machineId}`, turnId: `turn-${machineId}`, role: 'user', createdAt: now, parts: [{ type: 'text', text: '你好' }] },
   { id: `user-${machineId}`, turnId: `turn-${machineId}`, role: 'user', createdAt: now, parts: [{ type: 'text', text: '请检查这段很长的代码标识符：ThreadTermMobileCompanionRoundFourVisualRegression' }] },
   { id: `request-${machineId}`, turnId: `turn-${machineId}`, role: 'assistant', createdAt: now, parts: [{ type: 'text', text: 'A response is needed before the session can continue.\n```ts\nconst ThreadTermMobileCompanionCodeBlockMustWrapInsideBubble = true;\n```' }, { type: 'tool', toolId: `check-${machineId}`, toolName: 'terminal.exec', status: 'completed', text: 'Checked the long identifier without changing the workspace.' }, { type: 'approval', approvalId: `question-${machineId}`, status: 'pending', data: machineId === 'alpha' ? approval : { ...approval, approvalId: 'question-beta', turnId: 'turn-beta', title: 'Readonly question' } }] },
@@ -44,7 +50,7 @@ const native: NativePort = {
   request: async (id: string, method: string, text: string) => {
     const params = JSON.parse(text);calls.push({id,method,params});const machine = machines.find(row => row.id === id)!;
     const responses: Record<string, unknown> = {
-      'mobile.events.subscribe': { sessionIds: params.sessionIds, revision: 1 }, 'mobile.snapshot': snapshot(machine), 'chat.snapshot': chatSnapshot(id),
+      'mobile.events.subscribe': { sessionIds: params.sessionIds, revision: 1 }, 'mobile.snapshot': snapshot(machine), 'chat.snapshot': chatSnapshot(id, params.sessionId),
       'chat.options': optionStates.get(id)!, 'chat.connection': { sessionId: params.sessionId, runtimeEpoch: `epoch-${id}`, connectionGeneration: 1, revision: 1, phase: 'ready', optionsLoadState: 'ready' },
       'terminal.read': { sessionId: params.sessionId, fromCursor: 0, nextCursor: 24, truncated: false, encoding: 'base64', data: 'cWEgc2hlbGwgYnVpbGQgcGFzc2VkCg==' },
       'filesystem.files': { paths: ['README.md', 'src/index.ts'], truncated: false }, 'filesystem.read': { path: params.path, content: `fixture file from ${id}`, fingerprint: 'fixture', readonly: true, size: 25, modifiedAt: now },

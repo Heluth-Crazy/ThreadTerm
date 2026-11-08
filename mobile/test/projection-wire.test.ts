@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { attentionItems } from '../src/core/projection';
+import { activeSessionTurnId, attentionItems, isPendingAttentionInboxItem, sessionNeedsUserAction, sessionPresentation, sessionPresentationLabel } from '../src/core/projection';
 import { validateMobileRequest, mobileResult } from '../src/core/wire';
 import { isMobileSnapshot } from '@threadterm/protocol/mobile';
 
@@ -38,7 +38,7 @@ test('pending-looking approval from an earlier or settled turn cannot authorize 
   const host=machine('a');host.snapshot.sessions=[{...session,activity:{...session.activity,turnId:'new-turn'}}];
   const views:any={'["a","same"]':{items:[approval(),{...approval({turnId:'new-turn'}),turnStatus:'completed'}],ref:{machineId:'a',sessionId:'same'}}};
   const rows=attentionItems([host],views);
-  assert.equal(rows.length,1);assert.equal(rows[0]!.approvalId,undefined,'only the non-actionable session attention fallback remains');
+  assert.equal(rows.length,0,'there is no synthetic fallback for a stale approval card');
 });
 
 test('a session resync keeps a current approval visible but stale until authoritative data returns',()=>{
@@ -46,4 +46,60 @@ test('a session resync keeps a current approval visible but stale until authorit
   const views:any={'["a","same"]':{items:[approval()],syncing:true,ref:{machineId:'a',sessionId:'same'}}};
   const rows=attentionItems([host],views);
   assert.equal(rows[0]!.approvalId,'approval');assert.equal(rows[0]!.stale,true);
+});
+
+test('attention treats settled awaiting_input replies as unread replies, not approvals',()=>{
+  const host=machine('a');
+  host.snapshot.sessions=[{...session,status:'idle',activity:{state:'awaiting_input',turnId:'reply-turn',revision:2}}];
+  host.snapshot.inbox=[{id:'reply',sessionId:'same',kind:'reply',title:'Finished reply',createdAt:now,read:false}];
+  const views:any={'["a","same"]':{items:[],ref:{machineId:'a',sessionId:'same'}}};
+  assert.deepEqual(attentionItems([host],views),[],'a non-waiting awaiting_input reply is not Needs You');
+  assert.equal(sessionNeedsUserAction(host.snapshot.sessions[0]),false);
+  assert.equal(activeSessionTurnId(host.snapshot.sessions[0]),undefined,'a settled reply cannot show Stop');
+});
+
+test('attention keeps real pending approvals, questions, plans and forms plus waiting input',()=>{
+  const cases=[
+    {name:'approval',data:{}},
+    {name:'question',data:{interaction:'question'}},
+    {name:'plan',data:{interaction:'plan'}},
+    {name:'form',data:{form:{kind:'questions',questions:[]}}},
+  ];
+  for(const entry of cases){
+    const host=machine(entry.name);host.snapshot.sessions=[{...session,activity:{state:'awaiting_approval',turnId:'turn',revision:1}}];
+    const views:any={[JSON.stringify([entry.name,'same'])]:{items:[approval(entry.data)],ref:{machineId:entry.name,sessionId:'same'}}};
+    assert.equal(attentionItems([host],views).length,1,entry.name);
+  }
+  const host=machine('input');host.snapshot.sessions=[{...session,activity:{state:'awaiting_input',turnId:'input-turn',revision:1}}];
+  assert.equal(attentionItems([host],{}).length,1,'a status-waiting input remains actionable without an approval card');
+  host.snapshot.inbox=[{id:'input',sessionId:'same',kind:'waiting',title:'Answer requested',createdAt:now,read:false}];
+  assert.equal(attentionItems([host],{}).length,1,'a real waiting inbox item remains actionable');
+  assert.equal(sessionNeedsUserAction(host.snapshot.sessions[0]),true);
+});
+
+test('active turn is limited to running or status-waiting pending input/approval',()=>{
+  const running={...session,status:'running',activity:{state:'running',turnId:'running-turn',revision:1}} as any;
+  const waitingInput={...session,status:'waiting',activity:{state:'awaiting_input',turnId:'input-turn',revision:1}} as any;
+  const waitingApproval={...session,status:'waiting',activity:{state:'awaiting_approval',turnId:'approval-turn',revision:1}} as any;
+  const unknown={...session,status:'idle',activity:{state:'unknown',turnId:'unknown-turn',revision:1}} as any;
+  assert.equal(activeSessionTurnId(running),'running-turn');
+  assert.equal(activeSessionTurnId(waitingInput),'input-turn');
+  assert.equal(activeSessionTurnId(waitingApproval),'approval-turn');
+  assert.equal(activeSessionTurnId(unknown),undefined);
+});
+
+test('settled input has an unread-reply presentation while waiting input remains Needs You',()=>{
+  const reply={...session,status:'idle',activity:{state:'awaiting_input',turnId:'reply-turn',revision:1}} as any;
+  const waiting={...session,status:'waiting',activity:{state:'awaiting_input',turnId:'input-turn',revision:1}} as any;
+  assert.equal(sessionPresentation(reply),'unread_reply');
+  assert.equal(sessionPresentationLabel(reply,'en'),'Unread reply');
+  assert.equal(sessionPresentationLabel(reply,'zh-CN'),'未读回复');
+  assert.equal(sessionPresentation(waiting),'needs_user');
+  assert.equal(sessionPresentationLabel(waiting,'en'),'Needs you');
+});
+
+test('Needs You inbox accepts only known pending request kinds',()=>{
+  for (const kind of ['approval','question','plan','form','waiting','input']) assert.equal(isPendingAttentionInboxItem({read:false,kind}),true,kind);
+  for (const kind of ['reply','stalled','completed','error','unknown']) assert.equal(isPendingAttentionInboxItem({read:false,kind}),false,kind);
+  assert.equal(isPendingAttentionInboxItem({read:true,kind:'approval'}),false);
 });

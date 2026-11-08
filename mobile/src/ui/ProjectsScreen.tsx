@@ -27,6 +27,7 @@ import type { ResourceRoute } from "./ResourceScreen";
 import type { Theme } from "./theme";
 import { space } from "./theme";
 import { machineSummary, sessionStatusLabel, shortPath } from "./format";
+import { sessionPresentation, sessionPresentationLabel } from '../core/projection';
 import { sameWorkspacePath } from "./workspacePath";
 
 export type ProjectRoute =
@@ -430,10 +431,10 @@ function SessionRows({
           <View style={styles.grow}>
             <Text style={[styles.name, { color: theme.text }]}>{s.title}</Text>
             <Text style={{ color: theme.muted }}>
-              {sessionStatusLabel(s.status, locale)}
+              {sessionPresentationLabel(s, locale) === s.status ? sessionStatusLabel(s.status, locale) : sessionPresentationLabel(s, locale)}
             </Text>
           </View>
-          <StatusDot theme={theme} state={s.status} />
+          <StatusDot theme={theme} state={sessionPresentation(s) === 'needs_user' ? 'waiting' : sessionPresentation(s) === 'unread_reply' ? 'unread_reply' : s.status} />
         </Card>
       </Pressable>
     ))

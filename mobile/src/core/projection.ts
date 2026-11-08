@@ -1,4 +1,4 @@
-import type { ChatApprovalData, ChatItem, ChatUiState } from '@threadterm/protocol';
+import type { ChatApprovalData, ChatItem, ChatUiState, Session } from '@threadterm/protocol';
 import type { AttentionItem, CompanionState, Locale, MachineState, SessionRef, SessionView } from './types';
 import { sessionKey } from './types';
 import { chipValueText, partitionOptions, thinkingChipText } from '../../../renderer/src/composerOptions';
@@ -41,6 +41,42 @@ export function approvalData(value:unknown):ChatApprovalData|undefined {
   if (typeof data.approvalId!=='string') return;
   return {...data,choices:Array.isArray(data.choices)?data.choices.filter(choice=>typeof choice?.choiceId==='string'&&typeof choice.label==='string'):[]} as ChatApprovalData;
 }
+
+/** The desktop treats settled awaiting_input as an unread reply, never a user request. */
+export function sessionNeedsUserAction(session: Session): boolean {
+  return session.activity?.state === 'awaiting_approval'
+    || session.activity?.state === 'awaiting_input' && session.status === 'waiting';
+}
+
+export type SessionPresentation = 'ordinary' | 'needs_user' | 'unread_reply';
+
+/** Keep action affordances separate from a settled assistant reply that the user has not read yet. */
+export function sessionPresentation(session: Session): SessionPresentation {
+  if (sessionNeedsUserAction(session)) return 'needs_user';
+  if (session.activity?.state === 'awaiting_input') return 'unread_reply';
+  return 'ordinary';
+}
+
+export function sessionPresentationLabel(session: Session, locale: Locale): string {
+  const state = sessionPresentation(session);
+  if (state === 'needs_user') return locale === 'zh-CN' ? '等待处理' : 'Needs you';
+  if (state === 'unread_reply') return locale === 'zh-CN' ? '未读回复' : 'Unread reply';
+  return session.status;
+}
+
+/** Stop/cancel requires an actively running turn or a real pending user request. */
+export function activeSessionTurnId(session: Session): string | undefined {
+  const activity = session.activity;
+  if (!activity?.turnId) return;
+  if (activity.state === 'running' && session.status === 'running') return activity.turnId;
+  if ((activity.state === 'awaiting_approval' || activity.state === 'awaiting_input') && session.status === 'waiting') return activity.turnId;
+}
+
+/** Mobile Needs You is deliberately narrower than the desktop notification inbox. */
+export function isPendingAttentionInboxItem(item: { read: boolean; kind: string }): boolean {
+  return !item.read && /^(approval|question|plan|form|waiting|input)$/i.test(item.kind);
+}
+
 export function attentionItems(machines:MachineState[],views:CompanionState['sessions']):AttentionItem[] {
   const result:AttentionItem[]=[];
   for(const machine of machines) {
@@ -63,16 +99,18 @@ export function attentionItems(machines:MachineState[],views:CompanionState['ses
           if(session.activity?.turnId&&session.activity.turnId!==turnId) continue;
           // Resolved historical cards must not authorize current controls.
           if(data.planOutcome||data.answerSummary||data.outcome) continue;
-          if(!(session.activity?['awaiting_approval','awaiting_input'].includes(session.activity.state):session.status==='waiting')) continue;
+          if(!sessionNeedsUserAction(session)) continue;
           pending=true;
           result.push({...base,key:JSON.stringify([machine.id,session.id,turnId,approvalId]),title:data.title??part.text??session.title,createdAt:item.createdAt,turnId,approvalId,approval:data});
         }
       }
-      for(const entry of snapshot.inbox.filter(entry=>entry.sessionId===session.id&&!entry.read)) {
+      for(const entry of snapshot.inbox.filter(entry=>entry.sessionId===session.id&&isPendingAttentionInboxItem(entry))) {
         if(pending && /approval|question|input|waiting/i.test(entry.kind)) continue;
         result.push({...base,key:JSON.stringify([machine.id,'inbox',entry.id]),title:entry.title,createdAt:entry.createdAt,inboxId:entry.id});
       }
-      if(!pending && !snapshot.inbox.some(entry=>entry.sessionId===session.id&&!entry.read) && ['awaiting_approval','awaiting_input'].includes(session.activity?.state??'')) {
+      // A waiting input can be host-owned rather than represented as an approval card.
+      // It remains actionable, but the UI calls it a Request rather than inventing Approval.
+      if(!pending && !snapshot.inbox.some(entry=>entry.sessionId===session.id&&isPendingAttentionInboxItem(entry)) && session.activity?.state==='awaiting_input' && session.status==='waiting') {
         result.push({...base,key:JSON.stringify([machine.id,'attention',session.id]),title:session.title,createdAt:session.updatedAt});
       }
     }

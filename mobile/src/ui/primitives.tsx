@@ -38,8 +38,8 @@ export function SectionTitle({ theme, children, action }: PropsWithChildren<{ th
   return <View style={styles.sectionTitle}><Text maxFontSizeMultiplier={1.5} style={[styles.sectionLabel, { color: theme.muted }]}>{children}</Text>{action}</View>;
 }
 
-export function StatusDot({ theme, state, label }: { theme: Theme; state?: string; label?: string }) {
-  const color = statusColor(theme, state);
+export function StatusDot({ theme, state, sessionStatus, label }: { theme: Theme; state?: string; sessionStatus?: string; label?: string }) {
+  const color = statusColor(theme, state, sessionStatus);
   return <View style={styles.statusDotRow}><View style={[styles.statusDot, { backgroundColor: color }]} />{!!label && <Text maxFontSizeMultiplier={1.5} style={[styles.statusDotText, { color }]}>{label}</Text>}</View>;
 }
 

@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, StatusBar, StyleSheet, Text, View, useColorScheme } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CompanionProvider, useCompanion } from './src/core/react';
-import type { AttentionItem, SessionRef } from './src/core/types';
+import type { AttentionItem, CompanionController, SessionRef } from './src/core/types';
 import { Icon, type IconName } from './src/ui/icons';
 import { ChatListScreen, SessionDetailScreen } from './src/ui/ChatScreen';
 import { NeedsYouScreen } from './src/ui/NeedsYouScreen';
@@ -13,6 +13,7 @@ import { NewSessionSheet } from './src/ui/NewSessionSheet';
 import { SettingsScreen } from './src/ui/SettingsScreen';
 import { resolveTheme } from './src/ui/theme';
 import { useKeyboardVisible } from './src/ui/keyboard';
+import { EdgeBackScreen } from './src/ui/EdgeBackScreen';
 
 type Tab = 'needs' | 'projects' | 'chat' | 'settings';
 type Detail = { kind: 'session'; ref: SessionRef } | { kind: 'resource'; route: ResourceRoute };
@@ -32,6 +33,24 @@ export function CompanionApp() {
   const [details, setDetails] = useState<Detail[]>([]);
   const [newSession, setNewSession] = useState(false);
   const [pairingRequest, setPairingRequest] = useState(0);
+  const resourceCache = useRef(new Map<string, unknown>());
+  const resourceControllers = useMemo(() => {
+    const read: CompanionController['read'] = async (id, method, params) => {
+      const result = await controller.read(id, method, params);
+      const key = JSON.stringify([id, method, params]);
+      resourceCache.current.delete(key);
+      resourceCache.current.set(key, result);
+      if (resourceCache.current.size > 16) resourceCache.current.delete(resourceCache.current.keys().next().value!);
+      return result;
+    };
+    const cachedRead: CompanionController['read'] = (id, method, params) => {
+      const key = JSON.stringify([id, method, params]);
+      return resourceCache.current.has(key)
+        ? Promise.resolve(resourceCache.current.get(key) as Awaited<ReturnType<typeof controller.read<typeof method>>>)
+        : Promise.reject(new Error('Preview unavailable'));
+    };
+    return { active: { ...controller, read }, preview: { ...controller, read: cachedRead, openSession: async () => {}, closeSession: async () => {} } };
+  }, [controller]);
   const addComputer = () => { setTab('settings'); setPairingRequest(value => value + 1); };
   const detail = details.at(-1);
   const back = () => setDetails(current => current.slice(0, -1));
@@ -59,7 +78,7 @@ export function CompanionApp() {
   let page: React.ReactNode;
   if (detail?.kind === 'session') page = <SessionDetailScreen theme={theme} state={state} controller={controller} ref={detail.ref} onBack={back}
     onFiles={() => openSessionResource('files', detail.ref)} onGit={() => openSessionResource('git', detail.ref)} />;
-  else if (detail?.kind === 'resource') page = <ResourceScreen theme={theme} state={state} controller={controller} route={detail.route} onBack={back}
+  else if (detail?.kind === 'resource') page = <ResourceScreen theme={theme} state={state} controller={resourceControllers.active} route={detail.route} onBack={back}
     onRoute={route => setDetails(current => {
       const previous = current.at(-1);
       const keep = previous?.kind === 'resource' && isGitTabSwitch(previous.route, route) ? current.slice(0, -1) : current;
@@ -75,13 +94,37 @@ export function CompanionApp() {
   const initial = tab === 'projects' && projectRoute.kind !== 'computers'
     ? { machineId: projectRoute.machineId, ...('projectId' in projectRoute ? { projectId: projectRoute.projectId } : {}), ...('worktreeId' in projectRoute ? { worktreeId: projectRoute.worktreeId } : {}) }
     : undefined;
+  const projectBack = () => {
+    if (projectRoute.kind === 'worktree') setProjectRoute({ kind: 'project', machineId: projectRoute.machineId, projectId: projectRoute.projectId });
+    else if (projectRoute.kind === 'project') setProjectRoute({ kind: 'machine', machineId: projectRoute.machineId });
+    else setProjectRoute({ kind: 'computers' });
+  };
+  const canGoBack = !!detail || (tab === 'projects' && projectRoute.kind !== 'computers');
+  const navigationKey = JSON.stringify([tab, projectRoute, details]);
+  const renderPrevious = () => {
+    const previous = details.at(-2);
+    const inert = () => {};
+    if (previous?.kind === 'session') return <SessionDetailScreen theme={theme} state={{ ...state, controlUnlocked: false }} controller={resourceControllers.preview} ref={previous.ref} onBack={inert} onFiles={inert} onGit={inert} />;
+    if (previous?.kind === 'resource') return <ResourceScreen theme={theme} state={state} controller={resourceControllers.preview} route={previous.route} onBack={inert} onRoute={inert} />;
+    if (tab === 'projects') {
+      const route: ProjectRoute = detail ? projectRoute : projectRoute.kind === 'worktree'
+        ? { kind: 'project', machineId: projectRoute.machineId, projectId: projectRoute.projectId }
+        : projectRoute.kind === 'project' ? { kind: 'machine', machineId: projectRoute.machineId } : { kind: 'computers' };
+      return <ProjectsScreen theme={theme} state={state} controller={resourceControllers.preview} route={route} onRoute={inert} onOpenSession={inert} onOpenResource={inert} onConnect={inert} onAddComputer={inert} onNewSession={inert} />;
+    }
+    if (tab === 'needs') return <NeedsYouScreen theme={theme} state={state} controller={resourceControllers.preview} onOpenSession={inert} onAddComputer={inert} />;
+    if (tab === 'chat') return <ChatListScreen theme={theme} state={state} controller={resourceControllers.preview} onOpenSession={inert} onNew={inert} />;
+    return <SettingsScreen theme={theme} state={state} controller={resourceControllers.preview} />;
+  };
   return <SafeAreaView style={[styles.fill, { backgroundColor: theme.background }]} edges={['top', 'left', 'right']}>
     <StatusBar barStyle={theme.background === '#262624' ? 'light-content' : 'dark-content'} />
     <KeyboardAvoidingView testID="companion-keyboard" style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
     {!!state.error && <Pressable accessibilityRole="button" accessibilityLabel={zh ? '关闭错误提示' : 'Dismiss error'} onPress={() => controller.clearError()} style={[styles.error, { backgroundColor: theme.surface }]}>
       <Text style={{ color: theme.red, flex: 1 }}>{state.error}</Text><Icon name="close" color={theme.red} size={18} />
     </Pressable>}
-    <Pressable accessible={false} onPress={Keyboard.dismiss} style={[styles.page, detail ? { paddingBottom: keyboardVisible ? 0 : insets.bottom } : undefined]}>{page}</Pressable>
+    <EdgeBackScreen enabled={canGoBack && !newSession} navigationKey={navigationKey} onBack={detail ? back : projectBack} backgroundColor={theme.background} renderPrevious={renderPrevious}>
+      <Pressable accessible={false} onPress={Keyboard.dismiss} style={[styles.page, detail ? { paddingBottom: keyboardVisible ? 0 : insets.bottom } : undefined]}>{page}</Pressable>
+    </EdgeBackScreen>
     {!detail && !keyboardVisible && <TabBar theme={theme} active={tab} attention={state.attention.length} bottom={insets.bottom} onChange={setTab} />}
     {newSession && <NewSessionSheet theme={theme} state={state} controller={controller} visible initial={initial}
       onCreated={openSession} onDismiss={() => setNewSession(false)} />}

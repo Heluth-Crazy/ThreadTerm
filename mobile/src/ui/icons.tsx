@@ -37,9 +37,10 @@ export function Icon({ name, color, size = 22 }: { name: IconName; color: string
   }
 }
 
-export function statusColor(theme: Theme, state: string | undefined) {
+export function statusColor(theme: Theme, state: string | undefined, sessionStatus?: string) {
   if (state === 'connected' || state === 'running' || state === 'idle') return theme.green;
-  if (state === 'waiting' || state === 'connecting' || state === 'awaiting_approval' || state === 'awaiting_input') return theme.amber;
+  if (state === 'unread_reply') return theme.primary;
+  if (state === 'waiting' || state === 'connecting' || state === 'awaiting_approval' || state === 'awaiting_input' && sessionStatus === 'waiting') return theme.amber;
   if (state === 'error' || state === 'interrupted' || state === 'disconnected' || state === 'revoked' || state === 'pin-mismatch' || state === 'incompatible') return theme.red;
   return theme.faint;
 }

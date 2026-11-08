@@ -6,7 +6,7 @@ import { attachmentImageMime } from '../../../renderer/src/chatAttachments';
 import type { NativePort } from './native';
 import type { CompanionController, CompanionState, MachineState, SessionRef, SessionView, UploadedAttachment } from './types';
 import { sessionKey } from './types';
-import { attentionItems, chatOptionsPermissionRecovery, emptySession, errorMessage } from './projection';
+import { attentionItems, chatOptionsPermissionRecovery, emptySession, errorMessage, sessionNeedsUserAction } from './projection';
 import { base64Bytes, CONTROL_METHODS, READ_METHODS, mobileResult, validateMobileRequest } from './wire';
 import { appendTerminalChunk } from './terminalStream';
 
@@ -172,7 +172,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
   }
   async function refreshAttention(id:string) {
     const m=machine(id),ticket=gen(id);
-    const waiting=m.snapshot?.sessions.filter(s=>s.mode==='chat'&&['awaiting_approval','awaiting_input'].includes(s.activity?.state??''))??[];
+    const waiting=m.snapshot?.sessions.filter(s=>s.mode==='chat'&&sessionNeedsUserAction(s))??[];
     // Bounded concurrency; don't subscribe every waiting session to high frequency output.
     for(let index=0;index<waiting.length;index+=4) {
       await Promise.all(waiting.slice(index,index+4).map(async s=>{

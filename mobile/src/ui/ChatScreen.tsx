@@ -24,6 +24,7 @@ import type {
   SessionView,
 } from "../core/types";
 import { sessionKey } from "../core/types";
+import { activeSessionTurnId, sessionPresentation, sessionPresentationLabel } from "../core/projection";
 import { Icon } from "./icons";
 import {
   Button,
@@ -132,7 +133,7 @@ export function ChatListScreen({
                   {m.name}{s.projectId ? ` · ${m.snapshot?.projects.find(project => project.id === s.projectId)?.name ?? (locale === "zh-CN" ? "未归属项目" : "Unassigned project")}` : ''}
                 </Text>
               </View>
-              <View style={{ alignItems: 'flex-end', gap: 4 }}><StatusDot theme={theme} state={s.status} /><Text style={{ color: theme.muted, fontSize: 12 }}>{timeLabel(s.updatedAt, locale)}</Text></View>
+              <View style={{ alignItems: 'flex-end', gap: 4 }}><StatusDot theme={theme} state={sessionPresentation(s) === 'needs_user' ? 'waiting' : sessionPresentation(s) === 'unread_reply' ? 'unread_reply' : s.status} /><Text style={{ color: theme.muted, fontSize: 12 }}>{sessionPresentationLabel(s, locale) === s.status ? timeLabel(s.updatedAt, locale) : sessionPresentationLabel(s, locale)}</Text></View>
             </Card>
           </Pressable>
         ))
@@ -219,13 +220,8 @@ export function SessionDetailScreen({
     !machine.syncing &&
     !session.readOnly &&
     !session.archived;
-  const activeTurnId = [
-    "running",
-    "awaiting_approval",
-    "awaiting_input",
-  ].includes(session.activity?.state ?? "")
-    ? session.activity?.turnId
-    : undefined;
+  const activeTurnId = activeSessionTurnId(session);
+  const canStop = session.mode === 'chat' ? Boolean(activeTurnId) : !['exited', 'interrupted', 'error'].includes(session.status);
   return (
     <View style={[styles.detail, { backgroundColor: theme.background }]}>
       <View style={styles.head}>
@@ -256,7 +252,7 @@ export function SessionDetailScreen({
                 { text: locale === "zh-CN" ? "接管" : "Take over", onPress: takeOver },
                 ...(session.status === "exited" || session.status === "interrupted"
                   ? [{ text: locale === "zh-CN" ? "恢复" : "Resume", onPress: () => run("resume", () => controller.resume(ref)) }]
-                  : view?.leaseEpoch ? [{ text: locale === "zh-CN" ? "停止" : "Stop", onPress: () => run("stop", () => controller.stop(ref)) }] : []),
+                  : view?.leaseEpoch && canStop ? [{ text: locale === "zh-CN" ? "停止" : "Stop", onPress: () => run("stop", () => controller.stop(ref)) }] : []),
                 ...(activeTurnId && view?.leaseEpoch ? [{ text: locale === "zh-CN" ? "取消当前轮次" : "Cancel turn", onPress: () => run("cancel", () => controller.cancelTurn(ref, activeTurnId)) }] : []),
               ] : []),
               { text: locale === "zh-CN" ? "取消" : "Cancel", style: "cancel" },
@@ -265,7 +261,7 @@ export function SessionDetailScreen({
         />
       </View>
       <View style={{ paddingHorizontal: space.md, paddingBottom: 8 }}>
-        <StatusDot theme={theme} state={session.status} label={sessionStatusLabel(session.status, locale)} />
+        <StatusDot theme={theme} state={sessionPresentation(session) === 'needs_user' ? 'waiting' : sessionPresentation(session) === 'unread_reply' ? 'unread_reply' : session.status} label={sessionPresentationLabel(session, locale) === session.status ? sessionStatusLabel(session.status, locale) : sessionPresentationLabel(session, locale)} />
       </View>
       {(machine?.status !== "connected" || machine.syncing) && (
         <Text style={[styles.lock, { color: theme.amber }]}>
