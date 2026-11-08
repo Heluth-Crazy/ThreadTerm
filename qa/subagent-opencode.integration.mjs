@@ -3,7 +3,7 @@
 // OpenCode binary because every case-variant of PATH is removed below.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +24,17 @@ await Promise.all([mkdir(bin), mkdir(cwd)]);
 
 const shim = 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}';
 await writeFile(join(bin, 'shim.rs'), shim);
-const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
+// Reuse is opt-in and requires both the exact source and a caller-pinned binary hash.
+let compiled;
+if (process.env.THREADTERM_QA_OPENCODE_SHIM) {
+  const prebuilt = resolve(process.env.THREADTERM_QA_OPENCODE_SHIM);
+  assert.equal(await readFile(join(dirname(prebuilt), 'shim.rs'), 'utf8'), await readFile(join(bin, 'shim.rs'), 'utf8'), 'prebuilt shim source matches this harness');
+  assert.equal(createHash('sha256').update(await readFile(prebuilt)).digest('hex'), process.env.THREADTERM_QA_OPENCODE_SHIM_SHA256?.toLowerCase(), 'prebuilt shim hash is explicitly pinned');
+  await copyFile(prebuilt, join(bin, 'opencode.exe'));
+  compiled = { status: 0, stderr: '' };
+} else {
+  compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
+}
 assert.equal(compiled.status, 0, compiled.stderr);
 assert.ok(existsSync(join(bin, 'opencode.exe')), 'fake OpenCode rustc shim exists');
 const runtimeBin = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
@@ -34,6 +44,7 @@ await copyFile(runtimeBin, runtimeCopy);
 const environment = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')),
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'),
+  THREADTERM_QA_PROVIDER_BIN: bin,
   THREADTERM_V3_DATA: data,
   THREADTERM_V3_PIPE: pipe,
   TT_QA_NODE: process.execPath,

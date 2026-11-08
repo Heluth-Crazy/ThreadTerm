@@ -1,0 +1,2 @@
+{"case":"health","provenance":"native capture: opencode-ai@1.18.35, Windows, isolated scratch home/config/data/cache/state/tmp, 2026-11-08","request":{"method":"GET","path":"/global/health","basicUser":"threadterm"},"value":{"healthy":true,"version":"1.18.35"}}
+{"case":"v2_info_is_html","provenance":"native capture: opencode-ai@1.18.35, isolated scratch, 2026-11-08","request":{"method":"GET","path":"/api/info","basicUser":"threadterm"},"response":{"status":200,"contentType":"text/html","bodyPrefix":"<!doctype html>"}}

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -25,7 +25,17 @@ const pipe = `\\\\.\\pipe\\threadterm-opencode-chat-${unique()}`;
 await Promise.all([mkdir(bin), mkdir(cwd)]);
 const shim = 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}';
 await writeFile(join(bin, 'shim.rs'), shim);
-const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
+// Reuse is opt-in and requires both the exact source and a caller-pinned binary hash.
+let compiled;
+if (process.env.THREADTERM_QA_OPENCODE_SHIM) {
+  const prebuilt = resolve(process.env.THREADTERM_QA_OPENCODE_SHIM);
+  assert.equal(await readFile(join(dirname(prebuilt), 'shim.rs'), 'utf8'), await readFile(join(bin, 'shim.rs'), 'utf8'), 'prebuilt shim source matches this harness');
+  assert.equal(createHash('sha256').update(await readFile(prebuilt)).digest('hex'), process.env.THREADTERM_QA_OPENCODE_SHIM_SHA256?.toLowerCase(), 'prebuilt shim hash is explicitly pinned');
+  await copyFile(prebuilt, join(bin, 'opencode.exe'));
+  compiled = { status: 0, stderr: '' };
+} else {
+  compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
+}
 assert.equal(compiled.status, 0, compiled.stderr);
 const runtimeBin = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtimeBin), `runtime binary missing: ${runtimeBin}`);
@@ -35,6 +45,7 @@ const environment = {
   // Every case of PATH goes (Git Bash passes `PATH`): a second key would let the runtime find the real CLIs.
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')),
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'),
+  THREADTERM_QA_PROVIDER_BIN: bin,
   THREADTERM_V3_DATA: data,
   THREADTERM_V3_PIPE: pipe,
   TT_QA_NODE: process.execPath,
@@ -62,6 +73,9 @@ const waitFor = async (read, accept, label, attempts = 160) => {
 const items = () => peer.request('chat.read', { sessionId });
 const parts = async () => (await items()).flatMap(item => item.parts);
 const requests = async () => (await readFile(requestsFile, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+// Options can finish an already scheduled, read-only catalogue refresh. Count
+// other traffic so the assertion detects native selection writes without racing it.
+const optionRequests = async () => (await requests()).filter(row => !(row.method === 'GET' && ['/provider', '/agent', '/command'].includes(row.path)));
 const session = async () => (await peer.request('runtime.snapshot')).sessions.find(row => row.id === sessionId);
 const option = (ui, id) => ui.options.find(row => row.id === id);
 const setOption = (optionId, value) => peer.request('chat.option.set', { sessionId, leaseEpoch, optionId, value, operationId: unique() });
@@ -118,16 +132,16 @@ try {
   assert.equal(option(ui, 'next-model').choices.some(row => row.value === '{"providerID":"slash/provider","modelID":"family/model/with/slash"}'), true, 'slash-containing provider and model IDs stay opaque');
   assert.equal(option(ui, 'next-model').choices.some(row => /Unavailable/.test(row.name)), false, 'disconnected-provider model is unavailable');
   assert.deepEqual(option(ui, 'agent').choices.map(row => row.value), ['', 'build', 'plan', 'custom'], 'hidden and subagent agents are excluded');
-  const requestsBeforeOptions = (await requests()).length;
+  const requestsBeforeOptions = (await optionRequests()).length;
   await assert.rejects(setOption('next-model', '{"providerID":"unknown","modelID":"missing"}'), /no longer offers|does not offer|invalid/i, 'unknown model is rejected locally');
   await assert.rejects(setOption('agent', 'hidden'), /no longer offers|does not offer|invalid/i, 'hidden agent is rejected locally');
-  assert.equal((await requests()).length, requestsBeforeOptions, 'local option validation makes no native request');
-  const requestsBeforeSelection = (await requests()).length;
+  assert.equal((await optionRequests()).length, requestsBeforeOptions, 'local option validation makes no native request except background catalogue reads');
+  const requestsBeforeSelection = (await optionRequests()).length;
   ui = await setOption('next-model', '{"providerID":"openai","modelID":"gpt-5.2"}');
   assert.equal(option(ui, 'variant')?.category, 'other', 'variants appear only for the selected model');
   await setOption('agent', 'plan');
   await setOption('variant', 'precise');
-  assert.equal((await requests()).length, requestsBeforeSelection, 'successful option selection makes no native request');
+  assert.equal((await optionRequests()).length, requestsBeforeSelection, 'successful option selection makes no native request except background catalogue reads');
   await send('fixture-two-parts');
   const selectedPrompt = (await requests()).findLast(row => row.path.endsWith('/prompt_async'));
   assert.deepEqual(selectedPrompt.body, { parts: [{ type: 'text', text: 'fixture-two-parts' }], model: { providerID: 'openai', modelID: 'gpt-5.2' }, agent: 'plan', variant: 'precise' }, 'only the selected next-turn options are posted in the prompt body');
@@ -211,6 +225,7 @@ try {
   const staleState = JSON.parse(await readFile(stateFile, 'utf8'));
   staleState.catalogueOverrides = { removeModels: [{ providerID: 'openai', modelID: 'gpt-5.2' }], removeAgents: ['plan'] };
   await writeFile(stateFile, JSON.stringify(staleState));
+  const catalogueChangeEventsFrom = peer.events.length;
   await native('/qa/drop-events');
   await waitFor(() => peer.request('chat.connection', { sessionId }), state => state.phase !== 'ready', 'catalogue-change stream disconnect');
   assert.equal((await peer.request('chat.connect', { sessionId, leaseEpoch, operationId: unique() })).phase, 'ready', 'reconnect reads changed catalogue');
@@ -218,8 +233,11 @@ try {
   assert.equal(option(ui, 'next-model').value, '', 'stale persisted model is dropped');
   assert.equal(option(ui, 'agent').value, '', 'stale persisted agent is dropped');
   assert.equal(option(ui, 'variant'), undefined, 'stale variant is dropped with its model');
-  assert.equal(ui.loadState, 'error', 'stale selections leave a visible options notice');
-  assert.match(ui.error?.message ?? '', /unavailable|not applied/i, 'stale options notice is readable');
+  // A subsequent async catalogue refresh can replace the cached notice. The
+  // reconnect must still publish the rejection on its actual UI event stream.
+  const staleNotice = peer.events.slice(catalogueChangeEventsFrom).findLast(event => event.event === 'chat.ui' && event.data?.sessionId === sessionId && event.data.loadState === 'error');
+  assert.ok(staleNotice, 'stale selections publish an options notice');
+  assert.match(staleNotice.data.error?.message ?? '', /unavailable|not applied/i, 'stale options notice is readable');
   await send('fixture-stale-selection');
   assert.deepEqual((await requests()).findLast(row => row.path.endsWith('/prompt_async')).body, { parts: [{ type: 'text', text: 'fixture-stale-selection' }] }, 'dropped selections never reach a prompt');
   await waitFor(session, row => row.status === 'idle', 'stale-selection prompt settled');
@@ -283,10 +301,10 @@ try {
   await waitFor(items, rows => rows.find(row => row.id === retryId)?.parts.length === 0, 'resolved retry status is cleared');
   const stopped = await peer.request('chat.send', { sessionId, text: 'fixture-stuck', leaseEpoch, operationId: unique() });
   await waitFor(session, row => row.status === 'running', 'stop fixture is running before cancellation');
-  const requestsBeforeRunningSelection = (await requests()).length;
+  const requestsBeforeRunningSelection = (await optionRequests()).length;
   await setOption('next-model', '{"providerID":"slash/provider","modelID":"family/model/with/slash"}');
   await setOption('agent', 'build');
-  assert.equal((await requests()).length, requestsBeforeRunningSelection, 'option changes during a running turn remain local');
+  assert.equal((await optionRequests()).length, requestsBeforeRunningSelection, 'option changes during a running turn remain local except background catalogue reads');
   await peer.request('chat.cancel', { sessionId, turnId: stopped.turnId, leaseEpoch, operationId: unique() });
   await waitFor(items, rows => rows.some(row => row.turnId === stopped.turnId && row.turnStatus === 'interrupted'), 'confirmed abort is interrupted even when native idle follows');
   await waitFor(session, row => row.status === 'idle', 'confirmed abort returns the session to idle');

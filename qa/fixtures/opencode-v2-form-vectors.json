@@ -1,0 +1,62 @@
+{
+  "provenance": {
+    "kind": "source-derived",
+    "tag": "v2.2.5",
+    "schema": "packages/schema/src/form.ts",
+    "validator": "packages/core/src/form.ts",
+    "nativeExecution": "not executed"
+  },
+  "notes": [
+    "Only eq and neq conditions exist. All conditions are ANDed; unanswered references make either operation false.",
+    "For a multiselect reference, eq/neq test membership. There is no contains operator.",
+    "The source validator requires literal true for every external field and accepts duplicate multiselect entries; runtime/UI parity is not yet implemented or asserted.",
+    "Defaults and hidden field client initialization require native capture; these vectors do not infer it.",
+    "The source core uses JavaScript string length and only treats an empty required string as missing; Unicode grapheme and UI whitespace behavior still require native/client capture."
+  ],
+  "form": {
+    "id": "frm_source_vectors",
+    "sessionID": "ses_source_vectors",
+    "title": "Source-derived v2 form vectors",
+    "fields": [
+      { "key": "environment", "type": "string", "required": true, "options": [{ "value": "dev", "label": "Development" }, { "value": "prod", "label": "Production" }], "custom": false },
+      { "key": "replicas", "type": "integer", "required": true, "minimum": 0, "maximum": 3, "default": 0 },
+      { "key": "temperature", "type": "number", "minimum": -1.5, "maximum": 1.5 },
+      { "key": "enabled", "type": "boolean", "required": true, "default": false },
+      { "key": "shortText", "type": "string", "minLength": 2, "maxLength": 4 },
+      { "key": "optionalText", "type": "string" },
+      { "key": "regions", "type": "multiselect", "required": true, "options": [{ "value": "us", "label": "US" }, { "value": "eu", "label": "EU" }], "minItems": 1, "maxItems": 2, "custom": false },
+      { "key": "customRegions", "type": "multiselect", "options": [{ "value": "us", "label": "US" }], "custom": true },
+      { "key": "productionNote", "type": "string", "required": true, "minLength": 2, "when": [{ "key": "environment", "op": "eq", "value": "prod" }, { "key": "regions", "op": "eq", "value": "us" }] },
+      { "key": "nonProductionNote", "type": "string", "when": [{ "key": "environment", "op": "neq", "value": "prod" }] },
+      { "key": "customTag", "type": "string", "options": [{ "value": "known", "label": "Known" }], "custom": true, "pattern": "^[a-z]+$" },
+      { "key": "contactEmail", "type": "string", "format": "email" },
+      { "key": "endpoint", "type": "string", "format": "uri" },
+      { "key": "startDate", "type": "string", "format": "date" },
+      { "key": "startedAt", "type": "string", "format": "date-time" },
+      { "key": "invalidPattern", "type": "string", "pattern": "[" },
+      { "key": "hiddenDefault", "type": "string", "hidden": true, "default": "native-client-unknown" },
+      { "key": "approval", "type": "external", "url": "https://example.test/approval" },
+      { "key": "securityReview", "type": "external", "url": "https://example.test/security" }
+    ]
+  },
+  "answers": [
+    { "id": "positive-all-types", "provenance": "source-derived", "answer": { "environment": "prod", "replicas": 0, "temperature": 1.5, "enabled": false, "shortText": "test", "regions": ["us"], "customRegions": ["custom-region"], "productionNote": "go", "customTag": "customtag", "contactEmail": "name@example.test", "endpoint": "https://example.test", "startDate": "2026-02-28", "startedAt": "2026-02-28T10:00:00Z", "hiddenDefault": "supplied-override", "approval": true, "securityReview": true }, "sourceCoreExpected": "accepted", "requireNativeCapture": ["hidden/default client initialization and display"] },
+    { "id": "positive-dev-inactive-production", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 1, "enabled": false, "regions": ["eu"], "nonProductionNote": "local", "approval": true, "securityReview": true }, "sourceCoreExpected": "accepted" },
+    { "id": "missing-vs-false-zero-empty-optional", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "shortText": "  ", "optionalText": "", "regions": ["us"], "approval": true, "securityReview": true }, "sourceCoreExpected": "accepted; false and zero are supplied; whitespace is nonempty; optional empty is allowed", "requireNativeCapture": ["client whitespace presentation"] },
+    { "id": "missing-required", "provenance": "source-derived", "answer": { "environment": "dev", "enabled": false, "regions": ["us"], "approval": true, "securityReview": true }, "sourceCoreExpected": "reject: missing replicas" },
+    { "id": "empty-required-string", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "shortText": "", "regions": ["us"], "approval": true, "securityReview": true }, "sourceCoreExpected": "reject: shortText minLength" },
+    { "id": "bounds", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 4, "temperature": -2, "enabled": false, "shortText": "x", "regions": [], "approval": true, "securityReview": true }, "sourceCoreExpected": "reject first failing field in declared order: replicas maximum" },
+    { "id": "inactive-key-cascade", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["eu"], "productionNote": "not active", "approval": true, "securityReview": true }, "sourceCoreExpected": "reject: productionNote inactive" },
+    { "id": "neq-unanswered-predecessor", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["us"], "nonProductionNote": "active because environment is answered and neq prod", "approval": true, "securityReview": true }, "sourceCoreExpected": "accepted" },
+    { "id": "closed-single-choice", "provenance": "source-derived", "answer": { "environment": "other", "replicas": 0, "enabled": false, "regions": ["us"], "approval": true, "securityReview": true }, "sourceCoreExpected": "reject: invalid environment option" },
+    { "id": "closed-multiselect-choice", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["other"], "approval": true, "securityReview": true }, "sourceCoreExpected": "reject: invalid regions option" },
+    { "id": "custom-single-and-multi", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["us"], "customTag": "newtag", "customRegions": ["new-region"], "approval": true, "securityReview": true }, "sourceCoreExpected": "accepted" },
+    { "id": "duplicate-multiselect", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["us", "us"], "approval": true, "securityReview": true }, "sourceCoreExpected": "accepted by source core; parity decision required" },
+    { "id": "pattern-format-negative", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["us"], "customTag": "UPPER", "contactEmail": "bad", "endpoint": "not a uri", "startDate": "2026-02-30", "startedAt": "not-date-time", "approval": true, "securityReview": true }, "sourceCoreExpected": "reject first failing field in declared order: customTag pattern" },
+    { "id": "invalid-regex", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["us"], "invalidPattern": "x", "approval": true, "securityReview": true }, "sourceCoreExpected": "reject: invalid pattern" },
+    { "id": "unicode-length", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "shortText": "😀😀", "regions": ["us"], "approval": true, "securityReview": true }, "sourceCoreExpected": "accepted by source JavaScript length (4 UTF-16 code units); user-perceived grapheme behavior requires native/client capture" },
+    { "id": "external-multiple-not-acknowledged", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["us"], "approval": true, "securityReview": false }, "sourceCoreExpected": "reject: securityReview external must be true" },
+    { "id": "unknown-key", "provenance": "source-derived", "answer": { "environment": "dev", "replicas": 0, "enabled": false, "regions": ["us"], "approval": true, "securityReview": true, "unknown": "x" }, "sourceCoreExpected": "reject: unknown form field" }
+  ],
+  "openNativeCapture": ["hidden/default client initialization and supplied override behavior", "Unicode/whitespace client behavior", "pattern/format native error envelope", "reply/cancel/terminal race receipts", "malformed future schema response", "field ordering/error precedence in server responses"]
+}

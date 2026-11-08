@@ -1,0 +1,2 @@
+{"case":"server_connected","provenance":"native capture: @opencode/cli@2.2.5, isolated scratch direct serve, 2026-11-08; event ID sanitized","observedAtSeconds":0.058,"frame":"data: {\"id\":\"evt_native_capture\",\"type\":\"server.connected\",\"data\":{}}\n\n"}
+{"case":"heartbeat","provenance":"native capture: @opencode/cli@2.2.5, isolated scratch direct serve, 2026-11-08; measured stream receipt contains valid heartbeat through 75.038 seconds","observedAtSeconds":75.038,"frame":": heartbeat\n\n"}

@@ -326,7 +326,7 @@ fn find_executable_in(command: &str, vars: &crate::environment::Vars, directorie
             };
             let candidate = directory.join(name);
             if candidate.is_file() {
-                return std::path::absolute(prefer_native_opencode(candidate)).ok();
+                return std::path::absolute(candidate).ok();
             }
         }
     }
@@ -350,26 +350,6 @@ fn executable_extensions(pathext: Option<&str>) -> Vec<String> {
     }
     extensions.push(String::new());
     extensions
-}
-
-fn prefer_native_opencode(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or_default();
-        if stem.eq_ignore_ascii_case("opencode") {
-            if let Some(parent) = path.parent() {
-                let native = parent
-                    .join("node_modules")
-                    .join("opencode-ai")
-                    .join("bin")
-                    .join("opencode.exe");
-                if native.is_file() {
-                    return native;
-                }
-            }
-        }
-    }
-    path
 }
 
 pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, ProviderError> {

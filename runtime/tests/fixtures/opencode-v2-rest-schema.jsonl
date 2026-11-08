@@ -1,0 +1,4 @@
+{"case":"info","provenance":"schema-derived: anomalyco/opencode v2.2.5 packages/schema/src/server.ts; not a native capture","value":{"version":"2.2.5","pid":123,"urls":["http://127.0.0.1:4321"],"paths":{"tmp":"C:/isolated/tmp"}}}
+{"case":"session","provenance":"schema-derived: anomalyco/opencode v2.2.5 packages/protocol/src/groups/session.ts; not a native capture","value":{"data":{"id":"ses_exact_native","location":{"directory":"C:/isolated/project"}}}}
+{"case":"interrupt","provenance":"schema-derived: anomalyco/opencode v2.2.5 packages/protocol/src/groups/session.ts; not a native capture","value":{"interrupted":true}}
+{"case":"catalogue","provenance":"schema-derived: anomalyco/opencode v2.2.5 packages/protocol/src/groups/location.ts; not a native capture","value":{"location":{"directory":"C:/isolated/project"},"data":[]}}

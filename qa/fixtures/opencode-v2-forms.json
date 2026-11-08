@@ -1,0 +1,12 @@
+{
+  "provenance": "scenario specification derived from OpenCode v2.2.5; this is not an executable corpus or native evidence",
+  "cases": [
+    { "id": "typed-values", "covers": ["F1"], "fields": ["string", "number", "integer", "boolean", "select", "multiselect"] },
+    { "id": "conditional-cascade", "covers": ["F2"], "conditions": ["AND", "eq", "neq", "contains"], "distinguishes": ["missing", false, 0, "", []] },
+    { "id": "defaults-hidden", "covers": ["F3"], "fields": ["default", "hidden", "secret", "required-hidden-without-default"] },
+    { "id": "constraints", "covers": ["F4"], "constraints": ["required", "string/number/item bounds", "pattern", "email", "uri", "date", "date-time", "unicode", "whitespace"] },
+    { "id": "external-mixed", "covers": ["F5"], "fields": ["multiple external", "explicit true acknowledgement", "input"] },
+    { "id": "settlement-races", "covers": ["F6"], "events": ["invalid reply", "already settled", "reply/cancel", "Stop", "detail stale"] },
+    { "id": "shared-ui-regression", "covers": ["F7"], "scenarios": ["keyboard", "focus", "English", "Chinese", "light", "dark", "420px", "long labels", "custom values"] }
+  ]
+}

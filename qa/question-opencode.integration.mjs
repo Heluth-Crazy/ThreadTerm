@@ -2,7 +2,7 @@
 // local HTTP/SSE fixture behind a rustc shim; PATH contains no real agent CLI.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,17 @@ const stateFile = join(root, 'mock-state.json'), portFile = join(root, 'mock-por
 const pipe = `\\\\.\\pipe\\threadterm-opencode-question-${unique()}`;
 await Promise.all([mkdir(bin), mkdir(cwd)]);
 await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Command::new(std::env::var("TT_QA_NODE").unwrap()).arg(std::env::var("TT_QA_SCRIPT").unwrap()).args(std::env::args().skip(1)).status().unwrap();std::process::exit(status.code().unwrap_or(1));}');
-const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
+// Reuse is opt-in and requires both the exact source and a caller-pinned binary hash.
+let compiled;
+if (process.env.THREADTERM_QA_OPENCODE_SHIM) {
+  const prebuilt = resolve(process.env.THREADTERM_QA_OPENCODE_SHIM);
+  assert.equal(await readFile(join(dirname(prebuilt), 'shim.rs'), 'utf8'), await readFile(join(bin, 'shim.rs'), 'utf8'), 'prebuilt shim source matches this harness');
+  assert.equal(createHash('sha256').update(await readFile(prebuilt)).digest('hex'), process.env.THREADTERM_QA_OPENCODE_SHIM_SHA256?.toLowerCase(), 'prebuilt shim hash is explicitly pinned');
+  await copyFile(prebuilt, join(bin, 'opencode.exe'));
+  compiled = { status: 0, stderr: '' };
+} else {
+  compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'opencode.exe')], { encoding: 'utf8', windowsHide: true });
+}
 assert.equal(compiled.status, 0, compiled.stderr);
 const runtime = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe');
 assert.ok(existsSync(runtime), `runtime binary missing: ${runtime}`);
@@ -25,6 +35,7 @@ const runtimeCopy = join(root, 'runtime.exe'); await copyFile(runtime, runtimeCo
 const environment = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')),
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'),
+  THREADTERM_QA_PROVIDER_BIN: bin,
   THREADTERM_V3_DATA: data, THREADTERM_V3_PIPE: pipe, TT_QA_NODE: process.execPath,
   TT_QA_SCRIPT: resolve('qa/fixtures/mock-opencode.mjs'), TT_QA_OPENCODE_STATE: stateFile,
   TT_QA_OPENCODE_PORT_FILE: portFile, TT_QA_OPENCODE_REQUESTS: requestsFile,

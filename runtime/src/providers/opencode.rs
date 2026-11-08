@@ -1,12 +1,19 @@
 use super::{
     approval::{allow_deny_choices, approval_payload, map_allow_deny_choice},
     common::{
-        command_output, find_executable, history_page, insert_optional, spawn_managed_service,
+        command_output, history_page, insert_optional, spawn_managed_service,
         validate_native_id, version_probe, CommandSpec,
     },
     emit_scoped, spawn_ui_options_refresh, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
     TerminalCommand,
 };
+mod api;
+#[cfg(test)]
+#[path = "opencode/auth_tests.rs"]
+mod auth_tests;
+mod events;
+use api::{ApiDialect, NativeApi};
+
 use crate::chat_questions::answer_summary;
 use base64::Engine;
 use chrono::{TimeZone, Utc};
@@ -33,6 +40,31 @@ use tokio::sync::broadcast;
 pub struct OpenCodeAdapter {
     events: crate::provider_events::Sender,
 }
+
+// Unlike 1.x, unqualified 2.x auth commands may launch a managed service. Help
+// is read-only; only its confirmed native contract may authorize an auth probe.
+fn auth_probe_args(help: &str) -> Option<Vec<&'static str>> {
+    static ANSI: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let help = ANSI.get_or_init(|| regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").expect("constant ANSI expression"))
+        .replace_all(help, "");
+    if help.split_whitespace().any(|word| word == "--standalone") {
+        Some(vec!["--standalone", "auth", "list"])
+    } else if ["opencode auth login", "opencode auth logout", "opencode auth list"].iter().all(|command| help.contains(command)) {
+        Some(vec!["auth", "list"])
+    } else {
+        None
+    }
+}
+
+fn opencode_auth_probe() -> Result<Option<String>, ProviderError> {
+    let help = CommandSpec::provider("opencode", &["auth", "--help"])?;
+    let output = command_output(&help, Duration::from_secs(2))?;
+    let Some(args) = auth_probe_args(&output) else { return Ok(None) };
+    // Reuse the resolved executable, with the encompassing provider decision
+    // retaining the same captured environment for version/help/auth.
+    let spec = CommandSpec::from_path(std::path::PathBuf::from(help.program), args.into_iter().map(str::to_owned).collect())?;
+    command_output(&spec, Duration::from_secs(5)).map(Some)
+}
 impl OpenCodeAdapter {
     pub fn new(events: crate::provider_events::Sender) -> Self {
         Self { events }
@@ -44,12 +76,12 @@ impl ProviderAdapter for OpenCodeAdapter {
         "opencode"
     }
     fn capability(&self) -> ProviderCapability {
+        let _decision = crate::environment::provider_decision();
         let (installed, version, probe_error) = version_probe("opencode");
         let auth = if installed {
-            CommandSpec::provider("opencode", &["auth", "list"])
-                .and_then(|spec| command_output(&spec, Duration::from_secs(5)))
+            opencode_auth_probe()
                 .map(|output| {
-                    if output.contains("0 credentials") {
+                    if output.as_deref().is_some_and(|output| output.contains("0 credentials")) {
                         "unauthenticated"
                     } else {
                         "unknown"
@@ -95,10 +127,8 @@ impl ProviderAdapter for OpenCodeAdapter {
             validate_native_id(id)?;
             args.extend(["--session".to_owned(), id.to_owned()]);
         }
-        let path = find_executable("opencode").ok_or_else(|| {
-            ProviderError::unavailable("opencode", "OpenCode executable was not found on PATH")
-        })?;
-        let spec = CommandSpec::from_path(path, args)?;
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let spec = CommandSpec::provider("opencode", &refs)?;
         Ok(TerminalCommand {
             program: spec.program,
             args: spec.args,
@@ -114,8 +144,9 @@ impl ProviderAdapter for OpenCodeAdapter {
         // Create through the authenticated local native API. No prompt/turn
         // is sent, and the terminal subsequently opens this exact session.
         let server = OpenCodeServer::start(cwd, "terminal-prepare", crate::provider_events::tap_channel(1).0, "")?;
-        let session =
-            server.json(server.request(reqwest::Method::POST, "/session", Some(json!({})))?)?;
+        // V2 terminal lifetime/exact-resume verification belongs to P4.
+        server.require_legacy_events()?;
+        let session = server.native_api().open_session(None)?;
         let id = session.get("id").and_then(Value::as_str).ok_or_else(|| {
             ProviderError::new("provider_protocol", "OpenCode returned no session id")
         })?;
@@ -233,19 +264,11 @@ impl ProviderAdapter for OpenCodeAdapter {
             validate_native_id(id)?;
         }
         let server = OpenCodeServer::start(cwd, session_id, self.events.clone(), worker_token)?;
-        let session = if let Some(id) = native_id {
-            server.json(server.request(reqwest::Method::GET, &format!("/session/{id}"), None)?)?
-        } else {
-            server.json(server.request(reqwest::Method::POST, "/session", Some(json!({})))?)?
-        };
-        let native_id = session
-            .get("id")
-            .and_then(Value::as_str)
-            .or(native_id)
-            .ok_or_else(|| {
-                ProviderError::new("provider_protocol", "OpenCode returned no session id")
-            })?
-            .to_owned();
+        // REST compatibility alone cannot establish a usable Chat worker.
+        // Remove this fence only with P2's v2 event/snapshot reconciliation.
+        server.require_legacy_events()?;
+        let session = server.native_api().open_session(native_id)?;
+        let native_id = api::session_identity(&session, native_id)?;
         // The event stream binds only after the native identity is known; a
         // failed event channel fails the connect instead of leaving a blind
         // "ready" worker behind.
@@ -274,6 +297,7 @@ impl ProviderAdapter for OpenCodeAdapter {
 }
 
 struct OpenCodeServer {
+    dialect: ApiDialect,
     base_url: String,
     cwd: String,
     username: String,
@@ -292,38 +316,16 @@ struct OpenCodeServer {
 
 #[derive(Clone)]
 struct OpenCodeOptionsRequester {
-    base_url: String,
-    cwd: String,
-    username: String,
-    password: String,
-    client: Client,
+    api: NativeApi,
 }
 
 impl OpenCodeOptionsRequester {
     fn from_server(server: &OpenCodeServer) -> Self {
-        Self {
-            base_url: server.base_url.clone(),
-            cwd: server.cwd.clone(),
-            username: server.username.clone(),
-            password: server.password.clone(),
-            client: server.client.clone(),
-        }
+        Self { api: server.native_api() }
     }
 
     fn get_json(&self, path: &str) -> Result<Value, ProviderError> {
-        let response = self.client
-            .get(format!("{}{}", self.base_url, path))
-            .basic_auth(&self.username, Some(&self.password))
-            .query(&[("directory", &self.cwd)])
-            .send()
-            .map_err(|error| ProviderError::new("provider_disconnected", format!("OpenCode request failed: {error}")))?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let message = response.text().unwrap_or_default();
-            return Err(ProviderError::new("provider_error", format!("OpenCode returned {status}: {message}"))
-                .with_details(json!({"httpStatus":status.as_u16()})));
-        }
-        response.json().map_err(|error| ProviderError::new("provider_protocol", format!("invalid OpenCode response: {error}")))
+        self.api.get_catalogue(path.strip_prefix('/').unwrap_or(path))
     }
 }
 
@@ -341,6 +343,14 @@ const SSE_WATCHDOG_POLL: Duration = Duration::from_secs(1);
 const MAX_SSE_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 impl OpenCodeServer {
+    fn native_api(&self) -> NativeApi {
+        NativeApi::new(self.client.clone(), self.base_url.clone(), self.cwd.clone(), self.password.clone(), self.dialect)
+    }
+
+    fn require_legacy_events(&self) -> Result<(), ProviderError> {
+        self.dialect.require_event_compatibility()
+    }
+
     fn start(
         cwd: &str,
         threadterm_session: &str,
@@ -371,6 +381,7 @@ impl OpenCodeServer {
             &[
                 ("OPENCODE_SERVER_USERNAME", &username),
                 ("OPENCODE_SERVER_PASSWORD", &password),
+                ("OPENCODE_PASSWORD", &password),
             ],
         )?;
         if let Some(stdout) = child.stdout.take() {
@@ -391,33 +402,32 @@ impl OpenCodeServer {
             .map_err(|error| ProviderError::new("provider_internal", error.to_string()))?;
         let base_url = format!("http://127.0.0.1:{port}");
         let started = Instant::now();
-        loop {
-            if let Ok(response) = client
-                .get(format!("{base_url}/global/health"))
-                .basic_auth(&username, Some(&password))
-                .send()
-            {
-                if response.status().is_success() {
-                    break;
+        let dialect = loop {
+            let result = api::negotiate(&client, &base_url, &password);
+            match result {
+                Ok(Some(dialect)) => break dialect,
+                Ok(None) if started.elapsed() < Duration::from_secs(10) => {}
+                result => {
+                    // A failed handshake must release the owned process even
+                    // before the server's Drop implementation can take over.
+                    if let Ok(mut child) = child.lock() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    return Err(result.err().unwrap_or_else(|| ProviderError::new(
+                        "provider_launch_failed", "OpenCode server did not become healthy",
+                    )));
                 }
-            }
-            if started.elapsed() >= Duration::from_secs(10) {
-                if let Ok(mut child) = child.lock() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                return Err(ProviderError::new(
-                    "provider_launch_failed",
-                    "OpenCode server did not become healthy",
-                ));
             }
             thread::sleep(Duration::from_millis(50));
-        }
+        };
+        let username = dialect.username().to_owned();
         let stopped = Arc::new(AtomicBool::new(false));
         let event_gate = Arc::new(Mutex::new(()));
         let active_turn = Arc::new(Mutex::new(None));
         let permissions = Arc::new(Mutex::new(HashMap::new()));
         Ok(Self {
+            dialect,
             base_url,
             cwd: cwd.to_owned(),
             username,
@@ -441,6 +451,7 @@ impl OpenCodeServer {
     /// messages stay complete, and a natively busy session blocks new sends
     /// through a sentinel turn until its idle event arrives.
     fn attach_events(&self, native_id: &str) -> Result<Arc<EventTarget>, ProviderError> {
+        self.require_legacy_events()?;
         // `connect_timeout` only covers TCP establishment. A peer can accept
         // TCP yet never send SSE headers, so bound this handshake separately.
         // The Response is then read without a total timeout: normal SSE turns
@@ -500,6 +511,12 @@ impl OpenCodeServer {
                 "provider_disconnected",
                 format!("OpenCode event stream returned {}", response.status()),
             ));
+        }
+        if !response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(';').next().is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream")))
+        {
+            return Err(ProviderError::new("provider_protocol", "OpenCode returned no native event stream"));
         }
 
         let assembly = Arc::new(Mutex::new(OpenCodeAssembly::default()));
@@ -574,6 +591,7 @@ impl OpenCodeServer {
         });
         let liveness = Arc::new(AtomicBool::new(true));
         let target = Arc::new(EventTarget {
+            dialect: self.dialect,
             threadterm_session: self.threadterm_session.clone(),
             native_id: native_id.to_owned(),
             worker_token: self.worker_token.clone(),
@@ -622,6 +640,9 @@ impl OpenCodeServer {
         path: &str,
         body: Option<Value>,
     ) -> Result<Response, ProviderError> {
+        // All legacy snapshot/interaction producers stay fenced until their
+        // explicit v2 contracts land; never send a legacy mutation to v2.
+        self.require_legacy_events()?;
         let mut request = self
             .client
             .request(method, format!("{}{}", self.base_url, path))
@@ -665,7 +686,9 @@ impl OpenCodeServer {
         if already_stopped {
             return;
         }
-        let _ = self.request(reqwest::Method::POST, "/instance/dispose", None);
+        if self.dialect == ApiDialect::Legacy {
+            let _ = self.request(reqwest::Method::POST, "/instance/dispose", None);
+        }
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
             let _ = child.wait();
@@ -1015,6 +1038,9 @@ impl ChatSession for OpenCodeChat {
     fn send_with_images(&mut self, text: &str, images: &[String], operation_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(operation_id)?;
         let (route, prompt) = self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.dispatch(text, images)?;
+        if self.server.dialect == ApiDialect::V2 && (route != "prompt_async" || !images.is_empty() || ["model", "agent", "variant"].iter().any(|key| prompt.get(key).is_some())) {
+            return Err(ProviderError::new("provider_method_unsupported", "OpenCode 2.x composer settings, images and commands require the compatibility migration"));
+        }
         {
             let _commit = self.server.event_gate.lock().map_err(|_| {
                 ProviderError::new("provider_internal", "OpenCode event gate poisoned")
@@ -1060,13 +1086,17 @@ impl ChatSession for OpenCodeChat {
         // prompt: Stop could otherwise overtake it, and late replies could use
         // the next turn's native_turn_observed state. Keep this acceptance
         // boundary until dispatch and per-request outcome fencing are explicit.
-        let sent = self.server.request(
-            reqwest::Method::POST,
-            &format!("/session/{}/{route}", self.native_id),
-            Some(prompt),
-        );
+        let sent = if self.server.dialect == ApiDialect::V2 {
+            self.server.native_api().admit_prompt(&self.native_id, text)
+        } else {
+            self.server.request(
+                reqwest::Method::POST,
+                &format!("/session/{}/{route}", self.native_id),
+                Some(prompt),
+            ).and_then(|response| if route == "summarize" { self.server.json(response) } else { Ok(Value::Null) })
+        };
         if route == "summarize" {
-            let result = sent.and_then(|response| self.server.json(response)).and_then(|value| {
+            let result = sent.and_then(|value| {
                 if value == json!(true) { Ok(()) } else { Err(ProviderError::new("compact_not_confirmed", "OpenCode did not confirm conversation compaction").with_details(json!({"httpStatus":400}))) }
             });
             self.sse_target.finish_compact(operation_id, result)?;
@@ -1137,9 +1167,13 @@ impl ChatSession for OpenCodeChat {
             }
             *self.sse_target.abort_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode abort lock poisoned"))? = Some(OpenCodeAbort { turn: turn_id.to_owned(), confirmed: false, idle_observed: false });
         }
-        let result = self.server.request(reqwest::Method::POST, &format!("/session/{}/abort", self.native_id), None)
-            .and_then(|response| self.server.json(response))
-            .and_then(|value| if value == json!(true) { Ok(()) } else { Err(ProviderError::new("abort_result_unknown", "OpenCode did not confirm that the turn was stopped")) });
+        let result = if self.server.dialect == ApiDialect::V2 {
+            self.server.native_api().interrupt(&self.native_id)
+        } else {
+            self.server.request(reqwest::Method::POST, &format!("/session/{}/abort", self.native_id), None)
+                .and_then(|response| self.server.json(response))
+                .and_then(|value| api::interrupt_confirmed(ApiDialect::Legacy, &value))
+        };
         self.sse_target.finish_abort(turn_id, result)
     }
     fn approve(
@@ -2219,6 +2253,7 @@ struct OpenCodeAbort { turn: String, confirmed: bool, idle_observed: bool }
 struct OpenCodeCompact { turn: String, confirmed: bool, idle_observed: bool }
 
 struct EventTarget {
+    dialect: ApiDialect,
     threadterm_session: String,
     native_id: String,
     worker_token: String,
@@ -2530,6 +2565,7 @@ impl EventTarget {
     }
 
     fn snapshot_parts(&self, message_id: &str) -> Result<(Vec<Value>, Option<String>), ProviderError> {
+        self.dialect.require_event_compatibility()?;
         validate_native_id(message_id)?;
         // OpenCode's 1.18.31 GET /session/{id}/message/{messageID} returns the
         // complete current message. Reading it for each event on a seeded
@@ -2649,7 +2685,11 @@ fn expire_silent_stream(target: &EventTarget, clock: &Mutex<Instant>) -> bool {
     };
     let overdue = clock
         .lock()
-        .map(|last_valid| sse_event_silent_since(*last_valid, Instant::now()))
+        .map(|last_valid| if target.dialect == ApiDialect::Legacy {
+            sse_event_silent_since(*last_valid, Instant::now())
+        } else {
+            Instant::now().saturating_duration_since(*last_valid) >= events::silence_limit(target.dialect)
+        })
         .unwrap_or(true);
     if overdue {
         expire_stream_locked(
@@ -2735,7 +2775,7 @@ fn spawn_sse(context: SseContext) -> Result<(), ProviderError> {
                 liveness,
             } = context;
             let mut line = Vec::new();
-            let mut data = String::new();
+            let mut decoder = events::FrameDecoder::new(target.dialect);
             loop {
                 match read_bounded_sse_line(&mut reader, &mut line) {
                     Ok(0) => break,
@@ -2747,23 +2787,21 @@ fn spawn_sse(context: SseContext) -> Result<(), ProviderError> {
                         let Ok(line_text) = std::str::from_utf8(&line) else {
                             break;
                         };
-                        let trimmed = line_text.trim_end_matches(['\r', '\n']);
-                        if let Some(value) = trimmed.strip_prefix("data:") {
-                            if data.len() + value.len() + 1 > MAX_SSE_LINE_BYTES {
-                                break;
-                            }
-                            if !data.is_empty() {
-                                data.push('\n');
-                            }
-                            data.push_str(value.trim_start());
-                        } else if trimmed.is_empty() && !data.is_empty() {
-                            if let Ok(raw) = serde_json::from_str::<Value>(&data) {
-                                if valid_native_sse_frame(&raw) {
-                                    refresh_sse_clock(&target, &last_valid_event);
+                        match decoder.push_line(line_text) {
+                            Ok(Some(events::NativeFrame::Heartbeat)) => refresh_sse_clock(&target, &last_valid_event),
+                            Ok(Some(events::NativeFrame::Event(raw))) => {
+                                refresh_sse_clock(&target, &last_valid_event);
+                                if target.dialect == ApiDialect::Legacy {
                                     emit_opencode_event(&target, raw);
+                                } else {
+                                    // Keep a second fail-closed fence until P2's native
+                                    // event projection and snapshot reconciliation land.
+                                    expire_stream(&target, "event_adapter_incomplete", "OpenCode 2.x event projection is not implemented yet");
+                                    break;
                                 }
                             }
-                            data.clear();
+                            Ok(None) => {}
+                            Err(_) => break,
                         }
                     }
                 }
@@ -3708,6 +3746,7 @@ mod tests {
         *target.ui.lock().unwrap() = initial;
         let mut chat = OpenCodeChat {
             server: OpenCodeServer {
+                dialect: ApiDialect::Legacy,
                 base_url: format!("http://{address}"), cwd: String::new(), username: String::new(), password: String::new(),
                 client: Client::builder().timeout(Duration::from_secs(5)).build().unwrap(), child,
                 stopped: Arc::clone(&target.stopped), event_gate: Arc::clone(&target.event_gate), active_turn: active,
@@ -4114,6 +4153,7 @@ mod tests {
         active: Arc<Mutex<Option<String>>>,
     ) -> EventTarget {
         EventTarget {
+            dialect: ApiDialect::Legacy,
             threadterm_session: "chat-s".into(),
             native_id: "native-1".into(),
             worker_token: "test-worker".into(),
@@ -4756,6 +4796,7 @@ mod tests {
         let child = Arc::new(Mutex::new(child));
         let _child_cleanup = TestChildCleanup(Arc::clone(&child));
         let server = OpenCodeServer {
+            dialect: ApiDialect::Legacy,
             base_url: format!("http://{address}"),
             cwd: String::new(),
             username: String::new(),
@@ -5623,6 +5664,7 @@ mod tests {
         let target = Arc::new(event_target(&events, Arc::clone(&active)));
         let mut chat = OpenCodeChat {
             server: OpenCodeServer {
+                dialect: ApiDialect::Legacy,
                 base_url: format!("http://{address}"),
                 cwd: String::new(),
                 username: String::new(),
@@ -5663,4 +5705,28 @@ mod tests {
         assert_eq!(abort.turn, "turn-b");
         assert!(abort.confirmed, "the HTTP reply confirmed the abort");
     }
+    #[test]
+    fn v2_liveness_uses_complete_comments_and_expires_once_without_settling_success() {
+        let (sink, mut rx) = crate::provider_events::tap_channel(16);
+        let mut target = event_target(&sink, Arc::new(Mutex::new(Some("turn-v2".into()))));
+        target.dialect = ApiDialect::V2;
+        let clock = Mutex::new(Instant::now() - Duration::from_secs(36));
+        assert!(!expire_silent_stream(&target, &clock), "v2 may remain quiet across the legacy 35s limit");
+        *clock.lock().unwrap() = Instant::now() - Duration::from_secs(70);
+        let mut decoder = events::FrameDecoder::new(ApiDialect::V2);
+        assert!(decoder.push_line(": heartbeat\n").unwrap().is_none());
+        assert!(matches!(decoder.push_line("\n").unwrap(), Some(events::NativeFrame::Heartbeat)));
+        refresh_sse_clock(&target, &clock);
+        assert!(!expire_silent_stream(&target, &clock), "a complete native heartbeat keeps the idle transport alive");
+        *clock.lock().unwrap() = Instant::now() - Duration::from_secs(51);
+        assert!(decoder.push_line(": heartbeat\n").unwrap().is_none(), "partial frame has no heartbeat receipt");
+        assert!(expire_silent_stream(&target, &clock));
+        assert!(expire_silent_stream(&target, &clock));
+        expire_stream(&target, "event_stream_disconnected", "EOF racing with watchdog");
+        let emitted = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(emitted.iter().filter(|event| event.kind == "session.closed").count(), 1);
+        assert_eq!(emitted.iter().filter(|event| event.kind == "chat.error").count(), 1);
+        assert!(!emitted.iter().any(|event| event.kind == "chat.turn.completed"), "silence never proves successful completion");
+    }
+
 }

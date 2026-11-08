@@ -77,6 +77,24 @@ fn snapshot_path_and_pathext_win_and_launcher_fallback_remains_absolute() {
 }
 
 #[test]
+fn opencode_path_wrapper_is_not_replaced_by_a_coinstalled_legacy_native_binary() {
+    let root = tempfile::tempdir().unwrap();
+    let launcher = root.path().join("launcher");
+    let legacy_native = launcher
+        .join("node_modules")
+        .join("opencode-ai")
+        .join("bin")
+        .join("opencode.exe");
+    std::fs::create_dir_all(legacy_native.parent().unwrap()).unwrap();
+    let wrapper = launcher.join("opencode.cmd");
+    std::fs::write(&wrapper, "@echo off\r\n").unwrap();
+    std::fs::write(&legacy_native, "legacy native binary").unwrap();
+
+    let resolved = find_executable_in("opencode", &Vec::new(), &[launcher]);
+    assert_eq!(resolved, Some(wrapper));
+}
+
+#[test]
 fn captured_probe_environment_survives_decision_and_removed_executable_is_explicit() {
     let root = tempfile::tempdir().unwrap();
     let script = root.path().join("captured.cmd");
