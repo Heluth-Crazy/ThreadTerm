@@ -659,3 +659,90 @@ fn seeded_tool_full_input_and_called_arguments_survive_lagging_snapshots_until_r
     assert_eq!(parts[0]["status"], "completed");
     assert_eq!(parts[0]["data"]["result"]["content"][0]["text"], "output");
 }
+
+#[test]
+fn seeded_only_tool_arguments_survive_progress_and_terminal_over_a_lagging_snapshot() {
+    for terminal in [false, true] {
+        let mut state = State::default();
+        let mut snapshot = json!({"id":"msg-answer","type":"assistant","time":{"created":1},"content":[
+            {"type":"tool","id":"call-shell","name":"shell","state":{"status":"running","input":{"command":"dir"},"metadata":{}}}
+        ]});
+        state.seed_message("ses-root", &snapshot).unwrap();
+        let kind = if terminal {
+            "session.tool.success"
+        } else {
+            "session.tool.progress"
+        };
+        let mut data =
+            json!({"sessionID":"ses-root","assistantMessageID":"msg-answer","id":"call-shell"});
+        if terminal {
+            data["executed"] = json!(true);
+            data["content"] = json!([{"type":"text","text":"output"}]);
+        } else {
+            data["metadata"] = json!({"phase":"running"});
+        }
+        assert!(matches!(
+            state
+                .apply(
+                    "ses-root",
+                    &json!({"id":"evt-full","created":2,"type":kind,"data":data})
+                )
+                .unwrap(),
+            Change::Message { .. }
+        ));
+        // The called event predates attachment. Only the first GET ever supplied
+        // parsed arguments; a later projected GET temporarily lags behind it.
+        snapshot["content"][0]["state"] = json!({"status":"streaming","input":"{"});
+        let Change::Message { parts, .. } =
+            state.seed_message("ses-root", &snapshot).unwrap().unwrap()
+        else {
+            panic!("message expected")
+        };
+        assert_eq!(parts[0]["data"]["state"]["input"], json!({"command":"dir"}));
+        if terminal {
+            assert_eq!(parts[0]["status"], "completed");
+            assert_eq!(parts[0]["data"]["result"]["content"][0]["text"], "output");
+        } else {
+            assert_eq!(parts[0]["data"]["state"]["metadata"]["phase"], "running");
+        }
+    }
+}
+
+#[test]
+fn stop_acknowledgement_after_stream_expiry_never_infers_native_completion() {
+    for result in [
+        Ok(()),
+        Err(ProviderError::new(
+            "abort_result_unknown",
+            "interrupt response lost",
+        )),
+    ] {
+        let (target, mut events) = target(Some("turn-1"));
+        *target.abort_pending.lock().unwrap() = Some(OpenCodeAbort {
+            turn: "turn-1".into(),
+            confirmed: false,
+            idle_observed: false,
+        });
+        expire_stream(
+            &target,
+            "event_stream_disconnected",
+            "EOF before Stop acknowledgement",
+        );
+        assert!(target.active.lock().unwrap().is_none());
+        assert_eq!(
+            target.finish_abort("turn-1", result).unwrap_err().code,
+            "abort_result_unknown"
+        );
+        let emitted = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            emitted
+                .iter()
+                .filter(|event| event.kind == "session.closed")
+                .count(),
+            1
+        );
+        assert!(emitted
+            .iter()
+            .all(|event| event.kind != "chat.turn.completed"));
+    }
+}

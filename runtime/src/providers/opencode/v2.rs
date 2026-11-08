@@ -605,6 +605,20 @@ impl State {
             for (key, value) in data.as_object().expect("event data validated") {
                 full_data[key] = value.clone();
             }
+            if kind.starts_with("session.tool.") && full_data.get("input").is_none() {
+                // A called event may predate subscription. Retain parsed input
+                // known only from the seed before a later GET can regress it.
+                if let Some(input) = data
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| message.tools.get(id))
+                    .and_then(|index| message.content.get(index))
+                    .and_then(|tool| tool.pointer("/state/input"))
+                    .filter(|input| input.is_object())
+                {
+                    full_data["input"] = input.clone();
+                }
+            }
             if matches!(kind, "session.tool.success" | "session.tool.failed")
                 && data.get("metadata").is_none()
             {
@@ -1432,9 +1446,12 @@ pub(super) fn finish_prompt(
 pub(super) fn attach(
     server: &OpenCodeServer,
     native_id: &str,
+    session: &Value,
     response: Response,
 ) -> Result<Arc<EventTarget>, ProviderError> {
-    let session = server.native_api().open_session(Some(native_id))?;
+    // The caller already read/created and validated this exact session before
+    // subscribing. No metadata I/O may delay draining the subscribed stream.
+    api::session_identity(session, Some(native_id))?;
     let directory = session
         .pointer("/location/directory")
         .and_then(Value::as_str)
@@ -1580,7 +1597,8 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
             .lock()
             .map_err(|_| protocol("OpenCode v2 state lock poisoned"))?;
         // Recheck the candidate after I/O, including its owning parent's fence.
-        if !state.owned(&parent, &target.native_id)
+        if state.children.contains_key(&child)
+            || !state.owned(&parent, &target.native_id)
             || state.task_candidates.get(&child) != Some(&(parent.clone(), call.clone()))
         {
             continue;

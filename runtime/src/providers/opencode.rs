@@ -273,7 +273,7 @@ impl ProviderAdapter for OpenCodeAdapter {
         // The event stream binds only after the native identity is known; a
         // failed event channel fails the connect instead of leaving a blind
         // "ready" worker behind.
-        let sse_target = server.attach_events(&native_id)?;
+        let sse_target = server.attach_events(&native_id, &session)?;
         let ui = sse_target.ui.lock().map(|ui| ui.wire()).unwrap_or_else(|_| json!({"options":[],"commands":[]}));
         emit_scoped(&self.events, "opencode", session_id, Some(&native_id), None, "chat.ui", ui, Some(worker_token));
         emit_scoped(
@@ -451,7 +451,7 @@ impl OpenCodeServer {
     /// is seeded from the native message log so late part updates for existing
     /// messages stay complete, and a natively busy session blocks new sends
     /// through a sentinel turn until its idle event arrives.
-    fn attach_events(&self, native_id: &str) -> Result<Arc<EventTarget>, ProviderError> {
+    fn attach_events(&self, native_id: &str, session: &Value) -> Result<Arc<EventTarget>, ProviderError> {
         // `connect_timeout` only covers TCP establishment. A peer can accept
         // TCP yet never send SSE headers, so bound this handshake separately.
         // The Response is then read without a total timeout: normal SSE turns
@@ -519,7 +519,7 @@ impl OpenCodeServer {
         }
 
         if self.dialect == ApiDialect::V2 {
-            return v2::attach(self, native_id, response);
+            return v2::attach(self, native_id, session, response);
         }
         let assembly = Arc::new(Mutex::new(OpenCodeAssembly::default()));
         // Seed recent message identities before reading buffered SSE events.
@@ -2460,6 +2460,11 @@ impl EventTarget {
     }
     fn finish_abort(&self, turn_id: &str, result: Result<(), ProviderError>) -> Result<(), ProviderError> {
         let commit = self.event_gate.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode event gate poisoned"))?;
+        // Expiry also clears active. Its absence proves no native outcome and
+        // must not take the idempotent native-completion shortcut below.
+        if self.dialect == ApiDialect::V2 && (!self.liveness.load(Ordering::SeqCst) || self.stopped.load(Ordering::SeqCst)) {
+            return Err(ProviderError::new("abort_result_unknown", "OpenCode Stop result is unknown after event-stream loss"));
+        }
         if self.dialect == ApiDialect::V2 && self.active.lock().ok().is_some_and(|active| active.as_deref() != Some(turn_id)) {
             // A native execution terminal may beat a no-op interrupt reply.
             // It also fences late replies from a previous local operation.
