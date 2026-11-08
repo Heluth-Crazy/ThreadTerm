@@ -12,6 +12,7 @@ mod api;
 #[path = "opencode/auth_tests.rs"]
 mod auth_tests;
 mod events;
+mod v2;
 use api::{ApiDialect, NativeApi};
 
 use crate::chat_questions::answer_summary;
@@ -451,7 +452,6 @@ impl OpenCodeServer {
     /// messages stay complete, and a natively busy session blocks new sends
     /// through a sentinel turn until its idle event arrives.
     fn attach_events(&self, native_id: &str) -> Result<Arc<EventTarget>, ProviderError> {
-        self.require_legacy_events()?;
         // `connect_timeout` only covers TCP establishment. A peer can accept
         // TCP yet never send SSE headers, so bound this handshake separately.
         // The Response is then read without a total timeout: normal SSE turns
@@ -461,6 +461,7 @@ impl OpenCodeServer {
         let username = self.username.clone();
         let password = self.password.clone();
         let directory = self.cwd.clone();
+        let dialect = self.dialect;
         thread::Builder::new()
             .name(format!(
                 "opencode-sse-handshake-{}",
@@ -477,12 +478,10 @@ impl OpenCodeServer {
                     .build()
                     .map_err(|error| error.to_string())
                     .and_then(|client| {
-                        client
-                            .get(format!("{base_url}/global/event"))
-                            .basic_auth(&username, Some(&password))
-                            .query(&[("directory", &directory)])
-                            .send()
-                            .map_err(|error| error.to_string())
+                        let path = if dialect == ApiDialect::V2 { "/api/event" } else { "/global/event" };
+                        let mut request = client.get(format!("{base_url}{path}")).basic_auth(&username, Some(&password));
+                        if dialect == ApiDialect::Legacy { request = request.query(&[("directory", &directory)]); }
+                        request.send().map_err(|error| error.to_string())
                     });
                 let _ = sender.send(response);
             })
@@ -519,6 +518,9 @@ impl OpenCodeServer {
             return Err(ProviderError::new("provider_protocol", "OpenCode returned no native event stream"));
         }
 
+        if self.dialect == ApiDialect::V2 {
+            return v2::attach(self, native_id, response);
+        }
         let assembly = Arc::new(Mutex::new(OpenCodeAssembly::default()));
         // Seed recent message identities before reading buffered SSE events.
         // Existing messages must be refreshed from native snapshots: a delta
@@ -617,6 +619,7 @@ impl OpenCodeServer {
             retry_visible: AtomicBool::new(false),
             compact_pending: Mutex::new(None),
             ui_options_refreshing: Arc::new(AtomicBool::new(false)),
+            v2: Default::default(),
         });
         // The SSE response is already buffering. Hydrate before draining it so
         // replied/updated events win over these read-only snapshots.
@@ -1009,6 +1012,7 @@ impl ChatSession for OpenCodeChat {
                 "OpenCode event stream is disconnected",
             ));
         }
+        if self.server.dialect == ApiDialect::V2 { v2::validate_send(&self.sse_target)?; }
         if self
             .server
             .active_turn
@@ -1029,6 +1033,7 @@ impl ChatSession for OpenCodeChat {
         Ok(())
     }
     fn validate_send_with_images(&self, text: &str, images: &[String]) -> Result<(), ProviderError> {
+        if self.server.dialect == ApiDialect::V2 { v2::validate_send(&self.sse_target)?; }
         self.sse_target.ui.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode options lock poisoned"))?.validate_input(text, images)?;
         // Validate once before durable recording, without cloning data URLs.
         for image in images { opencode_image_mime(image)?; }
@@ -1060,6 +1065,7 @@ impl ChatSession for OpenCodeChat {
                     "OpenCode session already has an active turn",
                 ));
             }
+            if self.server.dialect == ApiDialect::V2 { v2::reserve_prompt(&self.sse_target, operation_id)?; }
             *active = Some(operation_id.to_owned());
             if route == "summarize" {
                 *self.sse_target.compact_pending.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode compact lock poisoned"))? = Some(OpenCodeCompact { turn: operation_id.to_owned(), confirmed: false, idle_observed: false });
@@ -1087,7 +1093,7 @@ impl ChatSession for OpenCodeChat {
         // the next turn's native_turn_observed state. Keep this acceptance
         // boundary until dispatch and per-request outcome fencing are explicit.
         let sent = if self.server.dialect == ApiDialect::V2 {
-            self.server.native_api().admit_prompt(&self.native_id, text)
+            v2::admit_prompt(&self.sse_target, text)
         } else {
             self.server.request(
                 reqwest::Method::POST,
@@ -2279,6 +2285,7 @@ struct EventTarget {
     retry_visible: AtomicBool,
     compact_pending: Mutex<Option<OpenCodeCompact>>,
     ui_options_refreshing: Arc<AtomicBool>,
+    v2: Mutex<v2::State>,
 }
 
 impl EventTarget {
@@ -2453,6 +2460,11 @@ impl EventTarget {
     }
     fn finish_abort(&self, turn_id: &str, result: Result<(), ProviderError>) -> Result<(), ProviderError> {
         let commit = self.event_gate.lock().map_err(|_| ProviderError::new("provider_internal", "OpenCode event gate poisoned"))?;
+        if self.dialect == ApiDialect::V2 && self.active.lock().ok().is_some_and(|active| active.as_deref() != Some(turn_id)) {
+            // A native execution terminal may beat a no-op interrupt reply.
+            // It also fences late replies from a previous local operation.
+            return Ok(());
+        }
         if let Err(error) = result {
             if let Ok(mut pending) = self.abort_pending.lock() { *pending = None; }
             expire_stream_locked(self, "abort_result_unknown", &error.message, &commit);
@@ -2483,6 +2495,7 @@ impl EventTarget {
         operation_id: &str,
         result: Result<(), ProviderError>,
     ) -> Result<(), ProviderError> {
+        if self.dialect == ApiDialect::V2 { return v2::finish_prompt(self, operation_id, result); }
         let commit = self.event_gate.lock().map_err(|_| {
             self.liveness.store(false, Ordering::SeqCst);
             ProviderError::new("provider_internal", "OpenCode event gate poisoned")
@@ -2762,6 +2775,9 @@ fn spawn_sse(context: SseContext) -> Result<(), ProviderError> {
     let last_valid_event = Arc::new(Mutex::new(Instant::now()));
     let watchdog_target = Arc::clone(&context.target);
     let watchdog_clock = Arc::clone(&last_valid_event);
+    let v2_queue = if context.target.dialect == ApiDialect::V2 {
+        Some(v2::EventQueue::start(Arc::clone(&context.target))?)
+    } else { None };
     thread::Builder::new()
         .name(format!(
             "opencode-sse-{}",
@@ -2794,10 +2810,7 @@ fn spawn_sse(context: SseContext) -> Result<(), ProviderError> {
                                 if target.dialect == ApiDialect::Legacy {
                                     emit_opencode_event(&target, raw);
                                 } else {
-                                    // Keep a second fail-closed fence until P2's native
-                                    // event projection and snapshot reconciliation land.
-                                    expire_stream(&target, "event_adapter_incomplete", "OpenCode 2.x event projection is not implemented yet");
-                                    break;
+                                    if let Some(queue) = &v2_queue { queue.push(raw); }
                                 }
                             }
                             Ok(None) => {}
@@ -2808,11 +2821,11 @@ fn spawn_sse(context: SseContext) -> Result<(), ProviderError> {
             }
             // EOF, malformed framing and watchdog timeout share one terminal
             // transition. The CAS prevents duplicate card expiry or errors.
-            expire_stream(
+            if let Some(queue) = &v2_queue { queue.eof(); } else { expire_stream(
                 &target,
                 "event_stream_disconnected",
                 "OpenCode event stream disconnected; permission outcome is unknown",
-            );
+            ); }
         })
         .map_err(|error| {
             ProviderError::new(
@@ -4179,6 +4192,7 @@ mod tests {
             retry_visible: AtomicBool::new(false),
             compact_pending: Mutex::new(None),
             ui_options_refreshing: Arc::new(AtomicBool::new(false)),
+            v2: Default::default(),
         }
     }
 
