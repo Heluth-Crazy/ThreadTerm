@@ -43,3 +43,17 @@ node mobile/qa/native-host-smoke.mjs
 All generated web exports and screenshots live in ignored `.qa-*` directories.
 The Apple build, camera/picker/biometrics and native preview/device matrix remain
 the separate gate in `scripts/NATIVE-IOS-VALIDATION.md`.
+
+`chat-options.mjs` uses the same injected Expo project for the host-driven model,
+reasoning and session-option composer sheet. Run from the repository root:
+
+```sh
+node mobile/qa/chat-options.mjs
+```
+
+It checks Control writes (including machine/session/lease identity), local lock,
+View-only refusal, English/Chinese, dark mode and narrow/landscape overflow. Its
+four screenshots live in `.trellis/tasks/11-06-mobile-companion/qa-chat-options/`.
+Inspect the captures after rendering; browser injection does not exercise Swift
+permission gates, biometrics or a real provider. A Swift allowlist change requires
+a rebuilt signed iPhone app even when the JavaScript is served by Metro.

@@ -10,6 +10,7 @@ export interface SessionRef { machineId:string; sessionId:string }
 export interface SessionView {
   ref:SessionRef; items:ChatItem[]; loading:boolean; syncing:boolean; error?:string;
   connection?:ChatConnectionState; chatUi?:ChatUiState; leaseEpoch?:number;
+  optionsLoading?:boolean; optionPending?:string; optionsError?:string;
   terminal:string; terminalCursor:number; terminalGap:boolean; hasOlder:boolean; olderCursor?:string;
 }
 export interface AttentionItem { key:string; ref:SessionRef; machineName:string; session:Session; title:string; createdAt:string; inboxId?:string; turnId?:string; approvalId?:string; approval?:ChatApprovalData; stale:boolean }
@@ -38,6 +39,8 @@ export interface CompanionController {
   claimControl(ref:SessionRef,takeover?:boolean):Promise<void>;
   releaseControl(ref:SessionRef):Promise<void>;
   connectChat(ref:SessionRef):Promise<void>;
+  refreshChatOptions(ref:SessionRef):Promise<void>;
+  setChatOption(ref:SessionRef,optionId:string,value:string):Promise<void>;
   send(ref:SessionRef):Promise<void>;
   setDraft(ref:SessionRef,text:string):void;
   approve(ref:SessionRef,turnId:string,approvalId:string,choiceId:string):Promise<void>;

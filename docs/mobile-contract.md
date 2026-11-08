@@ -20,7 +20,7 @@ Invalid/revoked credentials fail authentication with `{kind:"authentication_fail
 
 View: runtime.health, project.catalog.list, worktree.list/worktree.branches, session.lookup, chat.snapshot/read/subagent.read/options/connection, terminal.read, filesystem.list/read/files/search/image, git.status/diff/log/commit.show/commit.diff/branches, inbox.read, session.attention.acknowledge. Scope filesystem/Git to registered projects/worktrees. No arbitrary browse/external-files/host settings/history/plugin APIs. Use bounded existing result types.
 
-Control: mobile.session.create, session.stop/resume, session.claim/renew/release, chat.connect/send/cancel/approve/answer, terminal.input/resize, attachment.upload/read, chat.image.read. `chat.approve` uses choiceId, never invent approve/deny booleans. Optional other read methods only when needed and explicitly coordinated. Claims derive principal from authenticated device/client; subsequent operations use leaseEpoch. No silent takeover. Lease enforcement remains identical to desktop. `chat.image.read` and authorized session attachment reads are viewing operations; uploads require control. Do not expose `session.create` directly.
+Control: mobile.session.create, session.stop/resume, session.claim/renew/release, chat.connect/option.set/send/cancel/approve/answer, terminal.input/resize, attachment.upload/read, chat.image.read. `chat.option.set` receives only the host-provided option id/value and requires the same registered session and leaseEpoch as desktop. `chat.approve` uses choiceId, never invent approve/deny booleans. Optional other read methods only when needed and explicitly coordinated. Claims derive principal from authenticated device/client; subsequent operations use leaseEpoch. No silent takeover. Lease enforcement remains identical to desktop. `chat.image.read` and authorized session attachment reads are viewing operations; uploads require control. Do not expose `session.create` directly.
 
 Tunnel target is literal host loopback and a port belonging to a registered current preview session. Native proxy handles public resources locally; never tunnel arbitrary host network addresses or fallback to phone loopback. Opening viewer can have web app effects; it is not a promise that the viewed web app is read-only.
 
@@ -45,3 +45,26 @@ The JS coordinator handles network-backoff, summary synchronization, per-machine
 ## App coordinator facade
 
 UI imports `useCompanion` from `../core/react` and types from `../core/types`. The coordinator will supply machines with connection/snapshot state, tabs' routes, per-machine draft/history/attention and action methods; coordinate exact UI facade with root before implementation. UI must not call native module directly except camera/document inputs via coordinator. No production demo machines.
+
+### Chat options flow
+
+`chat.options {sessionId}` returns the host's complete `ChatUiState` (options,
+choices, selected values, load state and provider error). Subscribed `chat.ui`
+events replace that state. The companion uses the desktop's pure presentation
+helpers for category, group, labels and current model/effort; it has no model
+catalog of its own.
+
+`chat.option.set {sessionId,optionId,value,leaseEpoch,operationId}` returns the
+host-confirmed `ChatUiState`. It is session-scoped and has no turn identity. A
+Control phone must hold the same lease the desktop handler requires; View gets
+`mobile_readonly` before provider work. Native Swift and JavaScript both guard
+this Control method as well. The phone serializes changes, rechecks lock and
+connection generations after acquiring a lease, and never automatically replays
+a change. Reconnection must finish the current session snapshot before another
+write. Late replies cannot overwrite a new connection's options. Read failures
+retain the readable previous values; a later live UI snapshot wins over an older
+read. A pending or failed update remains visible even after dismissing the sheet.
+Like desktop, `chat_permission_restore_failed` offers only the host's permission
+(`category: mode`) choices even while the provider is failed. This exception
+retains every Control, unlock, synchronization and lease check; other option load
+errors and disconnected providers remain display-only.

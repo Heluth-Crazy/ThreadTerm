@@ -41,6 +41,8 @@ import {
   type CodexTurn,
 } from "../../../renderer/src/codexTranscript";
 import { stripAnsi } from "../../../renderer/src/chatContext";
+import { chatOptionsDisabledReason, chatOptionsPermissionRecovery, chatOptionsSummary } from "../core/projection";
+import { ChatOptionsSheet } from "./ChatOptionsSheet";
 
 export function ChatListScreen({
   theme,
@@ -403,6 +405,13 @@ function ChatPanel({
     [view?.items, session.provider],
   );
   const providerReady = view?.connection?.phase === "ready";
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsReason = chatOptionsDisabledReason(state, ref);
+  const optionsUi = chatOptionsPermissionRecovery(view) && view?.chatUi ? { ...view.chatUi, options: view.chatUi.options.filter(option => option.category === "mode") } : view?.chatUi;
+  const openOptions = () => {
+    setOptionsOpen(true);
+    void controller.refreshChatOptions(ref).catch(() => {});
+  };
   const unlock = () =>
     void controller
       .unlockControl()
@@ -559,6 +568,15 @@ function ChatPanel({
           ))}
         </View>
       )}
+      <View style={[styles.optionsBar, { borderTopColor: theme.line }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={locale === "zh-CN" ? "会话选项" : "Session options"} accessibilityHint={optionsReason} accessibilityValue={{ text: chatOptionsSummary(view?.chatUi, locale) }} accessibilityState={{ expanded: optionsOpen, busy: !!view?.optionPending || !!view?.optionsLoading }} onPress={openOptions} style={({ pressed }) => [styles.optionsButton, { backgroundColor: theme.chip, opacity: pressed ? .72 : 1 }]}>
+          <Text numberOfLines={1} style={{ color: theme.text, fontWeight: "800", flex: 1 }}>{chatOptionsSummary(view?.chatUi, locale)}</Text>
+          <Icon name="settings" color={theme.primary} size={18} />
+        </Pressable>
+        {!!view?.optionPending && <Text style={[styles.optionsHint, { color: theme.muted }]}>{locale === "zh-CN" ? "正在更新选项…" : "Updating options…"}</Text>}
+        {!view?.optionPending && !!view?.optionsError && <Text accessibilityRole="alert" style={[styles.optionsHint, { color: theme.red }]}>{view.optionsError.startsWith("outcome_unknown") ? (locale === "zh-CN" ? "无法确认更改结果，请打开选项查看当前值。" : "Could not confirm the change. Open options to check the current values.") : (locale === "zh-CN" ? "无法更新选项，请打开选项重试。" : "Could not update options. Open options to try again.")}</Text>}
+        {!view?.optionPending && !!optionsReason && <Text style={[styles.optionsHint, { color: theme.amber }]}>{optionsReason}</Text>}
+      </View>
       <View style={[styles.composer, { borderTopColor: theme.line }]}>
         <IconButton
           theme={theme}
@@ -596,6 +614,7 @@ function ChatPanel({
           onPress={send}
         />
       </View>
+      <ChatOptionsSheet theme={theme} locale={locale} visible={optionsOpen} ui={optionsUi} disabledReason={optionsReason} pending={view?.optionPending} error={view?.optionsError} loading={view?.optionsLoading} onDismiss={() => setOptionsOpen(false)} onRefresh={() => void controller.refreshChatOptions(ref).catch(() => {})} onChoose={(optionId, value) => void controller.setChatOption(ref, optionId, value).then(() => setOptionsOpen(false)).catch(() => {})} />
     </View>
   );
 }
@@ -1046,6 +1065,9 @@ const styles = StyleSheet.create({
     gap: 6,
     flexWrap: "wrap",
   },
+  optionsBar: { paddingHorizontal: 8, paddingTop: 6, borderTopWidth: StyleSheet.hairlineWidth },
+  optionsButton: { minHeight: 44, borderRadius: 12, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 8 },
+  optionsHint: { fontSize: 12, lineHeight: 16, paddingHorizontal: 4, paddingTop: 4 },
   composer: {
     padding: 8,
     flexDirection: "row",

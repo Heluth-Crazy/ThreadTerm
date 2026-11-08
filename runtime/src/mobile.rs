@@ -67,6 +67,7 @@ pub(crate) const CONTROL_METHODS: &[&str] = &[
     "session.renew",
     "session.release",
     "chat.connect",
+    "chat.option.set",
     "chat.send",
     "chat.cancel",
     "chat.approve",
@@ -880,6 +881,108 @@ pub(crate) async fn accept<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
 mod tests {
     use super::*;
     use crate::db::CreateSession;
+    use crate::providers::{
+        ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand,
+    };
+    use crate::{config::RuntimeConfig, domain::RpcRequest, service::RuntimeService};
+
+    struct MobileOptionProvider;
+
+    impl ProviderAdapter for MobileOptionProvider {
+        fn id(&self) -> &'static str {
+            "mobile-options"
+        }
+
+        fn capability(&self) -> ProviderCapability {
+            ProviderCapability {
+                source: "builtin",
+                plugin_id: None,
+                icon: None,
+                sign_in: None,
+                remote_sign_in: None,
+                homepage: None,
+                id: "mobile-options".into(),
+                name: "Mobile options fixture".into(),
+                installed: true,
+                version: None,
+                terminal: false,
+                chat: true,
+                history: false,
+                resume: false,
+                terminal_resume_capture: "none",
+                reason: None,
+                auth: "unknown".into(),
+            }
+        }
+
+        fn terminal_command(
+            &self,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "fixture has no terminal"))
+        }
+
+        fn history_list(
+            &self,
+            _: Option<&str>,
+            _: u32,
+            _: Option<&str>,
+        ) -> Result<Value, ProviderError> {
+            Ok(json!({}))
+        }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> {
+            Ok(json!([]))
+        }
+
+        fn open_chat(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Ok(Box::new(MobileOptionChat {
+                model: "host-model-a".into(),
+            }))
+        }
+    }
+
+    struct MobileOptionChat {
+        model: String,
+    }
+
+    impl ChatSession for MobileOptionChat {
+        fn native_id(&self) -> Option<String> {
+            Some("mobile-options".into())
+        }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> {
+            Ok(json!({}))
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn ui_state(&self) -> Value {
+            json!({"options":[{"id":"model","name":"Model","value":self.model,
+                "choices":[{"value":"host-model-a","name":"Host model A"},{"value":"host-model-b","name":"Host model B"}]}],
+                "commands":[],"loadState":"ready"})
+        }
+        fn set_option(&mut self, id: &str, value: &str) -> Result<Value, ProviderError> {
+            if id != "model" || !["host-model-a", "host-model-b"].contains(&value) {
+                return Err(ProviderError::new(
+                    "chat_option_invalid",
+                    "host did not offer that option",
+                ));
+            }
+            self.model = value.into();
+            Ok(self.ui_state())
+        }
+    }
 
     fn scope_fixture() -> (tempfile::TempDir, Database, String, String, String) {
         let directory = tempfile::tempdir().unwrap();
@@ -1015,6 +1118,227 @@ mod tests {
                 .code,
             "mobile_forbidden"
         );
+    }
+
+    #[test]
+    fn option_reads_stay_visible_but_option_changes_require_control_and_a_registered_session() {
+        let (_directory, db, project, _worktree, outside) = scope_fixture();
+        let visible = db
+            .create_session(CreateSession {
+                project_id: Some(&project),
+                title: Some("Visible options"),
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "visible-option-session",
+            })
+            .unwrap();
+        let root = resolve_mobile_cwd(&db, &project, None).unwrap();
+        db.bind_session(&visible.id, Some(&root), None).unwrap();
+
+        // View may read the current host-provided option state, but cannot
+        // mutate it; execution then passes through the ordinary lease fence.
+        authorize_method(DevicePermission::Readonly, "chat.options").unwrap();
+        assert_eq!(
+            authorize_method(DevicePermission::Readonly, "chat.option.set")
+                .unwrap_err()
+                .code,
+            "mobile_readonly"
+        );
+        authorize_method(DevicePermission::Fullcontrol, "chat.option.set").unwrap();
+        require_registered_session(&db, &visible.id).unwrap();
+
+        let escaped = db
+            .create_session(CreateSession {
+                project_id: Some(&project),
+                title: Some("Escaped options"),
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "escaped-option-session",
+            })
+            .unwrap();
+        db.bind_session(&escaped.id, Some(&outside), None).unwrap();
+        assert!(require_registered_session(&db, &escaped.id).is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mobile_option_dispatch_enforces_view_scope_and_desktop_lease_parity() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let config = RuntimeConfig {
+            data_dir: directory.path().to_owned(),
+            database_path: directory.path().join("runtime.sqlite"),
+            credential_path: directory.path().join("credential"),
+            pipe_base: r"\\.\pipe\threadterm-v3-mobile-options".into(),
+        };
+        let db = Arc::new(Database::open(&config.database_path).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::project_catalog::initialize(&db).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        crate::devices::DeviceManager::new(Arc::clone(&db))
+            .unwrap()
+            .set_remote_access_preference(true, None, None)
+            .unwrap();
+        let project = db
+            .add_project(
+                root.to_str().unwrap(),
+                Some("Mobile"),
+                "mobile-options-project",
+            )
+            .unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: Some(&project.id),
+                title: Some("Options"),
+                provider: "mobile-options",
+                mode: "chat",
+                native_id: None,
+                operation_id: "mobile-options-session",
+            })
+            .unwrap();
+        let registered = root.canonicalize().unwrap().to_string_lossy().to_string();
+        db.bind_session(&session.id, Some(&registered), None)
+            .unwrap();
+        db.set_session_status(&session.id, "idle", None).unwrap();
+
+        let service = Arc::new(RuntimeService::with_test_providers(
+            config.clone(),
+            Arc::clone(&db),
+            vec![Arc::new(MobileOptionProvider)],
+        ));
+        let remote = crate::remote_access::RemoteAccess::new(
+            Arc::downgrade(&service),
+            Arc::clone(&db),
+            config,
+        )
+        .unwrap();
+        assert!(service.remote.set(Arc::clone(&remote)).is_ok());
+        let desktop_lease = service.leases.claim(&db, &session.id, "desktop").unwrap();
+        service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "open-mobile-options-fixture".into(),
+                    method: "chat.connect".into(),
+                    params: json!({"sessionId":session.id,"leaseEpoch":desktop_lease,"operationId":"open-mobile-options-fixture"}),
+                },
+            )
+            .unwrap();
+        service
+            .leases
+            .release(&db, &session.id, "desktop", desktop_lease)
+            .unwrap();
+
+        let paired = |permission, operation: &str| {
+            let offer = remote
+                .devices
+                .create_pairing_with_profile(
+                    permission,
+                    crate::devices::DeviceProfile::Mobile,
+                    operation,
+                    "https://fixture",
+                    "AA",
+                    None,
+                )
+                .unwrap();
+            remote
+                .devices
+                .pair(&offer.id, &offer.code, operation, None)
+                .unwrap()
+                .device
+        };
+        let connect_group = |device: &crate::devices::PairedDevice| {
+            let (closed, _) = watch::channel(false);
+            remote.mobiles.groups.lock().unwrap().insert(
+                (device.id.clone(), "fixture".into()),
+                Group {
+                    epoch: "fixture-epoch".into(),
+                    permission: device.permission,
+                    closed,
+                },
+            );
+            format!("mobile:{}:fixture", device.id)
+        };
+        let readonly = connect_group(&paired(DevicePermission::Readonly, "readonly-options"));
+        let control = connect_group(&paired(DevicePermission::Fullcontrol, "control-options"));
+        let request = |principal: &str, method: &str, params: Value| {
+            service.dispatch(
+                principal,
+                RpcRequest {
+                    v: 1,
+                    id: format!("{method}-id"),
+                    method: method.into(),
+                    params,
+                },
+            )
+        };
+
+        let current = request(&readonly, "chat.options", json!({"sessionId":session.id})).unwrap();
+        assert_eq!(current["options"][0]["value"], "host-model-a");
+        assert_eq!(
+            request(&readonly, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-b","leaseEpoch":1,"operationId":"readonly-change"}))
+                .unwrap_err().code,
+            "mobile_readonly",
+        );
+        assert_eq!(
+            request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-b","operationId":"missing-lease"}))
+                .unwrap_err().code,
+            "invalid_request",
+        );
+        assert_eq!(
+            request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-b","leaseEpoch":1,"operationId":"wrong-lease"}))
+                .unwrap_err().code,
+            "stale_lease",
+        );
+        let unclaimed = db
+            .create_session(CreateSession {
+                project_id: Some(&project.id),
+                title: Some("Unclaimed"),
+                provider: "mobile-options",
+                mode: "chat",
+                native_id: None,
+                operation_id: "mobile-options-unclaimed",
+            })
+            .unwrap();
+        db.bind_session(&unclaimed.id, Some(&registered), None)
+            .unwrap();
+        let missing = request(&control, "chat.option.set", json!({"sessionId":unclaimed.id,"optionId":"model","value":"host-model-b","leaseEpoch":1,"operationId":"no-lease"})).unwrap_err();
+        // The ordinary desktop RPC mapper normalizes missing and stale leases.
+        assert_eq!(missing.code, "stale_lease");
+        assert_eq!(missing.message, "lease_missing");
+        let lease = service.leases.claim(&db, &session.id, &control).unwrap();
+        assert_eq!(
+            request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-b","leaseEpoch":lease + 1,"operationId":"stale-lease"}))
+                .unwrap_err().code,
+            "stale_lease",
+        );
+        let changed = request(&control, "chat.option.set", json!({"sessionId":session.id,"optionId":"model","value":"host-model-b","leaseEpoch":lease,"operationId":"valid-lease"})).unwrap();
+        assert_eq!(changed["options"][0]["value"], "host-model-b");
+
+        let escaped = db
+            .create_session(CreateSession {
+                project_id: Some(&project.id),
+                title: Some("Escaped"),
+                provider: "mobile-options",
+                mode: "chat",
+                native_id: None,
+                operation_id: "mobile-options-escaped",
+            })
+            .unwrap();
+        db.bind_session(&escaped.id, Some(outside.to_str().unwrap()), None)
+            .unwrap();
+        assert_eq!(
+            request(&control, "chat.option.set", json!({"sessionId":escaped.id,"optionId":"model","value":"host-model-b","leaseEpoch":lease,"operationId":"escaped-change"}))
+                .unwrap_err().code,
+            "mobile_scope_denied",
+        );
+        remote.disable().unwrap();
     }
 
     #[test]
@@ -1168,6 +1492,11 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("chat.send")));
+        let control = snapshot(&db, vec![], DevicePermission::Fullcontrol).unwrap();
+        assert!(control["capabilities"]["methods"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("chat.option.set")));
     }
 
     #[test]

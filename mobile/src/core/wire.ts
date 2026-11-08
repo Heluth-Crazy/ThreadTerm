@@ -1,7 +1,7 @@
 import { validateRequest, validateResult, type Method } from '@threadterm/protocol';
 import { isMobileSnapshot, type MobileMethod, type MobileResult } from '@threadterm/protocol/mobile';
 
-export const CONTROL_METHODS=new Set<MobileMethod>(['mobile.session.create','session.stop','session.resume','session.claim','session.renew','session.release','chat.connect','chat.send','chat.cancel','chat.approve','chat.answer','terminal.input','terminal.resize','attachment.upload']);
+export const CONTROL_METHODS=new Set<MobileMethod>(['mobile.session.create','session.stop','session.resume','session.claim','session.renew','session.release','chat.connect','chat.send','chat.option.set','chat.cancel','chat.approve','chat.answer','terminal.input','terminal.resize','attachment.upload']);
 export const READ_METHODS=new Set<MobileMethod>(['runtime.health','project.catalog.list','worktree.list','worktree.branches','session.lookup','chat.snapshot','chat.read','chat.subagent.read','chat.options','chat.connection','terminal.read','filesystem.list','filesystem.read','filesystem.files','filesystem.search','filesystem.image','git.status','git.diff','git.log','git.commit.show','git.commit.diff','git.branches','inbox.read','session.attention.acknowledge','chat.image.read','attachment.read']);
 export function validateMobileRequest(method:MobileMethod,params:unknown):void {
   if(!method.startsWith('mobile.')) {

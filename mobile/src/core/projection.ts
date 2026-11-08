@@ -1,6 +1,34 @@
-import type { ChatApprovalData, ChatItem } from '@threadterm/protocol';
-import type { AttentionItem, CompanionState, MachineState, SessionView } from './types';
+import type { ChatApprovalData, ChatItem, ChatUiState } from '@threadterm/protocol';
+import type { AttentionItem, CompanionState, Locale, MachineState, SessionRef, SessionView } from './types';
 import { sessionKey } from './types';
+import { chipValueText, partitionOptions, thinkingChipText } from '../../../renderer/src/composerOptions';
+
+/** Same classification and localized values as the desktop; all choices come from the host. */
+export function chatOptionsSummary(ui:ChatUiState|undefined,locale:Locale):string {
+  const zh=locale==='zh-CN', {model,thinking}=partitionOptions(ui?.options??[]);
+  return [model&&chipValueText(model,zh),thinking&&thinking.value&&thinkingChipText(thinking,zh)].filter(Boolean).join(' · ') || (zh?'会话选项':'Session options');
+}
+
+/** Desktop permits only host permission options when saved permissions need recovery. */
+export function chatOptionsPermissionRecovery(view:SessionView|undefined):boolean {
+  return view?.connection?.phase==='failed'&&view.connection.error?.code==='chat_permission_restore_failed';
+}
+
+/** Display-only reason. Runtime and the controller independently enforce authority. */
+export function chatOptionsDisabledReason(state:CompanionState,ref:SessionRef):string|undefined {
+  const zh=state.preferences.locale==='zh-CN',copy=(en:string,cn:string)=>zh?cn:en;
+  const machine=state.machines.find(m=>m.id===ref.machineId),view=state.sessions[sessionKey(ref)];
+  const session=machine?.snapshot?.sessions.find(s=>s.id===ref.sessionId);
+  if(machine?.permission==='readonly')return copy('This computer allows viewing only.','此电脑仅允许查看。');
+  if(!machine||machine.status!=='connected'||machine.syncing||view?.syncing)return copy('Waiting for this computer to sync.','正在等待此电脑同步。');
+  if(!session||session.readOnly||session.archived)return copy('This session allows viewing only.','此会话仅允许查看。');
+  if(!state.controlUnlocked)return copy('Locked — unlock to change options.','已锁定，解锁后可更改选项。');
+  if(!machine.snapshot?.capabilities.methods.includes('chat.option.set'))return copy('Update ThreadTerm on this computer to change options.','请更新此电脑上的 ThreadTerm 以更改选项。');
+  const recovering=chatOptionsPermissionRecovery(view);
+  if(view?.connection?.phase!=='ready'&&!recovering)return copy('Connect the agent to change options.','连接 Agent 后可更改选项。');
+  if(!view||view.optionsLoading||!view.chatUi||['idle','loading','unknown'].includes(view.chatUi.loadState??''))return copy('Loading options from this computer…','正在从此电脑读取选项…');
+  if(view.chatUi.loadState==='error'&&!recovering)return copy('Options could not be loaded. Try again.','无法读取选项，请重试。');
+}
 
 export function mergeItems(existing:ChatItem[],incoming:ChatItem[]):ChatItem[] {
   const rows = new Map(existing.map(item=>[item.id,item]));

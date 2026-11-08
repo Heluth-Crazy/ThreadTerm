@@ -59,13 +59,13 @@ export function EmptyState({ theme, icon, title, detail, action }: { theme: Them
   return <View style={styles.empty}><View style={[styles.emptyIcon, { backgroundColor: theme.raised }]}><Icon name={icon} color={theme.primary} size={28} /></View><Text maxFontSizeMultiplier={1.5} style={[styles.emptyTitle, { color: theme.text }]}>{title}</Text><Text maxFontSizeMultiplier={1.7} style={[styles.emptyDetail, { color: theme.muted }]}>{detail}</Text>{action}</View>;
 }
 
-export function Sheet({ theme, visible, title, onDismiss, children }: PropsWithChildren<{ theme: Theme; visible: boolean; title: string; onDismiss: () => void }>) {
+export function Sheet({ theme, visible, title, onDismiss, children, closeLabel = 'Close', dismissLabel = 'Dismiss' }: PropsWithChildren<{ theme: Theme; visible: boolean; title: string; onDismiss: () => void; closeLabel?: string; dismissLabel?: string }>) {
   const insets = useSafeAreaInsets();
   return <Modal visible={visible} animationType="slide" transparent onRequestClose={onDismiss} presentationStyle="overFullScreen">
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.sheetAvoidance}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" onPress={onDismiss} style={[styles.scrim, { backgroundColor: theme.overlay }]} />
+      <Pressable accessibilityRole="button" accessibilityLabel={dismissLabel} onPress={onDismiss} style={[styles.scrim, { backgroundColor: theme.overlay }]} />
       <View accessibilityViewIsModal style={[styles.sheet, { backgroundColor: theme.background, borderColor: theme.line, paddingBottom: Math.max(space.lg, insets.bottom) }]}>
-        <View style={[styles.grabber, { backgroundColor: theme.faint }]} /><View style={styles.sheetHead}><Text maxFontSizeMultiplier={1.4} style={[styles.sheetTitle, { color: theme.text }]}>{title}</Text><IconButton theme={theme} icon="close" label="Close" onPress={onDismiss} /></View>{children}
+        <View style={[styles.grabber, { backgroundColor: theme.faint }]} /><View style={styles.sheetHead}><Text maxFontSizeMultiplier={1.4} style={[styles.sheetTitle, { color: theme.text }]}>{title}</Text><IconButton theme={theme} icon="close" label={closeLabel} onPress={onDismiss} /></View>{children}
       </View>
     </KeyboardAvoidingView>
   </Modal>;

@@ -6,7 +6,7 @@ import { attachmentImageMime } from '../../../renderer/src/chatAttachments';
 import type { NativePort } from './native';
 import type { CompanionController, CompanionState, MachineState, SessionRef, SessionView, UploadedAttachment } from './types';
 import { sessionKey } from './types';
-import { attentionItems, emptySession, errorMessage } from './projection';
+import { attentionItems, chatOptionsPermissionRecovery, emptySession, errorMessage } from './projection';
 import { base64Bytes, CONTROL_METHODS, READ_METHODS, mobileResult, validateMobileRequest } from './wire';
 
 export interface LocalStoragePort { getItem(key:string):Promise<string|null>;setItem(key:string,value:string):Promise<void> }
@@ -30,6 +30,8 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
   const connectionTickets=new Map<string,number>();
   const refreshAgain=new Set<string>(),manualDisconnect=new Set<string>(),resyncs=new Map<string,Resync>();
   const sessionTickets=new Map<string,number>(),pendingSends=new Set<string>(),leaseTimers=new Map<string,Timer>();
+  const optionRevisions=new Map<string,number>(),optionWrites=new Set<string>();
+  const optionReads=new Map<string,{transport:number;promise:Promise<void>}>();
   const terminalDecoders=new Map<string,TextDecoder>();
   let foreground=true,disposed=false,initialized:Promise<void>|undefined,active:SessionRef|undefined,terminalTimer:Timer|undefined;
   let draftTimer:Timer|undefined,storageWrites:Promise<void>=Promise.resolve(),unlocking:Promise<boolean>|undefined;
@@ -62,7 +64,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     for(const entry of Object.values(state.sessions)) if(entry.ref.machineId===id) {
       const key=sessionKey(entry.ref);clearTimeout(leaseTimers.get(key));leaseTimers.delete(key);resyncs.delete(key);sessionTickets.set(key,(sessionTickets.get(key)??0)+1);
     }
-    emit({sessions:Object.fromEntries(Object.entries(state.sessions).map(([key,value])=>[key,value.ref.machineId===id?{...value,syncing:true,leaseEpoch:undefined}:value]))});
+    emit({sessions:Object.fromEntries(Object.entries(state.sessions).map(([key,value])=>[key,value.ref.machineId===id?{...value,syncing:true,leaseEpoch:undefined,optionsLoading:false}:value]))});
     clearTimeout(refreshTimers.get(id));refreshTimers.delete(id);
   }
   async function raw<M extends MobileMethod>(id:string,method:M,params:MobileParams<M>):Promise<MobileResult<M>> {
@@ -176,7 +178,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
   async function syncSession(ref:SessionRef) {
     const s=session(ref),key=sessionKey(ref),transport=gen(ref.machineId);
     const ticket=(sessionTickets.get(key)??0)+1;sessionTickets.set(key,ticket);
-    patchView(ref,{loading:!view(ref).items.length,syncing:true,error:undefined});
+    patchView(ref,{loading:!view(ref).items.length,syncing:true,error:undefined,optionsLoading:s.mode==='chat'});
     if(s.mode==='terminal') {patchView(ref,{loading:false,syncing:false});return;}
     const pending:Resync={ticket,buffered:resyncs.get(key)?.buffered??[]};resyncs.set(key,pending);
     try {
@@ -187,11 +189,72 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       ]);
       if(!current(ref.machineId,transport)||sessionTickets.get(key)!==ticket)return;
       if(connection.sessionId!==ref.sessionId||connection.runtimeEpoch!==machine(ref.machineId).snapshot?.epoch)throw new Error('chat_identity_mismatch');
-      patchView(ref,{items:restoreChat(snapshot,pending.buffered),chatUi:pending.ui??ui,connection,loading:false,syncing:false,error:undefined,hasOlder:snapshot.hasEarlier,olderCursor:snapshot.nextBefore});
+      optionRevisions.set(key,(optionRevisions.get(key)??0)+1);
+      patchView(ref,{items:restoreChat(snapshot,pending.buffered),chatUi:pending.ui??ui,connection,loading:false,syncing:false,error:undefined,optionsLoading:false,optionsError:undefined,hasOlder:snapshot.hasEarlier,olderCursor:snapshot.nextBefore});
     } catch(error) {
-      if(current(ref.machineId,transport)&&sessionTickets.get(key)===ticket)patchView(ref,{items:restoreChat({items:view(ref).items,revision:-1},pending.buffered),loading:false,syncing:true,error:errorMessage(error)});
+      if(current(ref.machineId,transport)&&sessionTickets.get(key)===ticket)patchView(ref,{items:restoreChat({items:view(ref).items,revision:-1},pending.buffered),loading:false,syncing:true,error:errorMessage(error),optionsLoading:false});
       throw error;
     } finally {if(resyncs.get(key)===pending)resyncs.delete(key);}
+  }
+  function acceptChatUi(ref:SessionRef,ui:ChatUiState) {
+    const key=sessionKey(ref),resync=resyncs.get(key);
+    optionRevisions.set(key,(optionRevisions.get(key)??0)+1);
+    if(resync)resync.ui=ui;else patchView(ref,{chatUi:ui});
+  }
+  async function refreshChatOptions(ref:SessionRef) {
+    ensureReady(ref.machineId);
+    if(session(ref).mode!=='chat')throw new Error('chat_unavailable');
+    const key=sessionKey(ref),transport=gen(ref.machineId),revision=optionRevisions.get(key)??0;
+    const existing=optionReads.get(key);if(existing?.transport===transport)return existing.promise;
+    patchView(ref,{optionsLoading:true});
+    const promise=(async()=>{
+      try {
+        const ui=await read(ref.machineId,'chat.options',{sessionId:ref.sessionId});
+        // A later chat.ui event or full session sync wins over a cached read response.
+        if((optionRevisions.get(key)??0)===revision)acceptChatUi(ref,ui);
+        patchView(ref,{optionsError:undefined});
+      }catch(error){if(current(ref.machineId,transport))patchView(ref,{optionsError:errorMessage(error)});throw error;}
+      finally{if(current(ref.machineId,transport))patchView(ref,{optionsLoading:false});}
+    })().finally(()=>{if(optionReads.get(key)?.promise===promise)optionReads.delete(key);});
+    optionReads.set(key,{transport,promise});return promise;
+  }
+  function requireOptionControl(ref:SessionRef,optionId:string,value:string) {
+    const m=ensureReady(ref.machineId),s=session(ref),v=view(ref);
+    if(m.permission!=='fullcontrol')throw new Error('mobile_readonly: This computer allows viewing only.');
+    if(s.readOnly||s.archived||s.mode!=='chat')throw new Error('session_readonly');
+    if(!state.controlUnlocked)throw new Error('control_locked');
+    if(!m.snapshot?.capabilities.methods.includes('chat.option.set'))throw new Error('mobile_unsupported: chat.option.set');
+    if(v.syncing)throw new Error('connection_syncing: Wait for this session to synchronize.');
+    const recovering=chatOptionsPermissionRecovery(v);
+    if(v.connection?.phase!=='ready'&&!recovering)throw new Error('provider_not_ready');
+    if(v.optionsLoading||!v.chatUi||['idle','loading','unknown'].includes(v.chatUi.loadState??'')||v.chatUi.loadState==='error'&&!recovering)throw new Error('options_not_ready');
+    const option=v.chatUi.options.find(row=>row.id===optionId);
+    if(!option||!option.choices.some(choice=>choice.value===value))throw new Error('invalid_option: Choose an option offered by this computer.');
+    if(recovering&&option.category!=='mode')throw new Error('options_not_ready');
+  }
+  async function setChatOption(ref:SessionRef,optionId:string,value:string) {
+    const key=sessionKey(ref);if(optionWrites.has(key))throw new Error('option_pending');
+    requireOptionControl(ref,optionId,value);
+    const transport=gen(ref.machineId),unlock=controlGeneration;
+    optionWrites.add(key);patchView(ref,{optionPending:optionId,optionsError:undefined});
+    let dispatched=false;
+    try {
+      const leaseEpoch=await control(ref);
+      if(!current(ref.machineId,transport))throw new Error('connection_changed');
+      if(controlGeneration!==unlock)throw new Error('control_locked');
+      requireOptionControl(ref,optionId,value);
+      const revision=optionRevisions.get(key)??0;
+      dispatched=true;
+      const ui=await write(ref,'chat.option.set',{sessionId:ref.sessionId,optionId,value,leaseEpoch,operationId:uuid()});
+      if((optionRevisions.get(key)??0)===revision)acceptChatUi(ref,ui);
+    }catch(error){
+      const failure=dispatched&&!current(ref.machineId,transport)?new Error('outcome_unknown: Check the current options after reconnecting before trying again.'):error;
+      if(state.machines.some(m=>m.id===ref.machineId))patchView(ref,{optionsError:errorMessage(failure)});
+      throw failure;
+    }finally{
+      optionWrites.delete(key);
+      if(state.machines.some(m=>m.id===ref.machineId))patchView(ref,{optionPending:undefined});
+    }
   }
   function onEvent(id:string,event:RuntimeEvent) {
     const m=state.machines.find(value=>value.id===id);
@@ -216,8 +279,7 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
       if(resync)resync.buffered.push({seq:event.seq,item:data.item});
       else patchView(ref,{items:upsertChatItem(currentView.items,data.item)});
     } else if(event.event==='chat.ui'||event.event==='chat.options') {
-      const ui=chatUiFromEvent(data);const resync=resyncs.get(key);
-      if(resync)resync.ui=ui;else patchView(ref,{chatUi:ui});
+      acceptChatUi(ref,chatUiFromEvent(data));
     } else if(event.event==='chat.connection') {
       const candidate={...data,sessionId:ref.sessionId,runtimeEpoch:event.epoch};
       try {
@@ -363,6 +425,8 @@ export function createCompanion(native:NativePort,storage:LocalStoragePort,uuid:
     },
     async releaseControl(ref) {const epoch=view(ref).leaseEpoch;clearLease(ref);if(epoch!==undefined&&state.machines.some(m=>m.id===ref.machineId&&m.status==='connected'))await raw(ref.machineId,'session.release',{sessionId:ref.sessionId,leaseEpoch:epoch}).catch(noop);},
     async connectChat(ref) {const leaseEpoch=await control(ref);await write(ref,'chat.connect',{sessionId:ref.sessionId,leaseEpoch,operationId:uuid()});await syncSession(ref);},
+    refreshChatOptions,
+    setChatOption,
     async send(ref) {
       const key=sessionKey(ref),text=state.drafts[key]??'',attachments=state.attachments[key]??[];if(!text.trim()&&!attachments.length)return;if(pendingSends.has(key))throw new Error('send_pending');
       if(attachments.some(file=>sessionKey(file.ref)!==key))throw new Error('attachment_identity_mismatch');

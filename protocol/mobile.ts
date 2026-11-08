@@ -30,7 +30,7 @@ export interface MobileMethods {
   'mobile.events.subscribe': [{sessionIds: string[]}, {sessionIds: string[]; revision: number}];
 }
 export type MobileReadMethod = 'runtime.health'|'project.catalog.list'|'worktree.list'|'worktree.branches'|'session.lookup'|'chat.snapshot'|'chat.read'|'chat.subagent.read'|'chat.options'|'chat.connection'|'terminal.read'|'filesystem.list'|'filesystem.read'|'filesystem.files'|'filesystem.search'|'filesystem.image'|'git.status'|'git.diff'|'git.log'|'git.commit.show'|'git.commit.diff'|'git.branches'|'inbox.read'|'session.attention.acknowledge'|'chat.image.read'|'attachment.read';
-export type MobileControlMethod = 'session.stop'|'session.resume'|'session.claim'|'session.renew'|'session.release'|'chat.connect'|'chat.send'|'chat.cancel'|'chat.approve'|'chat.answer'|'terminal.input'|'terminal.resize'|'attachment.upload';
+export type MobileControlMethod = 'session.stop'|'session.resume'|'session.claim'|'session.renew'|'session.release'|'chat.connect'|'chat.option.set'|'chat.send'|'chat.cancel'|'chat.approve'|'chat.answer'|'terminal.input'|'terminal.resize'|'attachment.upload';
 export type MobileRequestMap = MobileMethods & Pick<RequestMap, MobileReadMethod|MobileControlMethod>;
 export type MobileMethod = keyof MobileRequestMap;
 export type MobileParams<M extends MobileMethod> = MobileRequestMap[M][0];

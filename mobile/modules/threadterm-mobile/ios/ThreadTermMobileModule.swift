@@ -15,7 +15,7 @@ private let readMethods: Set<String> = [
 
 private let controlMethods: Set<String> = [
   "mobile.session.create", "session.stop", "session.resume", "session.claim", "session.renew",
-  "session.release", "chat.connect", "chat.send", "chat.cancel", "chat.approve", "chat.answer",
+  "session.release", "chat.connect", "chat.option.set", "chat.send", "chat.cancel", "chat.approve", "chat.answer",
   "terminal.input", "terminal.resize", "attachment.upload"
 ]
 
