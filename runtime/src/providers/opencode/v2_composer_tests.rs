@@ -71,6 +71,8 @@ fn scripted(responses: Vec<(u16, String)>) -> Scripted {
                     Err(error) => panic!("test peer failed: {error}"),
                 }
             };
+            // Accepted sockets inherit the listener's non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let mut bytes = Vec::new();
             let mut chunk = [0; 4096];

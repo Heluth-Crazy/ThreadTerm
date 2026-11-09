@@ -99,6 +99,8 @@ fn peer(
                     Err(error) => panic!("native recovery test peer timed out: {error}"),
                 }
             };
+            // Accepted sockets inherit the listener's non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();

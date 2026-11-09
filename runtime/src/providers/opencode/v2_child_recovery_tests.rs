@@ -98,6 +98,8 @@ fn peer(gate: Arc<Mutex<()>>) -> (String, mpsc::Receiver<Vec<String>>, thread::J
                     Err(error) => panic!("native recovery peer accept failed: {error}"),
                 }
             };
+            // Accepted sockets inherit the listener's non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -250,6 +252,8 @@ fn concurrent_child_hydration_cannot_overwrite_a_completed_child() {
                     Err(error) => panic!("child peer accept: {error}"),
                 }
             };
+            // Accepted sockets inherit the listener's non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -345,6 +349,8 @@ fn attachment_drains_early_burst_and_eof_before_delayed_metadata_returns() {
                 }
                 Err(error) => panic!("startup peer accept: {error}"),
             };
+            // Accepted sockets inherit the listener's non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -506,6 +512,8 @@ fn child_peer(parent: &'static str) -> (String, Arc<AtomicBool>, thread::JoinHan
                     Err(_) => return paths,
                 }
             };
+            // Accepted sockets inherit the listener's non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut request = String::new();

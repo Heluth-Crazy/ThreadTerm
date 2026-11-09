@@ -81,6 +81,8 @@ fn peer(
                 Err(error) => panic!("test peer did not receive a request: {error}"),
             }
         };
+        // Accepted sockets inherit the listener's non-blocking mode on Windows.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
@@ -545,6 +547,8 @@ fn terminal_tool_before_native_projection_uses_bounded_reads_without_replaying_i
                     Err(error) => panic!("tool projection peer timed out: {error}"),
                 }
             };
+            // Accepted sockets inherit the listener's non-blocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
