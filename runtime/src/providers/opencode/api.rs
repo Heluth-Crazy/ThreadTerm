@@ -210,6 +210,19 @@ impl NativeApi {
         decode_response(response, shape)
     }
 
+    /// Read-only liveness probe of the owned server. A native `shutdown` claim
+    /// is not evidence on its own: 2.2.5 also announces an aborted step (a
+    /// denied tool) that way while its server keeps answering.
+    pub(super) fn server_alive(&self) -> bool {
+        self.client
+            .get(format!("{}/api/info", self.base_url))
+            .basic_auth(self.dialect.username(), Some(&self.password))
+            .timeout(std::time::Duration::from_millis(1500))
+            .send()
+            .map(|response| response.status().is_success())
+            .unwrap_or(false)
+    }
+
     pub(super) fn open_session(&self, id: Option<&str>) -> Result<Value, ProviderError> {
         if let Some(id) = id {
             validate_native_id(id)?;

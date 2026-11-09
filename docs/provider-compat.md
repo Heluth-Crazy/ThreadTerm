@@ -12,7 +12,7 @@ upstream release is never a reason to refactor, redesign or add features.
 |---|---|---|---|---|
 | Codex | `runtime/src/providers/codex.rs` | 0.161.0 | 0.166.0 | — |
 | Claude Code | `runtime/src/providers/claude.rs`, `providers/claude-sdk/src` | 2.1.287 | 2.1.318 | `@anthropic-ai/claude-agent-sdk` 0.3.266 |
-| OpenCode | `runtime/src/providers/opencode.rs` | 1.18.35 | 1.18.35 | — |
+| OpenCode | `runtime/src/providers/opencode.rs` | 1.18.35 | 2.2.5 | — |
 | Kimi (ACP) | `runtime/src/providers/acp.rs`, `runtime/src/providers/kimi_plan_usage.rs` | 2.0.2 | 2.0.2 | — |
 | Gemini (ACP plugin) | `runtime/src/providers/acp.rs`, `runtime/plugins/gemini/` | not set | not verified | — |
 | Grok | `runtime/src/providers/grok.rs` | 1.0.67 | 1.0.70 | — |
@@ -20,7 +20,10 @@ upstream release is never a reason to refactor, redesign or add features.
 
 The floors are the versions installed on the maintainer's machine on 2026-11-04. The targets were verified that day
 against isolated installs (Chat smoke and live probes).
-- OpenCode 2.x does not work yet: v2 moved its server API. See the open `provider-compat` issue.
+- OpenCode 2.2.5 (2026-11-09): v2 moved its server API, so the adapter speaks both dialects behind the same Chat
+  contract. Live on 2.2.5: startup/attach, chat, model reporting, permission allow and reject (a rejected tool never
+  runs, the turn settles, the Chat stays connected and the next prompt works), questions, subagents, terminals, fork
+  and history. The 1.18.35 floor keeps its own regression tests; no floor behavior changed.
 - Kimi 2.5.0 and Pi 1.5.0 could not be verified, because their copied sign-ins were rejected.
 
 **Which binary each feature runs.**

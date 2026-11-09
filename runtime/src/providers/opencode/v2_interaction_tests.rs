@@ -475,3 +475,76 @@ fn terminal_and_stop_do_not_drop_a_pending_request() {
     assert_eq!(start(&request), "POST /api/session/ses-root/form/frm_after_terminal/reply HTTP/1.1");
     peer.handle.join().unwrap();
 }
+
+// Run 14, from the captured 2.2.5 reject rows: a denied tool aborts the step and
+// 2.2.5 announces it as `session.execution.interrupted {reason:"shutdown"}` while
+// its server keeps answering. That settles the turn, never the Chat.
+fn durable(id: &str, kind: &str, session: &str, seq: u64, data: Value) -> Value {
+    json!({"id":id,"created":1,"type":kind,"durable":{"aggregateID":session,"seq":seq,"version":1},"data":data})
+}
+
+#[test]
+fn an_aborted_step_shutdown_settles_the_turn_while_the_owned_server_answers() {
+    let peer = peer(200, r#"{"data":{"version":"2.2.5"}}"#);
+    let (target, mut events) = target(&peer.address);
+    process_event(
+        &target,
+        durable("evt-start", "session.execution.started", "ses-root", 1, json!({"sessionID":"ses-root"})),
+        false,
+    );
+    assert!(push(
+        &target,
+        &event("evt-permission", "permission.asked", json!({"id":"per_reject","sessionID":"ses-root","action":"read","resources":[".env.local"]})),
+    ));
+    // The native reject settles the card exactly once (native receipt).
+    push(
+        &target,
+        &event("evt-replied", "permission.replied", json!({"requestID":"per_reject","sessionID":"ses-root","reply":"reject"})),
+    );
+    let _ = drain(&mut events);
+    process_event(
+        &target,
+        durable("evt-shutdown", "session.execution.interrupted", "ses-root", 2, json!({"sessionID":"ses-root","reason":"shutdown"})),
+        false,
+    );
+    // The evidence is the live server, not the event's wording.
+    let request = peer.requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(start(&request), "GET /api/info HTTP/1.1");
+    peer.handle.join().unwrap();
+    assert!(target.liveness.load(Ordering::SeqCst), "an aborted step is not stream loss");
+    let emitted = drain(&mut events);
+    assert!(emitted.iter().all(|one| one.kind != "session.closed"), "the Chat stays connected");
+    let completed = emitted.iter().find(|one| one.kind == "chat.turn.completed").unwrap();
+    assert_eq!(completed.data["status"], "interrupted");
+    assert_eq!(completed.turn_id.as_deref(), Some("turn-1"));
+    assert!(target.active.lock().unwrap().is_none(), "the rejected turn is settled");
+    // A repeated reply to the settled card is refused, and the Chat is still open.
+    assert_eq!(approve(&target, "turn-1", "per_reject", "deny").unwrap_err().code, "approval_not_pending");
+    assert!(validate_send(&target).is_ok(), "the next prompt in this Chat is admitted");
+}
+
+#[test]
+fn a_real_native_shutdown_still_closes_the_chat() {
+    // The peer accepts nothing: the stream's owner is gone, so no evidence can
+    // keep the Chat open.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let (target, mut events) = target(&address);
+    process_event(
+        &target,
+        durable("evt-start", "session.execution.started", "ses-root", 1, json!({"sessionID":"ses-root"})),
+        false,
+    );
+    let _ = drain(&mut events);
+    process_event(
+        &target,
+        durable("evt-shutdown", "session.execution.interrupted", "ses-root", 2, json!({"sessionID":"ses-root","reason":"shutdown"})),
+        false,
+    );
+    assert!(!target.liveness.load(Ordering::SeqCst), "a dead native owner fences the stream");
+    let emitted = drain(&mut events);
+    let closed = emitted.iter().find(|one| one.kind == "session.closed").unwrap();
+    assert_eq!(closed.data["reason"], "provider_disconnected");
+    assert_eq!(approve(&target, "turn-1", "per_any", "deny").unwrap_err().code, "provider_disconnected");
+}

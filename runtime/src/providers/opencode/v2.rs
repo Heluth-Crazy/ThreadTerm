@@ -113,6 +113,13 @@ enum Change {
         status: &'static str,
         raw: Value,
     },
+    /// A native `session.execution.interrupted {reason:"shutdown"}`. 2.2.5
+    /// sends the same event for an aborted step and for a real server shutdown,
+    /// so the boundary is recorded here and only live evidence may close the
+    /// Chat afterwards.
+    NativeShutdown {
+        session: String,
+    },
     Pending {
         session: String,
         id: String,
@@ -151,6 +158,44 @@ enum Change {
         phase: &'static str,
         data: Value,
     },
+}
+
+/// 2.2.5 names a child session only inside the subagent tool's own output:
+/// `<subagent sessionID="ses_..." state="completed">...</subagent>`. The marker is a
+/// claim exactly like the older metadata field; ownership still requires the
+/// verified native parent link before anything is bound.
+fn subagent_marker_child(tool: &Value) -> Option<&str> {
+    let from_parts = tool
+        .pointer("/state/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .find_map(marker_child);
+    from_parts.or_else(|| {
+        tool.pointer("/state/output")
+            .and_then(Value::as_str)
+            .and_then(marker_child)
+    })
+}
+
+fn marker_child(text: &str) -> Option<&str> {
+    let mut rest = text;
+    while let Some(open) = rest.find("<subagent") {
+        let tag_start = open + "<subagent".len();
+        let close = rest[tag_start..].find('>')? + tag_start;
+        let attributes = &rest[tag_start..close];
+        if let Some(name) = attributes.find("sessionID") {
+            let value = attributes[name + "sessionID".len()..].trim_start();
+            let value = value.strip_prefix('=')?.trim_start();
+            let value = value.strip_prefix('"')?;
+            if let Some(end) = value.find('"') {
+                return Some(&value[..end]);
+            }
+        }
+        rest = &rest[close..];
+    }
+    None
 }
 
 impl State {
@@ -233,10 +278,15 @@ impl State {
             return Ok(());
         }
         // Filled from the native task contract, never a session parent link.
-        if let Some(child) = tool
+        // 2.2.5 stopped sending `state.metadata.sessionID`; it names the child
+        // only in its own tool output. Older builds still send the metadata, so
+        // both paths are read. Either one is a claim: `recover_children` proves
+        // ownership from the verified native parent link before it binds.
+        let child = tool
             .pointer("/state/metadata/sessionID")
             .and_then(Value::as_str)
-        {
+            .or_else(|| subagent_marker_child(tool));
+        if let Some(child) = child {
             validate_native_id(child)?;
             if self.task_candidates.len() >= MAX_SESSIONS
                 && !self.task_candidates.contains_key(child)
@@ -491,14 +541,6 @@ impl State {
             {
                 return Ok(Change::None);
             }
-            if kind == "session.execution.interrupted"
-                && data.get("reason").and_then(Value::as_str) == Some("shutdown")
-            {
-                return Err(ProviderError::new(
-                    "provider_disconnected",
-                    "OpenCode v2 execution paused at native shutdown; reconnect is required",
-                ));
-            }
             // A terminal with no matching observed/recovered execution cannot
             // settle a newly reserved local turn. Reconnect calibrates first.
             if !execution.running
@@ -511,6 +553,13 @@ impl State {
             }
             execution.running = false;
             execution.terminal_seq = Some(seq);
+            if kind == "session.execution.interrupted"
+                && data.get("reason").and_then(Value::as_str) == Some("shutdown")
+            {
+                return Ok(Change::NativeShutdown {
+                    session: session.into(),
+                });
+            }
             return Ok(Change::Terminal {
                 session: session.into(),
                 status,
@@ -1318,6 +1367,15 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                         _ => "running",
                     };
                     let mut info = json!({"status":status,"transcript":"live"});
+                    // 2.2.5 passes the agent under `input.agent`; the shared card
+                    // contract keeps it as `agentType` next to the description.
+                    if let Some(agent) = tool
+                        .pointer("/state/input/agent")
+                        .or_else(|| tool.pointer("/state/input/subagent_type"))
+                        .and_then(Value::as_str)
+                    {
+                        info["agentType"] = json!(agent);
+                    }
                     if let Some(description) = tool
                         .pointer("/state/input/description")
                         .and_then(Value::as_str)
@@ -1823,21 +1881,30 @@ fn process_event(target: &EventTarget, raw: Value, buffer_during_recovery: bool)
         {
             if let Some(dispatch) = state.dispatch.as_mut() {
                 dispatch.observed = true;
-                if matches!(change, Change::Terminal { .. }) {
+                if matches!(
+                    change,
+                    Change::Terminal { .. } | Change::NativeShutdown { .. }
+                ) {
                     dispatch.terminal = true;
                 }
             }
         }
+        let shutdown = match &change {
+            Change::NativeShutdown { session } => Some(session.clone()),
+            _ => None,
+        };
         let refresh = match &change {
             Change::Refresh { session, message } => Some((session.clone(), message.clone())),
             _ => None,
         };
-        if refresh.is_none() {
+        if refresh.is_none() && shutdown.is_none() {
             publish(target, &mut state, change);
         }
         drop(state);
         drop(commit);
-        if let Some((session, message)) = refresh {
+        if let Some(session) = shutdown {
+            settle_native_shutdown(target, session)?;
+        } else if let Some((session, message)) = refresh {
             refresh_message(target, &session, &message)?;
         } else {
             recover_children(target)?;
@@ -1847,6 +1914,41 @@ fn process_event(target: &EventTarget, raw: Value, buffer_during_recovery: bool)
     if let Err(error) = result {
         expire_stream(target, "v2_reconciliation_failed", &error.message);
     }
+}
+
+/// Evidence, not wording: an aborted step and a dying server both announce a
+/// native `shutdown`. Only a still-live stream plus an owned server that still
+/// answers `/api/info` proves the adapter must settle the turn and keep the
+/// Chat connected; anything else is real loss and fences the stream.
+fn settle_native_shutdown(target: &EventTarget, session: String) -> Result<(), ProviderError> {
+    if current(target) && api(target).server_alive() {
+        let _commit = target
+            .event_gate
+            .lock()
+            .map_err(|_| protocol("OpenCode event gate poisoned"))?;
+        if current(target) {
+            let mut state = target
+                .v2
+                .lock()
+                .map_err(|_| protocol("OpenCode v2 state lock poisoned"))?;
+            publish(
+                target,
+                &mut state,
+                Change::Terminal {
+                    session,
+                    status: "interrupted",
+                    raw: json!({"reason":"shutdown","serverAlive":true}),
+                },
+            );
+        }
+        return Ok(());
+    }
+    expire_stream(
+        target,
+        "provider_disconnected",
+        "OpenCode v2 native server stopped; reconnect is required",
+    );
+    Ok(())
 }
 
 pub(super) fn validate_send(target: &EventTarget) -> Result<(), ProviderError> {

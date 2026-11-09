@@ -175,21 +175,17 @@ fn step_end_does_not_settle_execution_but_durable_execution_does() {
 }
 
 #[test]
-fn shutdown_interruption_keeps_execution_unsettled_for_recovery() {
+fn shutdown_interruption_is_a_boundary_not_a_verdict() {
     let mut state = state();
     let root = "ses-root";
-    state
-        .apply(
-            root,
-            &durable(
-                "evt-start",
-                "session.execution.started",
-                root,
-                1,
-                json!({"sessionID":root}),
-            ),
-        )
-        .unwrap();
+    let started = durable(
+        "evt-start",
+        "session.execution.started",
+        root,
+        1,
+        json!({"sessionID":root}),
+    );
+    state.apply(root, &started).unwrap();
     let shutdown = durable(
         "evt-shutdown",
         "session.execution.interrupted",
@@ -197,11 +193,14 @@ fn shutdown_interruption_keeps_execution_unsettled_for_recovery() {
         2,
         json!({"sessionID":root,"reason":"shutdown"}),
     );
-    assert_eq!(
-        state.apply(root, &shutdown).unwrap_err().code,
-        "provider_disconnected"
-    );
-    assert!(state.executions[root].running);
+    // 2.2.5 sends `interrupted {reason:"shutdown"}` for a denied tool too, while
+    // its server keeps answering. The parser records the boundary; only live
+    // evidence in `process_event` decides whether the Chat must close.
+    assert!(matches!(
+        state.apply(root, &shutdown).unwrap(),
+        Change::NativeShutdown { .. }
+    ));
+    assert!(!state.executions[root].running);
 }
 
 #[test]

@@ -478,3 +478,138 @@ fn attachment_drains_early_burst_and_eof_before_delayed_metadata_returns() {
         Err(error) => assert_eq!(error.code, "provider_disconnected"),
     }
 }
+
+
+// Run 14: the live 2.2.5 row. The child identity is only in the tool's own
+// output marker; `state.metadata.sessionID` (which older builds sent) is absent.
+const CAPTURED_MARKER: &str = "<subagent sessionID=\"ses-child\" state=\"completed\">\nCHILD_TOKEN=run13-child-only-sentinel\n</subagent>";
+const CAPTURED_CALL: &str = "call_00_00nbmxypmo2jscbfnpf0tkyo";
+
+/// Serves the child reads `recover_children` performs, with a caller-chosen
+/// native parent link, until the test closes it.
+fn child_peer(parent: &'static str) -> (String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let finished = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&finished);
+    let handle = thread::spawn(move || {
+        let mut paths = Vec::new();
+        while !stop.load(Ordering::SeqCst) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(_) => return paths,
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                request.push_str(&line);
+            }
+            let path = request.lines().next().unwrap().split_whitespace().nth(1).unwrap().to_owned();
+            paths.push(path.clone());
+            let body = match path.as_str() {
+                "/api/session/ses-child" => json!({"data":{"id":"ses-child","parentID":parent,"location":{"directory":"C:/isolated"},"time":{"busy":1,"idle":2},"outcome":"succeeded"}}).to_string(),
+                "/api/session/ses-child/message?limit=128&order=desc" => json!({"data":[],"cursor":{}}).to_string(),
+                "/api/session/ses-child/form" | "/api/session/ses-child/permission" => json!({"data":[]}).to_string(),
+                other => panic!("unexpected child path {other}"),
+            };
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        }
+        paths
+    });
+    (base, finished, handle)
+}
+
+fn tool_events() -> Vec<Value> {
+    vec![
+        json!({"id":"evt-tool-start","created":1,"type":"session.tool.input.started","data":{"sessionID":"ses-root","assistantMessageID":"msg-root","id":CAPTURED_CALL,"name":"subagent"}}),
+        json!({"id":"evt-tool-called","created":1,"type":"session.tool.called","data":{"sessionID":"ses-root","assistantMessageID":"msg-root","id":CAPTURED_CALL,"input":{"agent":"general","description":"Extract the child token"}}}),
+        json!({"id":"evt-tool-success","created":1,"type":"session.tool.success","data":{"sessionID":"ses-root","assistantMessageID":"msg-root","id":CAPTURED_CALL,"name":"subagent","content":[{"type":"text","text":CAPTURED_MARKER}]}}),
+    ]
+}
+
+/// Apply and publish without the recovery read, so a test can call
+/// `recover_children` itself and see its verdict.
+fn push_event(target: &EventTarget, raw: Value) {
+    let change = target
+        .v2
+        .lock()
+        .unwrap()
+        .apply(&target.native_id, &raw)
+        .unwrap();
+    publish(target, &mut target.v2.lock().unwrap(), change);
+}
+
+#[test]
+fn a_captured_225_marker_binds_the_child_only_through_the_verified_parent_link() {
+    let (base, finished, peer) = child_peer("ses-root");
+    let (mut target, mut events) = target();
+    target.base_url = base;
+    target.v2.lock().unwrap().recovering = false;
+    for raw in tool_events() {
+        process_event(&target, raw, false);
+    }
+    finished.store(true, Ordering::SeqCst);
+    let paths = peer.join().unwrap();
+    assert!(paths.iter().any(|path| path == "/api/session/ses-child"), "the marker names the child: {paths:?}");
+    let state = target.v2.lock().unwrap();
+    assert_eq!(
+        state.task_candidates["ses-child"],
+        ("ses-root".to_string(), CAPTURED_CALL.to_string())
+    );
+    assert_eq!(state.children["ses-child"], CAPTURED_CALL);
+    assert_eq!(state.parents["ses-child"], "ses-root");
+    drop(state);
+    let emitted = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+    let cards = emitted
+        .iter()
+        .filter(|one| one.kind == "chat.subagent" && one.data["key"] == CAPTURED_CALL)
+        .collect::<Vec<_>>();
+    let card = cards
+        .iter()
+        .find(|one| one.data["info"].get("native").is_some())
+        .expect("the child card names its native child session");
+    assert_eq!(card.data["info"]["native"]["id"], "ses-child");
+    assert_eq!(card.data["info"]["status"], "completed");
+    // The tool card carries what the model asked for; the bound card carries the
+    // native identity. The renderer merges the two by key.
+    let described = cards
+        .iter()
+        .find(|one| one.data["info"].get("agentType").is_some())
+        .expect("the tool card keeps the delegated agent");
+    assert_eq!(described.data["info"]["agentType"], "general");
+    assert_eq!(described.data["info"]["description"], "Extract the child token");
+    assert!(emitted.iter().all(|one| one.kind != "chat.turn.completed"));
+}
+
+#[test]
+fn a_marker_naming_an_unrelated_session_never_owns_it() {
+    let (base, finished, peer) = child_peer("ses-other");
+    let (mut target, _events) = target();
+    target.base_url = base;
+    target.v2.lock().unwrap().recovering = false;
+    for raw in tool_events() {
+        push_event(&target, raw);
+    }
+    // The candidate comes from the marker, but the native parent link disproves
+    // it: ownership is never taken from the marker alone.
+    let error = recover_children(&target).unwrap_err();
+    finished.store(true, Ordering::SeqCst);
+    let _ = peer.join().unwrap();
+    assert_eq!(error.message, "OpenCode v2 task metadata does not prove child ownership");
+    let state = target.v2.lock().unwrap();
+    assert!(!state.children.contains_key("ses-child"));
+    assert!(state.parents.is_empty());
+}
