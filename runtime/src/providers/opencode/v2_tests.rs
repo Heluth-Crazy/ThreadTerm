@@ -485,3 +485,295 @@ fn equal_recovered_idle_and_new_start_timestamps_cannot_guess_execution_ownershi
     );
     assert!(!state.executions["ses-root"].running);
 }
+
+#[test]
+fn a_long_session_evicts_settled_assemblies_instead_of_failing() {
+    // Run-15 finding A1: finalized tool output accumulated against one 4 MiB cap
+    // for the whole Chat life, so a long session could never reopen. Settled
+    // assemblies are evicted now, and the budget check is incremental.
+    let mut state = state();
+    let root = "ses-root";
+    // Each assembly is ~3 MiB of content plus its finalized event.
+    let big = "x".repeat(1536 * 1024);
+    for index in 0..3u64 {
+        let message = format!("msg-{index}");
+        state
+            .apply(
+                root,
+                &ephemeral(
+                    &format!("evt-input-{index}"),
+                    "session.tool.input.started",
+                    json!({"sessionID":root,"assistantMessageID":message,"id":"call","name":"read"}),
+                ),
+            )
+            .unwrap();
+        state
+            .apply(
+                root,
+                &durable(
+                    &format!("evt-success-{index}"),
+                    "session.tool.success",
+                    root,
+                    index + 1,
+                    json!({"sessionID":root,"assistantMessageID":message,"id":"call","name":"read","input":{},"content":big}),
+                ),
+            )
+            .unwrap();
+        // Never a protocol failure: the stream stays usable across turns.
+        state.check_budget().unwrap();
+    }
+    assert!(
+        state.messages.len() < 3,
+        "the oldest settled assembly left the cache"
+    );
+    assert!(state.message_bytes <= MAX_ASSEMBLED_PAYLOAD_BYTES);
+    assert_eq!(state.message_order.len(), state.messages.len());
+
+    // A delta for an evicted message is re-read from the native projection
+    // instead of fabricating a partial local message.
+    assert!(matches!(
+        state
+            .apply(
+                root,
+                &ephemeral(
+                    "evt-late-delta",
+                    "session.text.delta",
+                    json!({"sessionID":root,"assistantMessageID":"msg-0","ordinal":0,"delta":"d"}),
+                ),
+            )
+            .unwrap(),
+        Change::Refresh { .. }
+    ));
+    // One live message larger than the whole bound is still an explicit error.
+    let mut state = State::default();
+    let oversized = "y".repeat(MAX_ASSEMBLED_PAYLOAD_BYTES + 1);
+    let error = state
+        .apply(
+            root,
+            &ephemeral(
+                "evt-huge",
+                "session.text.ended",
+                json!({"sessionID":root,"assistantMessageID":"msg-huge","ordinal":0,"text":oversized}),
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "provider_protocol");
+}
+
+#[test]
+fn early_child_events_are_a_bounded_window_and_proof_prunes_the_claim() {
+    // Run-15 finding A4: unowned events used to latch a permanent gap that
+    // failed the next subagent proof, and proven children stayed in the
+    // candidate map forever.
+    let mut state = state();
+    let root = "ses-root";
+    for index in 0..(MAX_PENDING_CHILD_EVENTS + 5) {
+        let raw = ephemeral(
+            &format!("evt-unowned-{index}"),
+            "session.text.delta",
+            json!({"sessionID":"ses-unproven","assistantMessageID":"msg-x","ordinal":0,"delta":"d"}),
+        );
+        assert!(matches!(state.apply(root, &raw).unwrap(), Change::None));
+    }
+    assert_eq!(state.unowned.len(), MAX_PENDING_CHILD_EVENTS);
+    assert!(state.unowned_bytes <= MAX_ASSEMBLED_PAYLOAD_BYTES);
+
+    // A proven child needs no candidate, so the map tracks in-flight claims.
+    state.children.insert("ses-child".into(), "call".into());
+    let tool = json!({"name":"subagent","id":"call","state":{"status":"running","input":{},"metadata":{"sessionID":"ses-child"}}});
+    state.task_binding(root, &tool).unwrap();
+    assert!(state.task_candidates.is_empty());
+
+    // Unproven claims stay bounded too: the oldest is replaced, and a later
+    // event for the same child re-announces it.
+    for index in 0..(MAX_SESSIONS + 3) {
+        let tool = json!({"name":"subagent","id":format!("call-{index}"),"state":{"status":"running","input":{},"metadata":{"sessionID":format!("ses-child-{index}")}}});
+        state.task_binding(root, &tool).unwrap();
+    }
+    assert_eq!(state.task_candidates.len(), MAX_SESSIONS);
+    assert!(state.task_candidates.contains_key(&format!("ses-child-{}", MAX_SESSIONS + 2)));
+}
+
+#[test]
+fn settled_execution_records_are_pruned_instead_of_failing_the_stream() {
+    // Run-15 finding A4: the 128th subagent execution used to expire the stream.
+    let mut state = state();
+    let root = "ses-root";
+    for index in 0..MAX_SESSIONS {
+        let child = format!("ses-exec-{index}");
+        state.children.insert(child.clone(), "call".into());
+        state
+            .apply(
+                root,
+                &durable(
+                    &format!("evt-exec-start-{index}"),
+                    "session.execution.started",
+                    &child,
+                    index as u64 + 1,
+                    json!({"sessionID":child}),
+                ),
+            )
+            .unwrap();
+        state
+            .apply(
+                root,
+                &durable(
+                    &format!("evt-exec-end-{index}"),
+                    "session.execution.succeeded",
+                    &child,
+                    index as u64 + 1000,
+                    json!({"sessionID":child}),
+                ),
+            )
+            .unwrap();
+    }
+    let newest = "ses-exec-new";
+    state.children.insert(newest.into(), "call".into());
+    // The bound is a prune, not a failure.
+    state
+        .apply(
+            root,
+            &durable(
+                "evt-exec-start-new",
+                "session.execution.started",
+                newest,
+                1,
+                json!({"sessionID":newest}),
+            ),
+        )
+        .unwrap();
+    assert!(state.executions.contains_key(newest));
+    assert!(state.executions.len() <= MAX_SESSIONS);
+}
+
+#[test]
+fn an_in_progress_message_is_never_evicted_and_keeps_its_earlier_text() {
+    // Verification round 2, item 3: an in-progress message whose current parts
+    // are already complete could be evicted by another session's assemblies; the
+    // next event then rebuilt it from empty (`entry().or_default()`) and the
+    // published item lost its text. The assembly `active_messages` names is
+    // never evictable.
+    let mut state = state();
+    let root = "ses-root";
+    let child = "ses-child";
+    state.children.insert(child.into(), "call".into());
+    state.parents.insert(child.into(), root.into());
+    state
+        .apply(
+            root,
+            &ephemeral(
+                "evt-live-ended",
+                "session.text.ended",
+                json!({"sessionID":root,"assistantMessageID":"msg-live","ordinal":0,"text":"earlier "}),
+            ),
+        )
+        .unwrap();
+    // A child subagent's settled tool output fills the retained cache past its
+    // byte bound while the root message is still in progress.
+    let big = "x".repeat(1536 * 1024);
+    for index in 0..3u64 {
+        let message = format!("msg-{index}");
+        state
+            .apply(
+                child,
+                &ephemeral(
+                    &format!("evt-input-{index}"),
+                    "session.tool.input.started",
+                    json!({"sessionID":child,"assistantMessageID":message,"id":"call","name":"read"}),
+                ),
+            )
+            .unwrap();
+        state
+            .apply(
+                child,
+                &durable(
+                    &format!("evt-success-{index}"),
+                    "session.tool.success",
+                    child,
+                    index + 1,
+                    json!({"sessionID":child,"assistantMessageID":message,"id":"call","name":"read","input":{},"content":big}),
+                ),
+            )
+            .unwrap();
+        state.check_budget().unwrap();
+        assert!(
+            state.messages.contains_key(&(root.to_string(), "msg-live".to_string())),
+            "the in-progress assembly survived eviction round {index}"
+        );
+        assert!(state.message_bytes <= MAX_ASSEMBLED_PAYLOAD_BYTES);
+    }
+    // A new part of the same live message: an evicted assembly would answer with
+    // a fresh empty message and the earlier text would be gone.
+    state
+        .apply(
+            root,
+            &ephemeral(
+                "evt-live-next",
+                "session.text.started",
+                json!({"sessionID":root,"assistantMessageID":"msg-live","ordinal":1}),
+            ),
+        )
+        .unwrap();
+    let change = state
+        .apply(
+            root,
+            &ephemeral(
+                "evt-live-later",
+                "session.text.delta",
+                json!({"sessionID":root,"assistantMessageID":"msg-live","ordinal":1,"delta":"later"}),
+            ),
+        )
+        .unwrap();
+    let Change::Message { parts, .. } = change else {
+        panic!("the live message was evicted and had to be re-read");
+    };
+    let text = parts
+        .iter()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<String>();
+    assert_eq!(text, "earlier later", "the earlier text survived: {text}");
+}
+
+#[test]
+fn a_settled_child_holding_a_pending_card_is_not_the_prune_choice() {
+    // Verification round 2, item 4 (deterministic choice): the bound pruned any
+    // settled child in map order, so a waiting child's card could lose its proven
+    // owner to a sibling that owns nothing.
+    let mut state = state();
+    state.children.insert("ses-card".into(), "call".into());
+    state.children.insert("ses-idle".into(), "call".into());
+    state.interactions.insert(
+        "frm-waiting".into(),
+        Interaction {
+            session: "ses-card".into(),
+            kind: "form.created".into(),
+            turn: Some(NATIVE_BUSY_TURN.into()),
+            payload: json!({"interaction":"question"}),
+        },
+    );
+    assert_eq!(
+        state.prunable_child("ses-root").as_deref(),
+        Some("ses-idle"),
+        "the child without a pending card is the prune choice"
+    );
+    // A running child is never prunable, even without a card. Run 19 rule 4:
+    // the card-owning child is then *not* a fallback either — the prune may
+    // never take a child that still owns a pending card.
+    state
+        .executions
+        .entry("ses-idle".into())
+        .or_default()
+        .running = true;
+    assert_eq!(state.prunable_child("ses-root"), None);
+    state
+        .executions
+        .entry("ses-idle".into())
+        .or_default()
+        .running = false;
+    assert_eq!(state.prunable_child("ses-root").as_deref(), Some("ses-idle"));
+    state.interactions.clear();
+    state.executions.clear();
+    assert!(state.prunable_child("ses-root").is_some());
+    state.children.clear();
+    assert!(state.prunable_child("ses-root").is_none());
+}

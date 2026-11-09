@@ -8,6 +8,28 @@ use reqwest::Method;
 use serde_json::{json, Value};
 use std::io::Read;
 
+/// A native fork copies a whole transcript, far longer than the general client
+/// deadline but still bounded.
+const V2_FORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+#[cfg(test)]
+static V2_FORK_TIMEOUT_TEST: std::sync::Mutex<Option<std::time::Duration>> =
+    std::sync::Mutex::new(None);
+
+fn v2_fork_timeout() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(timeout) = V2_FORK_TIMEOUT_TEST.lock().ok().and_then(|value| *value) {
+        return timeout;
+    }
+    V2_FORK_TIMEOUT
+}
+
+#[cfg(test)]
+pub(super) fn set_v2_fork_timeout_for_test(timeout: Option<std::time::Duration>) {
+    if let Ok(mut value) = V2_FORK_TIMEOUT_TEST.lock() {
+        *value = timeout;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ApiDialect {
     Legacy,
@@ -173,6 +195,19 @@ impl NativeApi {
         self.json_request_query(method, path, &[], body, shape)
     }
 
+    /// One request with an endpoint-owned deadline. Only a native copy (a fork)
+    /// needs a bound above the client default.
+    pub(super) fn json_request_with_timeout(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        shape: ResponseShape,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value, ProviderError> {
+        self.send_request(method, path, &[], body, shape, timeout)
+    }
+
     /// Same contract as [`Self::json_request`], with additional endpoint-owned
     /// query parameters (history filters and native cursors).
     pub(super) fn json_request_query(
@@ -182,6 +217,18 @@ impl NativeApi {
         query: &[(&str, String)],
         body: Option<Value>,
         shape: ResponseShape,
+    ) -> Result<Value, ProviderError> {
+        self.send_request(method, path, query, body, shape, None)
+    }
+
+    fn send_request(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+        shape: ResponseShape,
+        timeout: Option<std::time::Duration>,
     ) -> Result<Value, ProviderError> {
         let mut request = self
             .client
@@ -201,11 +248,19 @@ impl NativeApi {
         if let Some(body) = body {
             request = request.json(&body);
         }
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
         let response = request.send().map_err(|error| {
+            // A timeout is not proof that the server is gone, and a native copy
+            // (a fork) may still be running. Keep the reason in the details so
+            // callers do not drop a healthy process on a slow request.
+            let timed_out = error.is_timeout();
             ProviderError::new(
                 "provider_disconnected",
                 format!("OpenCode request failed: {error}"),
             )
+            .with_details(json!({"transportFailure":true,"timedOut":timed_out}))
         })?;
         decode_response(response, shape)
     }
@@ -221,6 +276,33 @@ impl NativeApi {
             .send()
             .map(|response| response.status().is_success())
             .unwrap_or(false)
+    }
+
+    /// The pid the answering server reports for itself. Used once at startup to
+    /// prove the server on the owned port is the process this runtime launched.
+    pub(super) fn info_pid(
+        client: &Client,
+        base_url: &str,
+        password: &str,
+    ) -> Result<u64, ProviderError> {
+        let response = client
+            .get(format!("{base_url}/api/info"))
+            .basic_auth(ApiDialect::V2.username(), Some(password))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .map_err(|error| {
+                ProviderError::new(
+                    "provider_launch_failed",
+                    format!("OpenCode did not answer its own health probe: {error}"),
+                )
+            })?;
+        let value = decode_response(response, ResponseShape::Direct)?;
+        value.get("pid").and_then(Value::as_u64).ok_or_else(|| {
+            ProviderError::new(
+                "provider_launch_failed",
+                "OpenCode did not report the pid of the server that answered",
+            )
+        })
     }
 
     pub(super) fn open_session(&self, id: Option<&str>) -> Result<Value, ProviderError> {
@@ -275,7 +357,17 @@ impl NativeApi {
         }
         // The native service must load the location before it can admit work;
         // storing a location in session/create alone does not initialize it.
-        self.resolve_location()?;
+        // A location read that fails happens before the prompt is written, so
+        // the caller may treat it as a definite pre-send failure.
+        self.resolve_location().map_err(|error| {
+            let mut details = error
+                .details
+                .clone()
+                .filter(|details| details.is_object())
+                .unwrap_or_else(|| json!({}));
+            details["nativeNotSent"] = json!(true);
+            ProviderError::new(error.code, error.message).with_details(details)
+        })?;
         let mut body = json!({"text":text});
         if !files.is_empty() {
             // `parts`/`content` are silently dropped by 2.2.5; only `files`
@@ -377,11 +469,15 @@ impl NativeApi {
             Some(before) => json!({"before":before}),
             None => json!({}),
         };
-        self.json_request(
+        // Copying a long native history can outlast the general client
+        // timeout. The fork is bounded, but far above it: aborting the read
+        // would report an unknown outcome for a copy that is still running.
+        self.json_request_with_timeout(
             Method::POST,
             &format!("{}/fork", self.dialect.session_path(Some(id))),
             Some(body),
             ResponseShape::Data,
+            Some(v2_fork_timeout()),
         )
     }
 

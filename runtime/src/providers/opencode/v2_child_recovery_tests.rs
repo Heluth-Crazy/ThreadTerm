@@ -573,10 +573,10 @@ fn a_captured_225_marker_binds_the_child_only_through_the_verified_parent_link()
     let paths = peer.join().unwrap();
     assert!(paths.iter().any(|path| path == "/api/session/ses-child"), "the marker names the child: {paths:?}");
     let state = target.v2.lock().unwrap();
-    assert_eq!(
-        state.task_candidates["ses-child"],
-        ("ses-root".to_string(), CAPTURED_CALL.to_string())
-    );
+    // Run 15 (finding A4): a proven claim is pruned from the candidate map, so
+    // repeated subagents cannot exhaust the ownership bound. Ownership itself
+    // stays proven by the verified parent link below.
+    assert!(!state.task_candidates.contains_key("ses-child"));
     assert_eq!(state.children["ses-child"], CAPTURED_CALL);
     assert_eq!(state.parents["ses-child"], "ses-root");
     drop(state);
@@ -620,4 +620,262 @@ fn a_marker_naming_an_unrelated_session_never_owns_it() {
     let state = target.v2.lock().unwrap();
     assert!(!state.children.contains_key("ses-child"));
     assert!(state.parents.is_empty());
+}
+
+/// A peer that answers the four reads `recover_children` performs for one proven
+/// child candidate. Reused by the prune-order test through the real recovery
+/// path.
+fn prune_peer(
+    child: &'static str,
+    parent: &'static str,
+) -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (sender, paths) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("child peer accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let first = String::from_utf8(request).unwrap();
+            let path = first.split_whitespace().nth(1).unwrap().to_owned();
+            let body = if path == format!("/api/session/{child}") {
+                json!({"data":{"id":child,"parentID":parent,"location":{"directory":"C:/isolated"},"time":{"created":0,"updated":1,"busy":0,"idle":1}}}).to_string()
+            } else if path.contains("/message?") {
+                json!({"data":[],"cursor":{}}).to_string()
+            } else {
+                json!({"data":[]}).to_string()
+            };
+            seen.push(path);
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        sender.send(seen).unwrap();
+    });
+    (base, paths, handle)
+}
+
+#[test]
+fn a_waiting_childs_card_keeps_its_owner_when_settled_children_are_pruned() {
+    // Verification round 2, item 4: the bound pruned any settled child in map
+    // order. A settled child that still owns a pending card lost its proven
+    // owner (and its form route) to a sibling that owns nothing.
+    let (mut target, _events) = target();
+    let awaiting = "ses-awaiting";
+    {
+        let mut state = target.v2.lock().unwrap();
+        state.children.insert(awaiting.into(), "call-awaiting".into());
+        state.parents.insert(awaiting.into(), "ses-root".into());
+        state.interactions.insert(
+            "frm-awaiting".into(),
+            Interaction {
+                session: awaiting.into(),
+                kind: "form.created".into(),
+                turn: Some(NATIVE_BUSY_TURN.into()),
+                payload: json!({"interaction":"question"}),
+            },
+        );
+        for index in 0..MAX_SESSIONS - 1 {
+            let child = format!("ses-settled-{index}");
+            state.children.insert(child.clone(), "call".into());
+            state.parents.insert(child.clone(), "ses-root".into());
+            let execution = state.executions.entry(child).or_default();
+            execution.terminal_seq = Some(index as u64 + 1);
+        }
+        state
+            .task_candidates
+            .insert("ses-new".into(), ("ses-root".into(), "call-new".into()));
+        state.recovering = true;
+    }
+    let (base, paths, peer) = prune_peer("ses-new", "ses-root");
+    target.base_url = base;
+    recover_children(&target).unwrap();
+    peer.join().unwrap();
+    assert_eq!(paths.recv().unwrap().len(), 4);
+    let state = target.v2.lock().unwrap();
+    assert!(
+        state.children.contains_key(awaiting),
+        "the child whose card is still waiting kept its proven owner"
+    );
+    let pruned = (0..MAX_SESSIONS - 1)
+        .filter(|index| !state.children.contains_key(&format!("ses-settled-{index}")))
+        .count();
+    assert_eq!(
+        pruned, 1,
+        "exactly one settled child without a pending card was pruned (map order is arbitrary)"
+    );
+    assert!(state.children.contains_key("ses-new"), "the newly proven child is kept");
+    assert!(
+        state.interactions.contains_key("frm-awaiting"),
+        "the waiting card is untouched"
+    );
+    assert!(state.children.len() <= MAX_SESSIONS);
+}
+
+/// A reconnect peer that still lists one pending native form on a proven child.
+fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (sender, paths) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let info = |id: &str, parent: Option<&str>| json!({"id":id,"parentID":parent,"location":{"directory":"C:/isolated"},"time":{"created":0,"updated":1,"busy":0,"idle":1}});
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("reconnect peer accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let first = String::from_utf8(request).unwrap();
+            let path = first.split_whitespace().nth(1).unwrap().to_owned();
+            let response = match path.as_str() {
+                "/api/session/ses-root" => json!({"data":info("ses-root",None)}).to_string(),
+                "/api/session/ses-root/message?limit=128&order=desc" => json!({"data":[{"id":"msg-root","type":"assistant","time":{"created":1},"content":[{"type":"tool","id":"call-root-child","name":"subagent","state":{"status":"running","input":{},"metadata":{"sessionID":"ses-child"}}}]}],"cursor":{}}).to_string(),
+                "/api/session/active" => json!({"data":{}}).to_string(),
+                "/api/session/ses-root/inbox" | "/api/session/ses-root/form" | "/api/session/ses-root/permission" => json!({"data":[]}).to_string(),
+                "/api/session/ses-child" => json!({"data":info("ses-child",Some("ses-root"))}).to_string(),
+                "/api/session/ses-child/message?limit=128&order=desc" => json!({"data":[],"cursor":{}}).to_string(),
+                "/api/session/ses-child/form" => json!({"data":[{"id":"form-child","sessionID":"ses-child","title":"still pending","fields":[{"key":"answer","title":"Answer","type":"string","required":true}]}]}).to_string(),
+                "/api/session/ses-child/permission" => json!({"data":[]}).to_string(),
+                other => panic!("unexpected native path {other}"),
+            };
+            seen.push(path);
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+        }
+        sender.send(seen).unwrap();
+    });
+    (base, paths, handle)
+}
+
+/// Verification round 4, rule 1 and its accepted limitation: the root turn
+/// terminal retires a background child's card without writing to OpenCode, so a
+/// request that was still pending stays pending on the native side. The child
+/// waits until the Chat reconnects; the reconnect lists the pending native
+/// request and raises the card again from a fresh state (no retirement receipt).
+#[test]
+fn a_card_expired_with_a_pending_native_request_is_raised_again_on_reconnect() {
+    let (mut target, mut events) = target();
+    target
+        .v2
+        .lock()
+        .unwrap()
+        .children
+        .insert("ses-child".into(), "call-child".into());
+    // A root execution no ThreadTerm turn reserved: the placeholder turn.
+    push_event(
+        &target,
+        json!({"id":"evt-root-start","created":1,"type":"session.execution.started","durable":{"aggregateID":"ses-root","seq":1,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    assert_eq!(
+        target.active.lock().unwrap().as_deref(),
+        Some(NATIVE_BUSY_TURN),
+        "the native execution takes the placeholder turn"
+    );
+    push_event(
+        &target,
+        json!({"id":"evt-child-form","created":2,"type":"form.created","data":{"form":{"id":"form-child","sessionID":"ses-child","title":"QA","fields":[{"key":"answer","title":"Answer","type":"string","required":true}]}}}),
+    );
+    assert!(target.v2.lock().unwrap().interactions.contains_key("form-child"));
+    // The root execution ends: the child's card is retired, nothing is written.
+    push_event(
+        &target,
+        json!({"id":"evt-root-end","created":3,"type":"session.execution.succeeded","durable":{"aggregateID":"ses-root","seq":2,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    {
+        let state = target.v2.lock().unwrap();
+        assert!(!state.interactions.contains_key("form-child"), "the ended turn retired the card");
+        assert!(
+            state
+                .receipts
+                .contains(&("ses-child".into(), "form-child".into())),
+            "the retirement is a receipt, not an answer to the native request"
+        );
+    }
+    let retired = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+    assert!(retired.iter().any(|event| {
+        event.kind == "chat.approval.resolved" && event.data["approvalId"] == "form-child"
+    }));
+    // Reconnect: a new worker state has no receipt, and the native request is
+    // still listed, so it becomes a card again.
+    *target.v2.lock().unwrap() = State {
+        recovering: true,
+        ..Default::default()
+    };
+    let (base, paths, peer) = reconnect_peer();
+    target.base_url = base;
+    recover(&target).unwrap();
+    peer.join().unwrap();
+    assert_eq!(paths.recv().unwrap().len(), 10);
+    {
+        let state = target.v2.lock().unwrap();
+        let card = state
+            .interactions
+            .get("form-child")
+            .expect("the still-pending native request is raised again");
+        assert_eq!(card.session, "ses-child");
+        assert_eq!(card.kind, "form.created");
+        assert_eq!(card.turn.as_deref(), Some(NATIVE_BUSY_TURN));
+        assert!(
+            !state
+                .receipts
+                .contains(&("ses-child".into(), "form-child".into())),
+            "the new state carries no receipt for the request it re-raised"
+        );
+    }
+    let reconnected = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        reconnected
+            .iter()
+            .any(|event| event.kind == "chat.approval" && event.data["approvalId"] == "form-child"),
+        "the reconnect publishes the card again: {:?}",
+        reconnected.iter().map(|event| &event.kind).collect::<Vec<_>>()
+    );
 }

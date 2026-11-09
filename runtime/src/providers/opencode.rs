@@ -2,7 +2,7 @@ use super::{
     approval::{allow_deny_choices, approval_payload, map_allow_deny_choice},
     common::{
         command_output, history_page, insert_optional, spawn_managed_service,
-        validate_native_id, version_probe, CommandSpec,
+        validate_native_id, version_probe, version_probe_detailed, CommandSpec,
     },
     emit_scoped, spawn_ui_options_refresh, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
     TerminalCommand,
@@ -95,21 +95,40 @@ impl OpenCodeAdapter {
     /// a session that has native activity is an explicit error, never a blank
     /// transcript.
     fn v2_history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
-        let (api, cached) = v2_read_api(".", native_id)?;
-        let result = (|| {
-            let items = v2_history_transcript(native_id, |cursor| {
-                api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
-            })?;
-            v2_require_visible(native_id, items.len(), || api.read_session(native_id))?;
-            Ok(Value::Array(items))
-        })();
-        if result.is_err() {
-            if let Some(server) = cached {
-                drop(server);
-                v2_forget_history_server(".");
+        let owner = v2_live_owner(native_id);
+        let attempt = |api: NativeApi, cached: Option<Arc<OpenCodeServer>>| {
+            let result = (|| {
+                let items = v2_history_transcript(native_id, |cursor| {
+                    api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
+                })?;
+                v2_require_visible(native_id, items.len(), || api.read_session(native_id))?;
+                Ok(Value::Array(items))
+            })();
+            if let Some(server) = cached.as_ref() {
+                if let Some(error) = result.as_ref().err() {
+                    if v2_failure_forgets_server(error, server.is_running()) {
+                        v2_forget_history_server(".");
+                    }
+                }
             }
+            result
+        };
+        let Some(owner) = owner else {
+            let server = v2_history_server_for_read()?;
+            return attempt(server.native_api(), Some(server));
+        };
+        match attempt(owner.api.clone(), None) {
+            Ok(value) => Ok(value),
+            // A worker can die before its connector notices. The owner is never
+            // the only way to read history: fall back to the shared server and
+            // stop serving the dead owner.
+            Err(error) if v2_owner_gone(&error) => {
+                v2_forget_live_owner(native_id);
+                let server = v2_history_server_for_read()?;
+                attempt(server.native_api(), Some(server))
+            }
+            Err(error) => Err(error),
         }
-        result
     }
 }
 
@@ -168,7 +187,10 @@ impl ProviderAdapter for OpenCodeAdapter {
         if let Some(id) = id {
             validate_native_id(id)?;
         }
-        let args = opencode_terminal_args(id, opencode_history_is_native());
+        // An unreadable version probe never selects the 1.x launch: 2.2.5
+        // without `--standalone` would attach to (or start) the user's
+        // background service, and a 1.x argument set on 2.x is not a launch.
+        let args = opencode_terminal_args(id, opencode_terminal_is_native()?);
         let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
         let spec = CommandSpec::provider("opencode", &refs)?;
         Ok(TerminalCommand {
@@ -188,7 +210,9 @@ impl ProviderAdapter for OpenCodeAdapter {
     /// silent new conversation. 1.18.35 keeps its unchanged CLI contract.
     fn preflight_terminal_resume(&self, cwd: &str, native_id: &str) -> Result<(), ProviderError> {
         validate_native_id(native_id)?;
-        if !opencode_history_is_native() {
+        // A 2.x resume of an unknown ID creates a new conversation, so the
+        // preflight is mandatory whenever this is not a proven 1.x CLI.
+        if !opencode_terminal_is_native()? {
             return Ok(());
         }
         opencode_v2_resume_preflight(cwd, native_id)
@@ -332,14 +356,16 @@ impl ProviderAdapter for OpenCodeAdapter {
         // `v2::attach`. Terminal preparation and history reads stay fenced.
         let session = server.native_api().open_session(native_id)?;
         let native_id = api::session_identity(&session, native_id)?;
-        // A session that is live here is read through this server: 2.2.5 keeps a
-        // session's live message projection in the owning server process, so a
-        // separate reader must not be preferred over the owner.
-        v2_register_live_owner(&native_id, &server);
         // The event stream binds only after the native identity is known; a
         // failed event channel fails the connect instead of leaving a blind
         // "ready" worker behind.
         let sse_target = server.attach_events(&native_id, &session)?;
+        // A session that is live here is read through this server: 2.2.5 keeps a
+        // session's live message projection in the owning server process, so a
+        // separate reader must not be preferred over the owner. The worker's
+        // stream liveness is part of the registration, so a dead owner is never
+        // served.
+        v2_register_live_owner(&native_id, &server, Arc::clone(&sse_target.liveness));
         let ui = sse_target.ui.lock().map(|ui| ui.wire()).unwrap_or_else(|_| json!({"options":[],"commands":[]}));
         emit_scoped(&self.events, "opencode", session_id, Some(&native_id), None, "chat.ui", ui, Some(worker_token));
         emit_scoped(
@@ -413,6 +439,16 @@ impl OpenCodeServer {
     fn native_api(&self) -> NativeApi {
         NativeApi::new(self.client.clone(), self.base_url.clone(), self.cwd.clone(), self.password.clone(), self.dialect)
     }
+    /// The owned process this cache entry points at is still alive.
+    fn is_running(&self) -> bool {
+        !self.stopped.load(Ordering::SeqCst)
+            && self
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok().map(|status| status.is_none()))
+                .unwrap_or(false)
+    }
 
     fn require_legacy_events(&self) -> Result<(), ProviderError> {
         self.dialect.require_event_compatibility()
@@ -470,6 +506,19 @@ impl OpenCodeServer {
         let base_url = format!("http://127.0.0.1:{port}");
         let started = Instant::now();
         let dialect = loop {
+            // The port was released before the child started, so the process
+            // that answers first is not necessarily the one this call launched.
+            let exited = child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok())
+                .flatten();
+            if let Some(status) = exited {
+                return Err(ProviderError::new(
+                    "provider_launch_failed",
+                    format!("OpenCode server exited before it became healthy ({status})"),
+                ));
+            }
             let result = api::negotiate(&client, &base_url, &password);
             match result {
                 Ok(Some(dialect)) => break dialect,
@@ -488,6 +537,32 @@ impl OpenCodeServer {
             }
             thread::sleep(Duration::from_millis(50));
         };
+        // The answering server must be this call's own process tree. Only 2.x
+        // reports a pid, and the job holds the whole tree (npm installs run
+        // through a command shim, so the direct child is not always the server).
+        if dialect == ApiDialect::V2 {
+            let answering = api::NativeApi::info_pid(&client, &base_url, &password).map_err(|error| {
+                if let Ok(mut child) = child.lock() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                error
+            })?;
+            let launched = child.lock().ok().map(|child| child.id());
+            let in_tree = job.process_ids().contains(&(answering as u32));
+            if !in_tree && launched != Some(answering as u32) {
+                if let Ok(mut child) = child.lock() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                return Err(ProviderError::new(
+                    "provider_launch_failed",
+                    format!(
+                        "OpenCode answered on the owned port from pid {answering}, which is not the process this runtime started"
+                    ),
+                ));
+            }
+        }
         let username = dialect.username().to_owned();
         let stopped = Arc::new(AtomicBool::new(false));
         let event_gate = Arc::new(Mutex::new(()));
@@ -1217,6 +1292,7 @@ struct OpenCodeChat {
     sse_target: Arc<EventTarget>,
     worker_token: String,
 }
+
 impl ChatSession for OpenCodeChat {
     fn native_id(&self) -> Option<String> {
         Some(self.native_id.clone())
@@ -3740,22 +3816,97 @@ const V2_HISTORY_MAX_BYTES: usize = 8 * 1024 * 1024;
 // `serve` process (own port and password), never the user's background service.
 const V2_HISTORY_SERVER_IDLE: Duration = Duration::from_secs(30);
 
+/// A recent *definite* version answer; an inconclusive probe is never stored.
+static OPENCODE_NATIVE_PROBE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
 /// Only a CLI that is not 2.x may use the legacy `session list`/`export` reader.
 /// A 2.x version probe can never authorize those commands.
+///
+/// An inconclusive probe (a timeout, odd output) is never cached: a failed
+/// probe must not select the 1.x behavior for the next minute.
 fn opencode_history_is_native() -> bool {
-    // The probe spawns the CLI; history pages and forks reuse a recent answer.
-    static RECENT: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
-    if let Some((at, native)) = RECENT.lock().ok().and_then(|recent| *recent) {
-        if at.elapsed() < Duration::from_secs(60) {
-            return native;
-        }
+    if let Some(native) = opencode_cached_native_probe() {
+        return native;
     }
-    let (installed, version, _) = version_probe("opencode");
+    let (installed, version, error) = version_probe_detailed("opencode");
+    let definite = opencode_probe_is_definite(installed, version.as_deref(), error.as_ref());
     let native = opencode_history_uses_native_api(installed, version.as_deref());
-    if let Ok(mut recent) = RECENT.lock() {
-        *recent = Some((Instant::now(), native));
+    if definite {
+        opencode_remember_native_probe(native);
     }
     native
+}
+
+/// The terminal dialect is a launch-safety decision: 2.x needs `--standalone`
+/// and an exact-ID resume preflight, 1.x has neither. An unknown version is an
+/// error, never a silent 1.x launch.
+fn opencode_terminal_is_native() -> Result<bool, ProviderError> {
+    if let Some(native) = opencode_cached_native_probe() {
+        return Ok(native);
+    }
+    let mut last_error = None;
+    // Two bounded attempts: a cold start can outrun the first probe's timeout,
+    // but a probe that never answers must not select a dialect by default.
+    for _ in 0..2 {
+        let (installed, version, error) = version_probe_detailed("opencode");
+        last_error = error.as_ref().map(|error| error.message.clone());
+        if opencode_probe_is_definite(installed, version.as_deref(), error.as_ref()) {
+            let native = opencode_history_uses_native_api(installed, version.as_deref());
+            opencode_remember_native_probe(native);
+            return Ok(native);
+        }
+    }
+    Err(ProviderError::new(
+        "provider_version_unknown",
+        format!(
+            "OpenCode did not report a readable version ({}); refusing to launch a terminal with an unverified dialect",
+            last_error.unwrap_or_else(|| "empty output".into())
+        ),
+    ))
+}
+
+fn opencode_cached_native_probe() -> Option<bool> {
+    let (at, native) = OPENCODE_NATIVE_PROBE
+        .lock()
+        .ok()
+        .and_then(|recent| *recent)?;
+    (at.elapsed() < Duration::from_secs(60)).then_some(native)
+}
+
+fn opencode_remember_native_probe(native: bool) {
+    if let Ok(mut recent) = OPENCODE_NATIVE_PROBE.lock() {
+        *recent = Some((Instant::now(), native));
+    }
+}
+
+#[cfg(test)]
+fn opencode_forget_native_probe() {
+    if let Ok(mut recent) = OPENCODE_NATIVE_PROBE.lock() {
+        *recent = None;
+    }
+}
+
+/// Serializes the tests that touch process-wide state: the version-probe cache
+/// and the fork-timeout override. The full gate runs two test threads, so a test
+/// that leaves either set can otherwise decide another test's dialect.
+#[cfg(test)]
+pub(super) fn provider_global_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A probe is definitive only when it names a numeric major version, or when
+/// the executable is genuinely absent. A CLI that ran and failed or timed out
+/// proves nothing about its dialect.
+fn opencode_probe_is_definite(
+    installed: bool,
+    version: Option<&str>,
+    error: Option<&ProviderError>,
+) -> bool {
+    if installed {
+        return version.and_then(opencode_version_major).is_some();
+    }
+    error.is_some_and(|error| error.code == "provider_unavailable")
 }
 
 fn opencode_history_uses_native_api(installed: bool, version: Option<&str>) -> bool {
@@ -3849,27 +4000,56 @@ fn v2_history_cache() -> &'static V2HistoryServers {
     &CACHE
 }
 
+/// One cache entry serves every native-id/directory read. Requests carry their
+/// own explicit directory or id, so forks, terminal preflight and lists never
+/// evict (and kill) each other's server.
+const V2_SHARED_HISTORY_KEY: &str = "shared";
+
 /// The shared owned history server. A dead or restarted server is never served
-/// from the cache after a failure: the error is reported and the entry dropped.
-fn v2_history_server(cwd: &str) -> Result<Arc<OpenCodeServer>, ProviderError> {
+/// from the cache after a failure or after its process exited.
+fn v2_history_server(_project_cwd: &str) -> Result<Arc<OpenCodeServer>, ProviderError> {
     let now = Instant::now();
     if let Ok(mut guard) = v2_history_cache().lock() {
         let cache = guard.get_or_insert_with(|| V2HistoryCache::new(V2_HISTORY_SERVER_IDLE));
-        if let Some(server) = cache.get(cwd, now) {
-            return Ok(server);
+        if let Some(server) = cache.get(V2_SHARED_HISTORY_KEY, now) {
+            if server.is_running() {
+                return Ok(server);
+            }
+            cache.invalidate(V2_SHARED_HISTORY_KEY);
         }
     }
     // The lock is not held across the launch: starting a server is slow and
     // must never block another read's cache lookup.
-    let server = Arc::new(opencode_v2_history_server(cwd, "history")?);
+    let neutral = v2_neutral_server_dir(
+        std::env::var_os("THREADTERM_V3_DATA").map(std::path::PathBuf::from),
+        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from),
+    );
+    let _ = std::fs::create_dir_all(&neutral);
+    let server = Arc::new(opencode_v2_history_server(
+        &neutral.to_string_lossy(),
+        "history",
+    )?);
     if let Ok(mut guard) = v2_history_cache().lock() {
         let cache = guard.get_or_insert_with(|| V2HistoryCache::new(V2_HISTORY_SERVER_IDLE));
-        cache.put(cwd, Arc::clone(&server), now);
+        cache.put(V2_SHARED_HISTORY_KEY, Arc::clone(&server), now);
         if !cache.reaping {
             cache.reaping = v2_spawn_history_reaper();
         }
     }
     Ok(server)
+}
+
+/// The shared history server never runs inside a project or a git worktree. Its
+/// requests carry their own explicit directory or native id, so the process's
+/// working directory is irrelevant to every read, while a server left running in
+/// a worktree blocks `git worktree remove` on Windows. The runtime's own data
+/// folder is the neutral choice.
+fn v2_neutral_server_dir(
+    data: Option<std::path::PathBuf>,
+    local: Option<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    data.or_else(|| local.map(|base| base.join("ThreadTermV3")))
+        .unwrap_or_else(|| std::env::temp_dir().join("ThreadTermV3"))
 }
 
 /// Retires the cached history server once its idle window passes, then exits
@@ -3903,17 +4083,16 @@ fn v2_spawn_history_reaper() -> bool {
         .is_ok()
 }
 
-fn v2_forget_history_server(cwd: &str) {
+fn v2_forget_history_server(_cwd: &str) {
     if let Ok(mut guard) = v2_history_cache().lock() {
         if let Some(cache) = guard.as_mut() {
-            cache.invalidate(cwd);
+            cache.invalidate(V2_SHARED_HISTORY_KEY);
         }
     }
 }
 
-/// Run one native read on the shared owned server. Any failure drops the cached
-/// server, so a dead or replaced process is never reused and the error stays
-/// the real one.
+/// Run one native read on the shared owned server. A failure that proves the
+/// process is gone drops the cached server; a timeout keeps it.
 fn v2_with_history_server<T>(
     cwd: &str,
     run: impl FnOnce(&OpenCodeServer) -> Result<T, ProviderError>,
@@ -3922,7 +4101,9 @@ fn v2_with_history_server<T>(
     match run(&server) {
         Ok(value) => Ok(value),
         Err(error) => {
-            v2_forget_history_server(cwd);
+            if v2_failure_forgets_server(&error, server.is_running()) {
+                v2_forget_history_server(cwd);
+            }
             Err(error)
         }
     }
@@ -3930,11 +4111,25 @@ fn v2_with_history_server<T>(
 
 /// One live 2.x session owned by a Chat worker in this runtime. Reading it
 /// through the owning server is the only way to see what the owner has not yet
-/// persisted; `stopped` is the owner's own flag, so a closed worker leaves a
-/// dead entry that is dropped on the next lookup.
+/// persisted. Both the worker's own stop flag and its stream liveness are
+/// checked: a dead owner is never served, so reads and forks fall back to the
+/// shared history server instead of a dead port.
+#[derive(Clone)]
 struct V2LiveOwner {
     api: NativeApi,
     stopped: Arc<AtomicBool>,
+    /// `None` for a shared history server alias, which has no event stream.
+    liveness: Option<Arc<AtomicBool>>,
+}
+
+impl V2LiveOwner {
+    fn alive(&self) -> bool {
+        !self.stopped.load(Ordering::SeqCst)
+            && self
+                .liveness
+                .as_ref()
+                .is_none_or(|live| live.load(Ordering::SeqCst))
+    }
 }
 
 type V2LiveOwners = Mutex<Option<HashMap<String, V2LiveOwner>>>;
@@ -3952,25 +4147,76 @@ fn with_v2_live_owners<T>(
     Some(run(owners))
 }
 
-fn v2_store_live_owner(native_id: &str, api: NativeApi, stopped: Arc<AtomicBool>) {
+fn v2_store_live_owner(
+    native_id: &str,
+    api: NativeApi,
+    stopped: Arc<AtomicBool>,
+    liveness: Option<Arc<AtomicBool>>,
+) {
     with_v2_live_owners(|owners| {
-        owners.retain(|_, owner| !owner.stopped.load(Ordering::SeqCst));
-        owners.insert(native_id.to_owned(), V2LiveOwner { api, stopped });
+        owners.retain(|_, owner| owner.alive());
+        owners.insert(
+            native_id.to_owned(),
+            V2LiveOwner {
+                api,
+                stopped,
+                liveness,
+            },
+        );
     });
 }
 
-fn v2_register_live_owner(native_id: &str, server: &OpenCodeServer) {
+fn v2_register_live_owner(
+    native_id: &str,
+    server: &OpenCodeServer,
+    liveness: Arc<AtomicBool>,
+) {
     // Only the 2.x dialect splits live state from the persisted history.
     if server.dialect != ApiDialect::V2 {
         return;
     }
-    v2_store_live_owner(native_id, server.native_api(), Arc::clone(&server.stopped));
+    v2_store_live_owner(
+        native_id,
+        server.native_api(),
+        Arc::clone(&server.stopped),
+        Some(liveness),
+    );
 }
 
-fn v2_live_owner(native_id: &str) -> Option<NativeApi> {
+/// A child this runtime just created natively (a fork) is read through the
+/// server that created it: another process cannot see the unpersisted copy, and
+/// starting one would evict and kill the server that ran the fork.
+fn v2_alias_live_owner(child: &str, parent: &str) -> bool {
     with_v2_live_owners(|owners| {
-        owners.retain(|_, owner| !owner.stopped.load(Ordering::SeqCst));
-        owners.get(native_id).map(|owner| owner.api.clone())
+        owners.retain(|_, owner| owner.alive());
+        let Some(owner) = owners.get(parent).cloned() else {
+            return false;
+        };
+        owners.insert(child.to_owned(), owner);
+        true
+    })
+    .unwrap_or(false)
+}
+
+fn v2_store_history_alias(child: &str, server: &OpenCodeServer) {
+    v2_store_live_owner(
+        child,
+        server.native_api(),
+        Arc::clone(&server.stopped),
+        None,
+    );
+}
+
+fn v2_forget_live_owner(native_id: &str) {
+    with_v2_live_owners(|owners| {
+        owners.remove(native_id);
+    });
+}
+
+fn v2_live_owner(native_id: &str) -> Option<V2LiveOwner> {
+    with_v2_live_owners(|owners| {
+        owners.retain(|_, owner| owner.alive());
+        owners.get(native_id).cloned()
     })
     .flatten()
 }
@@ -3982,11 +4228,17 @@ fn v2_read_api(
     cwd: &str,
     native_id: &str,
 ) -> Result<(NativeApi, Option<Arc<OpenCodeServer>>), ProviderError> {
-    if let Some(api) = v2_live_owner(native_id) {
-        return Ok((api, None));
+    if let Some(owner) = v2_live_owner(native_id) {
+        return Ok((owner.api, None));
     }
     let server = v2_history_server(cwd)?;
     Ok((server.native_api(), Some(server)))
+}
+
+/// A read by native id does not need project scope, so it reuses whatever owned
+/// history server is cached instead of replacing (and killing) it.
+fn v2_history_server_for_read() -> Result<Arc<OpenCodeServer>, ProviderError> {
+    v2_history_server(".")
 }
 
 /// Native evidence that a session has produced output: cumulative tokens, cost,
@@ -4008,7 +4260,10 @@ fn v2_session_has_activity(info: &Value) -> bool {
 
 /// A read that cannot see the owner's messages is an explicit error, never an
 /// empty transcript. `info` is only read when the transcript is empty, so a
-/// normal read never pays for it.
+/// normal read never pays for it. A fork is not activity by itself: a fork made
+/// at the first message is legitimately empty. ThreadTerm's own forks always
+/// include the selected reply, and a read right after one goes through the
+/// server that created it.
 fn v2_require_visible(
     native_id: &str,
     messages: usize,
@@ -4017,7 +4272,8 @@ fn v2_require_visible(
     if messages > 0 {
         return Ok(());
     }
-    if v2_session_has_activity(&info()?) {
+    let info = info()?;
+    if v2_session_has_activity(&info) {
         return Err(ProviderError::new(
             "session_history_unreadable",
             format!(
@@ -4026,6 +4282,29 @@ fn v2_require_visible(
         ));
     }
     Ok(())
+}
+
+fn v2_timed_out(error: &ProviderError) -> bool {
+    error
+        .details
+        .as_ref()
+        .and_then(|details| details["timedOut"].as_bool())
+        == Some(true)
+}
+
+/// A timeout proves the request was slow, not that the process died. Only
+/// evidence that the owner is gone retires it.
+fn v2_owner_gone(error: &ProviderError) -> bool {
+    error.code == "provider_disconnected" && !v2_timed_out(error)
+}
+
+/// A definite native answer about the request itself may leave a server that
+/// answered it. Only evidence that the process is gone drops the entry: a 404 on
+/// a deleted id, an unreadable transcript or a malformed body all came from a
+/// server that is still usable (and may own a fresh fork's alias). A timeout
+/// keeps it too, because the request may still be running.
+fn v2_failure_forgets_server(error: &ProviderError, server_running: bool) -> bool {
+    !server_running || (error.code == "provider_disconnected" && !v2_timed_out(error))
 }
 
 fn v2_history_page(payload: &Value) -> Result<Value, ProviderError> {
@@ -4225,6 +4504,8 @@ fn opencode_v2_fork(
             }
         };
         let result = api.fork_before(native_id, before.as_deref()).map_err(|error| {
+            // Keep the transport evidence (a timeout versus a refused
+            // connection) through the uncertain-outcome mapping.
             ProviderError::new(
                 "operation_outcome_unknown",
                 format!(
@@ -4232,6 +4513,7 @@ fn opencode_v2_fork(
                     error.message
                 ),
             )
+            .with_details(error.details.clone().unwrap_or(Value::Null))
         })?;
         let id = result
             .get("id")
@@ -4244,12 +4526,24 @@ fn opencode_v2_fork(
                 )
             })?;
         validate_native_id(id).map_err(|error| ProviderError::new("operation_outcome_unknown", error.message))?;
+        // Read the child through the server that created it: a different
+        // process cannot see the fork's copy, and starting one would evict and
+        // kill the server that just ran the fork.
+        if !v2_alias_live_owner(id, native_id) {
+            if let Some(server) = cached.as_ref() {
+                v2_store_history_alias(id, server);
+            }
+        }
         Ok(Some(id.to_owned()))
     })();
     if result.is_err() {
-        if let Some(server) = cached {
-            drop(server);
-            v2_forget_history_server(cwd);
+        // A fork timeout kills nothing: the copy may still be running, so the
+        // server that owns it stays alive for the next read.
+        if let (Some(server), Some(failed)) = (cached, result.as_ref().err()) {
+            if v2_failure_forgets_server(failed, server.is_running()) {
+                drop(server);
+                v2_forget_history_server(cwd);
+            }
         }
     }
     result

@@ -110,6 +110,39 @@ fn peer(status: u16, body: &'static str) -> Peer {
     Peer { address, requests, handle }
 }
 
+/// A listening peer that only reports whether anything connected. It answers
+/// nothing, so "the adapter never wrote to the native request" is provable.
+struct QuietPeer {
+    address: String,
+    accepted: mpsc::Receiver<()>,
+    handle: thread::JoinHandle<()>,
+}
+
+fn quiet_peer() -> QuietPeer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let (sender, accepted) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    // Accepted sockets inherit the listener's non-blocking mode.
+                    stream.set_nonblocking(false).unwrap();
+                    let _ = sender.send(());
+                    return;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5))
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    QuietPeer { address, accepted, handle }
+}
+
 fn body(request: &str) -> Value {
     let start = request.find("\r\n\r\n").map(|index| index + 4).unwrap_or(0);
     serde_json::from_str(&request[start..]).unwrap()
@@ -296,7 +329,8 @@ fn submit_reaches_the_owning_child_session_once_with_typed_values() {
     push(&target, &created);
     let card = drain(&mut events).into_iter().find(|one| one.kind == "chat.approval").unwrap();
     assert_eq!(card.data["part"]["data"]["subagent"]["key"], "call-1");
-    answer(&target, "turn-1", "frm_child", &json!({"action":"submit","values":{"mode":["red"]}})).unwrap();
+    assert_eq!(card.turn_id.as_deref(), Some(NATIVE_BUSY_TURN));
+    answer(&target, NATIVE_BUSY_TURN, "frm_child", &json!({"action":"submit","values":{"mode":["red"]}})).unwrap();
     let request = peer.requests.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(start(&request), "POST /api/session/ses-child/form/frm_child/reply HTTP/1.1");
     assert_eq!(body(&request), json!({"answer":{"mode":["red"]}}));
@@ -305,7 +339,7 @@ fn submit_reaches_the_owning_child_session_once_with_typed_values() {
     // The service owns the answer receipt; the adapter must not claim one.
     assert!(drain(&mut events).iter().all(|one| one.kind != "chat.approval.resolved"));
     // A duplicate submit is refused without a second native write.
-    assert_eq!(answer(&target, "turn-1", "frm_child", &json!({"action":"submit","values":{"mode":["red"]}})).unwrap_err().code, "approval_not_pending");
+    assert_eq!(answer(&target, NATIVE_BUSY_TURN, "frm_child", &json!({"action":"submit","values":{"mode":["red"]}})).unwrap_err().code, "approval_not_pending");
     assert!(peer.requests.try_recv().is_err(), "settled answers are never resent");
 }
 
@@ -457,24 +491,98 @@ fn a_foreign_or_stale_turn_can_never_reply_to_a_pending_card() {
 }
 
 #[test]
-fn terminal_and_stop_do_not_drop_a_pending_request() {
-    let peer = peer(204, "");
+fn a_turn_terminal_retires_its_cards_without_answering_native() {
+    // Run-16 finding B1. The service expires a turn's pending approvals on
+    // `chat.turn.completed` and 1.18.35 settles its own pending set, so the v2
+    // adapter retires the same cards when the native root turn terminates (a
+    // native terminal, or a settled Stop, which reaches this branch too).
+    // Nothing is written to OpenCode: a native request is never answered or
+    // cancelled on the user's behalf. A card raised under no turn (a background
+    // subagent, A2) is not touched.
+    let peer = quiet_peer();
     let (target, mut events) = target(&peer.address);
+    // A card with no active turn that arrives before the terminal survives it.
+    *target.active.lock().unwrap() = None;
+    push(
+        &target,
+        &event(
+            "evt-idle-card",
+            "form.created",
+            form("frm_background", "ses-root", json!([{"key":"name","type":"string","title":"Name"}])),
+        ),
+    );
+    let _ = drain(&mut events);
+    *target.active.lock().unwrap() = Some("turn-1".into());
     push(
         &target,
         &json!({"id":"evt-start","created":1,"type":"session.execution.started","durable":{"aggregateID":"ses-root","seq":1,"version":1},"data":{"sessionID":"ses-root"}}),
     );
     pending_form(&target, "frm_after_terminal", "ses-root");
+    let _ = drain(&mut events);
     push(
         &target,
         &json!({"id":"evt-done","created":2,"type":"session.execution.succeeded","durable":{"aggregateID":"ses-root","seq":2,"version":1},"data":{"sessionID":"ses-root"}}),
     );
-    // A native terminal does not settle the request; only its own receipt does.
-    assert!(target.v2.lock().unwrap().interactions.contains_key("frm_after_terminal"));
-    assert!(drain(&mut events).iter().all(|one| one.kind != "chat.approval.resolved"));
-    answer(&target, "turn-1", "frm_after_terminal", &json!({"action":"submit","values":{"name":"ABC"}})).unwrap();
-    let request = peer.requests.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(start(&request), "POST /api/session/ses-root/form/frm_after_terminal/reply HTTP/1.1");
+    {
+        let state = target.v2.lock().unwrap();
+        assert!(
+            !state.interactions.contains_key("frm_after_terminal"),
+            "the ended turn's card is retired"
+        );
+        assert!(
+            state.interactions.contains_key("frm_background"),
+            "a card with no turn outlives the turn"
+        );
+        assert!(
+            !state.pending_requests.contains(&("ses-root".into(), "frm_after_terminal".into())),
+            "the retired card releases its barrier slot"
+        );
+        assert!(
+            state.receipts.contains(&("ses-root".into(), "frm_after_terminal".into())),
+            "the retirement is a receipt, so a stale list cannot revive it"
+        );
+    }
+    let emitted = drain(&mut events);
+    let retired = emitted
+        .iter()
+        .find(|one| one.kind == "chat.approval.resolved")
+        .expect("the UI learns the card expired");
+    assert_eq!(retired.data["approvalId"], "frm_after_terminal");
+    assert_eq!(retired.data["status"], "expired");
+    assert_eq!(retired.data["outcome"], "native");
+    assert_eq!(retired.turn_id.as_deref(), Some("turn-1"));
+    assert!(
+        emitted.iter().all(|one| one.data["approvalId"] != "frm_background"),
+        "the no-turn card is not resolved by the root terminal"
+    );
+    // The retired card cannot be answered and no reply reaches the native side.
+    assert_eq!(
+        answer(&target, "turn-1", "frm_after_terminal", &json!({"action":"submit","values":{"name":"ABC"}})).unwrap_err().code,
+        "approval_not_pending"
+    );
+    // Only the unrelated no-turn card still blocks, exactly as A2 requires.
+    assert_eq!(
+        validate_send(&target).unwrap_err().code,
+        "provider_recovery_required"
+    );
+    settle_card(&target, "frm_background", None).unwrap();
+    assert!(validate_send(&target).is_ok(), "a later prompt in the same Chat is admitted");
+    // A late pending snapshot or list for the retired request revives nothing.
+    assert!(!push(
+        &target,
+        &event(
+            "evt-late-list",
+            "form.created",
+            form("frm_after_terminal", "ses-root", json!([{"key":"name","type":"string","title":"Name"}])),
+        ),
+    ));
+    assert!(!target.v2.lock().unwrap().interactions.contains_key("frm_after_terminal"));
+    assert!(drain(&mut events).iter().all(|one| one.kind != "chat.approval"));
+    // Nothing was sent to OpenCode: the owner never even opened a connection.
+    assert!(
+        peer.accepted.recv_timeout(Duration::from_millis(300)).is_err(),
+        "retiring a card never writes to the native request"
+    );
     peer.handle.join().unwrap();
 }
 
@@ -549,4 +657,605 @@ fn a_real_native_shutdown_still_closes_the_chat() {
     let closed = emitted.iter().find(|one| one.kind == "session.closed").unwrap();
     assert_eq!(closed.data["reason"], "provider_disconnected");
     assert_eq!(approve(&target, "turn-1", "per_any", "deny").unwrap_err().code, "provider_disconnected");
+}
+
+#[test]
+fn a_card_raised_without_an_active_turn_stays_answerable() {
+    // Run-15 finding A2: a background subagent, or an idle root at attach, asks
+    // after the root turn ended. The card is published with no turn, and a reply
+    // must not be refused for that reason (1.18.35 accepts it too).
+    let (target, mut events) = target("");
+    *target.active.lock().unwrap() = None;
+    push(
+        &target,
+        &event(
+            "evt-created-idle",
+            "form.created",
+            form("frm_idle", "ses-root", json!([{"key":"name","type":"string","title":"Name"}])),
+        ),
+    );
+    let emitted = drain(&mut events);
+    let card = emitted.iter().find(|one| one.kind == "chat.approval").unwrap();
+    assert_eq!(card.turn_id.as_deref(), Some(NATIVE_BUSY_TURN), "the card gets the native-busy placeholder turn");
+    assert_eq!(
+        validate_send(&target).unwrap_err().code,
+        "provider_recovery_required",
+        "unanswered cards still block a prompt"
+    );
+    // Answering works through the card's own turn, and it is retired once.
+    assert_eq!(
+        target.v2.lock().unwrap().interactions["frm_idle"].turn.as_deref(),
+        Some(NATIVE_BUSY_TURN)
+    );
+    let interaction = pending(&target, "frm_idle", "form.created", NATIVE_BUSY_TURN).unwrap();
+    assert_eq!(interaction.session, "ses-root");
+    assert!(settle_card(&target, "frm_idle", None).is_ok());
+    assert!(validate_send(&target).is_ok(), "a settled card never blocks the next send");
+    // A card that names a different turn is still refused for a live turn.
+    let mut state = target.v2.lock().unwrap();
+    state.interactions.insert(
+        "frm_other".into(),
+        Interaction {
+            session: "ses-root".into(),
+            kind: "form.created".into(),
+            turn: Some("turn-1".into()),
+            payload: json!({"interaction":"question"}),
+        },
+    );
+    drop(state);
+    assert_eq!(
+        pending(&target, "frm_other", "form.created", "turn-2").unwrap_err().code,
+        "approval_not_pending"
+    );
+}
+
+#[test]
+fn a_definite_pre_send_failure_keeps_the_chat_connected() {
+    // Run-15 finding A3: a model the server did not store fails before the
+    // prompt POST. Nothing was sent, so the Chat must stay connected and show
+    // the error instead of fencing the stream as an unknown send result.
+    let new_target = target;
+    let (target, mut events) = new_target("");
+    reserve_prompt(&target, "turn-1").unwrap();
+    let error = not_applied(&["model"], "agent");
+    assert_eq!(
+        error.details.as_ref().unwrap()["nativeNotSent"],
+        json!(true),
+        "a pre-send failure is marked definite"
+    );
+    let failed = finish_prompt(&target, "turn-1", Err(error));
+    assert_eq!(failed.unwrap_err().code, "chat_option_not_applied");
+    assert!(
+        target.liveness.load(Ordering::SeqCst),
+        "a definite failure never expires the stream"
+    );
+    assert!(target.active.lock().unwrap().is_none(), "the local turn is released");
+    let emitted = drain(&mut events);
+    let rejected = emitted.iter().find(|one| one.kind == "chat.error").unwrap();
+    assert_eq!(rejected.data["reason"], "prompt_rejected");
+    assert!(emitted.iter().all(|one| one.kind != "chat.connection"));
+
+    // A native execution observed during the pre-send writes keeps a
+    // native-busy placeholder even though the prompt itself was not written.
+    let (observed_target, mut observed_events) = new_target("");
+    reserve_prompt(&observed_target, "turn-1").unwrap();
+    process_event(
+        &observed_target,
+        json!({"id":"evt-native-start","created":1,"type":"session.execution.started","durable":{"aggregateID":"ses-root","seq":1,"version":1},"data":{"sessionID":"ses-root"}}),
+        false,
+    );
+    let observed_failure = not_applied(&["model"], "agent");
+    assert_eq!(
+        finish_prompt(&observed_target, "turn-1", Err(observed_failure))
+            .unwrap_err()
+            .code,
+        "chat_option_not_applied"
+    );
+    assert_eq!(
+        observed_target.active.lock().unwrap().as_deref(),
+        Some(NATIVE_BUSY_TURN),
+        "the observed execution keeps its placeholder"
+    );
+    let observed_emitted = drain(&mut observed_events);
+    assert!(
+        observed_emitted
+            .iter()
+            .any(|one| one.kind == "chat.turn.started" && one.turn_id.as_deref() == Some(NATIVE_BUSY_TURN)),
+        "the placeholder turn is visible to the service"
+    );
+
+    // An unmarked failure is still uncertain and fences the stream.
+    let (second, _second_events) = new_target("");
+    reserve_prompt(&second, "turn-1").unwrap();
+    let unknown = ProviderError::new("provider_protocol", "malformed admission");
+    assert!(finish_prompt(&second, "turn-1", Err(unknown)).is_err());
+    assert!(!second.liveness.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_running_childs_card_survives_the_root_turn_stop_and_answers() {
+    // Run-17 B1 through the real stream path: a background subagent asks while
+    // the root turn is active, then the root turn ends (Stop reaches the same
+    // terminal branch). The child's card must stay answerable and its native
+    // request must not be expired with the root turn.
+    let peer = peer(204, "");
+    let (target, mut events) = target(&peer.address);
+    target.v2.lock().unwrap().children.insert("ses-child".into(), "call-child".into());
+    push(
+        &target,
+        &json!({"id":"evt-start","created":1,"type":"session.execution.started","durable":{"aggregateID":"ses-root","seq":1,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    assert!(push(
+        &target,
+        &event(
+            "evt-child-form",
+            "form.created",
+            form("frm_child", "ses-child", json!([{"key":"name","type":"string","title":"Name","required":true,"minLength":3,"maxLength":8}])),
+        ),
+    ));
+    let card = drain(&mut events)
+        .into_iter()
+        .find(|one| one.kind == "chat.approval")
+        .expect("the child card is published");
+    assert_eq!(card.turn_id.as_deref(), Some(NATIVE_BUSY_TURN));
+    push(
+        &target,
+        &json!({"id":"evt-stop","created":2,"type":"session.execution.interrupted","durable":{"aggregateID":"ses-root","seq":2,"version":1},"data":{"sessionID":"ses-root","reason":"user"}}),
+    );
+    let emitted = drain(&mut events);
+    assert!(
+        emitted.iter().all(|one| one.data["approvalId"] != "frm_child"),
+        "the root terminal must not retire the running child's card"
+    );
+    let state = target.v2.lock().unwrap();
+    assert!(state.interactions.contains_key("frm_child"));
+    assert_eq!(state.interactions["frm_child"].turn.as_deref(), Some(NATIVE_BUSY_TURN));
+    drop(state);
+    answer(
+        &target,
+        NATIVE_BUSY_TURN,
+        "frm_child",
+        &json!({"action":"submit","values":{"name":"ABCD"}}),
+    )
+    .unwrap();
+    let request = peer.requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(start(&request), "POST /api/session/ses-child/form/frm_child/reply HTTP/1.1");
+    peer.handle.join().unwrap();
+}
+/// The service side of the same stream: every emitted event is projected the
+/// way the runtime projects a provider event, so a card the service would
+/// expire is visible here instead of only in adapter state.
+fn projection() -> crate::db::Database {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::db::Database::open(&dir.keep().join("projection.sqlite")).unwrap();
+    db.transaction(|tx| {
+        tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('chat-v2','test','opencode','chat','idle','now','now')", [])?;
+        Ok(())
+    })
+    .unwrap();
+    db
+}
+
+fn project(db: &crate::db::Database, events: &[crate::providers::ProviderEvent]) {
+    for event in events {
+        crate::chat_projection::record(
+            db,
+            "chat-v2",
+            event.turn_id.as_deref(),
+            &event.kind,
+            &event.data,
+        )
+        .unwrap();
+    }
+}
+
+fn approval_status(db: &crate::db::Database, approval: &str) -> Option<String> {
+    db.chat_items("chat-v2")
+        .unwrap()
+        .into_iter()
+        .flat_map(|item| item.parts)
+        .find_map(|part| {
+            (part.get("approvalId").and_then(Value::as_str) == Some(approval))
+                .then(|| part.get("status").and_then(Value::as_str).map(str::to_owned))
+                .flatten()
+        })
+}
+
+/// Verification round 4, rule 1: a root turn terminal (including the
+/// `native-busy` placeholder) retires every card whose turn ended, the root's
+/// own and a background child's alike, with receipts and no native write. That
+/// is exactly the set the service expires on `chat.turn.completed`.
+#[test]
+fn a_native_busy_root_terminal_retires_root_and_child_cards() {
+    let (target, mut events) = target("");
+    let db = projection();
+    *target.active.lock().unwrap() = None;
+    target
+        .v2
+        .lock()
+        .unwrap()
+        .children
+        .insert("ses-child".into(), "call-child".into());
+    // A native execution no ThreadTerm turn reserved: the placeholder turn.
+    push(
+        &target,
+        &json!({"id":"evt-root-start","created":1,"type":"session.execution.started","durable":{"aggregateID":"ses-root","seq":1,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    assert_eq!(
+        target.active.lock().unwrap().as_deref(),
+        Some(NATIVE_BUSY_TURN),
+        "the native execution takes the placeholder turn"
+    );
+    pending_form(&target, "frm_root", "ses-root");
+    assert!(push(
+        &target,
+        &event(
+            "evt-child-form",
+            "form.created",
+            form(
+                "frm_child",
+                "ses-child",
+                json!([{"key":"name","type":"string","title":"Name","required":true,"minLength":3,"maxLength":8}]),
+            ),
+        ),
+    ));
+    let before = drain(&mut events);
+    project(&db, &before);
+    assert_eq!(approval_status(&db, "frm_root").as_deref(), Some("pending"));
+    assert_eq!(approval_status(&db, "frm_child").as_deref(), Some("pending"));
+    // The root execution ends while both cards still wait.
+    push(
+        &target,
+        &json!({"id":"evt-root-end","created":2,"type":"session.execution.succeeded","durable":{"aggregateID":"ses-root","seq":2,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    let ended = drain(&mut events);
+    for id in ["frm_root", "frm_child"] {
+        let retired = ended
+            .iter()
+            .find(|event| {
+                event.kind == "chat.approval.resolved" && event.data["approvalId"] == id
+            })
+            .unwrap_or_else(|| panic!("the ended turn retires {id}"));
+        assert_eq!(retired.data["status"], "expired");
+        assert_eq!(retired.data["outcome"], "native");
+        assert_eq!(retired.turn_id.as_deref(), Some(NATIVE_BUSY_TURN));
+    }
+    assert!(
+        ended.iter().any(|event| event.kind == "chat.turn.completed"
+            && event.turn_id.as_deref() == Some(NATIVE_BUSY_TURN)),
+        "the placeholder turn completes once, after its cards are retired"
+    );
+    assert!(
+        target.active.lock().unwrap().is_none(),
+        "the placeholder is released"
+    );
+    project(&db, &ended);
+    for id in ["frm_root", "frm_child"] {
+        assert_eq!(
+            approval_status(&db, id).as_deref(),
+            Some("expired"),
+            "the service shows {id} expired, never pending after its turn ended"
+        );
+    }
+    let state = target.v2.lock().unwrap();
+    assert!(!state.interactions.contains_key("frm_root"));
+    assert!(!state.interactions.contains_key("frm_child"));
+    assert!(
+        state.receipts.contains(&("ses-child".into(), "frm_child".into())),
+        "the child's retirement is a receipt, so a stale list cannot revive it"
+    );
+    drop(state);
+    assert!(
+        validate_send(&target).is_ok(),
+        "no pending card and no turn: the next prompt is admitted"
+    );
+}
+
+#[test]
+fn a_late_root_fact_does_not_leave_a_placeholder_turn_without_an_execution() {
+    // Verification round 2, item 1: `dispatch.observed` is set by any root event
+    // `apply` does not ignore (a late title, usage or step event). A model the
+    // server did not store then left a `native-busy` placeholder with no
+    // execution: no terminal ever arrived, every send failed `turn_in_progress`
+    // and Stop disconnected. Only a running execution may keep the placeholder.
+    let (target, mut events) = target("");
+    reserve_prompt(&target, "turn-1").unwrap();
+    // The real stream path, so `dispatch.observed` is set by the adapter itself.
+    process_event(
+        &target,
+        json!({"id":"evt-late-title","created":1,"type":"session.renamed","data":{"sessionID":"ses-root","title":"late title"}}),
+        false,
+    );
+    assert!(
+        target.v2.lock().unwrap().dispatch.as_ref().unwrap().observed,
+        "a late title sets the observed flag without any execution"
+    );
+    let error = not_applied(&["model"], "agent");
+    assert_eq!(
+        finish_prompt(&target, "turn-1", Err(error)).unwrap_err().code,
+        "chat_option_not_applied"
+    );
+    assert!(
+        target.active.lock().unwrap().is_none(),
+        "a late title is not a running execution"
+    );
+    let emitted = drain(&mut events);
+    assert!(
+        emitted
+            .iter()
+            .all(|event| event.turn_id.as_deref() != Some(NATIVE_BUSY_TURN)),
+        "no placeholder turn is published: {:?}",
+        emitted
+            .iter()
+            .map(|event| (&event.kind, &event.turn_id))
+            .collect::<Vec<_>>()
+    );
+    assert!(target.liveness.load(Ordering::SeqCst), "the Chat stays connected");
+    assert!(
+        validate_send(&target).is_ok(),
+        "the Chat stays sendable after a not-applied model plus a late title"
+    );
+}
+
+/// Run 19, gap 2b through the simple rule: a child terminal retires that
+/// child's own card with a receipt and no native write. A child's terminal is
+/// never the root's turn terminal, so the root placeholder is untouched.
+#[test]
+fn a_child_terminal_retires_its_card_without_completing_the_root() {
+    let (target, mut events) = target("");
+    let db = projection();
+    *target.active.lock().unwrap() = None;
+    target
+        .v2
+        .lock()
+        .unwrap()
+        .children
+        .insert("ses-child".into(), "call-child".into());
+    push(
+        &target,
+        &json!({"id":"evt-child-start","created":1,"type":"session.execution.started","durable":{"aggregateID":"ses-child","seq":1,"version":1},"data":{"sessionID":"ses-child"}}),
+    );
+    push(
+        &target,
+        &json!({"id":"evt-root-start","created":2,"type":"session.execution.started","durable":{"aggregateID":"ses-root","seq":1,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    pending_form(&target, "frm_child", "ses-child");
+    let before = drain(&mut events);
+    project(&db, &before);
+    assert_eq!(approval_status(&db, "frm_child").as_deref(), Some("pending"));
+    assert_eq!(
+        validate_send(&target).unwrap_err().code,
+        "provider_recovery_required",
+        "the barrier holds while the card waits"
+    );
+    // The child's execution ends while its card is still pending.
+    push(
+        &target,
+        &json!({"id":"evt-child-end","created":3,"type":"session.execution.succeeded","durable":{"aggregateID":"ses-child","seq":2,"version":1},"data":{"sessionID":"ses-child"}}),
+    );
+    let ended = drain(&mut events);
+    let retired = ended
+        .iter()
+        .find(|event| {
+            event.kind == "chat.approval.resolved" && event.data["approvalId"] == "frm_child"
+        })
+        .expect("the child terminal retires its own card");
+    assert_eq!(retired.data["status"], "expired");
+    assert_eq!(retired.turn_id.as_deref(), Some(NATIVE_BUSY_TURN));
+    assert!(
+        ended.iter().all(|event| event.kind != "chat.turn.completed"),
+        "a child's terminal never completes the root's turn"
+    );
+    assert_eq!(
+        target.active.lock().unwrap().as_deref(),
+        Some(NATIVE_BUSY_TURN),
+        "the root execution keeps the placeholder turn"
+    );
+    project(&db, &ended);
+    assert_eq!(approval_status(&db, "frm_child").as_deref(), Some("expired"));
+    assert!(
+        validate_send(&target).is_ok(),
+        "the retired card releases the send barrier"
+    );
+    let state = target.v2.lock().unwrap();
+    assert!(!state.interactions.contains_key("frm_child"));
+    assert!(state
+        .receipts
+        .contains(&("ses-child".into(), "frm_child".into())));
+    drop(state);
+    // The root's own terminal still ends the placeholder turn.
+    push(
+        &target,
+        &json!({"id":"evt-root-end","created":4,"type":"session.execution.succeeded","durable":{"aggregateID":"ses-root","seq":2,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    let root_ended = drain(&mut events);
+    assert!(
+        root_ended.iter().any(|event| event.kind == "chat.turn.completed"
+            && event.turn_id.as_deref() == Some(NATIVE_BUSY_TURN)),
+        "the root's terminal completes the placeholder turn: {:?}",
+        root_ended.iter().map(|event| &event.kind).collect::<Vec<_>>()
+    );
+    assert!(target.active.lock().unwrap().is_none());
+}
+
+/// Run 19, rule 4: the child bound may never prune a child that still owns a
+/// pending card, or the answer loses its proven owner.
+#[test]
+fn the_child_bound_never_prunes_a_child_that_owns_a_pending_card() {
+    let (target, _events) = target("");
+    target
+        .v2
+        .lock()
+        .unwrap()
+        .children
+        .insert("ses-old".into(), "call-old".into());
+    target
+        .v2
+        .lock()
+        .unwrap()
+        .children
+        .insert("ses-child".into(), "call-child".into());
+    pending_form(&target, "frm_child", "ses-child");
+    let mut state = target.v2.lock().unwrap();
+    assert_eq!(
+        state.prunable_child("ses-root"),
+        Some("ses-old".into()),
+        "a settled child without a card is pruned first"
+    );
+    state.children.remove("ses-old");
+    assert_eq!(
+        state.prunable_child("ses-root"),
+        None,
+        "the only remaining child owns a pending card and is never pruned"
+    );
+}
+
+/// Kills the inert process a provider harness holds, so no test leaves a
+/// sleeping shell behind on a platform without a job object.
+struct KillChild(Arc<Mutex<std::process::Child>>);
+
+impl Drop for KillChild {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self.0.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// The real Stop path: an `OpenCodeChat` over this test's target, so `cancel`
+/// performs the native interrupt it would perform in the product.
+fn provider_chat(
+    base_url: &str,
+) -> (
+    OpenCodeChat,
+    Arc<EventTarget>,
+    tokio::sync::broadcast::Receiver<crate::providers::ProviderEvent>,
+) {
+    let (target, receiver) = target(base_url);
+    let target = Arc::new(target);
+    #[cfg(windows)]
+    let spec = CommandSpec::from_path(
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+        vec![
+            "-NoProfile".into(),
+            "-Command".into(),
+            "Start-Sleep -Seconds 30".into(),
+        ],
+    )
+    .unwrap();
+    #[cfg(not(windows))]
+    let spec = CommandSpec::from_path(
+        std::path::PathBuf::from("/bin/sh"),
+        vec!["-c".into(), "sleep 30".into()],
+    )
+    .unwrap();
+    let (child, job) = spawn_managed_service(&spec, None, &[]).unwrap();
+    let child = Arc::new(Mutex::new(child));
+    let _cleanup = KillChild(Arc::clone(&child));
+    let server = OpenCodeServer {
+        dialect: ApiDialect::V2,
+        base_url: base_url.into(),
+        cwd: String::new(),
+        username: String::new(),
+        password: String::new(),
+        client: Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap(),
+        child,
+        stopped: Arc::clone(&target.stopped),
+        event_gate: Arc::clone(&target.event_gate),
+        active_turn: Arc::clone(&target.active),
+        permissions: Arc::clone(&target.permissions),
+        events: target.events.clone(),
+        threadterm_session: "chat-v2".into(),
+        worker_token: "worker-v2".into(),
+        _job: job,
+    };
+    let chat = OpenCodeChat {
+        server,
+        session_id: "chat-v2".into(),
+        native_id: "ses-root".into(),
+        events: target.events.clone(),
+        sse_target: Arc::clone(&target),
+        worker_token: "worker-v2".into(),
+    };
+    std::mem::drop(_cleanup);
+    (chat, target, receiver)
+}
+
+/// Verification round 4, the reviewer's severe case: a normal user turn's Stop
+/// still interrupts the root after a background child's card was retired. Run
+/// 19 left a stale value behind whenever a card settled, and every later Stop
+/// found no target and interrupted nothing.
+#[test]
+fn a_normal_turn_stop_interrupts_the_root_after_a_child_card_was_retired() {
+    let peer = peer(200, r#"{"interrupted":true}"#);
+    let (mut chat, target, mut events) = provider_chat(&peer.address);
+    target
+        .v2
+        .lock()
+        .unwrap()
+        .children
+        .insert("ses-child".into(), "call-child".into());
+    // The user's turn runs in the root; a child asks and then finishes.
+    push(
+        &target,
+        &json!({"id":"evt-root-start","created":1,"type":"session.execution.started","durable":{"aggregateID":"ses-root","seq":1,"version":1},"data":{"sessionID":"ses-root"}}),
+    );
+    push(
+        &target,
+        &json!({"id":"evt-child-start","created":2,"type":"session.execution.started","durable":{"aggregateID":"ses-child","seq":1,"version":1},"data":{"sessionID":"ses-child"}}),
+    );
+    pending_form(&target, "frm_child", "ses-child");
+    let _ = drain(&mut events);
+    push(
+        &target,
+        &json!({"id":"evt-child-end","created":3,"type":"session.execution.succeeded","durable":{"aggregateID":"ses-child","seq":2,"version":1},"data":{"sessionID":"ses-child"}}),
+    );
+    let retired = drain(&mut events);
+    assert!(
+        retired.iter().any(|event| event.kind == "chat.approval.resolved"
+            && event.data["approvalId"] == "frm_child"),
+        "the child's card is retired before Stop"
+    );
+    assert_eq!(
+        target.active.lock().unwrap().as_deref(),
+        Some("turn-1"),
+        "the user's turn is still running"
+    );
+    // Stop is the real provider call, so the assertion is about the request
+    // that would reach 2.2.5.
+    chat.cancel("turn-1").unwrap();
+    let request = peer.requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        start(&request),
+        "POST /api/session/ses-root/interrupt HTTP/1.1",
+        "Stop interrupts the running root turn"
+    );
+    assert!(
+        target.liveness.load(Ordering::SeqCst),
+        "a confirmed Stop never fences the Chat"
+    );
+    // The native terminal for the stopped turn is authoritative.
+    push(
+        &target,
+        &json!({"id":"evt-root-stop","created":4,"type":"session.execution.interrupted","durable":{"aggregateID":"ses-root","seq":2,"version":1},"data":{"sessionID":"ses-root","reason":"user"}}),
+    );
+    let ended = drain(&mut events);
+    assert!(
+        ended.iter().any(|event| event.kind == "chat.turn.completed"
+            && event.turn_id.as_deref() == Some("turn-1")),
+        "the stopped turn completes: {:?}",
+        ended.iter().map(|event| &event.kind).collect::<Vec<_>>()
+    );
+    assert!(target.active.lock().unwrap().is_none());
+    assert!(target.abort_pending.lock().unwrap().is_none());
+    assert!(
+        validate_send(&target).is_ok(),
+        "the next prompt is accepted after the stopped turn"
+    );
+    peer.handle.join().unwrap();
 }

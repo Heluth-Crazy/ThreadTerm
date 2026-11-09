@@ -443,21 +443,50 @@ pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, P
 }
 
 pub fn version_probe(command: &str) -> (bool, Option<String>, Option<String>) {
+    let (installed, version, error) = version_probe_detailed(command);
+    (installed, version, error.map(|error| error.message))
+}
+
+/// A probe line that may carry the version. In a test build the provider is
+/// launched through the test binary's bootstrap helper, whose libtest harness
+/// always prints its own banner (`running 1 test`, `test result: ...`) before the
+/// provider writes. That banner is a property of the test launcher, not of any
+/// provider, so it is filtered here and only here; shipped builds read the first
+/// non-empty line of the provider's own output.
+fn probe_line_is_version(line: &str) -> bool {
+    if line.trim().is_empty() {
+        return false;
+    }
+    #[cfg(test)]
+    {
+        let line = line.trim();
+        if line.starts_with("running ") || line.starts_with("test result:") {
+            return false;
+        }
+    }
+    true
+}
+
+/// Like [`version_probe`], but keeps the error code so a caller can tell a
+/// missing executable apart from one that started and failed or timed out.
+pub fn version_probe_detailed(
+    command: &str,
+) -> (bool, Option<String>, Option<ProviderError>) {
     let spec = match CommandSpec::provider(command, &["--version"]) {
         Ok(spec) => spec,
-        Err(error) => return (false, None, Some(error.message)),
+        Err(error) => return (false, None, Some(error)),
     };
     match command_output(&spec, Duration::from_secs(5)) {
         Ok(output) => (
             true,
             output
                 .lines()
-                .find(|line| !line.trim().is_empty())
+                .find(|line| !line.trim().is_empty() && probe_line_is_version(line))
                 .map(str::trim)
                 .map(ToOwned::to_owned),
             None,
         ),
-        Err(error) => (false, None, Some(error.message)),
+        Err(error) => (false, None, Some(error)),
     }
 }
 

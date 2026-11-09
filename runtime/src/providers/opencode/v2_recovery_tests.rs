@@ -750,3 +750,73 @@ fn stop_acknowledgement_after_stream_expiry_never_infers_native_completion() {
             .all(|event| event.kind != "chat.turn.completed"));
     }
 }
+
+#[test]
+fn reconnecting_to_a_long_root_and_child_history_evicts_instead_of_failing() {
+    // Run-17 A1/eviction, through the real `recover` path. Server-loaded rows
+    // carry no part status; they are settled unless they are the live message.
+    // Root rows plus a subagent's rows over 128 and over 4 MiB must attach.
+    let (mut target, _events) = target(None);
+    let big = "x".repeat(40 * 1024);
+    let text_row = |id: &str, created: u64| {
+        json!({"id":id,"type":"assistant","time":{"created":created},"content":[{"type":"text","text":big}]})
+    };
+    let mut root_rows = (0..128u64)
+        .map(|index| text_row(&format!("msg-root-{index}"), index + 1))
+        .collect::<Vec<_>>();
+    root_rows[0] = json!({"id":"msg-root-0","type":"assistant","time":{"created":1},"content":[
+        {"type":"text","text":big},
+        {"type":"tool","id":"call-child","name":"subagent","state":{"status":"running","input":{},"metadata":{"sessionID":"ses-child"}}}
+    ]});
+    let child_rows = (0..128u64)
+        .map(|index| text_row(&format!("msg-child-{index}"), index + 1000))
+        .collect::<Vec<_>>();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    target.base_url = format!("http://{}", listener.local_addr().unwrap());
+    let peer = thread::spawn(move || {
+        for _ in 0..10 {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("long recovery peer failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 { break; }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") { break; }
+            }
+            let request = String::from_utf8(request).unwrap();
+            let path = request.lines().next().unwrap().split_whitespace().nth(1).unwrap().to_owned();
+            let info = |id: &str, parent: Option<&str>| json!({"id":id,"parentID":parent,"location":{"directory":"C:/scratch"},"time":{"created":0,"updated":1,"busy":0,"idle":1}});
+            let body = match path.as_str() {
+                "/api/session/ses-root" => json!({"data":info("ses-root",None)}).to_string(),
+                "/api/session/ses-root/message?limit=128&order=desc" => json!({"data":root_rows,"cursor":{}}).to_string(),
+                "/api/session/active" => json!({"data":{}}).to_string(),
+                "/api/session/ses-root/inbox" | "/api/session/ses-root/form" | "/api/session/ses-root/permission" => json!({"data":[]}).to_string(),
+                "/api/session/ses-child" => json!({"data":info("ses-child",Some("ses-root"))}).to_string(),
+                "/api/session/ses-child/message?limit=128&order=desc" => json!({"data":child_rows,"cursor":{}}).to_string(),
+                "/api/session/ses-child/form" | "/api/session/ses-child/permission" => json!({"data":[]}).to_string(),
+                other => panic!("unexpected recovery path {other}"),
+            };
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    recover(&target).unwrap();
+    peer.join().unwrap();
+    let state = target.v2.lock().unwrap();
+    assert!(state.messages.len() <= MAX_ASSEMBLED_MESSAGES, "{} retained", state.messages.len());
+    assert_eq!(state.message_order.len(), state.messages.len());
+    assert!(state.message_bytes <= MAX_ASSEMBLED_PAYLOAD_BYTES);
+    assert!(state.children.contains_key("ses-child"));
+}

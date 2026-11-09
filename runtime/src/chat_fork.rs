@@ -197,6 +197,12 @@ fn fork_inner(db: &Database, providers: &Providers, request: ForkRequest<'_>) ->
                 .map_err(|_| anyhow!("operation_outcome_unknown"))?;
             let transcript = serde_json::from_value::<Vec<ChatItem>>(history)
                 .map_err(|_| anyhow!("operation_outcome_unknown"))?;
+            // A fork copies a transcript. An empty read of a source that has
+            // messages proves this reader cannot see the fork, so it is never
+            // saved as a successful empty child.
+            if transcript.is_empty() && !items.is_empty() {
+                return Err(anyhow!("operation_outcome_unknown"));
+            }
             let import_operation = derived(request.operation_id, "native-import");
             let (child, created) = db
                 .import_history_session(ImportHistorySession {

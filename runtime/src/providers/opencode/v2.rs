@@ -24,9 +24,24 @@ pub(super) struct State {
     seen: HashSet<String>,
     seen_order: VecDeque<String>,
     messages: HashMap<(String, String), Message>,
+    /// Insertion order of `messages`, so the oldest settled assembly can be
+    /// evicted when a long session outgrows its retained bound.
+    message_order: VecDeque<(String, String)>,
+    /// Retained native bytes of every cached message, maintained incrementally:
+    /// the budget check runs on every delta under the event gate and must never
+    /// re-serialize the whole cache.
+    message_bytes: usize,
+    /// The assistant message each session's live execution is still writing.
+    /// It is never evicted even when every part it currently has is complete:
+    /// the next delta/final event rebuilds it from scratch and would lose text.
+    active_messages: HashMap<String, (String, String)>,
     /// Only task-tool metadata can bind a child; parentID also describes forks.
     children: HashMap<String, String>,
+    /// Unproven child claims only: a candidate is dropped as soon as its native
+    /// parent link proves ownership, so the map tracks in-flight claims instead
+    /// of every subagent the Chat ever ran.
     task_candidates: HashMap<String, (String, String)>,
+    task_order: VecDeque<String>,
     parents: HashMap<String, String>,
     executions: HashMap<String, Execution>,
     /// Durable sequence positions are per aggregate, not globally comparable.
@@ -48,14 +63,12 @@ pub(super) struct State {
     inbox_items: HashSet<String>,
     unowned: VecDeque<Value>,
     unowned_bytes: usize,
-    unowned_gap: bool,
-    authoritative_only: bool,
     /// The model an authoritative native assistant row proved it used. The
     /// footer shows this, never the next-turn selection.
     actual_model: Option<Value>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Interaction {
     session: String,
     kind: String,
@@ -89,6 +102,65 @@ struct Message {
     seeded: bool,
     created_at: Option<String>,
     finalized: HashMap<String, Value>,
+    /// Retained bytes of this message's content and finalized events.
+    bytes: usize,
+}
+
+impl Message {
+    fn retained_bytes(&self) -> usize {
+        self.content
+            .values()
+            .map(|part| part.to_string().len())
+            .sum::<usize>()
+            + self
+                .finalized
+                .values()
+                .map(|event| event.to_string().len())
+                .sum::<usize>()
+    }
+
+    /// A delta may only extend content this cache already knows: a tool the
+    /// message never opened, or a text ordinal that was never started, has to
+    /// come from the native projection instead of a fabricated local part.
+    fn contains_identity(&self, data: &Value, kind: &str) -> bool {
+        if kind.starts_with("session.tool.") {
+            return data
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| self.tools.contains_key(id));
+        }
+        let part_type = if kind.starts_with("session.reasoning.") {
+            "reasoning"
+        } else {
+            "text"
+        };
+        data.get("ordinal")
+            .and_then(Value::as_u64)
+            .is_some_and(|ordinal| self.ordinals.contains_key(&(part_type.to_owned(), ordinal)))
+    }
+
+    /// A message whose parts all reached a native terminal state may leave the
+    /// assembly cache: its published items are already durable downstream.
+    fn settled(&self) -> bool {
+        // A server-loaded row has no live part statuses. It is settled unless
+        // `active_messages` proves its execution is still writing it.
+        if self.seeded {
+            return !self.content.is_empty();
+        }
+        !self.content.is_empty()
+            && self.content.values().all(|part| {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text" | "reasoning") => {
+                        part.get("status").and_then(Value::as_str) == Some("completed")
+                    }
+                    Some("tool") => matches!(
+                        part.pointer("/state/status").and_then(Value::as_str),
+                        Some("completed" | "error")
+                    ),
+                    _ => false,
+                }
+            })
+    }
 }
 
 #[derive(Debug)]
@@ -247,26 +319,104 @@ impl State {
         Some(interaction)
     }
 
+    /// The settled child to prune when the proven-child graph is at its bound.
+    /// A child that still owns a pending card is never pruned, not even as a
+    /// fallback: its card would lose the native owner that makes an answer
+    /// possible and `pending` would refuse the reply as an unproven owner.
+    fn prunable_child(&self, parent: &str) -> Option<String> {
+        self.children
+            .keys()
+            .find(|id| {
+                id.as_str() != parent
+                    && self
+                        .executions
+                        .get(*id)
+                        .is_none_or(|execution| !execution.running)
+                    && !self
+                        .interactions
+                        .values()
+                        .any(|interaction| interaction.session == **id)
+            })
+            .cloned()
+    }
+
+    /// A finished native execution retires the cards that named its turn. A
+    /// child terminal only ends its own session's cards; the root turn terminal
+    /// uses [`Self::retire_turn`], which ends the turn everywhere.
+    fn retire_session_turn(
+        &mut self,
+        session: &str,
+        turn: &str,
+    ) -> Vec<(String, Interaction)> {
+        let retired = self
+            .interactions
+            .iter()
+            .filter(|(_, interaction)| {
+                interaction.session == session
+                    && interaction.turn.as_deref() == Some(turn)
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        self.retire(retired)
+    }
+
+    /// A root turn terminal (including the `native-busy` placeholder) ends the
+    /// turn for everybody: every card whose turn it was is retired, the root's
+    /// own and a background child's alike. This is exactly what the service does
+    /// on `chat.turn.completed`, so the adapter and the service never disagree
+    /// about which cards a finished turn expires.
+    ///
+    /// Retiring these cards sends nothing to OpenCode. A native request that was
+    /// still pending when its card expired stays pending; reconnect raises it
+    /// again (see validation notes).
+    fn retire_turn(&mut self, turn: &str) -> Vec<(String, Interaction)> {
+        let retired = self
+            .interactions
+            .iter()
+            .filter(|(_, interaction)| interaction.turn.as_deref() == Some(turn))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        self.retire(retired)
+    }
+
+    fn retire(&mut self, retired: Vec<String>) -> Vec<(String, Interaction)> {
+        retired
+            .into_iter()
+            .filter_map(|id| self.settle(&id).map(|interaction| (id, interaction)))
+            .collect()
+    }
+
+    /// Retained memory is bounded without failing a long session: the oldest
+    /// *settled* message is evicted (its items are already published) until the
+    /// count and byte bounds hold. Only a live assembly that cannot be evicted
+    /// stays an explicit error.
+    fn enforce_budget(&mut self, keep: &(String, String)) -> Result<(), ProviderError> {
+        while self.messages.len() > MAX_ASSEMBLED_MESSAGES
+            || self.message_bytes > MAX_ASSEMBLED_PAYLOAD_BYTES
+        {
+            let evictable = self.message_order.iter().position(|key| {
+                key != keep
+                    && !self.active_messages.values().any(|active| active == key)
+                    && self.messages.get(key).is_some_and(Message::settled)
+            });
+            let Some(index) = evictable else { break };
+            if let Some(key) = self.message_order.remove(index) {
+                if let Some(message) = self.messages.remove(&key) {
+                    self.message_bytes = self.message_bytes.saturating_sub(message.bytes);
+                }
+            }
+        }
+        self.check_budget()
+    }
+
     fn check_budget(&self) -> Result<(), ProviderError> {
         if self.messages.len() > MAX_ASSEMBLED_MESSAGES
+            || self.messages.len() > self.message_order.len()
+            || self.message_bytes > MAX_ASSEMBLED_PAYLOAD_BYTES
             || self
                 .messages
                 .values()
                 .any(|message| message.content.len() > MAX_BUFFERED_EVENTS)
-            || self
-                .messages
-                .values()
-                .flat_map(|m| m.content.values())
-                .map(|part| part.to_string().len())
-                .sum::<usize>()
-                > MAX_ASSEMBLED_PAYLOAD_BYTES
-            || self
-                .messages
-                .values()
-                .flat_map(|message| message.finalized.values())
-                .map(|event| event.to_string().len())
-                .sum::<usize>()
-                > MAX_ASSEMBLED_PAYLOAD_BYTES
         {
             return Err(protocol("OpenCode v2 message assembly exceeded its bound"));
         }
@@ -288,16 +438,28 @@ impl State {
             .or_else(|| subagent_marker_child(tool));
         if let Some(child) = child {
             validate_native_id(child)?;
-            if self.task_candidates.len() >= MAX_SESSIONS
-                && !self.task_candidates.contains_key(child)
-            {
-                return Err(protocol("OpenCode v2 child ownership exceeded its bound"));
-            }
             if child == session {
                 return Err(protocol("OpenCode v2 task owns itself"));
             }
-            self.task_candidates
-                .insert(child.into(), (session.into(), text(tool, "id")?.into()));
+            // An owned child needs no further proof: keeping its claim would
+            // make the candidate map grow with every subagent the Chat ran.
+            if !self.children.contains_key(child) {
+                if !self.task_candidates.contains_key(child)
+                    && self.task_candidates.len() >= MAX_SESSIONS
+                {
+                    // Oldest unproven claim first; a still-live claim is
+                    // re-announced by its own tool events, so dropping one is
+                    // never a permanent loss of ownership.
+                    if let Some(oldest) = self.task_order.pop_front() {
+                        self.task_candidates.remove(&oldest);
+                    }
+                }
+                if !self.task_candidates.contains_key(child) {
+                    self.task_order.push_back(child.into());
+                }
+                self.task_candidates
+                    .insert(child.into(), (session.into(), text(tool, "id")?.into()));
+            }
             if self
                 .parents
                 .get(child)
@@ -424,16 +586,17 @@ impl State {
             ));
         }
         let created_at = message.created_at.clone();
-        if self.messages.len() >= MAX_ASSEMBLED_MESSAGES
-            && !self.messages.contains_key(&(session.into(), id.into()))
-        {
-            self.authoritative_only = true;
-            if let Some(key) = self.messages.keys().next().cloned() {
-                self.messages.remove(&key);
-            }
+        let key = (session.to_owned(), id.to_owned());
+        message.bytes = message.retained_bytes();
+        // An evicted message is re-seeded by its next projection read, never
+        // fabricated from a delta; the budget is enforced after the insert.
+        if let Some(previous) = self.messages.insert(key.clone(), message) {
+            self.message_bytes = self.message_bytes.saturating_sub(previous.bytes);
+        } else {
+            self.message_order.push_back(key.clone());
         }
-        self.messages.insert((session.into(), id.into()), message);
-        self.check_budget()?;
+        self.message_bytes += self.messages[&key].bytes;
+        self.enforce_budget(&key)?;
         Ok(Some(Change::Message {
             session: session.into(),
             id: id.into(),
@@ -460,11 +623,17 @@ impl State {
             // Keep a bounded window for task metadata that arrives after its
             // child's native events. Unproven/fork sessions still never project.
             let bytes = raw.to_string().len();
-            if self.unowned.len() >= MAX_PENDING_CHILD_EVENTS
+            // Early events for a child that is not proven yet are a bounded
+            // window, not a queue: the oldest claim is dropped and the child's
+            // own snapshot read supplies its transcript once ownership is
+            // proven. Dropping an old unowned event is never a permanent gap.
+            while self.unowned.len() >= MAX_PENDING_CHILD_EVENTS
                 || self.unowned_bytes.saturating_add(bytes) > MAX_ASSEMBLED_PAYLOAD_BYTES
             {
-                self.unowned_gap = true;
-                return Ok(Change::None);
+                let Some(dropped) = self.unowned.pop_front() else { break };
+                self.unowned_bytes = self
+                    .unowned_bytes
+                    .saturating_sub(dropped.to_string().len());
             }
             self.unowned_bytes += bytes;
             self.unowned.push_back(raw.clone());
@@ -500,9 +669,23 @@ impl State {
             let seq =
                 seq.ok_or_else(|| protocol("OpenCode v2 execution event has no durable position"))?;
             if self.executions.len() >= MAX_SESSIONS && !self.executions.contains_key(session) {
-                return Err(protocol(
-                    "OpenCode v2 execution ownership exceeded its bound",
-                ));
+                // Settled per-session bookkeeping is pruned instead of failing
+                // the stream: only a live execution must stay resident.
+                let settled = self
+                    .executions
+                    .iter()
+                    .find(|(id, execution)| {
+                        id.as_str() != session
+                            && !execution.running
+                            && execution.terminal_seq.is_some()
+                    })
+                    .map(|(id, _)| id.clone());
+                let Some(settled) = settled else {
+                    return Err(protocol(
+                        "OpenCode v2 execution ownership exceeded its bound",
+                    ));
+                };
+                self.executions.remove(&settled);
             }
             let execution = self.executions.entry(session.into()).or_default();
             let created = raw
@@ -553,6 +736,7 @@ impl State {
             }
             execution.running = false;
             execution.terminal_seq = Some(seq);
+            self.active_messages.remove(session);
             if kind == "session.execution.interrupted"
                 && data.get("reason").and_then(Value::as_str) == Some("shutdown")
             {
@@ -735,6 +919,8 @@ impl State {
             });
         }
         let key = (session.into(), message_id.into());
+        self.active_messages
+            .insert(session.to_owned(), key.clone());
         let final_event = kind.ends_with(".ended")
             && (kind.starts_with("session.text.") || kind.starts_with("session.reasoning."))
             || matches!(
@@ -746,11 +932,9 @@ impl State {
                     | "session.tool.failed"
             );
         if final_event {
-            if self.messages.len() >= MAX_ASSEMBLED_MESSAGES && !self.messages.contains_key(&key) {
-                if let Some(old) = self.messages.keys().next().cloned() {
-                    self.messages.remove(&old);
-                }
-                self.authoritative_only = true;
+            let previous_bytes = self.messages.get(&key).map_or(0, |message| message.bytes);
+            if !self.messages.contains_key(&key) {
+                self.message_order.push_back(key.clone());
             }
             let message = self.messages.entry(key.clone()).or_default();
             if kind == "session.tool.progress"
@@ -841,7 +1025,13 @@ impl State {
             if let Some(tool) = finalized_tool {
                 self.task_binding(session, &tool)?;
             }
-            self.check_budget()?;
+            let message = self.messages.get_mut(&key).expect("message inserted");
+            message.bytes = message.retained_bytes();
+            self.message_bytes = self
+                .message_bytes
+                .saturating_sub(previous_bytes)
+                .saturating_add(message.bytes);
+            self.enforce_budget(&key)?;
             let message = &self.messages[&key];
             return Ok(Change::Message {
                 session: session.into(),
@@ -851,17 +1041,14 @@ impl State {
             });
         }
         if !kind.ends_with(".started")
-            && (self.authoritative_only
-                || self
-                    .messages
-                    .get(&key)
-                    .is_some_and(|message| message.seeded)
-                || (self.messages.len() >= MAX_ASSEMBLED_MESSAGES
-                    && !self.messages.contains_key(&key)))
+            && self
+                .messages
+                .get(&key)
+                .is_none_or(|message| message.seeded || !message.contains_identity(data, kind))
         {
-            if self.messages.len() >= MAX_ASSEMBLED_MESSAGES {
-                self.authoritative_only = true;
-            }
+            // A delta whose message is no longer cached (evicted, or only
+            // known from a snapshot) is re-read instead of fabricating a
+            // partial message from the stream.
             return Ok(Change::Refresh {
                 session: session.into(),
                 message: message_id.into(),
@@ -881,7 +1068,11 @@ impl State {
                 message: message_id.into(),
             });
         }
-        let message = self.messages.entry(key).or_default();
+        let previous_bytes = self.messages.get(&key).map_or(0, |message| message.bytes);
+        if !self.messages.contains_key(&key) {
+            self.message_order.push_back(key.clone());
+        }
+        let message = self.messages.entry(key.clone()).or_default();
         if kind.starts_with("session.text.") || kind.starts_with("session.reasoning.") {
             let ordinal = data
                 .get("ordinal")
@@ -988,11 +1179,14 @@ impl State {
             let part = part.clone();
             self.task_binding(session, &part)?;
         }
-        self.check_budget()?;
-        let message = self
-            .messages
-            .get(&(session.into(), message_id.into()))
-            .expect("message inserted");
+        let message = self.messages.get_mut(&key).expect("message inserted");
+        message.bytes = message.retained_bytes();
+        self.message_bytes = self
+            .message_bytes
+            .saturating_sub(previous_bytes)
+            .saturating_add(message.bytes);
+        self.enforce_budget(&key)?;
+        let message = &self.messages[&key];
         Ok(Change::Message {
             session: session.into(),
             id: message_id.into(),
@@ -1256,7 +1450,7 @@ pub(super) fn dispatch_v2(
             let name = body
                 .get("name")
                 .and_then(Value::as_str)
-                .ok_or_else(|| protocol("OpenCode v2 command has no name"))?;
+                .ok_or_else(|| not_sent(protocol("OpenCode v2 command has no name")))?;
             let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
             api.run_command(&target.native_id, name, text, &files)?;
             Ok(json!({}))
@@ -1267,7 +1461,7 @@ pub(super) fn dispatch_v2(
             let text = body
                 .get("text")
                 .and_then(Value::as_str)
-                .ok_or_else(|| protocol("OpenCode v2 prompt has no text"))?;
+                .ok_or_else(|| not_sent(protocol("OpenCode v2 prompt has no text")))?;
             api.admit_prompt(&target.native_id, text, &files)
         }
     }
@@ -1286,8 +1480,8 @@ fn apply_settings(target: &EventTarget, api: &NativeApi) -> Result<(), ProviderE
     };
     let mut applied: Vec<&str> = Vec::new();
     if let Some(model) = model {
-        api.switch_model(&target.native_id, &model)?;
-        let stored = api.read_session(&target.native_id)?;
+        api.switch_model(&target.native_id, &model).map_err(not_sent)?;
+        let stored = api.read_session(&target.native_id).map_err(not_sent)?;
         let stored = stored.get("model").cloned().unwrap_or(Value::Null);
         let wanted_variant = model.get("variant").and_then(Value::as_str);
         let matches = stored.get("providerID").and_then(Value::as_str)
@@ -1301,8 +1495,8 @@ fn apply_settings(target: &EventTarget, api: &NativeApi) -> Result<(), ProviderE
         applied.push("model");
     }
     if !agent.is_empty() {
-        api.switch_agent(&target.native_id, &agent)?;
-        let stored = api.read_session(&target.native_id)?;
+        api.switch_agent(&target.native_id, &agent).map_err(not_sent)?;
+        let stored = api.read_session(&target.native_id).map_err(not_sent)?;
         if stored.get("agent").and_then(Value::as_str) != Some(agent.as_str()) {
             return Err(not_applied(&applied, "agent"));
         }
@@ -1316,7 +1510,19 @@ fn not_applied(applied: &[&str], failed: &str) -> ProviderError {
         "chat_option_not_applied",
         format!("OpenCode did not apply the selected {failed}; nothing was sent"),
     )
-    .with_details(json!({"applied":applied,"failed":failed,"rolledBack":false}))
+    .with_details(json!({"applied":applied,"failed":failed,"rolledBack":false,"nativeNotSent":true}))
+}
+
+/// A failure that provably happened before the native prompt/command POST.
+/// `finish_prompt` must never fence the Chat for one of these: nothing was sent.
+fn not_sent(error: ProviderError) -> ProviderError {
+    let mut details = error
+        .details
+        .clone()
+        .filter(|details| details.is_object())
+        .unwrap_or_else(|| json!({}));
+    details["nativeNotSent"] = json!(true);
+    ProviderError::new(error.code, error.message).with_details(details)
 }
 
 fn publish(target: &EventTarget, state: &mut State, change: Change) {
@@ -1443,6 +1649,20 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                     turn.as_deref(),
                 );
             }
+            // B1: the turn ended, so every card whose turn this was is retired
+            // on this side with a receipt and no native write: the root's own
+            // cards and a background child's alike. This is the same set the
+            // service expires on `chat.turn.completed`.
+            if let Some(turn) = turn.as_deref() {
+                for (id, interaction) in state.retire_turn(turn) {
+                    emit(
+                        "chat.approval.resolved",
+                        json!({"approvalId":id,"status":"expired","outcome":"native",
+                            "message":"The turn ended before this request was answered."}),
+                        interaction.turn.as_deref(),
+                    );
+                }
+            }
             target.complete_turn(status, raw);
         }
         Change::Terminal {
@@ -1453,6 +1673,17 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                     "chat.subagent",
                     json!({"key":key,"info":{"status":status,"native":{"kind":"opencode-session","id":session}}}),
                     turn.as_deref(),
+                );
+            }
+            // A child whose execution ended (succeeded, failed or interrupted)
+            // can no longer answer its own native requests: retire its cards
+            // here with a receipt and no native write.
+            for (id, interaction) in state.retire_session_turn(&session, NATIVE_BUSY_TURN) {
+                emit(
+                    "chat.approval.resolved",
+                    json!({"approvalId":id,"status":"expired","outcome":"native",
+                        "message":"The subagent finished before this request was answered."}),
+                    interaction.turn.as_deref(),
                 );
             }
         }
@@ -1471,6 +1702,16 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                     .unwrap_or_else(|| "Subagent".into());
                 (key.clone(), label)
             });
+            // A background subagent's card and an idle root card are answerable
+            // even when their execution has no ThreadTerm turn. Give them the
+            // native-busy placeholder so the service records a turn and the UI
+            // can submit the answer. A child card is never tagged with the root
+            // turn: a root Stop must not expire it.
+            let card_turn = if session != target.native_id || turn.is_none() {
+                Some(NATIVE_BUSY_TURN.to_owned())
+            } else {
+                turn.clone()
+            };
             let mut payload = if kind == "form.created" {
                 match crate::chat_questions::canonical_form(&request) {
                     Ok(form) => json!({"interaction":"question","answerable":true,"form":form}),
@@ -1497,7 +1738,7 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                     title,
                     &request,
                     &allow_deny_choices(),
-                    turn.as_deref(),
+                    card_turn.as_deref(),
                     true,
                 )
             };
@@ -1520,7 +1761,7 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                 Interaction {
                     session,
                     kind: kind.clone(),
-                    turn: turn.clone(),
+                    turn: card_turn.clone(),
                     payload: payload.clone(),
                 },
             );
@@ -1532,7 +1773,7 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
             if payload["interaction"] == "permission" {
                 data["choices"] = json!(allow_deny_choices());
             }
-            emit("chat.approval", data, turn.as_deref());
+            emit("chat.approval", data, card_turn.as_deref());
         }
         Change::Receipt {
             session,
@@ -2006,10 +2247,26 @@ pub(super) fn finish_prompt(
             .details
             .as_ref()
             .and_then(|details| details["httpStatus"].as_u64());
-        let uncertain = dispatch.observed
-            || error.code == "provider_disconnected"
-            || status.is_none_or(|status| status >= 500);
+        // A definite failure happened before anything was written natively
+        // (a settings write, the location read, or an option the server did
+        // not store). Nothing can have been sent, so the Chat stays open and
+        // the error is shown instead of fencing the stream.
+        let not_sent = error
+            .details
+            .as_ref()
+            .and_then(|details| details["nativeNotSent"].as_bool())
+            .unwrap_or(false);
+        let uncertain = !not_sent
+            && (dispatch.observed
+                || error.code == "provider_disconnected"
+                || status.is_none_or(|status| status >= 500));
         let terminal = dispatch.terminal;
+        // A late title, usage or step event sets `observed` without proving a
+        // native execution: only a running execution may keep a placeholder.
+        let native_running = state
+            .executions
+            .get(&target.native_id)
+            .is_some_and(|execution| execution.running);
         drop(state);
         if uncertain && !terminal {
             expire_stream_locked(target, "send_result_unknown", &error.message, &commit);
@@ -2020,7 +2277,25 @@ pub(super) fn finish_prompt(
                 .ok()
                 .is_some_and(|active| active.as_deref() == Some(operation))
         {
-            if let Ok(mut active) = target.active.lock() {
+            if native_running {
+                // The prompt was not written, but a native execution started
+                // anyway. Keep a placeholder so its terminal event cannot
+                // settle the next local turn; do not drop the evidence before
+                // the execution's own terminal arrives.
+                if let Ok(mut active) = target.active.lock() {
+                    *active = Some(NATIVE_BUSY_TURN.into());
+                }
+                emit_scoped(
+                    &target.events,
+                    "opencode",
+                    &target.threadterm_session,
+                    Some(&target.native_id),
+                    Some(NATIVE_BUSY_TURN),
+                    "chat.turn.started",
+                    json!({"resumedNativeTurn":true}),
+                    Some(&target.worker_token),
+                );
+            } else if let Ok(mut active) = target.active.lock() {
                 *active = None;
             }
             emit_scoped(
@@ -2212,20 +2487,40 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
             .get(&parent)
             .cloned()
             .unwrap_or_else(|| call.clone());
+        // Every proven child keeps an execution record for the Chat's life, so
+        // a long subagent history must prune settled children instead of
+        // growing without a bound. A live child is never dropped.
+        if state.children.len() >= MAX_SESSIONS {
+            // Only a settled child that owns no pending card is pruned: a
+            // waiting child's card keeps its proven native owner instead of
+            // being pruned from under an answer that is still possible. When
+            // every settled child owns a card the new child is admitted past
+            // the bound, so the excess is bounded by the pending-interaction
+            // bound instead of failing the stream.
+            if let Some(settled) = state.prunable_child(&parent) {
+                state.children.remove(&settled);
+                state.parents.remove(&settled);
+                state.executions.remove(&settled);
+                state.sequences.remove(&settled);
+                state.active_messages.remove(&settled);
+                state.task_candidates.remove(&settled);
+                state.task_order.retain(|candidate| candidate != &settled);
+            }
+        }
         state.parents.insert(child.clone(), parent);
         state.children.insert(child.clone(), key.clone());
-        if state.unowned_gap {
-            return Err(protocol(
-                "OpenCode v2 early child events overflowed before ownership could be proven",
-            ));
-        }
+        // Proven ownership needs no further claim; keeping it would grow the
+        // candidate map with every subagent this Chat ever ran.
+        state.task_candidates.remove(&child);
+        state.task_order.retain(|candidate| candidate != &child);
         let execution = state.executions.entry(child.clone()).or_default();
         execution.snapshot_busy = info.pointer("/time/busy").and_then(Value::as_f64);
         execution.snapshot_idle = info.pointer("/time/idle").and_then(Value::as_f64);
         execution.running = execution
             .snapshot_busy
             .is_some_and(|busy| execution.snapshot_idle.is_none_or(|idle| busy > idle));
-        let status = if execution.running {
+        let child_running = execution.running;
+        let status = if child_running {
             "running"
         } else {
             match info.get("outcome").and_then(Value::as_str) {
@@ -2272,6 +2567,18 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
                         Some(&target.worker_token),
                     );
                 }
+            }
+        }
+        if child_running {
+            if let Some(id) = rows
+                .iter()
+                .rev()
+                .find(|row| row.get("type").and_then(Value::as_str) == Some("assistant"))
+                .and_then(|row| row.get("id").and_then(Value::as_str))
+            {
+                state
+                    .active_messages
+                    .insert(child.clone(), (child.clone(), id.to_owned()));
             }
         }
         if partial {
@@ -2520,6 +2827,20 @@ fn recover(target: &EventTarget) -> Result<(), ProviderError> {
                 publish(target, &mut state, change);
             }
         }
+        if running {
+            if let Some(id) = snapshot
+                .messages
+                .iter()
+                .rev()
+                .find(|row| row.get("type").and_then(Value::as_str) == Some("assistant"))
+                .and_then(|row| row.get("id").and_then(Value::as_str))
+            {
+                state.active_messages.insert(
+                    target.native_id.clone(),
+                    (target.native_id.clone(), id.to_owned()),
+                );
+            }
+        }
         let execution = state
             .executions
             .entry(target.native_id.clone())
@@ -2687,7 +3008,10 @@ fn pending(
     if !state.owned(&interaction.session, &target.native_id) {
         return Err(protocol("OpenCode v2 interaction has an unproven owner"));
     }
-    if interaction.turn.as_deref() != Some(turn_id) {
+    if interaction.turn.as_deref().is_some_and(|turn| turn != turn_id) {
+        // A card raised without an active turn (a background subagent, or an
+        // idle root at attach) belongs to no turn and stays answerable; only a
+        // card that names a different turn is refused.
         return Err(ProviderError::new(
             "approval_not_pending",
             "OpenCode interaction belongs to another turn",

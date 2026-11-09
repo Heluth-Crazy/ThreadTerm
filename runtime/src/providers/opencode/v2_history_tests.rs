@@ -4,6 +4,11 @@
 //! `session list` / `export` reads.
 use super::*;
 use serde_json::json;
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    sync::mpsc,
+};
 
 fn session_row(id: &str, directory: &str, updated: i64) -> Value {
     json!({
@@ -443,11 +448,267 @@ fn a_session_live_in_this_runtime_is_read_through_its_owning_server() {
         "pw".into(),
         ApiDialect::V2,
     );
-    v2_store_live_owner("ses_owner_run12", api, Arc::clone(&stopped));
+    v2_store_live_owner("ses_owner_run12", api, Arc::clone(&stopped), None);
     assert!(v2_live_owner("ses_owner_run12").is_some());
     // An unknown session has no owner: the caller falls back to the history
     // server, it never guesses a server.
     assert!(v2_live_owner("ses_unknown_run12").is_none());
     stopped.store(true, Ordering::SeqCst);
     assert!(v2_live_owner("ses_owner_run12").is_none(), "a stopped owner is never served");
+}
+
+#[test]
+fn a_dead_stream_owner_is_never_served_and_a_fork_child_keeps_its_server() {
+    // Run-15 findings C7 and C1. A worker whose server died but was not retired
+    // must not own reads; a fork child is read through the server that made it.
+    let stopped = Arc::new(AtomicBool::new(false));
+    let live = Arc::new(AtomicBool::new(true));
+    let api = NativeApi::new(
+        Client::builder().build().unwrap(),
+        "http://127.0.0.1:1".into(),
+        "D:/project/one".into(),
+        "pw".into(),
+        ApiDialect::V2,
+    );
+    v2_store_live_owner(
+        "ses_live_run15",
+        api.clone(),
+        Arc::clone(&stopped),
+        Some(Arc::clone(&live)),
+    );
+    assert!(v2_live_owner("ses_live_run15").is_some());
+    // The fork child created by this server is aliased to it, so its history
+    // read never starts (and evicts) a second server.
+    assert!(v2_alias_live_owner("ses_fork_run15", "ses_live_run15"));
+    assert!(v2_live_owner("ses_fork_run15").is_some());
+    v2_forget_live_owner("ses_fork_run15");
+    assert!(v2_live_owner("ses_fork_run15").is_none());
+    // A dead event stream retires the owner: reads fall back to the history
+    // server instead of a dead port.
+    live.store(false, Ordering::SeqCst);
+    assert!(v2_live_owner("ses_live_run15").is_none());
+    // An alias of a parent that is not registered is never invented.
+    assert!(!v2_alias_live_owner("ses_orphan_run15", "ses_missing_run15"));
+}
+
+#[test]
+fn an_unreadable_version_probe_never_selects_the_legacy_terminal() {
+    // Run-17 C2. Only "executable not found" is definite. A CLI that ran and
+    // failed or timed out must never cache the 1.x dialect.
+    let missing = ProviderError::unavailable("opencode", "not found on PATH");
+    let timeout = ProviderError::new("provider_timeout", "did not finish");
+    let failed = ProviderError::new("provider_probe_failed", "exit 3");
+    assert!(opencode_probe_is_definite(true, Some("2.2.5"), None), "a version answers");
+    assert!(opencode_probe_is_definite(true, Some("opencode v2.2.5"), None));
+    assert!(opencode_probe_is_definite(true, Some("1.18.35"), None));
+    assert!(opencode_probe_is_definite(false, None, Some(&missing)), "a missing CLI is definite");
+    assert!(!opencode_probe_is_definite(false, None, Some(&timeout)), "a timeout is inconclusive");
+    assert!(!opencode_probe_is_definite(false, None, Some(&failed)), "a failed run is inconclusive");
+    assert!(!opencode_probe_is_definite(true, None, None));
+    assert!(!opencode_probe_is_definite(true, Some("opencode"), None));
+    assert!(opencode_terminal_args(Some("ses_exact"), false) == vec!["--session", "ses_exact"]);
+    assert_eq!(opencode_history_uses_native_api(true, None), false);
+}
+
+#[test]
+fn a_fork_field_is_not_activity_but_a_real_transcript_still_guards_empty_reads() {
+    // Run-17: a native fork made at the first message is legitimately empty.
+    // The `fork` field alone no longer makes an empty read unreadable; real
+    // native work still does, and ThreadTerm's own fork read goes through the
+    // creating server (C1).
+    let fork = json!({"id":"ses_fork","fork":{"sessionID":"ses_source","messageID":"msg_reply"}});
+    assert!(v2_require_visible("ses_fork", 0, || Ok(fork.clone())).is_ok());
+    let worked = json!({"id":"ses_worked","tokens":{"input":3}});
+    assert_eq!(
+        v2_require_visible("ses_worked", 0, || Ok(worked.clone())).unwrap_err().code,
+        "session_history_unreadable"
+    );
+}
+
+#[test]
+fn a_fork_failure_on_a_timeout_never_kills_the_owning_server() {
+    // Run-17 C3/dead cache, extended by verification round 2 item 6: only a dead
+    // process or a refused connection drops the cached server. A timeout keeps it
+    // (the copy may still be running) and so does any native answer, including a
+    // 404 on a deleted id, an unreadable transcript or a malformed body.
+    let timeout = ProviderError::new("provider_disconnected", "OpenCode request failed: timed out")
+        .with_details(json!({"transportFailure":true,"timedOut":true}));
+    assert!(!v2_failure_forgets_server(&timeout, true), "a timeout keeps a live server");
+    let refused = ProviderError::new("provider_disconnected", "connection refused")
+        .with_details(json!({"transportFailure":true,"timedOut":false}));
+    assert!(v2_failure_forgets_server(&refused, true), "a refused connection is a dead server");
+    let answered = ProviderError::new("provider_error", "OpenCode returned 500")
+        .with_details(json!({"httpStatus":500}));
+    assert!(!v2_failure_forgets_server(&answered, true), "an answering server is kept");
+    let missing = ProviderError::new("provider_error", "OpenCode returned 404")
+        .with_details(json!({"httpStatus":404}));
+    assert!(
+        !v2_failure_forgets_server(&missing, true),
+        "a 404 on a deleted id ends nothing: a fresh fork alias stays readable"
+    );
+    let unreadable = ProviderError::new("session_history_unreadable", "no messages visible");
+    assert!(!v2_failure_forgets_server(&unreadable, true), "an unreadable transcript keeps it");
+    assert!(
+        v2_failure_forgets_server(&missing, false),
+        "a process that is not running is always dropped"
+    );
+}
+
+#[test]
+fn the_shared_history_server_starts_outside_every_project_and_worktree() {
+    // Verification round 2, item 5: with one shared cache key the server used to
+    // start in whatever project or worktree the first caller passed, and stayed
+    // there for its idle window. On Windows that blocks `git worktree remove`.
+    // Requests carry their own directory or id, so a neutral folder is correct.
+    let data = std::path::PathBuf::from("D:/runtime-data/ThreadTermV3");
+    let project = std::path::PathBuf::from("D:/project/worktree-feature");
+    assert_eq!(
+        v2_neutral_server_dir(Some(data.clone()), Some(project.clone())),
+        data,
+        "the runtime data folder wins over the caller's project"
+    );
+    assert_eq!(
+        v2_neutral_server_dir(None, Some(std::path::PathBuf::from("C:/Users/qa/AppData/Local"))),
+        std::path::PathBuf::from("C:/Users/qa/AppData/Local/ThreadTermV3")
+    );
+    let fallback = v2_neutral_server_dir(None, None);
+    assert!(fallback.ends_with("ThreadTermV3"), "{}", fallback.display());
+    assert_ne!(fallback, project, "never the caller's project or worktree");
+}
+
+#[test]
+fn an_empty_fork_read_at_the_first_message_is_valid_history() {
+    // Run-17: a fork can legitimately have no messages. The creating server
+    // proves visibility; chat_fork separately refuses an empty read of a
+    // non-empty ThreadTerm source.
+    let fork = json!({"id":"ses_fork","fork":{"sessionID":"ses_source","messageID":"msg_reply"}});
+    assert!(v2_require_visible("ses_fork", 0, || Ok(fork.clone())).is_ok());
+    let plain = json!({"id":"ses_new","cost":0,"tokens":{"input":0}});
+    assert!(v2_require_visible("ses_new", 0, || Ok(plain.clone())).is_ok());
+}
+
+#[cfg(windows)]
+#[test]
+fn a_timed_out_or_failing_version_probe_never_launches_the_legacy_terminal() {
+    // Run-17 C2 through `terminal_command`: a fake `opencode` that runs past
+    // the probe timeout or exits non-zero must refuse the launch, never fall
+    // back to 1.x arguments.
+    use crate::environment::{Snapshot, Vars};
+    let root = tempfile::tempdir().unwrap();
+    let start = std::env::vars_os().collect::<Vars>();
+    let mut block = start.clone();
+    block.retain(|(name, _)| !name.eq_ignore_ascii_case("PATH"));
+    block.push(("Path".into(), root.path().as_os_str().to_owned()));
+    let adapter = OpenCodeAdapter::new(crate::provider_events::tap_channel(1).0);
+    let launch = |script: &str| {
+        std::fs::write(root.path().join("opencode.cmd"), script).unwrap();
+        let start = start.clone();
+        let mut block = start.clone();
+        block.retain(|(name, _)| !name.eq_ignore_ascii_case("PATH"));
+        let mut paths = vec![root.path().to_path_buf()];
+        if let Some(system) = std::env::var_os("SystemRoot") {
+            paths.push(std::path::PathBuf::from(system).join("System32"));
+        }
+        block.push(("Path".into(), std::env::join_paths(paths).unwrap()));
+        let snapshot = Snapshot { block, registry: ["PATH".into()].into_iter().collect() };
+        crate::environment::with_test_snapshot(&start, snapshot, || {
+            opencode_forget_native_probe();
+            adapter.terminal_command(Some("ses_exact"), Some("C:/scratch"))
+        })
+    };
+    let _serialized = provider_global_test_lock();
+    // The script exists and runs, but does not answer within the probe window.
+    let timed_out = launch("@echo off\r\nping -n 8 127.0.0.1 >nul\r\necho opencode v2.2.5\r\n")
+        .unwrap_err();
+    assert_eq!(timed_out.code, "provider_version_unknown", "{}", timed_out.message);
+    // A non-zero exit is just as inconclusive.
+    let failed = launch("@echo off\r\nexit /b 3\r\n").unwrap_err();
+    assert_eq!(failed.code, "provider_version_unknown", "{}", failed.message);
+    // A definite 2.x answer still launches with `--standalone`. The probe reads
+    // the first non-empty line itself; the test controls that output instead of
+    // teaching the shared parser to skip unrelated lines.
+    let command = launch("@echo off\r\necho opencode v2.2.5\r\n").unwrap();
+    assert_eq!(
+        command.args,
+        vec!["--session".to_owned(), "ses_exact".to_owned(), "--standalone".to_owned()]
+    );
+}
+#[test]
+fn a_fork_timeout_keeps_its_evidence_through_the_uncertain_mapping() {
+    // Run-17 C3: `fork_before` used to be remapped to operation_outcome_unknown
+    // without details, so the timeout looked like a dead server and killed the
+    // cached process mid-copy. The test runs through `opencode_v2_fork`.
+    let _serialized = provider_global_test_lock();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (done, finished) = mpsc::channel();
+    let peer = thread::spawn(move || {
+        for index in 0..2 {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("fork peer failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 { break; }
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") { break; }
+            }
+            let request = String::from_utf8(request).unwrap();
+            let first = request.lines().next().unwrap().to_owned();
+            if index == 0 {
+                let body = json!({"data":[{"id":"msg-1","type":"assistant","content":[{"type":"text","text":"x"}]}],"cursor":{}}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            } else {
+                // Stall past the (test-shortened) fork deadline, then close.
+                assert!(first.starts_with("POST /api/session/ses_fork_timeout_run17/fork"), "{first}");
+                thread::sleep(Duration::from_millis(300));
+                done.send(()).unwrap();
+            }
+        }
+    });
+    let api = NativeApi::new(
+        Client::builder().build().unwrap(),
+        base,
+        "C:/scratch".into(),
+        "pw".into(),
+        ApiDialect::V2,
+    );
+    let stopped = Arc::new(AtomicBool::new(false));
+    v2_store_live_owner("ses_fork_timeout_run17", api, Arc::clone(&stopped), None);
+    api::set_v2_fork_timeout_for_test(Some(Duration::from_millis(80)));
+    let result = opencode_v2_fork(
+        "C:/scratch",
+        "ses_fork_timeout_run17",
+        None,
+        true,
+    );
+    api::set_v2_fork_timeout_for_test(None);
+    finished.recv_timeout(Duration::from_secs(5)).unwrap();
+    peer.join().unwrap();
+    stopped.store(true, Ordering::SeqCst);
+    v2_forget_live_owner("ses_fork_timeout_run17");
+    let error = result.err().expect("a timed-out fork is uncertain");
+    assert_eq!(error.code, "operation_outcome_unknown");
+    assert_eq!(
+        error.details.as_ref().and_then(|details| details["timedOut"].as_bool()),
+        Some(true),
+        "the mapping kept the timeout evidence: {:?}",
+        error.details
+    );
+    assert!(
+        !v2_failure_forgets_server(&error, true),
+        "a timed-out copy keeps its server"
+    );
 }
