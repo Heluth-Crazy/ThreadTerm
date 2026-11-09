@@ -842,6 +842,10 @@ impl ChatSession for CodexChat {
         Some(self.native_id.clone())
     }
 
+    fn process_ids(&self) -> Vec<u32> {
+        self.process.process_ids()
+    }
+
     fn is_alive(&self) -> bool {
         self.process.is_alive()
     }

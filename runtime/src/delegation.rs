@@ -1039,12 +1039,7 @@ pub(crate) fn release_finished_child(
     {
         return Ok(false);
     }
-    if db.chat_items(child_session_id)?.iter().any(|item| {
-        item.parts.iter().any(|part| {
-            part.get("type").and_then(Value::as_str) == Some("approval")
-                && matches!(part.get("status").and_then(Value::as_str), Some("pending" | "submitting"))
-        })
-    }) {
+    if crate::chat_projection::has_pending_request(db, child_session_id)? {
         return Ok(false);
     }
     if crate::chat_queue::pending_work(db, child_session_id)? {

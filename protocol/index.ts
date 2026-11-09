@@ -45,6 +45,10 @@ export interface SessionGroup { /** Owning group id. */ id:string; /** This sess
 /** Present when this Chat session is a Chat Code Review finder or verifier. S2 hides these from the sidebar and opens them by id. */
 export interface SessionCodeReview { reviewId:string; parentSessionId:string; role:'finder'|'verifier'; lens?:string }
 export interface Session { id:string; projectId?:string; worktreePath?:string; title:string; provider:ProviderId; mode:SessionMode; status:SessionStatus; createdAt:string; updatedAt:string; nativeId?:string; exitCode?:number; cols?:number; rows?:number; followed?:boolean; readOnly?:boolean; /** The process tree was stopped to free resources; opening the session resumes the same native conversation. */ released?:boolean; activity?:SessionActivity; delegation?:SessionDelegation; /** Group grouping metadata for member Chat sessions. */ group?:SessionGroup; archived?:boolean; pinned?:boolean; bookmarked?:boolean; intent?:'review'|'fix'|'research'|'test'|'docs'; sortOrder?:number; organizationRevision?:number; /** Present when this terminal is a Quick Launch run. */ run?:SessionRun; forkedFrom?:SessionForkOrigin; /** Present on Chat Code Review finder/verifier sessions. */ codeReview?:SessionCodeReview; /** What a shell/custom terminal is running now: a built-in mark id (claude, codex, …) or `image:<id>` from Settings → Terminal icons; absent otherwise. */ terminalAgent?:string }
+/** One live agent process tree, from `session.processes` (on demand). */
+export interface SessionProcess { sessionId:string; processCount:number; memoryBytes?:number; idleSeconds?:number; visible:boolean; idle:boolean; /** Why it cannot be stopped now (turn, pending request, queue, background task, …). */ blocked?:string; /** Its worker was busy, so process ids are the last successful read. */ busy?:boolean }
+/** `session.processes`: only sessions with a live process tree. Memory is Windows-only. */
+export interface SessionProcessList { sessions:SessionProcess[]; memoryBytes?:number; idleReleaseMinutes:number }
 /** Quick Launch: per-project saved commands, each run as an ordinary managed terminal session in a chosen worktree.
  * One active run per command and worktree root (the runtime admits atomically and returns the existing run). */
 export type QuickLaunchShell = 'cmd'|'powershell'|'pwsh';
@@ -213,7 +217,7 @@ export interface TerminalIconRule { id:string; match:string; /** A built-in mark
 /** A user's icon: only ever drawn as an <img> data URL (png, svg+xml, webp, jpeg or gif), at most about 64 KB. */
 export interface TerminalIconImage { id:string; name:string; src:string }
 export interface TerminalIconSettings { rules:TerminalIconRule[]; images:TerminalIconImage[] }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; /** Minutes before a hidden idle chat worker is released; 0 disables it (default 30). */ 'sessions.idleReleaseMinutes'?:number; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export type ExternalFileSource = 'dialog'|'drop'|'link'|'recent';
@@ -952,11 +956,15 @@ export interface RequestMap {
  'session.releaseResources': [{sessionId:string;operationId:string},Session];
  /** Check every listed session under its admission lock, then release all or none. */
  'session.releaseResources.bulk': [{sessionIds:string[];operationId:string},{released:Session[];refused:{sessionId:string;code:string;message:string}[]}];
+ /** Release the idle sessions in one project/worktree scope; returns what it stopped and how many it skipped. */
+ 'session.releaseIdle': [{projectId?:string;worktreePath?:string;operationId:string},{released:Session[];skipped:number;failed?:number;freedBytes?:number}];
+ /** Live agent process trees with memory (Windows) for Settings → Data → Running agents. */
+ 'session.processes': [{projectId?:string;worktreePath?:string},SessionProcessList];
  'session.organize': [{sessionId:string;archived?:boolean;pinned?:boolean;bookmarked?:boolean;intent?:'review'|'fix'|'research'|'test'|'docs'|'none';sortOrder?:number;expectedRevision:number;operationId:string},Session];
  'session.update': [{sessionId:string;title?:string;followed?:boolean;operationId:string},Session];
  'session.attention.acknowledge': [{sessionId:string;expectedRevision:number;operationId:string},Session];
  'session.claim': [{sessionId:string;clientId:string;takeover?:boolean},{leaseEpoch:number}];
- 'session.renew': [{sessionId:string;leaseEpoch:number},{leaseEpoch:number}];
+ 'session.renew': [{sessionId:string;leaseEpoch:number;visible?:boolean},{leaseEpoch:number}];
  'session.release': [{sessionId:string;leaseEpoch:number},null];
  'terminal.input': [{sessionId:string;data:string;leaseEpoch:number},null];
  'terminal.resize': [{sessionId:string;cols:number;rows:number;leaseEpoch:number},null];
@@ -1247,6 +1255,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'quickLaunch.sequence.cancel','quickLaunch.port.read',
  'quickLaunch.recent','quickLaunch.proposals.list','quickLaunch.proposals.accept','quickLaunch.proposals.reject','chat.tool.run.propose',
  'session.releaseResources.bulk',
+ 'session.releaseIdle','session.processes',
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
@@ -1282,6 +1291,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.create':['cwd','provider','mode','operationId'],'history.import':['cwd','provider','nativeId','mode','operationId'],'session.config.read':['sessionId'],'session.config.save':['sessionId','cwd','provider','mode','operationId'],'session.retry.read':['sessionId'],'session.retry.update':['sessionId','operationId'],'session.stop':['sessionId','operationId'],'session.releaseResources':['sessionId','operationId'],
  'session.update':['sessionId','operationId'],'session.attention.acknowledge':['sessionId','operationId'],'session.claim':['sessionId','clientId'],'session.release':['sessionId'],
  'session.renew':['sessionId'],
+ 'session.releaseIdle':['operationId'],'session.processes':[],
  'terminal.input':['sessionId','data'],'terminal.resize':['sessionId'],
  'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'chat.queue.read':['sessionId'],'chat.queue.add':['sessionId','text','operationId'],'chat.queue.update':['sessionId','itemId','text','operationId'],'chat.queue.remove':['sessionId','itemId','operationId'],'chat.queue.move':['sessionId','itemId','operationId'],'chat.queue.pause':['sessionId','operationId'],'chat.queue.resume':['sessionId','operationId'],'chat.queue.send':['sessionId','itemId','operationId'],'quickLaunch.list':['projectId'],'quickLaunch.save':['projectId','name','command','shell','kind','operationId'],'quickLaunch.delete':['id','operationId'],'quickLaunch.restart':['sessionId','operationId'],'quickLaunch.detect':['projectId','cwd'],'quickLaunch.repo.list':['projectId','cwd'],'quickLaunch.repo.save':['projectId','cwd','operationId'],'quickLaunch.repo.delete':['projectId','cwd','id','operationId'],'quickLaunch.repo.trust':['projectId','cwd','id','fingerprint','operationId'],'quickLaunch.setup.read':['projectId'],'quickLaunch.setup.save':['projectId','operationId'],'quickLaunch.setup.run':['projectId','cwd','operationId'],'quickLaunch.setup.status':['projectId'],'history.list':['provider'],'history.read':['provider','nativeId'],
 /* feat/run-p3 string field additions are assigned below.
@@ -1970,7 +1980,7 @@ export interface DataStatus { root:string;database:{path:string;sizeBytes:number
 export interface ThemeBackgroundLayer { image:string;opacity:number;blur:number;overlay:number;fit:'cover'|'contain'|'tile';focusX:number;focusY:number;scale:number }
 export interface ThemeBackgrounds { window?:ThemeBackgroundLayer;sidebar?:ThemeBackgroundLayer;sidebar2?:ThemeBackgroundLayer;chat?:ThemeBackgroundLayer;editor?:ThemeBackgroundLayer;terminal?:ThemeBackgroundLayer;browser?:ThemeBackgroundLayer }
 export interface ThemeTokens { background:string;surface:string;text:string;muted:string;accent:string;border:string;sidebar?:string;editor?:string;base?:string;backgrounds?:ThemeBackgrounds }
-export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.run'?:boolean;'chatTools.delegation'?:boolean} }
+export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.run'?:boolean;'chatTools.delegation'?:boolean;'sessions.idleReleaseMinutes'?:number} }
 export interface UsageRecord { source?:UsageSource;status?:SessionStatus;sessionId:string;provider:ProviderId;recordedAt:string;inputTokens?:number;outputTokens?:number;estimatedCost?:number;currency?:string;model?:string }
 export type UsageSource = 'created'|'native-history'|'rerun';
 export interface SessionLifecycleMetric { sessionId:string;projectId?:string;provider:ProviderId;mode:SessionMode;status:SessionStatus;source?:UsageSource;sourceSessionId?:string;startedAt:string;endedAt?:string;sessionLifetimeSeconds?:number;durationKind:'session_lifetime';history:{status:SessionStatus;recordedAt:string}[] }

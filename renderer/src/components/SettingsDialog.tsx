@@ -25,8 +25,8 @@ import "../../../reference/prototype/features/settings.css";
 import "./settings-parity.css";
 
 type Tab = "appearance" | "controls" | "terminal" | "browser" | "data" | "mobile" | "computers" | "tools" | "plugins" | "usage";
-type Props = { initialTab?: Tab; data: Snapshot; onClose: () => void; onSaved: () => Promise<void>; onSessionCreated?: (id: string) => void | Promise<void>; supervisionCounts: { checks: number; alertCount: number } };
-export function SettingsDialog({ initialTab = "appearance", data, onClose, onSaved, onSessionCreated, supervisionCounts }: Props) {
+type Props = { initialTab?: Tab; data: Snapshot; onClose: () => void; onSaved: () => Promise<void>; onSessionCreated?: (id: string) => void | Promise<void>; onOpenSession?: (id: string) => void; supervisionCounts: { checks: number; alertCount: number } };
+export function SettingsDialog({ initialTab = "appearance", data, onClose, onSaved, onSessionCreated, onOpenSession, supervisionCounts }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const machine = useMachines(), remote = machine.currentId !== 'local';
   useEffect(() => { if (!settingsPageVisible(tab, remote)) setTab('appearance'); }, [tab, remote]);
@@ -48,7 +48,7 @@ export function SettingsDialog({ initialTab = "appearance", data, onClose, onSav
       <section className={`settings-group ${tab === "controls" ? "active" : ""}`}><SettingsControls settings={data.settings} zh={zh} update={update} counts={supervisionCounts} /><SettingsQuickMessages settings={data.settings} zh={zh} update={update} /></section>
       {tab === "terminal" && window.threadterm.platform === "win32" && <section className="settings-group active"><SettingsTerminal settings={data.settings} zh={zh} update={update} /></section>}
       {tab === "browser" && <section className="settings-group active"><SettingsBrowser zh={zh} settings={data.settings} update={update} /></section>}
-      {!remote && <section className={`settings-group ${tab === "data" ? "active" : ""}`}><SettingsData settings={data.settings} zh={zh} onSaved={onSaved} /></section>}
+      {!remote && <section className={`settings-group ${tab === "data" ? "active" : ""}`}><SettingsData settings={data.settings} zh={zh} onSaved={onSaved} active={tab === "data"} sessions={data.sessions} projects={data.projects} onOpenSession={onOpenSession} /></section>}
       {!remote && <section className={`settings-group ${tab === "mobile" ? "active" : ""}`}><DeviceSettings language={zh ? "zh-CN" : "en"} active={tab === "mobile"} /></section>}
       {!remote && tab === 'computers' && <section className="settings-group active"><MachineSettings settings={data.settings} zh={zh} update={update} /></section>}
       <section className={`settings-group ${tab === "tools" ? "active" : ""}`}><SettingsChatTools settings={data.settings} zh={zh} update={update} /><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /><SettingsTools data={data} onSaved={onSaved} focusAccounts={initialTab === "tools" && tab === "tools"} /></section>

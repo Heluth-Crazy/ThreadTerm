@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import type { DataRelocationPrepared, DataStatus, Settings } from "@threadterm/protocol";
+import type { DataRelocationPrepared, DataStatus, Project, Session, Settings } from "@threadterm/protocol";
 import { activateDataRelocation, chooseDirectory, chooseSavePath, exportDiagnostics, exportFile, operationId, request, scheduleElectronCacheCleanup } from "../bridge";
 import { ensureReviewCommentsImported } from "../reviewComments";
 import { SurfaceDialog } from "./SurfaceDialog";
 import { SettingsSwitch } from "./SettingsControls";
+import { RunningAgents } from "./RunningAgents";
 
 const showValue = (value: unknown) => value === undefined ? "—" : JSON.stringify(value, null, 2);
 const relocationItems: Record<string, [string, string]> = { database: ["数据库与设置", "Database & settings"], credentials: ["本机运行时凭据", "Runtime credential"], remoteIdentity: ["远程访问证书与密钥", "Remote access certificate & key"], reviewCheckpoints: ["审查检查点对象", "Review checkpoint objects"], plugins: ["本地插件文件", "Local plugin files"] };
 const bytes = (value: number) => value < 1024 ? `${value} B` : value < 1048576 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1048576).toFixed(1)} MB`;
-export function SettingsData({ settings, zh, onSaved }: { settings: Settings; zh: boolean; onSaved: () => Promise<void> }) {
+export function SettingsData({ settings, zh, onSaved, active = false, sessions = [], projects = [], onOpenSession }: { settings: Settings; zh: boolean; onSaved: () => Promise<void>; active?: boolean; sessions?: readonly Session[]; projects?: readonly Project[]; onOpenSession?: (sessionId: string) => void }) {
   const [status, setStatus] = useState<DataStatus>(), [busy, setBusy] = useState(false), [issue, setIssue] = useState<string>(), [notice, setNotice] = useState<string>();
   const [bundle, setBundle] = useState(""), [preview, setPreview] = useState<Awaited<ReturnType<typeof request<"settings.import.preview">>>>(), [selected, setSelected] = useState<string[]>([]);
   const [target, setTarget] = useState(""), [prepared, setPrepared] = useState<{ value: DataRelocationPrepared; operation: string }>(), [migrationState, setMigrationState] = useState("idle");
@@ -34,6 +35,7 @@ export function SettingsData({ settings, zh, onSaved }: { settings: Settings; zh
   });
   const cache = settings.electronCacheCleanup as { state?: string; message?: string } | undefined;
   return <>
+    <RunningAgents settings={settings} zh={zh} active={active} sessions={sessions} projects={projects} onSaved={onSaved} onOpen={sessionId => onOpenSession?.(sessionId)} />
     <h3>{text("数据、导入与迁移", "Data, import & migration")}</h3><p>{status?.root ?? text("正在加载数据清单…", "Loading data inventory…")}</p>
     <table className="settings-table"><thead><tr><th>{text("类别", "Category")}</th><th>{text("大小", "Size")}</th><th>{text("项目", "Items")}</th></tr></thead><tbody>
       <tr><td>{text("会话与项目数据库", "Session & project database")}</td><td>{status ? bytes(status.database.sizeBytes) : "—"}</td><td>{status?.counts.sessions ?? "—"}</td></tr>

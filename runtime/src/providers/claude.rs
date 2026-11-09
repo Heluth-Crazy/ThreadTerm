@@ -635,6 +635,10 @@ impl ChatSession for ClaudeChat {
     fn native_id(&self) -> Option<String> {
         self.native_id.clone()
     }
+
+    fn process_ids(&self) -> Vec<u32> {
+        self.process.process_ids()
+    }
     fn is_alive(&self) -> bool {
         // The sidecar host process can outlive the SDK query it drives; both
         // must be alive for the session to count as usable.

@@ -44,6 +44,7 @@ pub(crate) mod git_undo;
 pub mod git_read;
 pub(crate) mod git_selected_commit;
 pub mod job;
+pub(crate) mod idle_release;
 pub mod leases;
 pub mod output;
 pub mod output_loss;

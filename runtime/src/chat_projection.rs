@@ -1054,6 +1054,21 @@ fn has_pending_approval(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Res
     Ok(false)
 }
 
+/// Bounded release-path check: SQLite resolves the pending part without
+/// loading any transcript item into the runtime.
+pub(crate) fn has_pending_request(db: &Database, session_id: &str) -> Result<bool> {
+    db.transaction(|tx| {
+        Ok(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_items, json_each(chat_items.data, '$.parts') part
+                WHERE chat_items.session_id=?
+                  AND json_extract(part.value, '$.type')='approval'
+                  AND json_extract(part.value, '$.status') IN ('pending','submitting'))",
+            [session_id],
+            |row| row.get::<_, bool>(0),
+        )?)
+    })
+}
+
 /// Who the session's pending approvals wait for: `Some("parent")` when every
 /// pending request was routed to the delegating parent agent, `Some("user")`
 /// when at least one waits for the user, `None` when nothing is pending.

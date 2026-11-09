@@ -69,6 +69,7 @@ async fn run() -> Result<()> {
     service.initialize_remote()?;
     service.start_retry_scheduler();
     service.start_terminal_agent_watcher();
+    service.start_idle_sweeper();
     let result = transport::serve(Arc::clone(&service), credential).await;
     service.shutdown();
     result

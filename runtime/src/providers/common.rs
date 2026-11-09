@@ -937,6 +937,14 @@ impl JsonLineProcess {
         self.alive.load(Ordering::SeqCst)
     }
 
+    /// Pids of this provider's whole process tree, for the Running agents view.
+    pub fn process_ids(&self) -> Vec<u32> {
+        self._job
+            .as_ref()
+            .map(crate::job::SessionJob::process_ids)
+            .unwrap_or_default()
+    }
+
     /// End the owned native process tree even if a captured worker handle
     /// delays dropping this transport. Trust revocation needs this boundary.
     pub fn terminate(&mut self) -> Result<(), ProviderError> {

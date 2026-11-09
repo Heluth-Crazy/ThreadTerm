@@ -663,6 +663,10 @@ function MachineApp() {
               await navigate({ kind: "session", id: sessionId });
               void refresh();
             }}
+            onOpenSession={(sessionId) => {
+              setSettingsOpen(false);
+              void navigate({ kind: "session", id: sessionId });
+            }}
           />
         )}
       </div>

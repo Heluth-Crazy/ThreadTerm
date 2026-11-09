@@ -149,6 +149,7 @@ impl Fixture {
             browser_tools: RuntimeService::browser_test_tools(&db),
             desktop_files: crate::desktop_files::DesktopFiles::default(),
             editor_navigation: Arc::new(crate::editor_navigation::EditorNavigation::new(root)),
+            idle: Arc::new(crate::idle_release::IdleClock::default()),
             shutdown_changed: tokio::sync::Notify::new(),
             config: RuntimeConfig { data_dir: root.to_owned(), database_path: root.join("runtime.sqlite"), credential_path: root.join("credential"), pipe_base: r"\\.\pipe\threadterm-v3-project-trust-test".into() },
             db, leases: LeaseManager::default(), output: Arc::clone(&output), providers,

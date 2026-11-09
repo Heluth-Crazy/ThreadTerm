@@ -39,6 +39,8 @@ struct FixtureAdapter {
     provider: &'static str,
     /// `capability()` starts a real probe in production; a release must not call it.
     capabilities: Arc<AtomicUsize>,
+    /// When true the fixture's active chat reports one running provider task.
+    background_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ProviderAdapter for FixtureAdapter {
@@ -74,6 +76,10 @@ impl ProviderAdapter for FixtureAdapter {
 
     fn id(&self) -> &'static str {
         self.provider
+    }
+
+    fn terminal_capture(&self) -> crate::providers::TerminalCapture {
+        crate::providers::TerminalCapture::PreAssigned
     }
 
     fn capability(&self) -> ProviderCapability {
@@ -167,6 +173,7 @@ impl ProviderAdapter for FixtureAdapter {
             cancels: Arc::clone(&self.cancels),
             cancel_failures: Arc::clone(&self.cancel_failures),
             options: Arc::new(Mutex::new(("default".to_owned(), "default".to_owned()))),
+            background_running: Arc::clone(&self.background_running),
         }))
     }
 }
@@ -184,6 +191,7 @@ struct FixtureChat {
     /// Permission options this chat offers (F07 verifies the fitted child mode
     /// against them, like a real adapter's catalogue).
     options: Arc<Mutex<(String, String)>>,
+    background_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ChatSession for FixtureChat {
@@ -224,6 +232,28 @@ impl ChatSession for FixtureChat {
 
     fn is_alive(&self) -> bool {
         self.alive.load(AtomicOrdering::SeqCst)
+    }
+
+    fn process_ids(&self) -> Vec<u32> {
+        vec![std::process::id()]
+    }
+
+    fn background_tasks(
+        &mut self,
+    ) -> Result<Vec<crate::providers::ChatBackgroundTask>, ProviderError> {
+        if !self.background_running.load(AtomicOrdering::SeqCst) {
+            return Ok(Vec::new());
+        }
+        Ok(vec![crate::providers::ChatBackgroundTask {
+            id: "fixture-task".into(),
+            title: "fixture background task".into(),
+            command: None,
+            status: "running".into(),
+            started_at: None,
+            ended_at: None,
+            can_stop: true,
+            tool_id: None,
+        }])
     }
 
     fn send(&mut self, _text: &str, _operation_id: &str) -> Result<Value, ProviderError> {
@@ -285,6 +315,7 @@ struct Fixture {
     cancels: Arc<AtomicUsize>,
     cancel_failures: Arc<Mutex<Vec<ProviderError>>>,
     capabilities: Arc<AtomicUsize>,
+    background_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Fixture {
@@ -364,6 +395,7 @@ impl Fixture {
         let cancels = Arc::new(AtomicUsize::new(0));
         let cancel_failures = Arc::new(Mutex::new(Vec::new()));
         let capabilities = Arc::new(AtomicUsize::new(0));
+        let background_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let adapter = Arc::new(FixtureAdapter {
             gate: slow.then_some(OpenGate {
                 started: started_tx,
@@ -384,6 +416,7 @@ impl Fixture {
             cancel_failures: Arc::clone(&cancel_failures),
             provider: "grok",
             capabilities: Arc::clone(&capabilities),
+            background_running: Arc::clone(&background_running),
         });
         let mut adapters: Vec<Arc<dyn ProviderAdapter>> = vec![adapter];
         if unrestricted_agent {
@@ -405,6 +438,7 @@ impl Fixture {
                 cancel_failures: Arc::clone(&cancel_failures),
                 provider: "demo-plugin",
                 capabilities: Arc::clone(&capabilities),
+                background_running: Arc::clone(&background_running),
             }));
         }
         let output = Arc::new(OutputStore::default());
@@ -413,6 +447,7 @@ impl Fixture {
             browser_tools: RuntimeService::browser_test_tools(&db),
             desktop_files: crate::desktop_files::DesktopFiles::default(),
             editor_navigation: Arc::new(crate::editor_navigation::EditorNavigation::new(root.path())),
+            idle: Arc::new(crate::idle_release::IdleClock::default()),
             shutdown_changed: tokio::sync::Notify::new(),
             config: RuntimeConfig {
                 data_dir: root.path().to_owned(),
@@ -452,6 +487,7 @@ impl Fixture {
             cancels,
             cancel_failures,
             capabilities,
+            background_running,
         }
     }
 
@@ -1484,6 +1520,7 @@ fn provider_handoff_does_not_publish_an_already_dead_worker() {
         cancel_failures: Arc::new(Mutex::new(Vec::new())),
         provider: "grok",
         capabilities: Arc::new(AtomicUsize::new(0)),
+        background_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let providers = Providers::for_test(vec![Arc::new(adapter)]);
     assert_eq!(
@@ -3444,6 +3481,504 @@ fn start_event_pump(fixture: &Fixture) {
             .unwrap(),
         Arc::clone(&fixture.service.delegations),
         crate::turn_speed::shared(fixture.db.path()),
+        Arc::clone(&fixture.service.idle),
     );
+}
+
+
+// ---- idle release, bulk stop and running agents ---------------------------
+
+fn idle_setting(fixture: &Fixture, minutes: i64) {
+    let _ = fixture.db.update_settings(
+        &json!({"sessions.idleReleaseMinutes":minutes}),
+        0,
+        &format!("idle-setting-{minutes}"),
+    );
+}
+
+fn backdate(fixture: &Fixture, session: &str, minutes: i64) {
+    fixture.service.idle.touch_at(
+        session,
+        chrono::Utc::now() - chrono::Duration::minutes(minutes),
+        false,
+    );
+}
+
+fn pending_approval_item(fixture: &Fixture, session: &str, status: &str) {
+    let item = json!({
+        "id": format!("{session}:approval:a"),
+        "role": "assistant",
+        "parts": [{"type":"approval","approvalId":"a","status":status}],
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                rusqlite::params![item["id"].as_str().unwrap(), session, "turn", "message", item.to_string(), chrono::Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn queued_item(fixture: &Fixture, session: &str) {
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO chat_queue_items(id,session_id,position,text,images_json,revision,state,created_at,updated_at) VALUES (?,?,?,?, '[]',1,'queued',?,?)",
+                rusqlite::params![format!("{session}-queue"), session, 0, "queued prompt", chrono::Utc::now().to_rfc3339(), chrono::Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_hidden_idle_chat_is_released_by_the_sweep_and_keeps_its_native_id() {
+    let fixture = Fixture::new(false, None);
+    idle_setting(&fixture, 30);
+    let (id, native) = connected_chat(&fixture, "idle-hidden");
+    backdate(&fixture, &id, 31);
+    let now = chrono::Utc::now();
+    assert!(!fixture.service.idle.seed(&id, now));
+    assert_eq!(fixture.service.sweep_idle(now).unwrap(), 1);
+    let session = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(session.released);
+    assert_eq!(session.status, "exited");
+    assert_eq!(session.native_id.as_deref(), Some(native.as_str()));
+}
+
+#[test]
+fn a_visible_renew_and_a_renew_without_the_flag_each_keep_the_session() {
+    let fixture = Fixture::for_delegation();
+    idle_setting(&fixture, 30);
+    for (label, visible) in [("visible", Some(true)), ("legacy", None)] {
+        let (id, _) = connected_chat(&fixture, &format!("renew-{label}"));
+        backdate(&fixture, &id, 31);
+        let epoch = fixture.claim(&id);
+        fixture
+            .service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: format!("renew-{label}"),
+                    method: "session.renew".into(),
+                    params: json!({"sessionId":id,"leaseEpoch":epoch,"visible":visible}),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            fixture.service.sweep_idle(chrono::Utc::now()).unwrap(),
+            0,
+            "{label}"
+        );
+        assert!(!fixture.db.session_by_id(&id).unwrap().unwrap().released);
+    }
+}
+
+#[test]
+fn setting_zero_disables_the_sweep() {
+    let fixture = Fixture::new(false, None);
+    idle_setting(&fixture, 0);
+    let (id, _) = connected_chat(&fixture, "idle-off");
+    backdate(&fixture, &id, 120);
+    assert_eq!(fixture.service.sweep_idle(chrono::Utc::now()).unwrap(), 0);
+    assert!(!fixture.db.session_by_id(&id).unwrap().unwrap().released);
+}
+
+#[test]
+fn busy_pending_queued_and_background_work_each_keep_the_worker() {
+    for keep in ["running", "pending", "queued", "background"] {
+        let fixture = Fixture::new(false, None);
+        idle_setting(&fixture, 30);
+        let (id, _) = connected_chat(&fixture, &format!("keep-{keep}"));
+        match keep {
+            "running" => fixture.db.set_session_status(&id, "running", None).unwrap(),
+            "pending" => pending_approval_item(&fixture, &id, "pending"),
+            "queued" => queued_item(&fixture, &id),
+            "background" => fixture
+                .background_running
+                .store(true, std::sync::atomic::Ordering::SeqCst),
+            _ => unreachable!(),
+        }
+        backdate(&fixture, &id, 31);
+        assert_eq!(
+            fixture.service.sweep_idle(chrono::Utc::now()).unwrap(),
+            0,
+            "{keep} keeps the worker"
+        );
+        assert!(
+            !fixture.db.session_by_id(&id).unwrap().unwrap().released,
+            "{keep}"
+        );
+    }
+}
+
+#[test]
+fn the_first_sweep_after_start_never_releases() {
+    let fixture = Fixture::new(false, None);
+    idle_setting(&fixture, 1);
+    let (id, _) = connected_chat(&fixture, "first-sweep");
+    fixture.service.idle.forget(&id);
+    assert_eq!(fixture.service.sweep_idle(chrono::Utc::now()).unwrap(), 0);
+    assert!(!fixture.db.session_by_id(&id).unwrap().unwrap().released);
+}
+
+#[test]
+fn a_send_that_takes_the_admission_lock_first_is_never_killed_and_the_sweep_rechecks() {
+    let fixture = Fixture::new(false, None);
+    idle_setting(&fixture, 30);
+    let (id, _) = connected_chat(&fixture, "send-race-recheck");
+    backdate(&fixture, &id, 31);
+    // A send takes the same admission lock and touches the clock under it. The
+    // sweep must wait, then re-read the clock instead of using its first look.
+    let admission = crate::chat_fork::session_admission(&fixture.db, &id).unwrap();
+    let guard = admission.lock().unwrap();
+    let clock = Arc::clone(&fixture.service.idle);
+    let service = Arc::clone(&fixture.service);
+    let waiting = std::thread::spawn(move || service.sweep_idle(chrono::Utc::now()));
+    std::thread::sleep(Duration::from_millis(100));
+    clock.touch_at(&id, chrono::Utc::now(), false);
+    drop(guard);
+    assert_eq!(waiting.join().unwrap().unwrap(), 0);
+    assert!(!fixture.db.session_by_id(&id).unwrap().unwrap().released);
+}
+
+#[test]
+fn idle_release_stops_a_user_resumed_delegate_and_clears_its_hold() {
+    let fixture = Fixture::for_delegation();
+    idle_setting(&fixture, 30);
+    let (parent, token) = delegation_parent(&fixture, "idle-delegate-parent");
+    let child = running_delegate(&fixture, &parent, &token, "idle-delegate-start");
+    fixture.db.set_session_status(&child, "idle", None).unwrap();
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "DELETE FROM session_activity WHERE session_id=?",
+                [child.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    fixture.service.delegations.note_user_resume(&child);
+    backdate(&fixture, &child, 31);
+    assert_eq!(fixture.service.sweep_idle(chrono::Utc::now()).unwrap(), 1);
+    assert!(fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    assert!(!fixture.service.delegations.user_resume_pending(&child));
+}
+
+#[test]
+fn bulk_stop_releases_idle_sessions_skips_and_counts_the_rest_and_is_idempotent() {
+    let fixture = Fixture::for_delegation();
+    let (idle, _) = connected_chat(&fixture, "bulk-idle");
+    let (busy, _) = connected_chat(&fixture, "bulk-busy");
+    backdate(&fixture, &idle, 1);
+    fixture.service.idle.touch(&busy);
+    let first = rpc(
+        &fixture,
+        "session.releaseIdle",
+        json!({"operationId":"bulk-idle-op"}),
+    )
+    .unwrap();
+    assert_eq!(first["released"].as_array().unwrap().len(), 1);
+    assert_eq!(first["skipped"], 1);
+    assert!(fixture.db.session_by_id(&idle).unwrap().unwrap().released);
+    assert!(!fixture.db.session_by_id(&busy).unwrap().unwrap().released);
+    let replay = rpc(
+        &fixture,
+        "session.releaseIdle",
+        json!({"operationId":"bulk-idle-op"}),
+    )
+    .unwrap();
+    assert_eq!(replay, first);
+    let again = rpc(
+        &fixture,
+        "session.releaseIdle",
+        json!({"operationId":"bulk-idle-op-2"}),
+    )
+    .unwrap();
+    assert_eq!(again["released"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn processes_lists_only_live_trees_with_a_count_and_windows_memory() {
+    let fixture = Fixture::for_delegation();
+    let (live, _) = connected_chat(&fixture, "process-live");
+    let (released, _) = connected_chat(&fixture, "process-released");
+    rpc(
+        &fixture,
+        "session.releaseResources",
+        json!({"sessionId":released,"operationId":"process-release"}),
+    )
+    .unwrap();
+    let result = rpc(&fixture, "session.processes", json!({})).unwrap();
+    let rows = result["sessions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["sessionId"], live);
+    assert!(rows[0]["processCount"].as_u64().unwrap() >= 1);
+    assert_eq!(result["idleReleaseMinutes"], 30);
+    if cfg!(windows) {
+        assert!(result["memoryBytes"].as_u64().unwrap() > 0);
+        assert!(rows[0]["memoryBytes"].as_u64().unwrap() > 0);
+    }
+}
+
+#[test]
+fn the_bounded_pending_check_agrees_with_the_transcript_scan() {
+    let fixture = Fixture::new(false, None);
+    let session = fixture
+        .db
+        .create_session(crate::db::CreateSession {
+            project_id: None,
+            title: Some("pending"),
+            provider: "grok",
+            mode: "chat",
+            native_id: None,
+            operation_id: "pending-session",
+        })
+        .unwrap();
+    let old_scan = |status: &str| {
+        pending_approval_item(&fixture, &session.id, status);
+        fixture.db.chat_items(&session.id).unwrap().iter().any(|item| {
+            item.parts.iter().any(|part| {
+                part.get("type").and_then(Value::as_str) == Some("approval")
+                    && matches!(
+                        part.get("status").and_then(Value::as_str),
+                        Some("pending" | "submitting")
+                    )
+            })
+        })
+    };
+    for status in ["pending", "submitting", "resolved", "expired"] {
+        let expected = old_scan(status);
+        let bounded = crate::chat_projection::has_pending_request(&fixture.db, &session.id).unwrap();
+        assert_eq!(bounded, expected, "{status}");
+    }
+}
+
+
+// ---- run 6 decisions P, R, S, T, U ----------------------------------------
+
+fn project_session(fixture: &Fixture, project_id: &str, worktree: Option<&str>, operation_id: &str) -> (String, String) {
+    let (id, native) = connected_chat(fixture, operation_id);
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE sessions SET project_id=?, worktree_path=? WHERE id=?",
+                rusqlite::params![project_id, worktree, id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    (id, native)
+}
+
+fn idle_terminal(fixture: &Fixture) -> String {
+    let session = fixture
+        .db
+        .create_session(crate::db::CreateSession {
+            project_id: None,
+            title: Some("Idle terminal"),
+            provider: "grok",
+            mode: "terminal",
+            native_id: Some("native-idle-terminal".into()),
+            operation_id: "idle-terminal",
+        })
+        .unwrap();
+    fixture
+        .service
+        .pty
+        .launch(
+            Arc::clone(&fixture.db),
+            &session.id,
+            fixture.root.path().to_str().unwrap(),
+            Some("cmd.exe"),
+            &["/C".into(), "ping -n 30 127.0.0.1".into()],
+        )
+        .unwrap();
+    fixture.db.set_session_status(&session.id, "idle", None).unwrap();
+    wait_for(|| !fixture.service.pty.process_ids(&session.id).is_empty());
+    session.id
+}
+
+#[test]
+fn processes_idle_count_matches_bulk_release_with_the_setting_off_and_on() {
+    for minutes in [0, 30] {
+        let fixture = Fixture::for_delegation();
+        idle_setting(&fixture, minutes);
+        let (idle_chat, _) = connected_chat(&fixture, &format!("p-idle-chat-{minutes}"));
+        let (busy_chat, _) = connected_chat(&fixture, &format!("p-busy-chat-{minutes}"));
+        let (recent_chat, _) = connected_chat(&fixture, &format!("p-recent-chat-{minutes}"));
+        let terminal = idle_terminal(&fixture);
+        fixture.db.set_session_status(&busy_chat, "running", None).unwrap();
+        backdate(&fixture, &idle_chat, 2);
+        backdate(&fixture, &terminal, 2);
+        fixture.service.idle.touch(&recent_chat);
+
+        let processes = rpc(&fixture, "session.processes", json!({})).unwrap();
+        let idle_rows = processes["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["idle"].as_bool() == Some(true))
+            .count();
+        assert_eq!(idle_rows, 2, "setting {minutes}: idle chat + idle terminal");
+        let released = rpc(
+            &fixture,
+            "session.releaseIdle",
+            json!({"operationId":format!("p-release-{minutes}")}),
+        )
+        .unwrap();
+        assert_eq!(released["released"].as_array().unwrap().len(), idle_rows, "setting {minutes}");
+        assert_eq!(released["failed"], 0, "setting {minutes}");
+        assert!(fixture.db.session_by_id(&idle_chat).unwrap().unwrap().released);
+        assert!(fixture.db.session_by_id(&terminal).unwrap().unwrap().released);
+        assert!(!fixture.db.session_by_id(&busy_chat).unwrap().unwrap().released);
+        assert!(!fixture.db.session_by_id(&recent_chat).unwrap().unwrap().released);
+    }
+}
+
+#[test]
+fn processes_reports_the_release_refusal_as_the_blocked_reason() {
+    let fixture = Fixture::for_delegation();
+    let (pending, _) = connected_chat(&fixture, "blocked-pending");
+    pending_approval_item(&fixture, &pending, "pending");
+    let (queued, _) = connected_chat(&fixture, "blocked-queued");
+    queued_item(&fixture, &queued);
+    let (background, _) = connected_chat(&fixture, "blocked-background");
+    fixture
+        .background_running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let processes = rpc(&fixture, "session.processes", json!({})).unwrap();
+    let reason = |id: &str| {
+        processes["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["sessionId"] == id)
+            .and_then(|row| row.get("blocked"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(reason(&pending).contains("pending request"), "{}", reason(&pending));
+    assert!(reason(&queued).contains("queued messages"), "{}", reason(&queued));
+    assert!(reason(&background).contains("background task"), "{}", reason(&background));
+}
+
+#[test]
+fn one_failing_bulk_release_is_counted_while_the_rest_continue_and_the_result_is_recorded() {
+    let fixture = Fixture::for_delegation();
+    let (first, _) = connected_chat(&fixture, "failing-first");
+    let (second, _) = connected_chat(&fixture, "failing-second");
+    backdate(&fixture, &first, 2);
+    backdate(&fixture, &second, 2);
+    crate::service::fail_next_release_for(&first);
+    let result = rpc(
+        &fixture,
+        "session.releaseIdle",
+        json!({"operationId":"failing-bulk"}),
+    )
+    .unwrap();
+    assert_eq!(result["released"].as_array().unwrap().len(), 1);
+    assert_eq!(result["failed"], 1);
+    assert!(!fixture.db.session_by_id(&first).unwrap().unwrap().released);
+    assert!(fixture.db.session_by_id(&second).unwrap().unwrap().released);
+    let recorded = fixture.db.operation("failing-bulk").unwrap().unwrap();
+    assert_eq!(recorded["failed"], 1);
+}
+
+#[test]
+fn one_failing_sweep_candidate_does_not_stop_the_next_one() {
+    let fixture = Fixture::for_delegation();
+    idle_setting(&fixture, 30);
+    let (first, _) = connected_chat(&fixture, "sweep-failing-first");
+    let (second, _) = connected_chat(&fixture, "sweep-failing-second");
+    backdate(&fixture, &first, 31);
+    backdate(&fixture, &second, 31);
+    crate::service::fail_next_release_for(&first);
+    assert_eq!(fixture.service.sweep_idle(chrono::Utc::now()).unwrap(), 1);
+    assert!(!fixture.db.session_by_id(&first).unwrap().unwrap().released);
+    assert!(fixture.db.session_by_id(&second).unwrap().unwrap().released);
+}
+
+#[test]
+fn scope_covers_the_main_checkout_and_canonical_path_variants() {
+    let fixture = Fixture::for_delegation();
+    let root = fixture.root.path().to_owned();
+    let variant = root.join("Worktree");
+    std::fs::create_dir_all(&variant).unwrap();
+    let project = fixture
+        .db
+        .add_project(root.to_str().unwrap(), Some("Scope"), "scope-project")
+        .unwrap();
+    let (main, _) = project_session(&fixture, &project.id, None, "scope-main");
+    let (worktree, _) = project_session(
+        &fixture,
+        &project.id,
+        Some(variant.to_str().unwrap()),
+        "scope-worktree",
+    );
+    let ids = |scope: Value| {
+        rpc(&fixture, "session.processes", scope)
+            .unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["sessionId"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    let main_scope = ids(json!({
+        "projectId":project.id,
+        "worktreePath":format!("{}/", root.to_string_lossy().replace('\\', "/").to_uppercase()),
+    }));
+    assert!(main_scope.contains(&main), "a missing worktree path means the project path: {main_scope:?}");
+    assert!(!main_scope.contains(&worktree));
+    let variant_scope = ids(json!({
+        "projectId":project.id,
+        "worktreePath":format!("{}/", variant.to_string_lossy().replace('\\', "/").to_uppercase()),
+    }));
+    assert!(variant_scope.contains(&worktree), "case and separators do not distinguish a path: {variant_scope:?}");
+    assert!(!variant_scope.contains(&main));
+}
+
+#[test]
+fn process_ids_do_not_wait_for_a_busy_worker_and_report_the_last_read() {
+    let fixture = Fixture::for_delegation_with_blocked_send();
+    let (id, _) = connected_chat(&fixture, "busy-process-ids");
+    let (before, busy) = fixture.service.providers.chat_process_ids(&id);
+    assert!(!before.is_empty());
+    assert!(!busy);
+    let epoch = fixture.claim(&id);
+    let service = Arc::clone(&fixture.service);
+    let sent_id = id.clone();
+    let sender = std::thread::spawn(move || {
+        service.dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "busy-process-send".into(),
+                method: "chat.send".into(),
+                params: json!({"sessionId":sent_id,"text":"hold the worker","leaseEpoch":epoch,"operationId":"busy-process-send"}),
+            },
+        )
+    });
+    fixture.send_started.as_ref().unwrap().recv().unwrap();
+    let started = std::time::Instant::now();
+    let (while_busy, busy) = fixture.service.providers.chat_process_ids(&id);
+    assert!(busy);
+    assert_eq!(while_busy, before);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    let listed = rpc_service(&fixture.service, "session.processes", json!({}));
+    assert!(listed.is_ok());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "the list never waits on the busy worker");
+    fixture.send_release.as_ref().unwrap().send(()).unwrap();
+    sender.join().unwrap().unwrap();
 }
 

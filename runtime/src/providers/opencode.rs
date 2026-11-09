@@ -436,6 +436,10 @@ const SSE_WATCHDOG_POLL: Duration = Duration::from_secs(1);
 const MAX_SSE_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 impl OpenCodeServer {
+    /// Pids of the owned OpenCode server tree, for the Running agents view.
+    fn process_ids(&self) -> Vec<u32> {
+        self._job.process_ids()
+    }
     fn native_api(&self) -> NativeApi {
         NativeApi::new(self.client.clone(), self.base_url.clone(), self.cwd.clone(), self.password.clone(), self.dialect)
     }
@@ -1296,6 +1300,10 @@ struct OpenCodeChat {
 impl ChatSession for OpenCodeChat {
     fn native_id(&self) -> Option<String> {
         Some(self.native_id.clone())
+    }
+
+    fn process_ids(&self) -> Vec<u32> {
+        self.server.process_ids()
     }
     fn is_alive(&self) -> bool {
         // A live event stream is what makes this chat usable: the server

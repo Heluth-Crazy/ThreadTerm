@@ -104,3 +104,102 @@ test("a refused Stop shows the reason in the reader's language, never the runtim
     assert.doesNotMatch(releaseErrorText(caught, true), /session_release/);
   }
 });
+
+test("the idle menu entry is hidden with nothing idle and shows its count and memory", async () => {
+  const { idleMenuLabel } = await import("./sessionRelease");
+  assert.equal(idleMenuLabel(0, 1024, false), undefined);
+  assert.equal(idleMenuLabel(3, 1.6 * 1024 ** 3, false), "Stop idle sessions (3 · 1.6 GB)");
+  assert.match(idleMenuLabel(2, 512 * 1024 ** 2, true)!, /2/);
+  assert.match(idleMenuLabel(2, 512 * 1024 ** 2, true)!, /512\.0 MB/);
+});
+
+test("the lease pool reports visible only while some holder is visible", async () => {
+  const { createLeasePool, sessionVisible } = await import("./controlLease");
+  const seen: (boolean | undefined)[] = [];
+  const pool = createLeasePool({ claim: async () => 1, renew: async (_id, _epoch, visible) => { seen.push(visible); }, release: async () => {} });
+  const hidden = await pool("s", () => {}, () => false);
+  const shown = await pool("s", () => {}, () => true);
+  await hidden.check();
+  assert.equal(seen.at(-1), true, "one visible holder makes the lease visible");
+  shown.release();
+  await hidden.check();
+  assert.equal(seen.at(-1), false, "a hidden holder alone reports hidden");
+  hidden.release();
+  assert.equal(sessionVisible({ getClientRects: () => ({ length: 1 }) as DOMRectList }, true), true);
+  assert.equal(sessionVisible({ getClientRects: () => ({ length: 0 }) as DOMRectList }, true), false);
+  assert.equal(sessionVisible({ getClientRects: () => ({ length: 1 }) as DOMRectList }, false), false);
+});
+
+test("Running agents renders one dense row per live tree, its setting and a quiet empty state", async () => {
+  const { renderToStaticMarkup } = await import("react-dom/server.edge");
+  const { createElement } = await import("react");
+  const { RunningAgentsView } = await import("./components/RunningAgents");
+  const sessions = [
+    { id: "a", title: "Fix the login redirect", provider: "codex", mode: "chat", status: "idle", createdAt: "", updatedAt: "", projectId: "p", worktreePath: "D:/work/app-feature" },
+    { id: "b", title: "Review docs", provider: "claude", mode: "chat", status: "running", createdAt: "", updatedAt: "", projectId: "p", worktreePath: "D:/work/app" },
+  ] as never;
+  const projects = [{ id: "p", name: "App", path: "D:/work/app", createdAt: "" }] as never;
+  const view = (processes: unknown, idleMinutes = 30) => renderToStaticMarkup(createElement(RunningAgentsView, {
+    processes: processes as never, sessions, projects, zh: false, idleMinutes,
+    onStopIdle() {}, onStop() {}, onOpen() {}, onIdleMinutes() {},
+  }));
+  const html = view({ sessions: [
+    { sessionId: "a", processCount: 24, memoryBytes: 588_000_000, idleSeconds: 12 * 60, visible: false, idle: true },
+    { sessionId: "b", processCount: 8, memoryBytes: 120_000_000, idleSeconds: 3, visible: true, idle: false, blocked: "the session is working or waiting for your answer" },
+  ], memoryBytes: 708_000_000, idleReleaseMinutes: 30 });
+  assert.match(html, /Running agents/);
+  assert.match(html, /2 running · 675\.2 MB/);
+  assert.match(html, /Fix the login redirect/);
+  assert.match(html, /App · app-feature/);
+  assert.match(html, /Idle 12 min/);
+  assert.match(html, /In view/);
+  assert.match(html, /Stop idle \(1 · 560\.8 MB\)/);
+  assert.match(html, /value="30"/);
+  assert.match(html, /Off/);
+  assert.match(html, /data-agent-tile="codex"/, "rows use the sidebar agent icon");
+  assert.ok(html.indexOf("Stop idle") < html.indexOf("running-agents-rows"), "Stop idle sits on the header line");
+  const empty = view({ sessions: [], idleReleaseMinutes: 30 });
+  assert.match(empty, /No agent processes are running\./);
+  assert.doesNotMatch(empty, /Stop idle/);
+  const imported = view({ sessions: [], idleReleaseMinutes: 45 }, 45);
+  assert.match(imported, /value="45"[^>]*>45 min/, "an imported idle value stays selectable");
+  const off = view({ sessions: [{ sessionId: "a", processCount: 2, memoryBytes: 10_000_000, idleSeconds: 120, visible: false, idle: true }], memoryBytes: 10_000_000, idleReleaseMinutes: 0 }, 0);
+  assert.match(off, /Stop idle \(1/, "Stop idle is available with auto-release Off");
+  assert.match(off, /value="0"[^>]*>Off/);
+});
+
+test("a blocked row shows the refusal reason and disables only its own Stop", async () => {
+  const { renderToStaticMarkup } = await import("react-dom/server.edge");
+  const { createElement } = await import("react");
+  const { RunningAgentsView } = await import("./components/RunningAgents");
+  const sessions = [
+    { id: "waiting", title: "Answer the plan", provider: "codex", mode: "chat", status: "waiting", createdAt: "", updatedAt: "", projectId: "p" },
+    { id: "blocked", title: "Background sync", provider: "codex", mode: "chat", status: "idle", createdAt: "", updatedAt: "", projectId: "p" },
+  ] as never;
+  const html = renderToStaticMarkup(createElement(RunningAgentsView, {
+    processes: { sessions: [
+      { sessionId: "waiting", processCount: 4, memoryBytes: 80_000_000, idleSeconds: 900, visible: false, idle: false, blocked: "the session is working or waiting for your answer" },
+      { sessionId: "blocked", processCount: 2, memoryBytes: 20_000_000, idleSeconds: 900, visible: false, idle: false, blocked: "a background task is running" },
+    ], memoryBytes: 100_000_000, idleReleaseMinutes: 30 } as never,
+    sessions, projects: [], zh: false, idleMinutes: 30,
+    onStopIdle() {}, onStop() {}, onOpen() {}, onIdleMinutes() {},
+  }));
+  assert.match(html, /Waiting for you/);
+  assert.match(html, />Background task</, "the row shows a short label, not the runtime sentence");
+  assert.doesNotMatch(html, /a background task is running/);
+  assert.match(html, /title="A background task is still running\. Stop it first\."/);
+  assert.match(html, /running-agents-row-stop[^>]*disabled/);
+  assert.match(html, /aria-label="Stop Answer the plan"/);
+  const zhHtml = renderToStaticMarkup(createElement(RunningAgentsView, {
+    processes: { sessions: [
+      { sessionId: "blocked", processCount: 2, memoryBytes: 20_000_000, idleSeconds: 900, visible: false, idle: false, blocked: "a background task is running" },
+      { sessionId: "waiting", processCount: 4, memoryBytes: 80_000_000, idleSeconds: 900, visible: false, idle: false, blocked: "send or remove the queued messages first" },
+    ], memoryBytes: 100_000_000, idleReleaseMinutes: 30 } as never,
+    sessions, projects: [], zh: true, idleMinutes: 30,
+    onStopIdle() {}, onStop() {}, onOpen() {}, onIdleMinutes() {},
+  }));
+  assert.match(zhHtml, />后台任务运行中</);
+  assert.match(zhHtml, />有排队消息</);
+  assert.doesNotMatch(zhHtml, /queued messages|background task/, "no English runtime text in the Chinese UI");
+});
+

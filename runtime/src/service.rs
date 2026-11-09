@@ -55,12 +55,68 @@ pub struct RuntimeService {
     pub(crate) browser_tools: Arc<crate::browser_tools::BrowserTools>,
     desktop_files: crate::desktop_files::DesktopFiles,
     pub(crate) editor_navigation: Arc<crate::editor_navigation::EditorNavigation>,
+    /// Last use per session; the idle sweep reads it under each admission lock.
+    pub(crate) idle: Arc<crate::idle_release::IdleClock>,
 }
 
 /// A release only has work while the session is live; a released, ended or
 /// unknown status is a successful no-op.
 fn is_releasable_status(status: &str) -> bool {
     matches!(status, "starting" | "running" | "idle" | "waiting")
+}
+
+const DEFAULT_IDLE_RELEASE_MINUTES: i64 = 30;
+/// The configured threshold, or the debug-only seconds override a QA probe uses.
+fn idle_release_seconds(db: &Database) -> i64 {
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("THREADTERM_QA_IDLE_RELEASE_SECONDS") {
+        if let Ok(seconds) = value.parse::<i64>() {
+            return seconds.max(0);
+        }
+    }
+    idle_release_minutes(db) * 60
+}
+
+fn idle_release_minutes(db: &Database) -> i64 {
+    db.settings_value()
+        .ok()
+        .and_then(|settings| {
+            settings
+                .get("sessions.idleReleaseMinutes")
+                .and_then(Value::as_i64)
+        })
+        .unwrap_or(DEFAULT_IDLE_RELEASE_MINUTES)
+}
+
+fn idle_sweep_interval() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("THREADTERM_QA_IDLE_SWEEP_SECONDS") {
+        if let Ok(seconds) = value.parse::<u64>() {
+            return std::time::Duration::from_secs(seconds.max(1));
+        }
+    }
+    std::time::Duration::from_secs(60)
+}
+
+#[cfg(test)]
+static RELEASE_FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn fail_next_release_for(session_id: &str) {
+    RELEASE_FAILURES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .insert(session_id.to_owned());
+}
+
+#[cfg(test)]
+fn take_release_failure(session_id: &str) -> bool {
+    RELEASE_FAILURES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .remove(session_id)
 }
 
 /// Opens a session's provider Chat. Shared by `chat.connect` (after the
@@ -880,6 +936,7 @@ pub(crate) fn spawn_projection_pump(
     event_chat_tools: Arc<crate::chat_tools::ChatTools>,
     event_delegations: Arc<crate::delegation::Delegations>,
     turn_speeds: Arc<crate::turn_speed::TurnSpeeds>,
+    idle: Arc<crate::idle_release::IdleClock>,
 ) {
     std::thread::spawn(move || loop {
             // Own the shared tracker for the lifetime of canonical projection.
@@ -912,6 +969,12 @@ pub(crate) fn spawn_projection_pump(
                     }
                     for event in batch {
                         if project_provider_event(&event_db, &event_providers, &event) {
+                            // A provider UI snapshot is not user activity: the idle
+                            // check itself asks for background tasks and every such
+                            // answer emits `chat.ui`, which would reset the clock.
+                            if event.kind != "chat.ui" {
+                                idle.touch(&event.session_id);
+                            }
                             event_queues.provider_event(&event_db, &event_providers, &event);
                             crate::group_chat::provider_event(&event_db, &event_providers, &event_queues, &event);
                             if matches!(event.kind.as_str(), "chat.turn.completed" | "chat.error" | "chat.approval.resolved") {
@@ -1176,6 +1239,7 @@ impl RuntimeService {
             }),
         ));
         let editor_navigation = Arc::new(crate::editor_navigation::EditorNavigation::new(&config.data_dir));
+        let idle = Arc::new(crate::idle_release::IdleClock::default());
         providers.set_tool_server_resolver(crate::group_chat::tool_server_resolver(Arc::clone(&db), crate::preview::tool_server_resolver(
             Arc::clone(&db),
             Arc::clone(&delegations),
@@ -1202,6 +1266,7 @@ impl RuntimeService {
             event_chat_tools,
             event_delegations,
             turn_speeds,
+            Arc::clone(&idle),
         );
         Self {
             config,
@@ -1225,6 +1290,7 @@ impl RuntimeService {
             browser_tools,
             desktop_files: crate::desktop_files::DesktopFiles::default(),
             editor_navigation,
+            idle,
         }
     }
 
@@ -1246,6 +1312,21 @@ impl RuntimeService {
             .map(|snapshot| snapshot.revision)
             .unwrap_or_default();
         std::thread::spawn(move || retry_runner(service, &mut cursor));
+    }
+    /// The idle sweep runs every minute and takes each candidate's admission
+    /// lock before it decides, so a send that won the lock is never killed.
+    pub fn start_idle_sweeper(self: &Arc<Self>) {
+        let service = Arc::downgrade(self);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(idle_sweep_interval());
+            let Some(service) = service.upgrade() else { return };
+            if service.shutdown_requested.load(Ordering::Acquire) {
+                return;
+            }
+            if let Err(error) = service.sweep_idle(chrono::Utc::now()) {
+                eprintln!("idle release sweep failed: {error}");
+            }
+        });
     }
     pub fn start_terminal_agent_watcher(self: &Arc<Self>) {
         // PTYs do not survive a restart; drop any stale agent detections first.
@@ -1612,6 +1693,7 @@ impl RuntimeService {
                     }
                 });
         }
+        self.touch_idle_request(&request.method, &request.params);
         let outcome = (|| -> Result<Value> {
             if let Some(value) = crate::host_files::dispatch(&self.db, &request.method, &request.params)? { return Ok(value); }
             if let Some(value) = crate::attachments::dispatch(&self.db, &self.config.data_dir, &request.method, &request.params)? { return Ok(value); }
@@ -1968,6 +2050,23 @@ impl RuntimeService {
                     self.db.complete_operation(&p.operation_id, "session.releaseResources.bulk", &result)?;
                     Ok(result)
                 }
+                "session.releaseIdle" => {
+                    let p: SessionReleaseIdle = parse(&request.params)?;
+                    if let Some(prior) = self.db.operation(&p.operation_id)? {
+                        return Ok(prior);
+                    }
+                    let result = self.release_idle_sessions(
+                        p.project_id.as_deref(),
+                        p.worktree_path.as_deref(),
+                        chrono::Utc::now(),
+                    )?;
+                    self.db.complete_operation(&p.operation_id, "session.releaseIdle", &result)?;
+                    Ok(result)
+                }
+                "session.processes" => {
+                    let p: SessionProcesses = parse(&request.params)?;
+                    self.session_processes(p.project_id.as_deref(), p.worktree_path.as_deref())
+                }
                 "session.update" => {
                     let p: SessionUpdate = parse(&request.params)?;
                     Ok(serde_json::to_value(self.db.update_session(
@@ -2014,6 +2113,7 @@ impl RuntimeService {
                     let epoch =
                         self.leases
                             .renew(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    self.idle.renew(&p.session_id, p.visible);
                     Ok(json!({"leaseEpoch": epoch}))
                 }
                 "terminal.input" => {
@@ -3086,12 +3186,7 @@ impl RuntimeService {
             if matches!(session.status.as_str(), "running" | "waiting") {
                 return Ok(Some(("session_release_blocked", "the session is working or waiting for your answer".into())));
             }
-            if self.db.chat_items(session_id)?.iter().any(|item| {
-                item.parts.iter().any(|part| {
-                    part.get("type").and_then(Value::as_str) == Some("approval")
-                        && matches!(part.get("status").and_then(Value::as_str), Some("pending" | "submitting"))
-                })
-            }) {
+            if crate::chat_projection::has_pending_request(&self.db, session_id)? {
                 return Ok(Some(("session_release_blocked", "answer or dismiss the pending request first".into())));
             }
             if crate::chat_queue::pending_work(&self.db, session_id)? {
@@ -3114,6 +3209,12 @@ impl RuntimeService {
     /// admission lock and has already run `release_refusal`.
     fn release_session_locked(&self, session: &Session) -> Result<Session> {
         let session_id = session.id.as_str();
+        #[cfg(test)]
+        if take_release_failure(session_id) {
+            return Err(anyhow::anyhow!(
+                "session_release_blocked: injected release failure"
+            ));
+        }
         crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
             .revoke_session(session_id)?;
         self.browser_tools.revoke_session(session_id);
@@ -3192,6 +3293,302 @@ impl RuntimeService {
             released.push(serde_json::to_value(session)?);
         }
         Ok(json!({"released": released, "refused": Vec::<Value>::new()}))
+    }
+    /// The renderer's scope rule: separators, trailing slash and case do not
+    /// distinguish paths, and a missing worktree path means the project path.
+    fn same_canonical_scope(left: &str, right: &str) -> bool {
+        let key = |value: &str| {
+            let plain = crate::git_read::plain_path(std::path::Path::new(value));
+            let mut text = plain.to_string_lossy().replace('\\', "/");
+            while text.ends_with('/') {
+                text.pop();
+            }
+            if cfg!(windows) {
+                text.to_lowercase()
+            } else {
+                text
+            }
+        };
+        !left.trim().is_empty() && !right.trim().is_empty() && key(left) == key(right)
+    }
+    fn session_in_scope(
+        session: &Session,
+        project_id: Option<&str>,
+        worktree_path: Option<&str>,
+        project_path: Option<&str>,
+    ) -> bool {
+        if !project_id.is_none_or(|id| session.project_id.as_deref() == Some(id)) {
+            return false;
+        }
+        worktree_path.is_none_or(|path| {
+            session
+                .worktree_path
+                .as_deref()
+                .or(project_path)
+                .is_some_and(|session_path| Self::same_canonical_scope(session_path, path))
+        })
+    }
+    /// Requests that mean the user used this session. A queue read, a lease
+    /// release and a hidden renew are deliberately absent.
+    fn touch_idle_request(&self, method: &str, params: &Value) {
+        if matches!(
+            method,
+            "chat.send"
+                | "chat.steer"
+                | "chat.approve"
+                | "chat.answer"
+                | "chat.cancel"
+                | "chat.connect"
+                | "session.claim"
+                | "terminal.input"
+                | "chat.queue.add"
+                | "chat.queue.update"
+                | "chat.queue.remove"
+                | "chat.queue.move"
+                | "chat.queue.pause"
+                | "chat.queue.resume"
+                | "chat.queue.send"
+        ) {
+            if let Some(session_id) = params.get("sessionId").and_then(Value::as_str) {
+                self.idle.touch(session_id);
+            }
+        }
+    }
+    fn session_process_ids_with_busy(&self, session: &Session) -> (Vec<u32>, bool) {
+        if session.mode == "chat" {
+            self.providers.chat_process_ids(&session.id)
+        } else {
+            (self.pty.process_ids(&session.id), false)
+        }
+    }
+    fn session_process_ids(&self, session: &Session) -> Vec<u32> {
+        self.session_process_ids_with_busy(session).0
+    }
+    /// Why this session cannot be released now, as the sentence the row shows.
+    fn release_blocked_reason(&self, session: &Session) -> Result<Option<String>> {
+        if let Some((_, message)) = self.release_refusal(session)? {
+            return Ok(Some(message));
+        }
+        if session.mode == "chat" {
+            return Ok(match self
+                .providers
+                .chat_has_running_background_task(&session.id)
+            {
+                Ok(true) => Some("a background task is running".into()),
+                Ok(false) => None,
+                Err(_) => Some("the session is busy".into()),
+            });
+        }
+        Ok(None)
+    }
+    /// One predicate for Running agents, the menu count and `releaseIdle`:
+    /// nothing refuses it, no background task runs, the last use is at least
+    /// `min_seconds` ago, and no holder reported visible in the last 30 s.
+    fn idle_now(
+        &self,
+        session: &Session,
+        now: chrono::DateTime<chrono::Utc>,
+        min_seconds: i64,
+    ) -> Result<bool> {
+        if self.release_blocked_reason(session)?.is_some() {
+            return Ok(false);
+        }
+        Ok(self.idle.idle_seconds(&session.id, now).unwrap_or(0) >= min_seconds
+            && !self.idle.visible_within(&session.id, now, 30))
+    }
+    /// One sweep over chat workers. `now` is a parameter so tests drive it.
+    pub(crate) fn sweep_idle(&self, now: chrono::DateTime<chrono::Utc>) -> Result<usize> {
+        let threshold = idle_release_seconds(&self.db);
+        if threshold <= 0 {
+            return Ok(0);
+        }
+        let mut released = 0;
+        for session_id in self.providers.registered_chat_sessions() {
+            match self.sweep_idle_candidate(&session_id, now, threshold) {
+                Ok(true) => released += 1,
+                Ok(false) => {}
+                Err(error) => eprintln!("idle release for {session_id} failed: {error}"),
+            }
+        }
+        Ok(released)
+    }
+    fn sweep_idle_candidate(
+        &self,
+        session_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        threshold: i64,
+    ) -> Result<bool> {
+        let Some(session) = self.db.session_by_id(session_id)? else { return Ok(false) };
+        if session.mode != "chat" || session.released || !is_releasable_status(&session.status) {
+            self.idle.forget(session_id);
+            return Ok(false);
+        }
+        // The first sweep after start seeds the clock; never release from it.
+        if self.idle.seed(session_id, now) {
+            return Ok(false);
+        }
+        if !self.idle_now(&session, now, threshold)? {
+            return Ok(false);
+        }
+        let admission = crate::chat_fork::session_admission(&self.db, session_id)?;
+        let _admission = admission
+            .lock()
+            .map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        // Re-read under the lock: a send or connect that won it touched the
+        // clock, and a queue or approval may have appeared meanwhile.
+        let Some(session) = self.db.session_by_id(session_id)? else { return Ok(false) };
+        if session.released || !is_releasable_status(&session.status) {
+            return Ok(false);
+        }
+        if !self.idle_now(&session, now, threshold)? {
+            return Ok(false);
+        }
+        self.release_session_locked(&session)?;
+        // A resumed delegate has no hold left once its idle release won.
+        self.delegations.clear_user_resume(session_id);
+        self.idle.forget(session_id);
+        Ok(true)
+    }
+    /// Bulk Stop idle: the same predicate, each session under its own admission
+    /// lock. A refusal is skipped; a failure is logged, counted and skipped, so
+    /// one session never aborts the pass or loses the operation result.
+    fn release_idle_sessions(
+        &self,
+        project_id: Option<&str>,
+        worktree_path: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Value> {
+        let sessions = self.db.sessions()?;
+        let project_path = match (project_id, worktree_path) {
+            (Some(id), Some(_)) => self.db.project_path(id)?,
+            _ => None,
+        };
+        let mut released = Vec::new();
+        let mut skipped = 0usize;
+        let mut failed = 0usize;
+        let mut freed = std::collections::HashSet::new();
+        for session in sessions.into_iter().filter(|session| {
+            Self::session_in_scope(session, project_id, worktree_path, project_path.as_deref())
+        }) {
+            if session.read_only || session.released || !is_releasable_status(&session.status) {
+                continue;
+            }
+            // Running agents lists only live trees; the menu count and this
+            // action must release the same set, so a worker with no process
+            // tree is not a candidate.
+            if self.session_process_ids_with_busy(&session).0.is_empty() {
+                continue;
+            }
+            let outcome = (|| -> Result<Option<Session>> {
+                if !self.idle_now(&session, now, 30)? {
+                    return Ok(None);
+                }
+                let admission = crate::chat_fork::session_admission(&self.db, &session.id)?;
+                let _admission = admission
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("provider_internal"))?;
+                let Some(current) = self.db.session_by_id(&session.id)? else { return Ok(None) };
+                if current.released || !is_releasable_status(&current.status) {
+                    return Ok(None);
+                }
+                if !self.idle_now(&current, now, 30)? {
+                    return Ok(None);
+                }
+                freed.extend(self.session_process_ids(&current));
+                let released_session = self.release_session_locked(&current)?;
+                self.delegations.clear_user_resume(&current.id);
+                self.idle.forget(&current.id);
+                Ok(Some(released_session))
+            })();
+            match outcome {
+                Ok(Some(session)) => released.push(serde_json::to_value(session)?),
+                Ok(None) => skipped += 1,
+                Err(error) => {
+                    eprintln!("idle release for {} failed: {error}", session.id);
+                    failed += 1;
+                }
+            }
+        }
+        let freed_bytes: u64 = freed
+            .into_iter()
+            .filter_map(crate::idle_release::process_memory_bytes)
+            .sum();
+        let mut result = json!({"released": released, "skipped": skipped, "failed": failed});
+        if cfg!(windows) {
+            result["freedBytes"] = json!(freed_bytes);
+        }
+        Ok(result)
+    }
+    /// Running agents: live session trees, with memory on Windows. On demand only.
+    fn session_processes(
+        &self,
+        project_id: Option<&str>,
+        worktree_path: Option<&str>,
+    ) -> Result<Value> {
+        let now = chrono::Utc::now();
+        let sessions = self.db.sessions()?;
+        let project_path = match (project_id, worktree_path) {
+            (Some(id), Some(_)) => self.db.project_path(id)?,
+            _ => None,
+        };
+        let mut memory: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+        let mut rows = Vec::new();
+        for session in sessions.into_iter().filter(|session| {
+            Self::session_in_scope(session, project_id, worktree_path, project_path.as_deref())
+        }) {
+            let (mut pids, busy) = self.session_process_ids_with_busy(&session);
+            pids.sort_unstable();
+            pids.dedup();
+            if pids.is_empty() && !busy {
+                continue;
+            }
+            let mut row_memory = 0u64;
+            for pid in &pids {
+                let bytes = *memory
+                    .entry(*pid)
+                    .or_insert_with(|| crate::idle_release::process_memory_bytes(*pid).unwrap_or(0));
+                row_memory += bytes;
+            }
+            let idle_seconds = self.idle.idle_seconds(&session.id, now);
+            let visible = self.idle.visible_within(&session.id, now, 30);
+            let blocked = if busy {
+                Some("the session is working or waiting for your answer".to_owned())
+            } else {
+                self.release_blocked_reason(&session)?
+            };
+            let idle = !busy
+                && blocked.is_none()
+                && idle_seconds.is_some_and(|seconds| seconds >= 30)
+                && !visible;
+            let mut row = json!({
+                "sessionId": session.id,
+                "processCount": pids.len(),
+                "visible": visible,
+                "idle": idle,
+            });
+            if cfg!(windows) {
+                row["memoryBytes"] = json!(row_memory);
+            }
+            if let Some(seconds) = idle_seconds {
+                row["idleSeconds"] = json!(seconds);
+            }
+            if busy {
+                row["busy"] = json!(true);
+            }
+            if let Some(reason) = blocked {
+                row["blocked"] = json!(reason);
+            }
+            rows.push(row);
+        }
+        let total: u64 = memory.values().sum();
+        let mut result = json!({
+            "sessions": rows,
+            "idleReleaseMinutes": idle_release_minutes(&self.db),
+        });
+        if cfg!(windows) {
+            result["memoryBytes"] = json!(total);
+        }
+        Ok(result)
     }
     /// One Stop: fence the queue, apply the turn-scoped effects, then let the
     /// provider decide. A provider that refuses did not stop a turn, so the
@@ -3890,6 +4287,9 @@ struct SessionClaim {
 struct SessionRelease {
     session_id: String,
     lease_epoch: i64,
+    /// A renew from a view reports whether any holder is really visible.
+    #[serde(default)]
+    visible: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3902,6 +4302,23 @@ struct SessionReleaseResources {
 struct SessionReleaseResourcesBulk {
     session_ids: Vec<String>,
     operation_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionReleaseIdle {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    worktree_path: Option<String>,
+    operation_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionProcesses {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    worktree_path: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

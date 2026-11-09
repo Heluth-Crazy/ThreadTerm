@@ -7,7 +7,7 @@ import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQue
 import { ChatItem, attachFiles, chooseDirectory, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { anchoredScrollTop, mergeEarlierPage, needsAnotherPage, shouldLoadEarlier } from "../chatPaging";
-import { acquireControl } from '../controlLease';
+import { acquireControl, sessionVisible } from '../controlLease';
 import { createDraftWriter } from '../chatDraft';
 import { useTranslation } from '../i18n';
 import { Icon, useAgentCapabilities } from "./PrototypeIcon";
@@ -944,7 +944,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
             return;
           }
           setControlIssue(copy('Chat control was lost. Retry from this view.', '聊天控制权已丢失，请在此视图重试。'));
-        });
+        }, () => sessionVisible(logRef.current));
         const target = lifecycle.current;
         if (disposed || target?.sessionId !== session.id) { claim.release(); return; }
         control = {epoch: claim.epoch, check: claim.check, release: claim.release, valid: true};

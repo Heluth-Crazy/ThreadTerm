@@ -38,6 +38,7 @@ if (!isAppServer) {
     if (method === 'thread/resume') return result(id, { thread: thread(params.threadId ?? nativeId), threadSettings: settings() });
     if (method === 'thread/read') return result(id, { thread: thread(params.threadId ?? nativeId) });
     if (method === 'thread/inject_items') return result(id, {});
+    if (method === 'thread/backgroundTerminals/list') return result(id, { data: [] });
     if (method === 'model/list') return result(id, { data: [{ id: 'qa-release-model', displayName: 'QA release model', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }] });
     if (method === 'skills/list') return result(id, { data: [] });
     if (method === 'thread/settings/update') { result(id, {}); event('thread/settings/updated', { threadId: nativeId, threadSettings: settings() }); return; }

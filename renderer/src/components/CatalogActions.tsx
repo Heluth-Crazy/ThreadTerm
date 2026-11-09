@@ -11,7 +11,7 @@ import { CHAT_REPAIR_CHANGED, chatRepairAvailability, requestChatRepair } from '
 import './catalog-active-delete-dialog.css';
 import './project-catalog.css';
 import { canAcknowledgeActivity } from '../sessionActivity';
-import { isLiveSession, releaseBlockedReason, releaseErrorText, releaseMenuLabel } from '../sessionRelease';
+import { isLiveSession, idleMenuLabel, releaseBlockedReason, releaseErrorText, releaseMenuLabel } from '../sessionRelease';
 
 type Kind=CatalogVisibility['kind'];
 export type CatalogTarget={kind:Kind;id:string;name:string;path:string;projectId:string;worktreeId?:string};
@@ -32,6 +32,7 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
   const {locale}=useTranslation(),zh=locale==='zh-CN',text=(en:string,cn:string)=>zh?cn:en;
   const [anchor,setAnchor]=useState<HTMLElement>(),[dialog,setDialog]=useState<Dialog>(),[sessionsToEnd,setSessionsToEnd]=useState<Session[]>(),[deleteNotice,setDeleteNotice]=useState<DeleteNotice>();
   const [name,setName]=useState(target.name),[issue,setIssue]=useState<string>(),[busy,setBusy]=useState(false),locked=useRef(false);
+  const [idleSummary,setIdleSummary]=useState<{count:number;bytes?:number}>();
   const [,setRepairVersion]=useState(0);
   const menuOpenChange=useRef(onMenuOpenChange),ownsOpenMenu=useRef(false);menuOpenChange.current=onMenuOpenChange;
   useEffect(()=>()=>{if(ownsOpenMenu.current)menuOpenChange.current?.(false);},[]);
@@ -40,6 +41,18 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
   const archived=entry?.visibility==='archived'||Boolean(session?.archived);
   const repair=session&&session.mode==='chat'?chatRepairAvailability(session.id):undefined;
   useEffect(()=>{const changed=(event:Event)=>{if((event as CustomEvent<{sessionId?:string}>).detail?.sessionId===target.id)setRepairVersion(version=>version+1);};addEventListener(CHAT_REPAIR_CHANGED,changed);return()=>removeEventListener(CHAT_REPAIR_CHANGED,changed);},[target.id]);
+  useEffect(()=>{
+    if(!anchor||target.kind==='session'){setIdleSummary(undefined);return;}
+    let live=true;
+    const scope={projectId:target.projectId,...(target.kind==='worktree'?{worktreePath:target.path}:{})};
+    void request('session.processes',scope).then(result=>{
+      if(!live)return;
+      const idle=result.sessions.filter(row=>row.idle);
+      const bytes=result.memoryBytes===undefined?undefined:idle.reduce((sum,row)=>sum+(row.memoryBytes??0),0);
+      setIdleSummary({count:idle.length,bytes});
+    }).catch(()=>{if(live)setIdleSummary(undefined);});
+    return()=>{live=false;};
+  },[anchor,target.kind,target.projectId,target.path]);
   const scopedSessions=sessionsInCatalogScope(target,sessions,project?.path),activeSessions=scopedSessions.filter(isActiveSession),deleteActiveSessions=sessionsToEnd??activeSessions;
   const liveSession=session&&isLiveSession(session)?session:undefined;
   const releaseBlocked=(value:Session)=>releaseBlockedReason(value,providers,zh);
@@ -70,6 +83,10 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
     onChanged();close();setDialog(undefined);
   };
   const releaseSession=async()=>{if(!session)return;try{await request('session.releaseResources',{sessionId:session.id,operationId:operationId()});}catch(error){throw new Error(releaseErrorText(error,zh));}onChanged();close();};
+  const stopIdleSessions=async()=>{
+    await request('session.releaseIdle',{projectId:target.projectId,...(target.kind==='worktree'?{worktreePath:target.path}:{}),operationId:operationId()});
+    onChanged();close();
+  };
   const archiveTarget=async()=>{
     if(!activeSessions.length)return changeVisibility('archived');
     // The runtime checks every live session in scope under its admission lock
@@ -125,7 +142,8 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
         {item(text('Move up','向上移动'),'chevD',()=>void run(()=>move(-1)))}
         {item(text('Move down','向下移动'),'chevD',()=>void run(()=>move(1)))}
       </>}
-      {session&&item(session.pinned?text('Unpin from quick switch','取消固定快捷选择'):text('Pin to quick switch','固定到快捷选择'),'star',()=>void run(()=>organize({pinned:!session.pinned})))}
+      {session&&item(session.pinned?text('Unpin from quick switch','取消固定快捷选择'):text('Pin to quick switch','固定到快捷选择'),'star',()=>void run(()=>organize({pinned:!session.pinned})))} 
+      {target.kind!=='session'&&idleSummary&&idleMenuLabel(idleSummary.count,idleSummary.bytes,zh)&&<button type="button" role="menuitem" className="menu-item" disabled={busy} onClick={()=>void run(stopIdleSessions)}><Icon name="close"/>{idleMenuLabel(idleSummary.count,idleSummary.bytes,zh)}</button>}
       <div className="menu-sep"/>
       {liveSession&&<button type="button" role="menuitem" className="menu-item" disabled={busy||Boolean(releaseBlocked(liveSession))} title={releaseBlocked(liveSession)} onClick={()=>void run(releaseSession)}><Icon name="terminal"/>{releaseMenuLabel(zh)}</button>}
       {liveSession&&releaseBlocked(liveSession)&&<div className="menu-note">{releaseBlocked(liveSession)}</div>}

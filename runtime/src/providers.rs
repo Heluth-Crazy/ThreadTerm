@@ -669,6 +669,10 @@ pub(crate) fn verify_permission_options(state: &Value, options: &Value) -> Resul
 
 pub(crate) trait ChatSession: Send {
     fn native_id(&self) -> Option<String>;
+    /// Pids of the provider process tree owned by this worker, if it has one.
+    fn process_ids(&self) -> Vec<u32> {
+        Vec::new()
+    }
     fn is_alive(&self) -> bool {
         true
     }
@@ -1116,6 +1120,9 @@ pub struct Providers {
     /// identity (`Arc::ptr_eq`) before changing the slot. A worker `try_lock`
     /// under this registry is the one bounded exception: it never waits.
     chats: Mutex<HashMap<String, ChatSlot>>,
+    /// Last process ids read without waiting on the worker, for the Running
+    /// agents view while a worker is busy.
+    process_ids: Mutex<HashMap<String, Vec<u32>>>,
     connect_wait: Condvar,
     capability_cache: Arc<Mutex<CapabilityCache>>,
     capability_wait: Arc<Condvar>,
@@ -1509,6 +1516,7 @@ impl Providers {
                 .collect()),
             plugins: RwLock::new(None),
             chats: Mutex::new(HashMap::new()),
+            process_ids: Mutex::new(HashMap::new()),
             connect_wait: Condvar::new(),
             capability_cache: Arc::new(Mutex::new(CapabilityCache::default())),
             capability_wait: Arc::new(Condvar::new()),
@@ -1869,6 +1877,62 @@ impl Providers {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// A finished chat still running a provider background task must not be
+    /// released: the kill would end that task.
+    pub(crate) fn chat_has_running_background_task(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, ProviderError> {
+        let tasks = self.chat_background_tasks(session_id)?;
+        Ok(tasks
+            .get("tasks")
+            .and_then(Value::as_array)
+            .is_some_and(|tasks| {
+                tasks
+                    .iter()
+                    .any(|task| task.get("status").and_then(Value::as_str) == Some("running"))
+            }))
+    }
+
+    /// Pids owned by a live Chat worker, read with `try_lock`: a busy worker
+    /// never stalls Running agents. `true` means it was busy, so the ids are
+    /// the last successful read (possibly empty).
+    pub(crate) fn chat_process_ids(&self, session_id: &str) -> (Vec<u32>, bool) {
+        let worker = self
+            .chats
+            .lock()
+            .ok()
+            .and_then(|chats| chats.get(session_id).and_then(|slot| slot.worker.clone()));
+        let Some(worker) = worker else {
+            if let Ok(mut cached) = self.process_ids.lock() {
+                cached.remove(session_id);
+            }
+            return (Vec::new(), false);
+        };
+        let result = match worker.try_lock() {
+            Ok(chat) => {
+                let ids = chat.process_ids();
+                if let Ok(mut cached) = self.process_ids.lock() {
+                    if ids.is_empty() {
+                        cached.remove(session_id);
+                    } else {
+                        cached.insert(session_id.to_owned(), ids.clone());
+                    }
+                }
+                (ids, false)
+            }
+            Err(_) => (
+                self.process_ids
+                    .lock()
+                    .ok()
+                    .and_then(|cached| cached.get(session_id).cloned())
+                    .unwrap_or_default(),
+                true,
+            ),
+        };
+        result
     }
 
     /// Snapshot only: no provider I/O or native worker lock. Preview grants use

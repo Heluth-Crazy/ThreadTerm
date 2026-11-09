@@ -2189,6 +2189,36 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"session.releaseIdle\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.processes\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "RequestParams<\"session.organize\">": {
       "type": "object",
       "properties": {
@@ -2301,6 +2331,9 @@
         },
         "leaseEpoch": {
           "type": "number"
+        },
+        "visible": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -9097,6 +9130,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22session.releaseResources.bulk%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.releaseIdle"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.releaseIdle%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.processes"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.processes%22%3E"
         }
       },
       "required": [

@@ -7,7 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { browserHandoff, onBrowserHandoffEvent, openExternal, operationId, outputSubscription, request, subscribeEvents } from "../bridge";
-import { acquireControl, takeTerminalControl } from '../controlLease';
+import { acquireControl, sessionVisible, takeTerminalControl } from '../controlLease';
 import { createTerminalControl, type TerminalControlState } from '../terminalControl';
 import { registerTerminalInputTarget } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
@@ -352,7 +352,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     } });
     let transportUp = true, controlEverReady = false;
     let resizeEpoch: number | undefined;
-    const control = createTerminalControl(onLost => acquireControl(sessionId, onLost), state => {
+    const control = createTerminalControl(onLost => acquireControl(sessionId, onLost, () => sessionVisible(host.current)), state => {
       if (disposed) return;
       leaseEpoch = state.phase === 'ready' ? state.epoch : undefined;
       terminal.options.disableStdin = state.phase !== 'ready';

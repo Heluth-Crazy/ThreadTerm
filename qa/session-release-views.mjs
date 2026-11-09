@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {freemem,tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {join,dirname,resolve} from 'node:path';
 import {electron} from './lib/desktop1.mjs';
 import {acquireElectronQaLock} from './lib/electron-lock.mjs';
 
@@ -16,7 +16,7 @@ const check=text=>{report.checks.push(text);console.log(`PASS ${text}`);};
 let app,release;
 try {
   await mkdir(out,{recursive:true});
-  const renderer=`import React,{useEffect,useState}from 'react';import{createRoot}from'react-dom/client';import{ChatView}from'./renderer/src/components/ChatView';import{TerminalSurface}from'./renderer/src/components/TerminalSurface';import{I18nProvider}from'./renderer/src/i18n';import'./renderer/src/styles.css';
+  const renderer=`import React,{useEffect,useState}from 'react';import{createRoot}from'react-dom/client';import{ChatView}from'./renderer/src/components/ChatView';import{TerminalSurface}from'./renderer/src/components/TerminalSurface';import{RunningAgentsView}from'./renderer/src/components/RunningAgents';import{I18nProvider}from'./renderer/src/i18n';import'./renderer/src/styles.css';
 const view=new URLSearchParams(location.search).get('view')??'chat';
 const chat={id:'qa-chat',projectId:'qa-project',title:'Released chat',provider:'codex',mode:'chat',status:'exited',createdAt:'2026-11-09T00:00:00Z',updatedAt:'2026-11-09T00:00:00Z',released:true,nativeId:'native-qa-chat'};
 const terminal={id:'qa-term',projectId:'qa-project',title:'Released terminal',provider:'codex',mode:'terminal',status:'exited',createdAt:'2026-11-09T00:00:00Z',updatedAt:'2026-11-09T00:00:00Z',released:true,nativeId:'native-qa-term',cols:80,rows:24};
@@ -25,7 +25,24 @@ function Harness(){
   useEffect(()=>{const onSession=event=>setSession(current=>({...current,...event.detail}));addEventListener('qa-session',onSession);return()=>removeEventListener('qa-session',onSession)},[]);
   return view==='chat'?<ChatView session={session}/>:<TerminalSurface sessionId={session.id} provider={session.provider} session={session} theme='dark'/>;
 }
-createRoot(document.getElementById('root')).render(<I18nProvider locale='en'><Harness/></I18nProvider>);`;
+const project={id:'qa-project',name:'ThreadTerm',path:'D:/project/ThreadTerm',createdAt:'2026-11-09T00:00:00Z'};
+const agents=[
+  {id:'a',title:'Fix the login redirect race',provider:'codex',mode:'chat',status:'idle',createdAt:'',updatedAt:'',projectId:'qa-project',worktreePath:'D:/project/ThreadTerm/tt-login'},
+  {id:'b',title:'Review the session release diff',provider:'claude',mode:'chat',status:'running',createdAt:'',updatedAt:'',projectId:'qa-project',worktreePath:'D:/project/ThreadTerm/tt-session-release'},
+  {id:'c',title:'Approve the deployment plan',provider:'opencode',mode:'chat',status:'waiting',createdAt:'',updatedAt:'',projectId:'qa-project',worktreePath:'D:/project/ThreadTerm/tt-docs'},
+  {id:'d',title:'Run the migration checks',provider:'grok',mode:'chat',status:'idle',createdAt:'',updatedAt:'',projectId:'qa-project',worktreePath:'D:/project/ThreadTerm/tt-session-release'},
+  {id:'e',title:'Build the release package',provider:'codex',mode:'terminal',status:'idle',createdAt:'',updatedAt:'',projectId:'qa-project',worktreePath:'D:/project/ThreadTerm/tt-release'},
+];
+const processes={sessions:[
+  {sessionId:'a',processCount:24,memoryBytes:588000000,idleSeconds:14*60,visible:false,idle:true},
+  {sessionId:'b',processCount:31,memoryBytes:812000000,idleSeconds:4,visible:false,idle:false,blocked:'the session is working or waiting for your answer'},
+  {sessionId:'c',processCount:8,memoryBytes:146000000,idleSeconds:52*60,visible:false,idle:false,blocked:'the session is working or waiting for your answer'},
+  {sessionId:'d',processCount:12,memoryBytes:241000000,idleSeconds:40,visible:false,idle:false,blocked:'a background task is running'},
+  {sessionId:'e',processCount:6,memoryBytes:96000000,idleSeconds:22*60,visible:false,idle:true},
+],memoryBytes:1883000000,idleReleaseMinutes:30};
+function RunningAgentsQa(){return <div style={{width:900,padding:24,background:'var(--bg)',color:'var(--text)'}}><RunningAgentsView processes={processes} sessions={agents} projects={[project]} zh={false} idleMinutes={30} onStopIdle={()=>{}} onStop={()=>{}} onOpen={()=>{}} onIdleMinutes={()=>{}}/></div>;}
+function App(){return view==='running-agents'?<RunningAgentsQa/>:<Harness/>;}
+createRoot(document.getElementById('root')).render(<I18nProvider locale='en'><App/></I18nProvider>);`;
   await build({stdin:{contents:renderer,resolveDir:root,loader:'tsx'},bundle:true,jsx:'automatic',outfile:join(scratch,'ui.js'),loader:{'.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl'},logLevel:'error'});
   await writeFile(join(scratch,'index.html'),'<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="ui.css"><script>window.__qaErrors=[];addEventListener("error",event=>window.__qaErrors.push(String(event.message||event.error)));addEventListener("unhandledrejection",event=>window.__qaErrors.push("rejection "+String(event.reason)));</script><style>html,body,#root{height:100%;margin:0}#root{display:flex;flex:1}</style><div id="root"></div><script src="ui.js"></script>');
   const preload=`const{contextBridge}=require('electron');
@@ -166,6 +183,22 @@ app.whenReady().then(()=>{const view=(process.argv.find(argument=>argument.start
   assert.equal(relocated[0].params.resume,true,'relocation carries resume:true');
   assert.equal(relocated[0].params.cwd,'D:/qa/relocated','the chosen folder is sent');
   check('a missing folder offers Choose folder, which resumes explicitly');
+
+  // 8. The Running agents diagnostics: realistic rows, the setting, and one
+  //    screenshot the owner can judge.
+  const agentsPage=await launch('running-agents');
+  await agentsPage.waitForSelector('.running-agents-row');
+  assert.equal(await agentsPage.locator('.running-agents-row').count(),5,'five realistic agent rows');
+  const agentsText=await agentsPage.locator('.running-agents').innerText();
+  assert.match(agentsText,/5 running · 1\.8 GB/);
+  assert.match(agentsText,/Idle 14 min/);
+  assert.match(agentsText,/Waiting for you/);
+  assert.match(agentsText,/Stop idle \(2 · 652\.3 MB\)/);
+  assert.match(agentsText,/Release idle sessions after/);
+  const shot=join('D:/project/ThreadTerm/tt-qa-temp/session-release-idle','running-agents.png');
+  await mkdir(dirname(shot),{recursive:true});
+  await agentsPage.screenshot({path:shot,fullPage:true});
+  check('the Running agents section shows its rows, memory, setting and Stop idle action');
 
   assert.deepEqual(report.errors,[]);report.passed=true;
 } catch (error) { report.failure=String(error.stack??error); try{const current=await app?.firstWindow();report.html=(await current.content()).slice(0,3000);report.pageErrors=await current.evaluate(()=>window.__qaErrors);report.calls=await current.evaluate(()=>window.qa.calls())}catch{} process.exitCode=1; }

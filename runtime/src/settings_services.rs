@@ -37,6 +37,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "chatTools.feedback",
     "chatTools.run",
     "chatTools.delegation",
+    "sessions.idleReleaseMinutes",
 ];
 const RUNTIME_SETTINGS: &[&str] = &[
     "theme",
@@ -64,6 +65,8 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "chatTools.run",
     "chatTools.delegation",
     "chatTools",
+    // Minutes before a hidden, idle chat worker is released; 0 disables it.
+    "sessions.idleReleaseMinutes",
     // Machine-specific (not exported): the console host for Windows terminals (conpty.rs); read at runtime start.
     "conptyHost",
     // Machine-specific: a new Shell terminal resolves this once and stores the executable in its launch config.
@@ -1123,6 +1126,13 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
             Ok(())
         }
         "quickMessages" if valid_quick_messages(value) => Ok(()),
+        "sessions.idleReleaseMinutes"
+            if value
+                .as_i64()
+                .is_some_and(|minutes| (0..=1440).contains(&minutes)) =>
+        {
+            Ok(())
+        }
         "terminalIcons" if valid_terminal_icons(value) => Ok(()),
         "providerNetwork"
             if value
@@ -2241,5 +2251,43 @@ mod tests {
         assert!(!ok(json!([]), json!([{"id":"x","name":"X","src":huge}])), "an image is at most about 64 KB");
         assert!(!valid_runtime_patch(&json!({"terminalIcons":{"rules":[]}})).is_ok(), "both lists are required");
         assert!(ALLOWED_SETTINGS.contains(&"terminalIcons"), "icons travel with exported settings");
+    }
+
+    #[test]
+    fn idle_release_minutes_is_bounded_and_portable() {
+        for minutes in [0, 15, 30, 60, 120, 1440] {
+            assert!(valid_runtime_patch(&json!({"sessions.idleReleaseMinutes":minutes})).is_ok());
+        }
+        for invalid in [json!(-1), json!(1441), json!(1.5), json!("30"), json!(null), json!(true)] {
+            assert!(
+                valid_runtime_patch(&json!({"sessions.idleReleaseMinutes":invalid})).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(ALLOWED_SETTINGS.contains(&"sessions.idleReleaseMinutes"));
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("settings.sqlite")).unwrap();
+        db.update_settings(
+            &json!({"sessions.idleReleaseMinutes":15}),
+            0,
+            "idle-release-save",
+        )
+        .unwrap();
+        let exported = settings_export(&db).unwrap();
+        assert_eq!(exported["settings"]["sessions.idleReleaseMinutes"], 15);
+        let bundle = json!({"marker":SETTINGS_MARKER,"version":SETTINGS_VERSION,
+            "settings":{"sessions.idleReleaseMinutes":60}})
+        .to_string();
+        settings_apply(
+            &db,
+            object(&json!({"operationId":"idle-release-import","expectedRevision":1,
+                "bundle":bundle,"selected":["sessions.idleReleaseMinutes"]}))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings_export(&db).unwrap()["settings"]["sessions.idleReleaseMinutes"],
+            60
+        );
     }
 }

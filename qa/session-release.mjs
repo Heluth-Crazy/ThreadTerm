@@ -35,14 +35,16 @@ assert.deepEqual(Object.keys(environment).filter(key => key.toLowerCase() === 'p
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const report = { passed: false, scratch, runtime, checks: [] };
 let daemon, peer;
-async function start() {
-  daemon = spawn(runtimeCopy, [], { env: environment, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+async function start(extraEnv = {}) {
+  const runData = extraEnv.THREADTERM_V3_DATA ?? data;
+  const runPipe = extraEnv.THREADTERM_V3_PIPE ?? pipe;
+  daemon = spawn(runtimeCopy, [], { env: { ...environment, ...extraEnv }, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   let diagnostic = '';
   daemon.stderr.on('data', bytes => { diagnostic += bytes.toString(); });
   for (let attempt = 0; attempt < 200; attempt++) {
     try {
-      const next = await connectPeer(`${pipe}-control`);
-      await next.auth((await readFile(join(data, 'runtime.credential'), 'utf8')).trim());
+      const next = await connectPeer(`${runPipe}-control`);
+      await next.auth((await readFile(join(runData, 'runtime.credential'), 'utf8')).trim());
       peer = next;
       return;
     } catch {
@@ -132,6 +134,56 @@ try {
   assert.equal(restored.released, true);
   assert.equal(restored.status, 'exited');
   report.checks.push('released state survived a runtime restart');
+
+  // Idle release needs minutes in production; a debug-only override makes the
+  // sweep and threshold seconds so this probe can watch it.
+  await peer.request('runtime.shutdown', { operationId: randomUUID() }).catch(() => {});
+  peer.close(); peer = undefined;
+  for (let attempt = 0; attempt < 200 && daemon.exitCode === null; attempt++) await pause(50);
+  const idleData = join(scratch, 'idle-data'), idlePipe = `${pipe}-idle`;
+  await mkdir(idleData, { recursive: true });
+  await start({ THREADTERM_QA_IDLE_SWEEP_SECONDS: '1', THREADTERM_QA_IDLE_RELEASE_SECONDS: '2', THREADTERM_V3_DATA: idleData, THREADTERM_V3_PIPE: idlePipe });
+  const idleCwd = join(scratch, 'idle-workspace');
+  await mkdir(idleCwd, { recursive: true });
+  const project = await peer.request('project.add', { path: idleCwd, name: 'Idle QA project', operationId: randomUUID() }).catch(() => undefined);
+  const scope = project ? { projectId: project.id } : {};
+  const createChat = async title => {
+    const created = await peer.request('session.create', { cwd: idleCwd, ...(project ? { projectId: project.id } : {}), title, provider: 'codex', mode: 'chat', operationId: randomUUID() });
+    const { leaseEpoch } = await peer.request('session.claim', { sessionId: created.id, clientId: 'qa-idle' });
+    await peer.request('chat.connect', { sessionId: created.id, leaseEpoch, operationId: randomUUID() });
+    return created.id;
+  };
+  const hidden = await createChat('Hidden idle QA');
+  const visible = await createChat('Visible QA');
+  const visibleEpoch = (await peer.request('session.claim', { sessionId: visible, clientId: 'qa-idle' })).leaseEpoch;
+  const renewUntil = Date.now() + 4500;
+  while (Date.now() < renewUntil) {
+    await peer.request('session.renew', { sessionId: visible, leaseEpoch: visibleEpoch, visible: true }).catch(() => {});
+    await pause(300);
+  }
+  assert.equal(Boolean((await session(hidden))?.released), true, 'the hidden idle chat was released by the sweep');
+  assert.equal(Boolean((await session(visible))?.released), false, 'the visible chat was kept');
+  report.checks.push('the idle sweep released a hidden chat and kept a visible one');
+
+  const live = await peer.request('session.processes', scope);
+  const visibleRow = live.sessions.find(row => row.sessionId === visible);
+  assert.ok(visibleRow, `the live chat is listed: ${JSON.stringify(live)}`);
+  assert.ok(visibleRow.processCount >= 1, 'the live chat has a process count');
+  if (process.platform === 'win32') assert.ok(visibleRow.memoryBytes > 0 && live.memoryBytes > 0, 'Windows reports memory above 0');
+  assert.equal(live.sessions.some(row => row.sessionId === hidden), false, 'a released tree is not listed');
+  report.checks.push('Running agents lists only live trees with a process count and memory');
+
+  // Stop idle uses a 30 s no-visible window, so let the last use age out.
+  // Use a terminal: the automatic sweep never releases terminals, while the
+  // bulk action does, so the two checks cannot race each other.
+  const idleTerminal = await peer.request('session.create', { cwd: idleCwd, ...(project ? { projectId: project.id } : {}), title: 'Bulk idle terminal QA', provider: 'codex', mode: 'terminal', operationId: randomUUID() });
+  await waitFor(() => session(idleTerminal.id), row => row?.status === 'running', 'bulk terminal live');
+  await peer.request('session.claim', { sessionId: idleTerminal.id, clientId: 'qa-idle-bulk' });
+  await pause(31_000);
+  const bulk = await peer.request('session.releaseIdle', { ...scope, operationId: randomUUID() });
+  assert.ok(bulk.released.some(row => row.id === idleTerminal.id), `Stop idle released the idle terminal: ${JSON.stringify(bulk)}`);
+  assert.equal(Boolean((await session(idleTerminal.id))?.released), true);
+  report.checks.push('Stop idle from a project scope released only the idle chats');
   report.passed = true;
 } catch (error) {  report.error = error.stack ?? String(error);
   process.exitCode = 1;

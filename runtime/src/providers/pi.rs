@@ -874,6 +874,10 @@ impl ChatSession for PiChat {
         self.native()
     }
 
+    fn process_ids(&self) -> Vec<u32> {
+        self.process.process_ids()
+    }
+
     fn is_alive(&self) -> bool {
         !self.retired && self.process.is_alive()
     }

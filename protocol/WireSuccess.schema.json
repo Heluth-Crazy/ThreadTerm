@@ -3701,6 +3701,9 @@
             },
             "chatTools.delegation": {
               "type": "boolean"
+            },
+            "sessions.idleReleaseMinutes": {
+              "type": "number"
             }
           },
           "additionalProperties": false
@@ -3932,6 +3935,9 @@
         },
         "chatTools.delegation": {
           "type": "boolean"
+        },
+        "sessions.idleReleaseMinutes": {
+          "type": "number"
         },
         "quickMessages": {
           "type": "array",
@@ -5302,6 +5308,94 @@
         "refused"
       ],
       "additionalProperties": false
+    },
+    "RequestResult<\"session.releaseIdle\">": {
+      "type": "object",
+      "properties": {
+        "released": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Session"
+          }
+        },
+        "skipped": {
+          "type": "number"
+        },
+        "failed": {
+          "type": "number"
+        },
+        "freedBytes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "released",
+        "skipped"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"session.processes\">": {
+      "$ref": "#/definitions/SessionProcessList"
+    },
+    "SessionProcessList": {
+      "type": "object",
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionProcess"
+          }
+        },
+        "memoryBytes": {
+          "type": "number"
+        },
+        "idleReleaseMinutes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessions",
+        "idleReleaseMinutes"
+      ],
+      "additionalProperties": false,
+      "description": "`session.processes`: only sessions with a live process tree. Memory is Windows-only."
+    },
+    "SessionProcess": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "processCount": {
+          "type": "number"
+        },
+        "memoryBytes": {
+          "type": "number"
+        },
+        "idleSeconds": {
+          "type": "number"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "idle": {
+          "type": "boolean"
+        },
+        "blocked": {
+          "type": "string"
+        },
+        "busy": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sessionId",
+        "processCount",
+        "visible",
+        "idle"
+      ],
+      "additionalProperties": false,
+      "description": "One live agent process tree, from `session.processes` (on demand)."
     },
     "RequestResult<\"session.organize\">": {
       "$ref": "#/definitions/Session"
@@ -13389,6 +13483,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22session.releaseResources.bulk%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.releaseIdle"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.releaseIdle%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.processes"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.processes%22%3E"
         }
       },
       "required": [

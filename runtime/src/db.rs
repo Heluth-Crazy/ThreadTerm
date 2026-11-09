@@ -774,6 +774,26 @@ impl Database {
             providers: vec![],
         })
     }
+    /// Sessions only: the Running agents view polls this, so it must not read
+    /// projects, inbox, workspaces or transcripts.
+    pub fn sessions(&self) -> Result<Vec<Session>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        collect_sessions(&conn)
+    }
+
+    pub fn project_path(&self, id: &str) -> Result<Option<String>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        conn.query_row("SELECT path FROM projects WHERE id=?", [id], |row| row.get(0))
+            .optional()
+            .map_err(Into::into)
+    }
+
     /// Small projections for the server-owned control tree subscription. Never reads transcripts.
     pub fn tree_projection(&self, event: &str, data: &Value) -> Result<Value> {
         let conn = self.connection.lock().map_err(|_| anyhow!("database lock poisoned"))?;
