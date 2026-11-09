@@ -85,6 +85,59 @@ function fixture(savedFiles=new Map()) {
  return {invoke,handoff,show,first,owner,views,profile,sent,timers,opened,savedFiles,png,bitmap,setDiskStep(fn){diskStep=fn;},advance(ms){now+=ms;for(const timer of [...timers])timer.fn();},setLoad(fn){loadPage=fn;},setCapture(fn){capture=fn;}};
 }
 
+test('only proven same-document same-URL History replacement preserves the page epoch',async()=>{
+ for(const scenario of ['replace','missing-commit','push','full-history-push','traverse','changed-position','changed-url','cross-document','subframe-interleaving','duplicate-commit','no-start']){
+  const f=fixture();await f.show();const wc=f.views[0].webContents;
+  let index=scenario==='full-history-push'?49:1,length=scenario==='full-history-push'?50:3;
+  Object.assign(wc.navigationHistory,{getActiveIndex:()=>index,length:()=>length});
+  wc.emit('did-navigate',{},wc.url);wc.emit('did-finish-load');
+  const before=await f.invoke({type:'state',tabId:'page-one'}),address=scenario==='changed-url'?`${wc.url}#new`:wc.url;
+  if(scenario!=='no-start')wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:scenario!=='cross-document',url:address});
+  if(scenario==='replace'){
+   const during=await f.invoke({type:'state',tabId:'page-one'});
+   assert.equal(during.loading,false);assert.equal(during.navigation,'load_observed');assert.equal(during.sharing.navigationEpoch,before.sharing.navigationEpoch);
+  }
+  if(scenario==='changed-position')index++;
+  if(scenario==='push'){index++;length++;}
+  // Traversal may already expose its destination index at start; capacity push
+  // also leaves both values unchanged. Neither is a replacement commit.
+  const replaced=!['push','full-history-push','traverse'].includes(scenario);
+  if(scenario!=='missing-commit')wc.emit('navigation-entry-committed',{},address,scenario!=='cross-document',replaced);
+  if(scenario==='subframe-interleaving')wc.emit('did-start-navigation',{isMainFrame:false,isSameDocument:true,url:address});
+  if(scenario==='duplicate-commit')wc.emit('navigation-entry-committed',{},address,true,true);
+  wc.url=address;wc.emit('did-navigate-in-page',{},address,true);
+  const after=await f.invoke({type:'state',tabId:'page-one'});
+  assert.equal(after.sharing.navigationEpoch===before.sharing.navigationEpoch,scenario==='replace',scenario);
+ }
+});
+
+test('uncompleted and overlapping same-URL event sequences fail closed',async()=>{
+ for(const scenario of ['missing-in-page','missing-both','overlap','failed','unexpected-document','unexpected-load','subframe-completion','foreign-commit','replaced-view']){
+  const f=fixture();await f.show();const wc=f.views[0].webContents;
+  Object.assign(wc.navigationHistory,{getActiveIndex:()=>0,length:()=>1});
+  wc.emit('did-navigate',{},wc.url);wc.emit('did-finish-load');
+  const before=await f.invoke({type:'state',tabId:'page-one'});
+  wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url:wc.url});
+  if(scenario==='overlap')wc.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true,url:wc.url});
+  if(scenario!=='missing-both')wc.emit('navigation-entry-committed',{},wc.url,true,true);
+  if(scenario==='overlap')wc.emit('did-navigate-in-page',{},wc.url,true);
+  if(scenario==='failed')wc.emit('did-fail-load',{},-3,'cancelled',wc.url,true);
+  if(scenario==='unexpected-document'){wc.url='https://other.test/';wc.emit('did-navigate',{},wc.url);wc.emit('did-finish-load');}
+  if(scenario==='unexpected-load')wc.emit('did-finish-load');
+  if(scenario==='subframe-completion')wc.emit('did-navigate-in-page',{},wc.url,false);
+  if(scenario==='foreign-commit'){wc.url='https://other.test/';wc.emit('navigation-entry-committed',{},wc.url,false,true);assert.equal((await f.invoke({type:'state',tabId:'page-one'})).url,wc.url);}
+  if(scenario==='replaced-view'){
+   await f.invoke({type:'close',tabId:'page-one'});await f.show();
+   const replacement=await f.invoke({type:'state',tabId:'page-one'});
+   await new Promise(resolve=>setTimeout(resolve,10));
+   assert.equal((await f.invoke({type:'state',tabId:'page-one'})).sharing.navigationEpoch,replacement.sharing.navigationEpoch);
+  }else{
+   await new Promise(resolve=>setTimeout(resolve,10));
+   assert.ok((await f.invoke({type:'state',tabId:'page-one'})).sharing.navigationEpoch>before.sharing.navigationEpoch,scenario);
+  }
+ }
+});
+
 test('console handoff is owner-scoped, bounded to the document, and excludes normal logs',async()=>{
  const f=fixture();await f.show();const wc=f.views[0].webContents;wc.emit('did-navigate',{},wc.url);
  wc.emit('console-message',{},3,'first error',7,'https://example.test/a.js');wc.emit('console-message',{},2,'warning',8,'https://example.test/a.js');wc.emit('console-message',{},1,'ordinary log',9,'https://example.test/a.js');

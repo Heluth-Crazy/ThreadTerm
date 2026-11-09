@@ -76,11 +76,32 @@ function makeView(tab: Tab): WebContentsView {
   const view=new WebContentsView({ webPreferences:{ sandbox:true, contextIsolation:true, nodeIntegration:false, webSecurity:true, preload:undefined, partition:tab.partition } });
   tab.view=view;tab.viewGeneration=++nativeViewGeneration;
   const wc=view.webContents;
+  // A hidden page may replace its History state to save scroll position. Wait for
+  // native commit evidence before treating an exact-same-URL event as navigation.
+  // Index/length alone are insufficient (traversal and a full history can keep both).
+  const historyPosition=()=>{try{return {index:wc.navigationHistory.getActiveIndex(),length:wc.navigationHistory.length()};}catch{return undefined;}};
+  let settledHistory: ReturnType<typeof historyPosition>;
+  let historyUpdate: {url:string;documentGeneration:number;epoch:number;index:number;length:number;replacement?:boolean;timer?:ReturnType<typeof setTimeout>}|undefined;
+  const clearHistoryUpdate=()=>{const pending=historyUpdate;historyUpdate=undefined;if(pending?.timer)clearTimeout(pending.timer);return pending;};
+  const beginNavigation=(address:string,crossDocument:boolean)=>{
+    const previousEpoch=tab.navigationEpoch;
+    agentControllers.get(tab.owner)?.navigationStarted(tab.id,address);tab.navigationEpoch++;if(!crossDocument)advanceSameDocumentHandoffs(tab,address,previousEpoch);tab.contextPoint=undefined;if(crossDocument){tab.faviconAbort?.abort();tab.faviconAbort=undefined;tab.consoleStatus='pending';tab.favicon=undefined;tab.faviconRequest=(tab.faviconRequest??0)+1;} tab.findRequestId=undefined; tab.find=undefined; tab.issue=tab.devtoolsStopped!==undefined?devtoolsStoppedIssue:undefined;tab.loading=true;tab.navigation='pending';tab.url=address;tab.origin=pageOrigin(address);emit(tab);
+  };
+  // Supplemental native Electron event, intentionally outside its public typings.
+  // Absence on a future version falls back to navigation; it never grants access.
+  const navigationEvents: NodeJS.EventEmitter=wc;
+  navigationEvents.on('navigation-entry-committed', (_event:Electron.Event,url:string,sameDocument:boolean,replaced:boolean) => {
+    const pending=historyUpdate;
+    if(!pending)return;
+    if(pending.replacement===undefined&&sameDocument===true&&replaced===true&&url===pending.url){pending.replacement=true;return;}
+    clearHistoryUpdate();if(tab.view?.webContents===wc)beginNavigation(url,sameDocument!==true);
+  });
+  wc.once('destroyed',clearHistoryUpdate);
   wc.on('will-attach-webview', event => event.preventDefault());
   wc.on('devtools-opened',()=>{const devtools=tab.devtools;if(tab.view?.webContents!==wc||!devtools)return;devtools.ready=true;selectDevtoolsPanel(tab,devtools);attachDevtools(tab);emit(tab);});
   wc.on('devtools-closed',()=>{if(tab.view?.webContents===wc&&tab.devtools)devtoolsStopped(tab,tab.devtools);});
   wc.on('devtools-open-url',(event,url)=>{event.preventDefault();if(tab.view?.webContents!==wc||tab.owner.isDestroyed())return;const normalized=normalizeBrowserUrl(url);if(normalized.url&&/^https?:/.test(normalized.url)&&allowedFor(tab,normalized.url))tab.owner.send('threadterm:browser-event',{type:'popup',openerId:tab.id,tabId:randomUUID(),url:normalized.url} satisfies BrowserEvent);});
-  wc.on('render-process-gone',()=>{if(tab.view?.webContents!==wc)return;tab.loading=false;tab.navigation='failed';agentControllers.get(tab.owner)?.invalidate(tab.id,'Sharing stopped — the page process exited.');emit(tab);});
+  wc.on('render-process-gone',()=>{clearHistoryUpdate();if(tab.view?.webContents!==wc)return;tab.loading=false;tab.navigation='failed';agentControllers.get(tab.owner)?.invalidate(tab.id,'Sharing stopped — the page process exited.');emit(tab);});
   wc.setWindowOpenHandler(details => {
     const normalized=normalizeBrowserUrl(details.url);
     if (Date.now()>tab.gestureUntil || !normalized.url || !allowedFor(tab, normalized.url)) { setIssue(tab, normalized.issue ?? 'Blocked an unsolicited popup.'); return { action:'deny' }; }
@@ -97,16 +118,39 @@ function makeView(tab: Tab): WebContentsView {
   wc.on('will-redirect', (details,url,_inPage,isMainFrame) => { if(isMainFrame)guardNavigation(details,url); });
   // Screenshot epochs change at navigation start; console ownership changes only at commit.
   // The outgoing document can keep logging while a new response is still pending.
-  wc.on('did-start-navigation', (details, url, sameDocument, isMainFrame) => { if (tab.view?.webContents!==wc||!(details.isMainFrame??isMainFrame)) return; const address=details.url??url,previousEpoch=tab.navigationEpoch,crossDocument=!(details.isSameDocument??sameDocument);agentControllers.get(tab.owner)?.navigationStarted(tab.id,address);tab.navigationEpoch++;if(!crossDocument)advanceSameDocumentHandoffs(tab,address,previousEpoch);tab.contextPoint=undefined;if(crossDocument){tab.faviconAbort?.abort();tab.faviconAbort=undefined;tab.consoleStatus='pending';tab.favicon=undefined;tab.faviconRequest=(tab.faviconRequest??0)+1;} tab.findRequestId=undefined; tab.find=undefined; tab.issue=tab.devtoolsStopped!==undefined?devtoolsStoppedIssue:undefined;tab.loading=true;tab.navigation='pending';tab.url=address;tab.origin=pageOrigin(address);emit(tab); });
+  wc.on('did-start-navigation', (details, url, sameDocument, isMainFrame) => {
+    const interrupted=clearHistoryUpdate();
+    if(interrupted&&tab.view?.webContents===wc)beginNavigation(interrupted.url,false);
+    if (tab.view?.webContents!==wc||!(details.isMainFrame??isMainFrame)) return;
+    const address=details.url??url,crossDocument=!(details.isSameDocument??sameDocument);
+    const position=!interrupted&&!crossDocument&&address===tab.url&&wc.getURL()===address&&!tab.loading&&tab.navigation==='load_observed'?historyPosition():undefined;
+    if(position&&Number.isSafeInteger(position.index)&&position.index>=0&&position.length>position.index&&position.index===settledHistory?.index&&position.length===settledHistory?.length){
+      const pending: NonNullable<typeof historyUpdate>={url:address,documentGeneration:tab.documentGeneration,epoch:tab.navigationEpoch,...position};historyUpdate=pending;
+      pending.timer=setTimeout(()=>{if(historyUpdate!==pending)return;clearHistoryUpdate();if(tab.view?.webContents===wc&&!wc.isDestroyed())beginNavigation(pending.url,false);},0);
+      return;
+    }
+    beginNavigation(address,crossDocument);
+  });
   wc.on('did-navigate', (_event,url) => {
+    const pending=clearHistoryUpdate();
     if(tab.view?.webContents!==wc)return;
+    if(pending)beginNavigation(url,true);
     tab.console=createConsoleRing();tab.consoleCounts={errors:0,warnings:0};tab.consoleUrl=url;tab.consoleStatus='committed';
     if(!tab.owner.isDestroyed())tab.owner.send('threadterm:browser-handoff-event',{type:'console',tabId:tab.id,documentGeneration:tab.documentGeneration,errors:0,warnings:0} satisfies BrowserHandoffEvent);
   });
-  wc.on('did-navigate-in-page', (_event,url,isMainFrame) => { if(tab.view?.webContents===wc&&isMainFrame){const previousEpoch=tab.navigationEpoch;agentControllers.get(tab.owner)?.navigationStarted(tab.id,url);tab.navigationEpoch++;advanceSameDocumentHandoffs(tab,url,previousEpoch);tab.loading=false;tab.navigation='load_observed';tab.url=url;tab.origin=pageOrigin(url);if(tab.consoleUrl&&tab.consoleStatus!=='failed')tab.consoleUrl=url;emit(tab);} });
-  wc.on('did-finish-load', () => { if(tab.view?.webContents!==wc||tab.navigation==='failed')return;if(tab.devtoolsStopped!==undefined&&tab.devtoolsStopped!==tab.viewGeneration){tab.devtoolsStopped=undefined;if(tab.issue===devtoolsStoppedIssue)tab.issue=undefined;}tab.loading=false; tab.url=wc.getURL(); tab.title=sanitizeBrowserTitle(wc.getTitle()); tab.origin=pageOrigin(tab.url); tab.documentGeneration++; tab.navigation='load_observed'; emit(tab); });
+  wc.on('did-navigate-in-page', (_event,url,isMainFrame) => {
+    const pending=clearHistoryUpdate();
+    if(tab.view?.webContents!==wc)return;
+    if(!isMainFrame){if(pending)beginNavigation(pending.url,false);return;}
+    const position=historyPosition();settledHistory=position;
+    // This supplemental event is verified on pinned Electron 44.3.0. If it is
+    // missing or inconsistent, keep the normal navigation/authority invalidation.
+    if(pending?.replacement&&url===pending.url&&tab.url===url&&wc.getURL()===url&&tab.documentGeneration===pending.documentGeneration&&tab.navigationEpoch===pending.epoch&&!tab.loading&&tab.navigation==='load_observed'&&position?.index===pending.index&&position?.length===pending.length)return;
+    const previousEpoch=tab.navigationEpoch;agentControllers.get(tab.owner)?.navigationStarted(tab.id,url);tab.navigationEpoch++;advanceSameDocumentHandoffs(tab,url,previousEpoch);tab.contextPoint=undefined;tab.findRequestId=undefined;tab.find=undefined;tab.loading=false;tab.navigation='load_observed';tab.url=url;tab.origin=pageOrigin(url);if(tab.consoleUrl&&tab.consoleStatus!=='failed')tab.consoleUrl=url;emit(tab);
+  });
+  wc.on('did-finish-load', () => { const pending=clearHistoryUpdate();if(tab.view?.webContents!==wc||tab.navigation==='failed')return;if(pending)beginNavigation(wc.getURL(),true);settledHistory=historyPosition();if(tab.devtoolsStopped!==undefined&&tab.devtoolsStopped!==tab.viewGeneration){tab.devtoolsStopped=undefined;if(tab.issue===devtoolsStoppedIssue)tab.issue=undefined;}tab.loading=false; tab.url=wc.getURL(); tab.title=sanitizeBrowserTitle(wc.getTitle()); tab.origin=pageOrigin(tab.url); tab.documentGeneration++; tab.navigation='load_observed'; emit(tab); });
   wc.on('console-message', (details, legacyLevel, legacyMessage, legacyLine, legacySourceId) => { if(tab.view?.webContents!==wc)return;const event=details as unknown as {level?:unknown;message?:unknown;line?:unknown;lineNumber?:unknown;sourceId?:unknown},level=event.level??legacyLevel,message=event.message??legacyMessage,line=event.lineNumber??event.line??legacyLine,sourceId=event.sourceId??legacySourceId; const entry:BrowserConsoleEntry={level:typeof level==='number'?['verbose','info','warning','error'][level]??String(level):String(level),text:typeof message==='string'?message:'',sourceUrl:typeof sourceId==='string'?sourceId:'',line:typeof line==='number'&&Number.isSafeInteger(line)&&line>=0?line:0}; appendConsoleEntry(tab.console,entry);const counts=consoleCounts(tab.console.entries);if(counts.errors!==tab.consoleCounts.errors||counts.warnings!==tab.consoleCounts.warnings){tab.consoleCounts=counts;if(!tab.owner.isDestroyed())tab.owner.send('threadterm:browser-handoff-event',{type:'console',tabId:tab.id,documentGeneration:tab.documentGeneration,...counts} satisfies BrowserHandoffEvent);}});
-  wc.on('did-fail-load', (_event, _code, description, url, isMainFrame) => { if (tab.view?.webContents!==wc||!isMainFrame||_code===-3) return; tab.consoleStatus='failed';tab.consoleUrl=undefined;tab.loading=false; tab.url=url || tab.url; tab.navigation='failed'; tab.issue=`Page failed to load: ${description}`; emit(tab); });
+  wc.on('did-fail-load', (_event, _code, description, url, isMainFrame) => { const pending=clearHistoryUpdate();if(pending&&tab.view?.webContents===wc)beginNavigation(pending.url,false);if (tab.view?.webContents!==wc||!isMainFrame||_code===-3) return; tab.consoleStatus='failed';tab.consoleUrl=undefined;tab.loading=false; tab.url=url || tab.url; tab.navigation='failed'; tab.issue=`Page failed to load: ${description}`; emit(tab); });
   wc.on('page-title-updated', (_event, title) => { tab.title=sanitizeBrowserTitle(title); emit(tab); });
   wc.on('page-favicon-updated', (_event, candidates) => { void updateFavicon(tab,wc,candidates); });
   wc.on('did-stop-loading', () => {
