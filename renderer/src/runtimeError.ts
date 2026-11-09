@@ -5,6 +5,8 @@ import { runtimeErrorCode, runtimeErrorText } from './runtimeErrors';
  * round trip drops typed fields, but the runtime repeats the code in the message
  * (`response_too_large: …`), so `runtimeErrorCode` still recovers it. */
 const CODE_TEXT: Record<string, [string, string]> = {
+  cwd_missing_choose_relocation: ['That conversation\u2019s folder is gone. Choose the folder it should use, then continue.', '对话所在的文件夹已不存在。请选择它应使用的文件夹，然后继续。'],
+  cwd_required: ['Choose the folder this conversation should use, then continue.', '请选择此对话应使用的文件夹，然后继续。'],
   outbox_history_pruned: ['Older event history was removed. Refreshing the session snapshot.', '较早的事件记录已清理，正在刷新会话快照。'],
   response_too_large: ['This part of the conversation is too large to load at once.', '此部分对话过大，无法一次加载。'],
   schema_too_new: ['This database was upgraded by a newer ThreadTerm. Update the app or restore a backup.', '此数据库已由较新的 ThreadTerm 升级。请更新应用或恢复备份。'],

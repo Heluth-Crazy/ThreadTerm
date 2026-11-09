@@ -36,7 +36,7 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
       }
       const session = row.session;
       const needs = byId.get(session.id)!.needsYou, activity = sessionActivity(session), terminal = isTerminalAttentionSession(session);
-      const label = terminal ? sessionStateLabel(sessionState(session), zh, session.readOnly) : sessionActivityLabel(activity, zh);
+      const label = terminal ? sessionStateLabel(sessionState(session), zh, session.readOnly, Boolean(session.released)) : sessionActivityLabel(activity, zh);
       const dot = needs ? 'needs' : session.status === 'error' ? 'failed' : session.status === 'interrupted' ? 'stalled' : session.status === 'exited' || session.readOnly ? 'ended' : activity === 'running' || terminal && session.status === 'running' ? 'running' : 'ended';
       return <div className={`sess-row-wrap${row.nested ? ' is-delegate' : ''}`} key={machineTreeKey(tree.machine.id, 'session', session.id)} data-machine-id={tree.machine.id} data-session-id={session.id} data-activity={activity}>
         {needs > 0 && <i className="session-attention-bar" aria-hidden="true" />}

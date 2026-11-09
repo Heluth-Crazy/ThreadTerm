@@ -319,6 +319,17 @@ impl PtyManager {
         Ok(())
     }
     pub fn stop(&self, db: &Database, session_id: &str, force: bool) -> Result<()> {
+        self.stop_kind(db, session_id, force, false)
+    }
+
+    /// Kills the same process tree as a forced stop, but marks the session
+    /// released instead of ended and writes no exit inbox row: a later exit of
+    /// the resumed conversation is still recorded.
+    pub fn stop_for_release(&self, db: &Database, session_id: &str) -> Result<()> {
+        self.stop_kind(db, session_id, true, true)
+    }
+
+    fn stop_kind(&self, db: &Database, session_id: &str, force: bool, released: bool) -> Result<()> {
         let live = self
             .sessions
             .lock()
@@ -338,7 +349,11 @@ impl PtyManager {
             if let Ok(mut child) = live.child.lock() {
                 let _ = child.kill();
             }
-            db.set_session_status(session_id, "exited", None)?;
+            if released {
+                db.release_session(session_id)?;
+            } else {
+                db.set_session_status(session_id, "exited", None)?;
+            }
             crate::quick_launch::setup_terminal_exited(db, session_id, None, true)?;
             return Ok(());
         }
@@ -368,7 +383,11 @@ impl PtyManager {
             child.kill()?;
             exit = Some(child.wait()?.exit_code() as i32);
         }
-        db.set_session_status(session_id, "exited", exit)?;
+        if released {
+            db.release_session(session_id)?;
+        } else {
+            db.set_session_status(session_id, "exited", exit)?;
+        }
         crate::quick_launch::setup_terminal_exited(db, session_id, exit, true)?;
         Ok(())
     }

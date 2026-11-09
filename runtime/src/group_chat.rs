@@ -984,7 +984,10 @@ fn configure(db: &Database, providers: &Providers, g: &Value, m: &Value) -> Resu
                 m["model"].as_str(),
             )?;
         }
-        if let Err(error) = crate::service::connect_chat_session(db, providers, session) {
+        // A delivery is an explicit user message to this member: it resumes a
+        // stopped member's same native conversation instead of dropping the
+        // delivery silently.
+        if let Err(error) = crate::service::connect_chat_session(db, providers, session, true) {
             if !readonly
                 || m["provider"] != "claude"
                 || error
@@ -1002,7 +1005,7 @@ fn configure(db: &Database, providers: &Providers, g: &Value, m: &Value) -> Resu
                 .cloned()
                 .collect::<Vec<_>>();
             db.set_chat_option_selections(session, "claude", &json!(rows))?;
-            crate::service::connect_chat_session(db, providers, session)?;
+            crate::service::connect_chat_session(db, providers, session, true)?;
         }
     }
     // Model selection is independent from role; the shared helper only applies an explicit advertised model.

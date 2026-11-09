@@ -36,6 +36,10 @@ pub struct Session {
     pub followed: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub read_only: bool,
+    /// The process tree was stopped to free resources. The session and its
+    /// native identity stay; opening it resumes the same conversation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub released: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<SessionActivity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

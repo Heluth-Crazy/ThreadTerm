@@ -47,8 +47,8 @@ export function partLabel(part: ChatPart, copy: (en: string, zh: string) => stri
   return part.type;
 }
 
-export function chatCanControl(session: { readOnly?: boolean; status: string }): boolean {
-  return !session.readOnly && session.status !== "exited";
+export function chatCanControl(session: { readOnly?: boolean; status: string; released?: boolean }): boolean {
+  return !session.readOnly && (session.status !== "exited" || Boolean(session.released));
 }
 
 /** An explicit native outcome wins over legacy duration-only completion. */

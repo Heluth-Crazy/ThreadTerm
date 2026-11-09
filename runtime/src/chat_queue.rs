@@ -349,6 +349,18 @@ fn blocked_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<&'static str>> {
 
 pub(crate) fn idle(db:&Database,id:&str)->Result<bool>{db.transaction(|tx|idle_tx(tx,id))}
 
+/// A chat that still has queued follow-ups must not be released: the kill would
+/// land between the queue and the turn it is about to dispatch.
+pub(crate) fn pending_work(db: &Database, id: &str) -> Result<bool> {
+    db.transaction(|tx| {
+        Ok(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_queue_items WHERE session_id=?)",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )?)
+    })
+}
+
 /// Runtime-owned group deliveries use exactly the same durable queue and bounds.
 pub(crate) fn add_owned(tx:&Transaction<'_>,session:&str,item:&str,text:&str)->Result<()> {
     require_chat(tx,session,true)?;if text.trim() != "/fork" { validate_message(text,&[])?; }

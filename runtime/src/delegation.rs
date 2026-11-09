@@ -127,6 +127,9 @@ pub struct Delegations {
     /// Serializes a delegate's first send with a cancel (F09): a cancel that
     /// lands between the active check and the send produces no send.
     send_fence: Mutex<()>,
+    /// Children the user reopened with Continue or a send after their delegation
+    /// finished. Auto-release waits for that new turn to finish.
+    user_resumed: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Delegations {
@@ -140,6 +143,29 @@ impl Delegations {
             tokens.insert(session_id.to_owned(), token.clone());
         }
         token
+    }
+
+    /// The user explicitly reopened this child (Continue, a send or a keystroke).
+    pub(crate) fn note_user_resume(&self, session_id: &str) {
+        if let Ok(mut sessions) = self.user_resumed.lock() {
+            sessions.insert(session_id.to_owned());
+        }
+    }
+
+    /// The child's next turn finished, so a resumed delegation may be released again.
+    /// Only a new delegation run on the child calls this: finish of a turn, a
+    /// compaction or a stray error never does.
+    pub(crate) fn clear_user_resume(&self, session_id: &str) {
+        if let Ok(mut sessions) = self.user_resumed.lock() {
+            sessions.remove(session_id);
+        }
+    }
+
+    pub(crate) fn user_resume_pending(&self, session_id: &str) -> bool {
+        self.user_resumed
+            .lock()
+            .map(|sessions| sessions.contains(session_id))
+            .unwrap_or(true)
     }
 
     fn token_matches(&self, session_id: &str, token: &str) -> bool {
@@ -912,7 +938,10 @@ pub(crate) fn run_start(
     let fail = |message: String| {
         let _ = db.transaction(|tx| set_state(tx, delegation_id, "failed", None, Some(&message)));
     };
-    if let Err(error) = crate::service::connect_chat_session(db, providers, child_session_id) {
+    // The parent starts a new delegation run on this child: the user's earlier
+    // Continue no longer keeps it open, so this run's completion releases it.
+    delegations.clear_user_resume(child_session_id);
+    if let Err(error) = crate::service::connect_chat_session(db, providers, child_session_id, false) {
         return fail(format!("The delegated agent could not connect: {error}"));
     }
     // The fence with `cancel` (F09): a cancel that lands between the active
@@ -951,6 +980,92 @@ fn is_active(db: &Database, delegation_id: &str) -> bool {
         .map_err(Into::into)
     })
     .unwrap_or(false)
+}
+
+/// Auto-release: once a delegated child has finished for good, stop its worker
+/// tree but keep the child session, so the same native conversation can be
+/// answered with a follow-up. Any unfinished business (a running turn, a pending
+/// request, or a queued follow-up) keeps the worker; the next completed turn,
+/// settled request or queue drain retries.
+pub(crate) fn release_finished_child(
+    db: &Database,
+    providers: &Providers,
+    delegations: &Delegations,
+    previews: &crate::preview::Previews,
+    child_session_id: &str,
+    turn: Option<&str>,
+) -> Result<bool> {
+    // Look up the link before any lock: an event for a session that is not a
+    // finished delegated child must not wait behind that session's send or
+    // connect, and must not take its admission lock at all.
+    let Some((state, bound_turn)) = child_link(db, child_session_id)? else { return Ok(false); };
+    if !matches!(state.as_str(), "completed" | "failed" | "cancelled" | "interrupted") {
+        return Ok(false);
+    }
+    // Only the turn that settled the delegation may trigger its release. A
+    // turnless event never does; a queue drain asks for a retry explicitly.
+    if turn.is_some_and(|event| bound_turn.as_deref() != Some(event)) {
+        return Ok(false);
+    }
+    // The user reopened this child; keep it until that new turn finishes.
+    if delegations.user_resume_pending(child_session_id) {
+        return Ok(false);
+    }
+    // Same admission lock as a manual release: a follow-up send or a connect
+    // cannot interleave with the checks, the kill and the status write.
+    let admission = crate::chat_fork::session_admission(db, child_session_id)?;
+    let _admission = admission
+        .lock()
+        .map_err(|_| anyhow::anyhow!("provider_internal"))?;
+    // Re-check under the lock: the link and the release state may have changed.
+    let Some((state, bound_turn)) = child_link(db, child_session_id)? else { return Ok(false); };
+    if !matches!(state.as_str(), "completed" | "failed" | "cancelled" | "interrupted") {
+        return Ok(false);
+    }
+    if turn.is_some_and(|event| bound_turn.as_deref() != Some(event)) {
+        return Ok(false);
+    }
+    if delegations.user_resume_pending(child_session_id) {
+        return Ok(false);
+    }
+    let Some(session) = db.session_by_id(child_session_id)? else { return Ok(false); };
+    if session.read_only || session.released || !matches!(session.status.as_str(), "starting" | "running" | "idle" | "waiting") {
+        return Ok(false);
+    }
+    if matches!(session.status.as_str(), "starting" | "running" | "waiting")
+        || session.activity.as_ref().is_some_and(|activity| {
+            matches!(activity.state.as_str(), "running" | "awaiting_approval" | "awaiting_parent")
+        })
+    {
+        return Ok(false);
+    }
+    if db.chat_items(child_session_id)?.iter().any(|item| {
+        item.parts.iter().any(|part| {
+            part.get("type").and_then(Value::as_str) == Some("approval")
+                && matches!(part.get("status").and_then(Value::as_str), Some("pending" | "submitting"))
+        })
+    }) {
+        return Ok(false);
+    }
+    if crate::chat_queue::pending_work(db, child_session_id)? {
+        return Ok(false);
+    }
+    providers.chat_stop(child_session_id)?;
+    previews.revoke_disabled(providers)?;
+    db.release_session(child_session_id)?;
+    Ok(true)
+}
+
+fn child_link(db: &Database, child_session_id: &str) -> Result<Option<(String, Option<String>)>> {
+    db.transaction(|tx| {
+        tx.query_row(
+            "SELECT state,turn_id FROM delegations WHERE child_session_id=?",
+            [child_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+    })
 }
 
 /// `session.stop` on a delegate ends its delegation as cancelled. The worker is

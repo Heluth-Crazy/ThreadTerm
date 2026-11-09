@@ -4,7 +4,7 @@ use crate::{
     group_chat,
     providers::{
         ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent, Providers,
-        TerminalCommand,
+        ProviderRuntime, TerminalCommand,
     },
     session_configs::{self, LaunchSpec},
 };
@@ -1344,3 +1344,50 @@ fn archived_group_rejects_new_delivery() {
     )
     .is_err());
 }
+
+#[test]
+fn a_delivery_to_a_released_member_resumes_it_and_sends_exactly_once() {
+    let fixture = Fixture::new();
+    let group = fixture.create(1);
+    let id = group["id"].as_str().unwrap();
+    let handle = group["members"][0]["handle"].as_str().unwrap();
+    let session = group["members"][0]["sessionId"].as_str().unwrap();
+    // The first delivery connects the member; its turn then finishes.
+    fixture.dispatch(
+        "group.send",
+        json!({"id":id,"text":"first task","to":[handle],"operationId":"release-first"}),
+    );
+    wait_for(|| fixture.script.lock().unwrap().sent.len() == 1);
+    let first = fixture.script.lock().unwrap().sent[0].clone();
+    fixture.complete(&first, "first answer");
+    wait_for(|| fixture.read(id)["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["author"] == "member"));
+    // Release stops the member's worker and keeps its native conversation.
+    fixture.providers.chat_stop(session).unwrap();
+    fixture.db.release_session(session).unwrap();
+    assert!(fixture.db.session_by_id(session).unwrap().unwrap().released);
+    // A later delivery is an explicit message: it resumes the same member and
+    // is delivered exactly once.
+    fixture.dispatch(
+        "group.send",
+        json!({"id":id,"text":"second task","to":[handle],"operationId":"after-release"}),
+    );
+    wait_for(|| fixture.script.lock().unwrap().sent.len() == 2);
+    let second = fixture.script.lock().unwrap().sent[1].clone();
+    assert_eq!(second.session, session);
+    assert!(second.prompt.contains("second task"));
+    assert!(
+        !fixture.db.session_by_id(session).unwrap().unwrap().released,
+        "the delivery reopened the released member"
+    );
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        fixture.script.lock().unwrap().sent.len(),
+        2,
+        "the delivery is sent exactly once"
+    );
+}
+

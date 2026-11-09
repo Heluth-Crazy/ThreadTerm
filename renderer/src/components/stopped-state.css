@@ -1,0 +1,29 @@
+.chat-stopped {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm, 12px);
+  line-height: 1.4;
+  color: var(--text-dim, inherit);
+}
+
+.chat-stopped strong {
+  font-weight: 600;
+}
+
+.chat-stopped-continue {
+  min-height: 20px;
+  padding: 0 8px;
+}
+
+.chat-stopped-issue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger, #b3261e);
+}
+
+.chat-stopped-relocate {
+  min-height: 20px;
+  padding: 0 8px;
+}

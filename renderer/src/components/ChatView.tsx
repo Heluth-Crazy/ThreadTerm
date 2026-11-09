@@ -4,7 +4,7 @@ import { parseChatMarkdown } from '../chatMath';
 import { ChatProviderNotice } from './ChatProviderNotice';
 import { ChatMarkdown } from './ChatMarkdownExtras';
 import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
-import { ChatItem, attachFiles, openExternal, operationId, request, subscribeEvents } from "../bridge";
+import { ChatItem, attachFiles, chooseDirectory, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { anchoredScrollTop, mergeEarlierPage, needsAnotherPage, shouldLoadEarlier } from "../chatPaging";
 import { acquireControl } from '../controlLease';
@@ -15,6 +15,7 @@ import { ChatApprovalCard } from "./ChatApprovalCard";
 import { isBrowserEvalApproval } from '../browserEvalApproval';
 import { hasRedactedBrowserResult } from '../browserToolActivity';
 import { ChatConnectOverlay } from "./ChatConnectOverlay";
+import { StoppedState } from "./StoppedState";
 import { PiProjectTrust } from './PiProjectTrust';
 import { DelegationPanel } from "./DelegationPanel";
 import { delegationTool, delegationToolLabel } from "../delegation";
@@ -387,7 +388,7 @@ function KimiStatusCard({ rows, zh, copy }: { rows: { key: string; value: string
   </div>;
 }
 
-const isEnded = (session: Session) => Boolean(session.readOnly) || session.status === "exited";
+const isEnded = (session: Session) => Boolean(session.readOnly) || (session.status === "exited" && !session.released);
 // Option classification and labels moved to ../composerOptions (C2).
 type DraftWriter = ReturnType<typeof createDraftWriter>;
 type ControlToken = { epoch: number; check: () => Promise<void>; release: () => void; valid: boolean };
@@ -443,6 +444,24 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   // Native-history repair needs a lease even when chat writes are read-only.
   const canTakeControl = canControl || (session.readOnly && session.mode === 'chat' && session.status !== 'exited');
   const ended = isEnded(session);
+  // A released chat never reconnects by itself: only Continue, or sending the
+  // first message, asks the runtime to reopen the same native conversation.
+  const released = Boolean(session.released) && !session.readOnly;
+  // A new Stop is a new hold: every transition into `released` starts a new
+  // release epoch, so a resume asked for before it no longer counts. This is
+  // derived during render, independent of event and snapshot ordering.
+  const releasedSeen = useRef(released);
+  const releaseEpoch = useRef(0);
+  if (released !== releasedSeen.current) {
+    releasedSeen.current = released;
+    if (released) releaseEpoch.current += 1;
+  }
+  const [resumeForEpoch, setResumeForEpoch] = useState<number | undefined>(undefined);
+  // An explicit resume that fails must not stay pending: Continue stays usable
+  // and the reason (with its folder relocation) is shown in the stopped row.
+  const [stoppedIssue, setStoppedIssue] = useState<{ code?: string; message: string; needsFolder: boolean }>();
+  const [stoppedRelocating, setStoppedRelocating] = useState(false);
+  const resumeRequested = released && resumeForEpoch === releaseEpoch.current;
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
   const [codeReviewOpen, setCodeReviewOpen] = useState(false);
   const [codeReviewFocus, setCodeReviewFocus] = useState("");
@@ -965,6 +984,15 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const permissionRecovery = canRecoverPermissions(link);
   const permissionOptionsWritable = permissionRecovery && canControl && controllable && discoveryClear && leaseSessionId.current === session.id && lease.current !== undefined;
   useEffect(() => { if (writable && draftLoaded && !busy && surface?.focused !== false) focusRequestedChatInput(session.id); }, [writable, draftLoaded, busy, session.id, surface?.focused]);
+  /** Waits for the reconnect a Continue or a send asked for; live refs, so it sees the new render. */
+  async function waitForChatReady(timeoutMs = 20000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (composerStateRef.current.writable) return true;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return false;
+  }
   const repairWritable = controllable && leaseSessionId.current === session.id && lease.current !== undefined;
   const repairHasLiveTurn = !ended && Boolean(activeTurnId(items, session.status));
   useEffect(() => {
@@ -993,17 +1021,20 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   useEffect(() => {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     const shouldConnect = connection.phase === "connecting" || connection.phase === "disconnected";
+    const resumeHeld = released && !resumeRequested;
     if (connectInFlight.current && connection.connectionGeneration > connectInFlight.current.connectionGeneration) connectInFlight.current = undefined;
-    if (!discoveryClear || !canControl || ended || !controllable || epoch === undefined || connected || !shouldConnect || link.transport !== "up" || connectInFlight.current) return;
+    if (!discoveryClear || !canControl || ended || resumeHeld || !controllable || epoch === undefined || connected || !shouldConnect || link.transport !== "up" || connectInFlight.current) return;
     const generation = transportGeneration.current;
     const attempt: ChatConnectAttempt = {
       sessionId: session.id, runtimeEpoch: connection.runtimeEpoch, transportGeneration: generation,
       connectionGeneration: Math.max(connection.connectionGeneration + (connection.phase === "connecting" && connection.connectionGeneration > 0 ? 0 : 1), (link.failedAttempt?.connectionGeneration ?? -1) + 1),
     };
     connectInFlight.current = attempt;
+    // A fresh explicit attempt replaces the previous failure message.
+    if (resumeRequested) setStoppedIssue(undefined);
     // Phase/options updates do not cancel this request. Only a newer explicit
     // attempt, mounted session or transport generation can supersede its result.
-    void request("chat.connect", { sessionId: session.id, leaseEpoch: epoch, operationId: operationId() }).then(snapshot => {
+    void request("chat.connect", { sessionId: session.id, leaseEpoch: epoch, operationId: operationId(), resume: resumeRequested }).then(snapshot => {
       if (connectInFlight.current !== attempt || generation !== transportGeneration.current) return;
       connectInFlight.current = undefined;
       setLink(current => reduceChatLink(current, { type: "snapshot", snapshot, transportGeneration: generation, attempt }));
@@ -1011,9 +1042,19 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (connectInFlight.current !== attempt || generation !== transportGeneration.current) return;
       connectInFlight.current = undefined;
       const code = caught && typeof caught === "object" && "code" in caught && typeof caught.code === "string" ? caught.code : undefined;
+      // The runtime refuses an automatic reconnect to a released session. The
+      // released snapshot is already on its way; never show this as an error.
+      if (code === 'session_resume_required') return;
+      // An explicit Continue or send failed. Do not keep it pending for this
+      // Stop: clear the hold (Continue becomes usable again) and show the
+      // reason, with the relocation the runtime asks for when the folder is gone.
+      if (resumeRequested) {
+        setResumeForEpoch(undefined);
+        setStoppedIssue({ code, message: asUserError(caught, copy("Could not connect.", "无法连接。")), needsFolder: code === 'cwd_missing_choose_relocation' || code === 'cwd_required' });
+      }
       setLink(current => reduceChatLink(current, { type: "connect-failed", attempt, code, message: asUserError(caught, copy("Could not connect.", "无法连接。")) }));
     });
-  }, [discoveryClear, canControl, ended, controllable, connected, connection.phase, connection.connectionGeneration, connection.runtimeEpoch, link.transport, link.transportGeneration, session.id, zh]);
+  }, [discoveryClear, canControl, ended, released, resumeRequested, controllable, connected, connection.phase, connection.connectionGeneration, connection.runtimeEpoch, link.transport, link.transportGeneration, session.id, zh]);
   useEffect(() => {
     if (!connected && !permissionRecovery) return;
     let disposed = false;
@@ -1026,7 +1067,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     });
     return () => { disposed = true; };
   }, [connected, permissionRecovery, session.id, zh]);
-  const overlay = connectionHeld || discoveryFailed ? 'none' : permissionRecovery ? 'banner' : overlayKind({
+  // A stopped chat shows its own compact state, never the reconnect overlay.
+  const overlay = released || connectionHeld || discoveryFailed ? 'none' : permissionRecovery ? 'banner' : overlayKind({
     ended,
     canControl,
     phase: connection.phase,
@@ -1038,7 +1080,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   // an async continuation can never act on permissions captured before an await.
   const composerStateRef = useRef<ComposerInputState>({ writable: false, ended: false, busy: false, draftLoaded: false, overlayFull: false, recoveryPending: false });
   composerStateRef.current = { writable, ended, busy, draftLoaded, overlayFull: overlay === 'full', recoveryPending: recovery !== undefined };
-  const composerEditableNow = composerEditable(composerStateRef.current);
+  // A released chat keeps its composer usable: the draft is local until the
+  // user continues, and the runtime drafts resume once the chat is reconnected.
+  const stoppedDraftUsable = released && controllable && discoveryClear && !busy && draftLoaded
+    && recovery === undefined && overlay !== 'full' && leaseSessionId.current === session.id && lease.current !== undefined;
+  const composerEditableNow = composerEditable(composerStateRef.current) || stoppedDraftUsable;
   // Losing control, a connection change or a pending recovery choice cancels an
   // outstanding session pick before it can mutate the catalogue.
   useEffect(() => { if (!composerEditable(composerStateRef.current)) pickTicket.current = undefined; }, [writable, ended, busy, draftLoaded, overlay, recovery]);
@@ -1054,6 +1100,23 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     connectInFlight.current = undefined;
     setLink(current => reduceChatLink(current, { type: "reset", sessionId: session.id, phase: "disconnected" }));
     reclaimRef.current();
+  }
+  /** The stopped row's folder relocation: the runtime refuses a resume whose
+   * working folder is gone, so the user picks the existing folder explicitly. */
+  async function relocateStoppedChat() {
+    if (stoppedRelocating) return;
+    setStoppedRelocating(true);
+    try {
+      const cwd = await chooseDirectory();
+      if (!cwd) return;
+      await request("session.resume", { sessionId: session.id, cwd, operationId: operationId(), resume: true });
+      setResumeForEpoch(undefined);
+      setStoppedIssue(undefined);
+    } catch (caught) {
+      setStoppedIssue({ message: asUserError(caught, copy("The folder could not be changed.", "无法更改文件夹。")), needsFolder: true });
+    } finally {
+      setStoppedRelocating(false);
+    }
   }
   function continueWithoutReload() {
     if (!discoveryCurrent || repairBusy || !connectionHeld) return;
@@ -1088,6 +1151,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       return;
     }
     try { value=serializeSubmission(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
+    // Sending to a stopped chat reconnects the same conversation first, then
+    // sends this one message; the draft and the transcript are kept meanwhile.
+    if (released && !composerStateRef.current.writable) {
+      setResumeForEpoch(releaseEpoch.current);
+      const ready = await waitForChatReady();
+      if (!ready) { setError(copy('The conversation could not be resumed. Try Continue.', '未能恢复对话，请点“继续”重试。')); return; }
+    }
     const epoch=leaseSessionId.current === session.id ? lease.current : undefined;
     const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
     if((!value&&!images.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!composerEditable(composerStateRef.current)||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))))return;
@@ -1961,9 +2031,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {!submissionPreview && <PageShotDrafts draft={pageShots} disabled={busy||imageReading||!writable}/>}
       {!submissionPreview && <ContextTray items={context.items.filter(item=>!pageShots.records.some(record=>item.id===`browser-shot:${record.shot.id}`))} text={text} zh={zh} onRemove={context.remove} disabled={busy || imageReading || !writable} mentions={activeMentions} workspaceRoot={session.worktreePath} />}
       {!!activeMentions.length && <p id={mentionDescriptionId} className="sr-only">{mentionDescription(activeMentions, zh)}</p>}
+      {released && !connected && <StoppedState zh={zh} busy={resumeRequested || busy || stoppedRelocating} issue={stoppedIssue} onContinue={() => { setStoppedIssue(undefined); if (connection.phase === 'failed') retryConnection(); setResumeForEpoch(releaseEpoch.current); }} onRelocate={() => void relocateStoppedChat()} />}
       <div className="chat-compose-input">
-        {!submissionPreview && <ComposerMentionHighlights text={text} resolved={resolvedMentions} catalogue={mentionCatalogue} areaRef={composeRef} />}
-      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; changeText(event.currentTarget.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={composerEditableNow ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} aria-describedby={activeMentions.length ? mentionDescriptionId : undefined} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={!composerEditableNow} />
+        {!submissionPreview && <ComposerMentionHighlights text={text} resolved={resolvedMentions} catalogue={mentionCatalogue} areaRef={composeRef} />}      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { setCaret(event.target.selectionStart ?? event.target.value.length); setMentionDismissed(undefined); changeText(event.target.value); setSlashIndex(0); setMentionIndex(0); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; changeText(event.currentTarget.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart ?? caret)} onClick={event => setCaret(event.currentTarget.selectionStart ?? caret)} onKeyUp={event => setCaret(event.currentTarget.selectionStart ?? caret)} onPaste={pasteImages} onContextMenu={composerEditableNow ? openComposerContextMenu : undefined} onKeyDown={onComposeKey} aria-describedby={activeMentions.length ? mentionDescriptionId : undefined} placeholder={copy('Message, or type / for commands', '发送消息，或输入 / 命令')} rows={1} disabled={!composerEditableNow} />
       </div>
       <ComposerOptions
         options={permissionRecovery ? ui.options.filter(option => option.category === 'mode') : ui.options}

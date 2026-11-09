@@ -2242,6 +2242,9 @@
         "readOnly": {
           "type": "boolean"
         },
+        "released": {
+          "type": "boolean"
+        },
         "activity": {
           "$ref": "#/definitions/SessionActivity"
         },
@@ -5257,6 +5260,48 @@
     },
     "RequestResult<\"session.stop\">": {
       "type": "null"
+    },
+    "RequestResult<\"session.releaseResources\">": {
+      "$ref": "#/definitions/Session"
+    },
+    "RequestResult<\"session.releaseResources.bulk\">": {
+      "type": "object",
+      "properties": {
+        "released": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Session"
+          }
+        },
+        "refused": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sessionId",
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "released",
+        "refused"
+      ],
+      "additionalProperties": false
     },
     "RequestResult<\"session.organize\">": {
       "$ref": "#/definitions/Session"
@@ -13292,6 +13337,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22session.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.releaseResources"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.releaseResources%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.releaseResources.bulk"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.releaseResources.bulk%22%3E"
         }
       },
       "required": [

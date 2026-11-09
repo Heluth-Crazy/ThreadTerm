@@ -153,7 +153,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const treeSessions=data.sessions.filter(s=>s.projectId===session.projectId&&sameCanonicalScope(s.worktreePath??project?.path,path)&&(!s.archived||s.id===session.id)&&(!isCodeReviewSession(s)||s.id===session.id));
  const hostedChatIds=data.sessions.filter(candidate=>candidate.mode==='chat'&&sessionIdsIn(layout).includes(candidate.id)).map(candidate=>candidate.id);
  const state=session.readOnly?'ended':session.status==='waiting'?'needs':session.status==='error'?'failed':session.status==='interrupted'?'stalled':working(session)?'running':'ended';
- const stateLabel=zh?({needs:'待处理',failed:'失败',stalled:'已中断',running:'运行中',ended:session.readOnly?'只读历史':'已结束'}[state]):({needs:'Attention',failed:'Failed',stalled:'Interrupted',running:'Running',ended:session.readOnly?'Read-only history':'Ended'}[state]);
+ const stateLabel=session.released?(zh?'已停止':'Stopped'):zh?({needs:'待处理',failed:'失败',stalled:'已中断',running:'运行中',ended:session.readOnly?'只读历史':'已结束'}[state]):({needs:'Attention',failed:'Failed',stalled:'Interrupted',running:'Running',ended:session.readOnly?'Read-only history':'Ended'}[state]);
  const fail=(error:unknown)=>setIssue(error instanceof Error?error.message:String(error));
  const save=(next:PaneLayout)=>{
   latestLayout.current=next;

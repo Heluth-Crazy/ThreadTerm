@@ -74,7 +74,7 @@ impl Database {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, title TEXT NOT NULL, provider TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, native_id TEXT, exit_code INTEGER, followed INTEGER NOT NULL DEFAULT 0, read_only INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, title TEXT NOT NULL, provider TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, native_id TEXT, exit_code INTEGER, followed INTEGER NOT NULL DEFAULT 0, read_only INTEGER NOT NULL DEFAULT 0, released INTEGER NOT NULL DEFAULT 0);
              CREATE TRIGGER IF NOT EXISTS sessions_delete_chat_integrity AFTER DELETE ON sessions BEGIN DELETE FROM metadata WHERE key='chat.integrity:'||OLD.id; END;
              CREATE TRIGGER IF NOT EXISTS sessions_delete_terminal_storage AFTER DELETE ON sessions BEGIN DELETE FROM metadata WHERE key='terminal.storage:'||OLD.id; END;
              CREATE UNIQUE INDEX IF NOT EXISTS active_native_owner ON sessions(provider, native_id) WHERE native_id IS NOT NULL AND status NOT IN ('exited','interrupted','error');
@@ -189,6 +189,12 @@ impl Database {
                     [],
                 )?;
             }
+        }
+        if !session_columns.iter().any(|name| name == "released") {
+            connection.execute(
+                "ALTER TABLE sessions ADD COLUMN released INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
         }
         let epoch: Option<String> = connection
             .query_row("SELECT value FROM metadata WHERE key='epoch'", [], |r| {
@@ -1416,17 +1422,17 @@ impl Database {
     /// `exited`. Already-live states retain their provider-event status.
     pub fn begin_chat_connection(&self, id: &str) -> Result<bool> {
         self.transaction(|tx| {
-            let (status, read_only): (String, bool) = tx.query_row(
-                "SELECT status,read_only FROM sessions WHERE id=?",
+            let (status, read_only, released): (String, bool, bool) = tx.query_row(
+                "SELECT status,read_only,released FROM sessions WHERE id=?",
                 [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-            if read_only || status == "exited" {
+            if read_only || (status == "exited" && !released) {
                 return Ok(false);
             }
-            if matches!(status.as_str(), "error" | "interrupted") {
+            if released || matches!(status.as_str(), "error" | "interrupted") {
                 tx.execute(
-                    "UPDATE sessions SET status='starting',exit_code=NULL,updated_at=? WHERE id=?",
+                    "UPDATE sessions SET status='starting',exit_code=NULL,released=0,updated_at=? WHERE id=?",
                     params![now(), id],
                 )?;
                 let data = json!({"sessionId":id,"status":"starting","previousStatus":status,"exitCode":null});
@@ -1472,7 +1478,7 @@ impl Database {
             session.status="starting".into();session.exit_code=None;session.worktree_path=Some(workspace_root.into());
             session.organization.archived=false;session.organization.organization_revision+=1;
             session.read_only=false;
-            tx.execute("UPDATE sessions SET status='starting',exit_code=NULL,read_only=0,worktree_path=?,updated_at=? WHERE id=?",params![workspace_root,now(),id])?;
+            tx.execute("UPDATE sessions SET status='starting',exit_code=NULL,read_only=0,released=0,worktree_path=?,updated_at=? WHERE id=?",params![workspace_root,now(),id])?;
             if tx.execute(
                 "UPDATE session_launch_configs SET cwd=?,revision=revision+1 WHERE session_id=?",
                 params![cwd, id],
@@ -1510,7 +1516,7 @@ impl Database {
                 return Ok((session,false));
             }
             let timestamp=now();
-            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, group:None, run:None, code_review:None, terminal_agent:None, organization:SessionOrganization::default() };
+            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, released:false, activity:None, delegation:None, group:None, run:None, code_review:None, terminal_agent:None, organization:SessionOrganization::default() };
             let mut transcript = normalize_history_transcript(&session.id, request.transcript)?;
             add_generic_fork_anchors(&mut transcript, Some(request.native_id));
             tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
@@ -1673,6 +1679,7 @@ impl Database {
             rows: None,
             followed: false,
             read_only: false,
+            released: false,
             activity: None,
             delegation: None,
             group: None,
@@ -1788,10 +1795,32 @@ impl Database {
     }
 
     pub fn set_session_status(&self, id: &str, status: &str, exit_code: Option<i32>) -> Result<()> {
+        self.set_session_state(id, status, exit_code, false, true)
+    }
+
+    /// Stops a live session for resource release: `status` and `released` are
+    /// written by one transaction, and no exit inbox row is written, so a later
+    /// real exit of the resumed conversation is still recorded.
+    pub fn release_session(&self, id: &str) -> Result<()> {
+        self.set_session_state(id, "exited", None, true, false)
+    }
+
+    fn set_session_state(
+        &self,
+        id: &str,
+        status: &str,
+        exit_code: Option<i32>,
+        mark_released: bool,
+        record_exit: bool,
+    ) -> Result<()> {
         let result = self.transaction(|tx| {
             let (previous,prior_code,mode):(String,Option<i32>,String)=tx.query_row("SELECT status,exit_code,mode FROM sessions WHERE id=?",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
-            if previous==status&&prior_code==exit_code{return Ok(());}
-            tx.execute("UPDATE sessions SET status=?,exit_code=?,updated_at=? WHERE id=?",params![status,exit_code,now(),id])?;
+            if previous==status&&prior_code==exit_code&&!mark_released{return Ok(());}
+            if mark_released {
+                tx.execute("UPDATE sessions SET status=?,exit_code=?,released=1,updated_at=? WHERE id=?",params![status,exit_code,now(),id])?;
+            } else {
+                tx.execute("UPDATE sessions SET status=?,exit_code=?,updated_at=? WHERE id=?",params![status,exit_code,now(),id])?;
+            }
             if matches!(status, "exited" | "interrupted" | "error") {
                 // A stopped terminal can no longer host an agent; clear without a second publish
                 // (the status event below already refreshes the snapshot).
@@ -1818,9 +1847,12 @@ impl Database {
             let data=json!({"sessionId":id,"status":status,"previousStatus":previous,"exitCode":exit_code});
             emit(tx,"session.status",data.clone())?;
             emit(tx,"state.changed",data)?;
-            if mode=="terminal"&&status=="exited"&&previous!="exited"&&!self.quiet_terminal_exits.load(std::sync::atomic::Ordering::Acquire)&&!crate::quick_launch::quiet_exit_tx(tx,id,exit_code)? {
+            if record_exit && mode=="terminal"&&status=="exited"&&previous!="exited"&&!self.quiet_terminal_exits.load(std::sync::atomic::Ordering::Acquire)&&!crate::quick_launch::quiet_exit_tx(tx,id,exit_code)? {
                 let kind=match exit_code{Some(0)=>"completed",Some(_)=>"failed",None=>"interrupted"};
                 tx.execute("INSERT OR IGNORE INTO inbox(id,session_id,kind,data,resolved,created_at) VALUES (?,?,?,?,1,?)",params![format!("{id}:exit"),id,kind,json!({"exitCode":exit_code}).to_string(),now()])?;
+            }
+            if mark_released {
+                emit(tx,"state.changed",json!({"sessionId":id,"kind":"session.released","released":true}))?;
             }
             Ok(())
         });
@@ -2649,7 +2681,7 @@ fn collect_tree_sessions(conn: &Connection, id: Option<&str>) -> Result<Vec<Valu
 }
 
 fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
-    let mut stmt=conn.prepare("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port,terminal_agents.provider FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id LEFT JOIN terminal_agents ON terminal_agents.session_id=sessions.id ORDER BY sessions.created_at")?;
+    let mut stmt=conn.prepare("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port,terminal_agents.provider,sessions.released FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id LEFT JOIN terminal_agents ON terminal_agents.session_id=sessions.id ORDER BY sessions.created_at")?;
     let rows = stmt.query_map([], |r| {
         let provider: String = r.get(4)?;
         let mode: String = r.get(5)?;
@@ -2673,6 +2705,7 @@ fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
             exit_code: r.get(10)?,
             followed: r.get(11)?,
             read_only: r.get(12)?,
+            released: r.get(24)?,
             cols: r.get(13)?,
             rows: r.get(14)?,
             activity: None,
@@ -3078,12 +3111,12 @@ pub(crate) fn set_session_activity_tx(
 }
 
 fn read_session(conn: &Connection, id: &str) -> Result<Session> {
-    let mut session = conn.query_row("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port,terminal_agents.provider FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id LEFT JOIN terminal_agents ON terminal_agents.session_id=sessions.id WHERE sessions.id=?",[id],|r|{
+    let mut session = conn.query_row("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested,quick_launch_runs.readiness,quick_launch_runs.ready_port,quick_launch_runs.started_by,quick_launch_runs.allocated_port,terminal_agents.provider,sessions.released FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id LEFT JOIN terminal_agents ON terminal_agents.session_id=sessions.id WHERE sessions.id=?",[id],|r|{
         let provider:String=r.get(4)?;
         let mode:String=r.get(5)?;
         let detected:Option<String>=r.get(23)?;
         let terminal_agent=if mode=="terminal"&&matches!(provider.as_str(),"shell"|"custom"){detected}else{None};
-        Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider,mode,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,activity:None,delegation:None,group:None,run:crate::quick_launch::run_from_row(r,15)?,code_review:None,terminal_agent,organization:SessionOrganization::default()})
+        Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider,mode,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,released:r.get(24)?,cols:r.get(13)?,rows:r.get(14)?,activity:None,delegation:None,group:None,run:crate::quick_launch::run_from_row(r,15)?,code_review:None,terminal_agent,organization:SessionOrganization::default()})
     })?;
     session.organization = session_organization(conn, id)?;
     session.activity = session_activity(conn, id)?;

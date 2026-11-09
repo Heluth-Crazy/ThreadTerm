@@ -6,9 +6,9 @@ export type WatchClient = Pick<RuntimeClient, 'request' | 'onEvent' | 'dispose'>
 export interface WatchState { visibility: CatalogVisibility[]; projects: Project[]; sessions: Session[]; worktrees: Worktree[]; inbox: InboxItem[]; settings?: Settings; providers: Snapshot['providers'] }
 /** Public tree metadata only, including when the initial full snapshot had richer session fields. */
 function treeSession(session: Session): MachineTreeSession['session'] {
-  const { id, title, provider, mode, status, createdAt, updatedAt, projectId, worktreePath, exitCode, readOnly, archived, activity, terminalAgent } = session;
+  const { id, title, provider, mode, status, createdAt, updatedAt, projectId, worktreePath, exitCode, readOnly, released, archived, activity, terminalAgent } = session;
   const delegation = session.delegation && { parentSessionId: session.delegation.parentSessionId, state: session.delegation.state };
-  return { id, title, provider, mode, status, createdAt, updatedAt, projectId, worktreePath, exitCode, readOnly, archived, activity, terminalAgent, delegation };
+  return { id, title, provider, mode, status, createdAt, updatedAt, projectId, worktreePath, exitCode, readOnly, released, archived, activity, terminalAgent, delegation };
 }
 export interface WatchNotice { machine: MachineInfo; event: RuntimeEvent; state: WatchState }
 

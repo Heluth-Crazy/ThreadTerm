@@ -20,7 +20,7 @@ export interface MachineBridge {
 /** Parent identity and lifecycle are enough for nesting and the finished-delegate fold. */
 export type MachineTreeSessionMetadata = Pick<import('@threadterm/protocol').Session,
   'id' | 'title' | 'provider' | 'mode' | 'status' | 'createdAt' | 'updatedAt' | 'projectId' | 'worktreePath'
-  | 'exitCode' | 'readOnly' | 'archived' | 'activity' | 'terminalAgent'> & {
+  | 'exitCode' | 'readOnly' | 'released' | 'archived' | 'activity' | 'terminalAgent'> & {
   delegation?: Pick<import('@threadterm/protocol').SessionDelegation, 'parentSessionId' | 'state'>;
 };
 export interface MachineTreeSession { session: MachineTreeSessionMetadata; needsYou: number }

@@ -24,6 +24,7 @@ struct FixtureAdapter {
     stops: Arc<AtomicUsize>,
     alive: Arc<Mutex<Arc<std::sync::atomic::AtomicBool>>>,
     worker_tokens: Arc<Mutex<Vec<String>>>,
+    opened_native: Arc<Mutex<Vec<Option<String>>>>,
     initial_liveness: bool,
     /// Delegation tests run several chats at once; real providers give each a
     /// distinct native id, which `accept_chat_connection` requires.
@@ -36,6 +37,8 @@ struct FixtureAdapter {
     /// The provider id this adapter answers to; delegation tests add a second,
     /// restricted-mode-less agent (F07).
     provider: &'static str,
+    /// `capability()` starts a real probe in production; a release must not call it.
+    capabilities: Arc<AtomicUsize>,
 }
 
 impl ProviderAdapter for FixtureAdapter {
@@ -74,6 +77,7 @@ impl ProviderAdapter for FixtureAdapter {
     }
 
     fn capability(&self) -> ProviderCapability {
+        self.capabilities.fetch_add(1, AtomicOrdering::SeqCst);
         ProviderCapability {
             source: "builtin", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None, homepage: None,
             id: self.provider.into(),
@@ -83,7 +87,7 @@ impl ProviderAdapter for FixtureAdapter {
             terminal: false,
             chat: true,
             history: false,
-            resume: false,
+            resume: true,
             terminal_resume_capture: "none",
             reason: None,
             auth: "authenticated".into(),
@@ -118,9 +122,10 @@ impl ProviderAdapter for FixtureAdapter {
         &self,
         _session_id: &str,
         _cwd: &str,
-        _native_id: Option<&str>,
+        native_id: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let open = self.opens.fetch_add(1, AtomicOrdering::SeqCst);
+        self.opened_native.lock().unwrap().push(native_id.map(str::to_owned));
         let native = if self.unique_native_ids {
             format!("fixture-native-{open}")
         } else {
@@ -271,6 +276,7 @@ struct Fixture {
     stops: Arc<AtomicUsize>,
     alive: Arc<Mutex<Arc<std::sync::atomic::AtomicBool>>>,
     worker_tokens: Arc<Mutex<Vec<String>>>,
+    opened_native: Arc<Mutex<Vec<Option<String>>>>,
     started: Option<Receiver<()>>,
     release: Option<SyncSender<()>>,
     /// Set when the send blocks: the send is in flight until `send_release` fires.
@@ -278,6 +284,7 @@ struct Fixture {
     send_release: Option<SyncSender<()>>,
     cancels: Arc<AtomicUsize>,
     cancel_failures: Arc<Mutex<Vec<ProviderError>>>,
+    capabilities: Arc<AtomicUsize>,
 }
 
 impl Fixture {
@@ -346,6 +353,7 @@ impl Fixture {
         let opens = Arc::new(AtomicUsize::new(0));
         let stops = Arc::new(AtomicUsize::new(0));
         let worker_tokens = Arc::new(Mutex::new(Vec::new()));
+        let opened_native = Arc::new(Mutex::new(Vec::new()));
         let alive = Arc::new(Mutex::new(Arc::new(std::sync::atomic::AtomicBool::new(
             true,
         ))));
@@ -355,6 +363,7 @@ impl Fixture {
         let (send_release_tx, send_release_rx) = mpsc::sync_channel(1);
         let cancels = Arc::new(AtomicUsize::new(0));
         let cancel_failures = Arc::new(Mutex::new(Vec::new()));
+        let capabilities = Arc::new(AtomicUsize::new(0));
         let adapter = Arc::new(FixtureAdapter {
             gate: slow.then_some(OpenGate {
                 started: started_tx,
@@ -366,6 +375,7 @@ impl Fixture {
             stops: Arc::clone(&stops),
             alive: Arc::clone(&alive),
             worker_tokens: Arc::clone(&worker_tokens),
+            opened_native: Arc::clone(&opened_native),
             initial_liveness,
             unique_native_ids,
             send_gate: blocked_send
@@ -373,6 +383,7 @@ impl Fixture {
             cancels: Arc::clone(&cancels),
             cancel_failures: Arc::clone(&cancel_failures),
             provider: "grok",
+            capabilities: Arc::clone(&capabilities),
         });
         let mut adapters: Vec<Arc<dyn ProviderAdapter>> = vec![adapter];
         if unrestricted_agent {
@@ -386,12 +397,14 @@ impl Fixture {
                 stops: Arc::clone(&stops),
                 alive: Arc::clone(&alive),
                 worker_tokens: Arc::clone(&worker_tokens),
+                opened_native: Arc::clone(&opened_native),
                 initial_liveness,
                 unique_native_ids,
                 send_gate: None,
                 cancels: Arc::clone(&cancels),
                 cancel_failures: Arc::clone(&cancel_failures),
                 provider: "demo-plugin",
+                capabilities: Arc::clone(&capabilities),
             }));
         }
         let output = Arc::new(OutputStore::default());
@@ -431,12 +444,14 @@ impl Fixture {
             stops,
             alive,
             worker_tokens,
+            opened_native,
             started: slow.then_some(started_rx),
             release: slow.then_some(release_tx),
             send_started: blocked_send.then_some(send_started_rx),
             send_release: blocked_send.then_some(send_release_tx),
             cancels,
             cancel_failures,
+            capabilities,
         }
     }
 
@@ -504,6 +519,22 @@ impl Fixture {
                 "sessionId":session_id,
                 "leaseEpoch":lease_epoch,
                 "operationId":operation_id
+            }),
+        }
+    }
+
+    /// The explicit Continue/send connect: it carries the only resume flag a
+    /// released chat accepts.
+    fn resume_connect_request(session_id: &str, lease_epoch: i64, operation_id: &str) -> RpcRequest {
+        RpcRequest {
+            v: 1,
+            id: format!("request-{operation_id}"),
+            method: "chat.connect".into(),
+            params: json!({
+                "sessionId":session_id,
+                "leaseEpoch":lease_epoch,
+                "operationId":operation_id,
+                "resume":true
             }),
         }
     }
@@ -1445,12 +1476,14 @@ fn provider_handoff_does_not_publish_an_already_dead_worker() {
             false,
         )))),
         worker_tokens: Arc::new(Mutex::new(Vec::new())),
+        opened_native: Arc::new(Mutex::new(Vec::new())),
         initial_liveness: false,
         unique_native_ids: false,
         send_gate: None,
         cancels: Arc::new(AtomicUsize::new(0)),
         cancel_failures: Arc::new(Mutex::new(Vec::new())),
         provider: "grok",
+        capabilities: Arc::new(AtomicUsize::new(0)),
     };
     let providers = Providers::for_test(vec![Arc::new(adapter)]);
     assert_eq!(
@@ -2626,4 +2659,791 @@ fn a_refused_stop_keeps_the_queued_prompt_dispatchable_and_an_accepted_stop_fenc
     assert_eq!(queue["items"][0]["text"], "next prompt");
 }
 
+
+
+fn release_request(session_id: &str, operation_id: &str) -> RpcRequest {
+    RpcRequest {
+        v: 1,
+        id: format!("request-{operation_id}"),
+        method: "session.releaseResources".into(),
+        params: json!({"sessionId":session_id,"operationId":operation_id}),
+    }
+}
+
+fn connected_chat(fixture: &Fixture, label: &str) -> (String, String) {
+    let created = fixture.create(label);
+    let id = created["id"].as_str().unwrap().to_owned();
+    let epoch = fixture.claim(&id);
+    fixture
+        .service
+        .dispatch("desktop", Fixture::connect_request(&id, epoch, &format!("{label}-connect")))
+        .unwrap();
+    let native = fixture.db.session_by_id(&id).unwrap().unwrap().native_id.unwrap();
+    (id, native)
+}
+
+#[test]
+fn release_stops_the_chat_worker_but_keeps_the_session_and_resumes_the_exact_native_id() {
+    let fixture = Fixture::new(false, None);
+    let (id, native) = connected_chat(&fixture, "release-chat");
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 0);
+
+    let released = fixture
+        .service
+        .dispatch("desktop", release_request(&id, "release-chat-op"))
+        .unwrap();
+    assert_eq!(released["released"], true);
+    assert_eq!(released["status"], "exited");
+    assert_eq!(released["nativeId"], native);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1);
+    assert!(!fixture.db.chat_items(&id).unwrap().iter().any(|item| item.role == "user"));
+
+    // A second release is idempotent, even from a new operation.
+    fixture
+        .service
+        .dispatch("desktop", release_request(&id, "release-chat-again"))
+        .unwrap();
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
+
+    // Opening it resumes the same native conversation and sends no prompt.
+    let epoch = fixture.claim(&id);
+    fixture
+        .service
+        .dispatch("desktop", Fixture::resume_connect_request(&id, epoch, "release-chat-resume"))
+        .unwrap();
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(fixture.opened_native.lock().unwrap().last().cloned().flatten(), Some(native));
+    let resumed = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(!resumed.released);
+    assert!(!fixture.db.chat_items(&id).unwrap().iter().any(|item| item.role == "user"));
+}
+
+#[test]
+fn release_is_refused_for_a_running_turn_or_pending_interaction() {
+    let fixture = Fixture::new(false, None);
+    let (id, _) = connected_chat(&fixture, "blocked-chat");
+    fixture.db.set_session_status(&id, "running", None).unwrap();
+    let failure = fixture
+        .service
+        .dispatch("desktop", release_request(&id, "release-running"))
+        .unwrap_err();
+    assert!(format!("{failure:?}").contains("session_release_blocked"), "{failure:?}");
+
+    fixture.db.set_session_status(&id, "idle", None).unwrap();
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO session_activity(session_id,state,revision,turn_id) VALUES (?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET state=excluded.state,revision=excluded.revision,turn_id=excluded.turn_id",
+                rusqlite::params![id, "awaiting_approval", 2, "turn"],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let failure = fixture
+        .service
+        .dispatch("desktop", release_request(&id, "release-pending"))
+        .unwrap_err();
+    assert!(format!("{failure:?}").contains("session_release_blocked"), "{failure:?}");
+    assert!(!fixture.db.session_by_id(&id).unwrap().unwrap().released);
+}
+
+#[test]
+fn released_state_survives_a_runtime_restart() {
+    let fixture = Fixture::new(false, None);
+    let (id, _) = connected_chat(&fixture, "persisted-release");
+    fixture
+        .service
+        .dispatch("desktop", release_request(&id, "persist-release"))
+        .unwrap();
+    let reopened = Database::open(&fixture.root.path().join("runtime.sqlite")).unwrap();
+    let session = reopened.session_by_id(&id).unwrap().unwrap();
+    assert!(session.released);
+    assert_eq!(session.status, "exited");
+}
+
+#[test]
+fn finished_delegation_child_is_released_only_after_delivery_and_not_while_pending_or_open() {
+    let fixture = Fixture::for_delegation();
+    let (id, _) = connected_chat(&fixture, "delegate-child");
+    let insert = |state: &str| {
+        fixture
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,prompt,operation_id,state,result,turn_id,authority,created_at,updated_at) VALUES ('link',?,?, 'grok','shared',?, 'prompt','op',?,'answer','turn-1','full_access','now','now')",
+                    rusqlite::params![id, id, fixture.root.path().to_string_lossy(), state],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    };
+    insert("running");
+    assert!(!crate::delegation::release_finished_child(
+        &fixture.db,
+        &fixture.service.providers,
+        &fixture.service.delegations,
+        &fixture.service.previews,
+        &id,
+        Some("turn-1"),
+    )
+    .unwrap());
+    assert!(!fixture.db.session_by_id(&id).unwrap().unwrap().released);
+
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute("UPDATE delegations SET state='completed' WHERE id='link'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    fixture.claim(&id); // an open lease no longer keeps a finished delegate alive.
+    assert!(crate::delegation::release_finished_child(
+        &fixture.db,
+        &fixture.service.providers,
+        &fixture.service.delegations,
+        &fixture.service.previews,
+        &id,
+        Some("turn-1"),
+    )
+    .unwrap());
+    let released = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(released.released);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
+}
+
+// ---- release, run 2 -------------------------------------------------------
+
+#[test]
+fn release_is_refused_while_a_queued_follow_up_waits() {
+    let fixture = Fixture::new(false, None);
+    let (id, _) = connected_chat(&fixture, "release-queued");
+    let queued = crate::chat_queue::mutate(
+        &fixture.db,
+        "chat.queue.add",
+        &json!({"sessionId":id,"text":"and then run the tests","images":[],"operationId":"queue-add"}),
+    )
+    .unwrap();
+    let item = queued["items"][0]["id"].as_str().unwrap().to_owned();
+    let refused = rpc(&fixture, "session.releaseResources", json!({"sessionId":id,"operationId":"release-queued-op"}))
+        .unwrap_err();
+    assert!(format!("{refused:?}").contains("queued"), "{refused:?}");
+    assert!(!fixture.db.session_by_id(&id).unwrap().unwrap().released);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 0);
+
+    crate::chat_queue::mutate(
+        &fixture.db,
+        "chat.queue.remove",
+        &json!({"sessionId":id,"itemId":item,"operationId":"queue-remove"}),
+    )
+    .unwrap();
+    rpc(&fixture, "session.releaseResources", json!({"sessionId":id,"operationId":"release-queued-op-2"}))
+        .unwrap();
+    let released = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(released.released);
+    assert_eq!(released.status, "exited");
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[test]
+fn release_writes_status_and_released_together_without_a_terminal_exit_row() {
+    let fixture = Fixture::new(false, None);
+    let session = fixture
+        .db
+        .create_session(crate::db::CreateSession {
+            project_id: None,
+            title: None,
+            provider: "shell",
+            mode: "terminal",
+            native_id: None,
+            operation_id: "release-terminal",
+        })
+        .unwrap();
+    fixture.db.set_session_status(&session.id, "running", None).unwrap();
+    let exit_rows = |fixture: &Fixture| -> bool {
+        fixture
+            .db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM inbox WHERE id=?)",
+                    [format!("{}:exit", session.id)],
+                    |row| row.get::<_, bool>(0),
+                )?)
+            })
+            .unwrap()
+    };
+    fixture.db.release_session(&session.id).unwrap();
+    let released = fixture.db.session_by_id(&session.id).unwrap().unwrap();
+    assert_eq!(released.status, "exited");
+    assert!(released.released);
+    assert!(!exit_rows(&fixture), "a release is not a real exit");
+    // The resumed conversation's own exit is still recorded.
+    fixture.db.set_session_status(&session.id, "running", None).unwrap();
+    fixture.db.set_session_status(&session.id, "exited", Some(0)).unwrap();
+    assert!(exit_rows(&fixture));
+}
+
+#[test]
+fn release_decides_resumability_without_a_provider_capability_probe() {
+    let fixture = Fixture::new(false, None);
+    let (id, _) = connected_chat(&fixture, "release-no-probe");
+    let before = fixture.capabilities.load(AtomicOrdering::SeqCst);
+    rpc(&fixture, "session.releaseResources", json!({"sessionId":id,"operationId":"release-no-probe-op"}))
+        .unwrap();
+    assert_eq!(
+        fixture.capabilities.load(AtomicOrdering::SeqCst),
+        before,
+        "releasing must not run a provider capability probe"
+    );
+}
+
+#[test]
+fn a_finished_delegation_started_child_is_released_after_its_result_is_stored() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    // The delegated turn completes: the result is stored, then the link settles.
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.item",
+            &json!({"raw":{"params":{"item":{"id":"answer","type":"agentMessage","text":"The README explains setup."}}}}),
+        )
+        .unwrap();
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({"status":"completed"}),
+        )
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+    // A queued follow-up keeps the worker until it drains.
+    let queued = crate::chat_queue::mutate(
+        &fixture.db,
+        "chat.queue.add",
+        &json!({"sessionId":child,"text":"one more thing","images":[],"operationId":"child-queue-add"}),
+    )
+    .unwrap();
+    let item = queued["items"][0]["id"].as_str().unwrap().to_owned();
+    let attempt = || {
+        crate::delegation::release_finished_child(
+            &fixture.db,
+            &fixture.service.providers,
+            &fixture.service.delegations,
+            &fixture.service.previews,
+            &child,
+            Some("fixture-turn"),
+        )
+        .unwrap()
+    };
+    assert!(!attempt());
+    assert!(!fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    crate::chat_queue::mutate(
+        &fixture.db,
+        "chat.queue.remove",
+        &json!({"sessionId":child,"itemId":item,"operationId":"child-queue-remove"}),
+    )
+    .unwrap();
+    assert!(attempt(), "the queue drain retries the release");
+    let released = fixture.db.session_by_id(&child).unwrap().unwrap();
+    assert!(released.released);
+    assert_eq!(released.status, "exited");
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
+    // The parent is untouched and the stored result is still readable.
+    assert!(!fixture.db.session_by_id(&parent).unwrap().unwrap().released);
+    let id = delegation_id(&fixture, &child);
+    let result = rpc(
+        &fixture,
+        "delegation.result",
+        json!({"callerSessionId":parent,"callerToken":token,"id":id}),
+    )
+    .unwrap();
+    assert_eq!(result["finalAnswer"], "The README explains setup.");
+}
+
+#[test]
+fn every_finished_delegation_state_releases_the_child() {
+    for state in ["completed", "failed", "cancelled", "interrupted"] {
+        let fixture = Fixture::for_delegation();
+        let (parent, token) = delegation_parent(&fixture, "parent-create");
+        let child = running_delegate(&fixture, &parent, &token, "start-1");
+        fixture
+            .db
+            .record_provider_event(
+                &child,
+                Some("fixture-turn"),
+                "chat.turn.completed",
+                &json!({"status":state}),
+            )
+            .unwrap();
+        fixture
+            .db
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE delegations SET state=? WHERE child_session_id=?",
+                    rusqlite::params![state, child],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            crate::delegation::release_finished_child(
+                &fixture.db,
+                &fixture.service.providers,
+                &fixture.service.delegations,
+                &fixture.service.previews,
+                &child,
+                Some("fixture-turn"),
+            )
+            .unwrap(),
+            "{state} must release the child"
+        );
+        assert!(fixture.db.session_by_id(&child).unwrap().unwrap().released, "{state}");
+        assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1, "{state}");
+    }
+}
+// ---- review round 2: explicit resume, auto-release retries, bulk release ----
+
+fn try_release(fixture: &Fixture, child: &str, turn: Option<&str>) -> bool {
+    crate::delegation::release_finished_child(
+        &fixture.db,
+        &fixture.service.providers,
+        &fixture.service.delegations,
+        &fixture.service.previews,
+        child,
+        turn,
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_automatic_connect_is_refused_for_a_released_chat_and_the_explicit_resume_reopens_it() {
+    let fixture = Fixture::new(false, None);
+    let (id, native) = connected_chat(&fixture, "resume-gate");
+    rpc(&fixture, "session.releaseResources", json!({"sessionId":id,"operationId":"resume-gate-release"})).unwrap();
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1);
+    let epoch = fixture.claim(&id);
+    // An automatic reconnect (a mount, a visibility change, a disconnected
+    // phase) never carries the flag, so the runtime refuses it.
+    let refused = fixture
+        .service
+        .dispatch("desktop", Fixture::connect_request(&id, epoch, "resume-gate-auto"));
+    assert!(refused.is_err(), "an automatic reconnect must be refused: {refused:?}");
+    assert!(format!("{refused:?}").contains("session_resume_required"), "{refused:?}");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1, "nothing reopened the released worker");
+    assert!(fixture.db.session_by_id(&id).unwrap().unwrap().released);
+    // The explicit Continue resumes the same native conversation.
+    let resumed = fixture
+        .service
+        .dispatch("desktop", Fixture::resume_connect_request(&id, epoch, "resume-gate-explicit"))
+        .unwrap();
+    assert_eq!(resumed["phase"], "ready");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    let session = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(!session.released);
+    assert_eq!(session.native_id.as_deref(), Some(native.as_str()));
+}
+
+#[test]
+fn an_automatic_terminal_resume_is_refused_for_a_released_terminal() {
+    let fixture = Fixture::new(false, None);
+    let session = fixture
+        .db
+        .create_session(crate::db::CreateSession {
+            project_id: None,
+            title: None,
+            provider: "shell",
+            mode: "terminal",
+            native_id: Some("native-terminal-record"),
+            operation_id: "resume-gate-terminal",
+        })
+        .unwrap();
+    fixture.db.set_session_status(&session.id, "running", None).unwrap();
+    fixture.db.release_session(&session.id).unwrap();
+    let automatic = rpc(&fixture, "session.resume", json!({"sessionId":session.id,"operationId":"terminal-auto"}));
+    assert!(format!("{automatic:?}").contains("session_resume_required"), "{automatic:?}");
+    let explicit = rpc(
+        &fixture,
+        "session.resume",
+        json!({"sessionId":session.id,"operationId":"terminal-explicit","resume":true}),
+    );
+    // The explicit action is not refused by the release gate; it proceeds to a
+    // different, honest failure for this fixture (a shell has no resume command).
+    assert!(!format!("{explicit:?}").contains("session_resume_required"), "{explicit:?}");
+}
+
+#[test]
+fn a_queue_removal_releases_the_finished_child_through_the_queue_request() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "queue-retry-parent");
+    let child = running_delegate(&fixture, &parent, &token, "queue-retry-start");
+    fixture
+        .db
+        .record_provider_event(&child, Some("fixture-turn"), "chat.turn.completed", &json!({"status":"completed"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+    let queued = crate::chat_queue::mutate(
+        &fixture.db,
+        "chat.queue.add",
+        &json!({"sessionId":child,"text":"one more thing","images":[],"operationId":"queue-retry-add"}),
+    )
+    .unwrap();
+    let item = queued["items"][0]["id"].as_str().unwrap().to_owned();
+    assert!(!fixture.db.session_by_id(&child).unwrap().unwrap().released, "a queued follow-up keeps the worker");
+    // Removing the last queued follow-up emits no provider event; the queue
+    // request itself retries the release.
+    let epoch = fixture.claim(&child);
+    fixture
+        .service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "queue-retry-remove".into(),
+                method: "chat.queue.remove".into(),
+                params: json!({"sessionId":child,"itemId":item,"operationId":"queue-retry-remove","leaseEpoch":epoch}),
+            },
+        )
+        .unwrap();
+    let released = fixture.db.session_by_id(&child).unwrap().unwrap();
+    assert!(released.released, "the drained queue releases the finished child");
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[test]
+fn reading_the_queue_does_not_release_a_finished_child() {
+    // Opening a chat view reads its queue. That read must not stop a child the
+    // user has just resumed from the history rail or the folder picker.
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "queue-read-parent");
+    let child = running_delegate(&fixture, &parent, &token, "queue-read-start");
+    fixture
+        .db
+        .record_provider_event(&child, Some("fixture-turn"), "chat.turn.completed", &json!({"status":"completed"}))
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+    fixture
+        .service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "queue-read".into(),
+                method: "chat.queue.read".into(),
+                params: json!({"sessionId":child}),
+            },
+        )
+        .unwrap();
+    assert!(!fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
+fn an_event_for_another_turn_does_not_release_the_finished_child() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "turn-gate-parent");
+    let child = running_delegate(&fixture, &parent, &token, "turn-gate-start");
+    fixture
+        .db
+        .record_provider_event(&child, Some("fixture-turn"), "chat.turn.completed", &json!({"status":"completed"}))
+        .unwrap();
+    assert!(!try_release(&fixture, &child, Some("another-turn")));
+    assert!(!fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
+fn a_user_resume_holds_auto_release_until_the_follow_up_turn_finishes() {
+    // Stable native ids: this fixture resumes the same conversation.
+    let fixture = Fixture::build(false, Vec::new(), None, false, true, false, false);
+    let (parent, token) = delegation_parent(&fixture, "hold-parent");
+    let child = running_delegate(&fixture, &parent, &token, "hold-start");
+    fixture
+        .db
+        .record_provider_event(&child, Some("fixture-turn"), "chat.turn.completed", &json!({"status":"completed"}))
+        .unwrap();
+    assert!(try_release(&fixture, &child, Some("fixture-turn")));
+    assert!(fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    // The user continues the finished child: a new worker, no new turn yet.
+    let epoch = fixture.claim(&child);
+    fixture
+        .service
+        .dispatch("desktop", Fixture::resume_connect_request(&child, epoch, "hold-resume"))
+        .unwrap();
+    fixture.db.set_session_status(&child, "idle", None).unwrap();
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute("DELETE FROM session_activity WHERE session_id=?", [child.as_str()])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    // A drained queue or a settled request must not undo the user's Continue.
+    assert!(!try_release(&fixture, &child, None), "a resumed child stays open until the parent delegates to it again");
+    assert!(!fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    // The parent starts a new delegation run on this child: only that clears a
+    // user's Continue (finish of a turn, a compaction or a stray error never
+    // does), and the release retry then stops the finished child.
+    fixture.service.delegations.clear_user_resume(&child);
+    assert!(try_release(&fixture, &child, None));
+    assert!(fixture.db.session_by_id(&child).unwrap().unwrap().released);
+}
+
+#[test]
+fn bulk_release_is_all_or_none_and_names_the_sessions_it_cannot_stop() {
+    // Two chats in one project need distinct native ids.
+    let fixture = Fixture::build(false, Vec::new(), None, true, true, false, false);
+    let (first, _) = connected_chat(&fixture, "bulk-first");
+    let (second, _) = connected_chat(&fixture, "bulk-second");
+    fixture.db.set_session_status(&second, "running", None).unwrap();
+    let refused = rpc(
+        &fixture,
+        "session.releaseResources.bulk",
+        json!({"sessionIds":[first.clone(),second.clone()],"operationId":"bulk-refused"}),
+    )
+    .unwrap();
+    let entries = refused["refused"].as_array().unwrap();
+    assert!(entries.iter().any(|entry| entry["sessionId"] == second.as_str() && entry["code"] == "session_release_blocked"), "{refused}");
+    assert!(entries.iter().all(|entry| entry["sessionId"] != first.as_str()), "the releasable session is not named: {refused}");
+    assert!(refused["released"].as_array().unwrap().is_empty());
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 0, "one refusal stops nothing");
+    assert!(!fixture.db.session_by_id(&first).unwrap().unwrap().released);
+    assert!(!fixture.db.session_by_id(&second).unwrap().unwrap().released);
+
+    fixture.db.set_session_status(&second, "idle", None).unwrap();
+    let released = rpc(
+        &fixture,
+        "session.releaseResources.bulk",
+        json!({"sessionIds":[second.clone(),first.clone()],"operationId":"bulk-released"}),
+    )
+    .unwrap();
+    assert!(released["refused"].as_array().unwrap().is_empty(), "{released}");
+    assert_eq!(released["released"].as_array().unwrap().len(), 2);
+    assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 2);
+    assert!(fixture.db.session_by_id(&first).unwrap().unwrap().released);
+    assert!(fixture.db.session_by_id(&second).unwrap().unwrap().released);
+}
+
+/// Pushes an event the way a provider worker does: through the reliable event
+/// queue into the runtime's single projection pump. Never a direct call into
+/// the release or the hold helpers.
+fn emit_child_event(
+    fixture: &Fixture,
+    worker_token: &str,
+    session: &str,
+    turn: Option<&str>,
+    kind: &str,
+    data: Value,
+) {
+    crate::providers::emit_scoped(
+        &fixture.service.providers.test_event_sender(),
+        "grok",
+        session,
+        None,
+        turn,
+        kind,
+        data,
+        Some(worker_token),
+    );
+}
+
+fn child_worker_token(fixture: &Fixture, opened_at: usize) -> String {
+    fixture.worker_tokens.lock().unwrap()[opened_at].clone()
+}
+
+#[test]
+fn a_delegated_turn_completion_through_the_provider_event_channel_releases_the_child() {
+    let fixture = Fixture::for_delegation();
+    start_event_pump(&fixture);
+    let (parent, token) = delegation_parent(&fixture, "pump-release-parent");
+    let opened_at = fixture.worker_tokens.lock().unwrap().len();
+    let child = running_delegate(&fixture, &parent, &token, "pump-release-start");
+    let worker = child_worker_token(&fixture, opened_at);
+    emit_child_event(
+        &fixture,
+        &worker,
+        &child,
+        Some("fixture-turn"),
+        "chat.turn.completed",
+        json!({"status":"completed"}),
+    );
+    wait_for(|| fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+    assert_eq!(
+        fixture.stops.load(AtomicOrdering::SeqCst),
+        1,
+        "the delegated child's worker is stopped once"
+    );
+}
+
+#[test]
+fn a_user_resumed_child_is_not_released_by_a_compaction_or_a_stray_error() {
+    // Stable native ids: this fixture resumes the same conversation.
+    let fixture = Fixture::build(false, Vec::new(), None, false, true, false, false);
+    start_event_pump(&fixture);
+    let (parent, token) = delegation_parent(&fixture, "pump-hold-parent");
+    let opened_at = fixture.worker_tokens.lock().unwrap().len();
+    let child = running_delegate(&fixture, &parent, &token, "pump-hold-start");
+    let worker = child_worker_token(&fixture, opened_at);
+    emit_child_event(
+        &fixture,
+        &worker,
+        &child,
+        Some("fixture-turn"),
+        "chat.turn.completed",
+        json!({"status":"completed"}),
+    );
+    wait_for(|| fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    // The user continues the finished child: a new worker and a hold.
+    let epoch = fixture.claim(&child);
+    let resumed_at = fixture.worker_tokens.lock().unwrap().len();
+    fixture
+        .service
+        .dispatch("desktop", Fixture::resume_connect_request(&child, epoch, "pump-hold-resume"))
+        .unwrap();
+    fixture.db.set_session_status(&child, "idle", None).unwrap();
+    let worker = child_worker_token(&fixture, resumed_at);
+    assert!(fixture.service.delegations.user_resume_pending(&child));
+    // Codex maps a thread compaction to a turnless chat.turn.completed. It must
+    // not clear the hold and must not release the child. The error that follows
+    // is the ordering sentinel: the pump drains in order, so its status change
+    // proves the compaction was already processed.
+    emit_child_event(
+        &fixture,
+        &worker,
+        &child,
+        None,
+        "chat.turn.completed",
+        json!({"status":"completed"}),
+    );
+    emit_child_event(
+        &fixture,
+        &worker,
+        &child,
+        Some("slash-command-id"),
+        "chat.error",
+        json!({"message":"command failed"}),
+    );
+    wait_for(|| fixture.db.session_by_id(&child).unwrap().unwrap().status == "error");
+    assert!(
+        fixture.service.delegations.user_resume_pending(&child),
+        "a compaction does not clear the hold"
+    );
+    assert!(
+        !fixture.db.session_by_id(&child).unwrap().unwrap().released,
+        "a compaction does not release a child the user continued"
+    );
+    // A turnless chat.error is the other shape the pump must not act on.
+    fixture.db.set_session_status(&child, "idle", None).unwrap();
+    emit_child_event(
+        &fixture,
+        &worker,
+        &child,
+        None,
+        "chat.error",
+        json!({"message":"worker restart"}),
+    );
+    wait_for(|| fixture.db.session_by_id(&child).unwrap().unwrap().status == "error");
+    assert!(
+        fixture.service.delegations.user_resume_pending(&child),
+        "a turnless error does not clear the hold"
+    );
+    assert!(!fixture.db.session_by_id(&child).unwrap().unwrap().released);
+    assert_eq!(
+        fixture.stops.load(AtomicOrdering::SeqCst),
+        1,
+        "only the first delegated turn stopped a worker"
+    );
+}
+
+
+#[test]
+fn an_explicit_resume_with_a_missing_folder_is_refused_and_leaves_the_chat_resumable() {
+    let fixture = Fixture::new(false, None);
+    let gone = fixture.root.path().join("gone-worktree");
+    std::fs::create_dir(&gone).unwrap();
+    let created = fixture
+        .service
+        .dispatch(
+            "desktop",
+            RpcRequest {
+                v: 1,
+                id: "missing-cwd-create".into(),
+                method: "session.create".into(),
+                params: json!({"cwd":gone,"provider":"grok","mode":"chat","operationId":"missing-cwd-create"}),
+            },
+        )
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_owned();
+    let epoch = fixture.claim(&id);
+    fixture
+        .service
+        .dispatch("desktop", Fixture::connect_request(&id, epoch, "missing-cwd-connect"))
+        .unwrap();
+    let native = fixture.db.session_by_id(&id).unwrap().unwrap().native_id;
+    rpc(
+        &fixture,
+        "session.releaseResources",
+        json!({"sessionId":id,"operationId":"missing-cwd-release"}),
+    )
+    .unwrap();
+    assert!(fixture.db.session_by_id(&id).unwrap().unwrap().released);
+    std::fs::remove_dir(&gone).unwrap();
+    // The explicit Continue fails on the missing folder, and the failure does
+    // not consume the release: nothing was reopened and nothing is stuck in
+    // "starting", so Continue still has a session to resume.
+    let refused = fixture
+        .service
+        .dispatch("desktop", Fixture::resume_connect_request(&id, epoch, "missing-cwd-resume"));
+    assert!(refused.is_err(), "a missing folder refuses the resume: {refused:?}");
+    assert!(
+        format!("{refused:?}").contains("cwd_missing_choose_relocation"),
+        "{refused:?}"
+    );
+    let after = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(after.released, "the failed resume leaves the chat released");
+    assert_eq!(after.status, "exited");
+    assert_eq!(after.native_id, native, "the native identity is kept");
+    // The automatic reconnect is still refused, so Continue stays the only way in.
+    let automatic = fixture
+        .service
+        .dispatch("desktop", Fixture::connect_request(&id, epoch, "missing-cwd-auto"));
+    assert!(format!("{automatic:?}").contains("session_resume_required"), "{automatic:?}");
+    // Once the folder exists the same explicit resume reopens the conversation.
+    std::fs::create_dir(&gone).unwrap();
+    let resumed = fixture
+        .service
+        .dispatch("desktop", Fixture::resume_connect_request(&id, epoch, "missing-cwd-again"));
+    assert!(resumed.is_ok(), "the repaired folder resumes: {resumed:?}");
+    let reopened = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(!reopened.released);
+    assert_eq!(reopened.native_id, native, "the same conversation is continued");
+}
+
+
+/// Starts the production projection pump on this fixture's event queue: the
+/// fixture builds the service directly, so the only thing missing is the loop.
+fn start_event_pump(fixture: &Fixture) {
+    let Some(events) = fixture.service.providers.take_projection_events() else {
+        return;
+    };
+    spawn_projection_pump(
+        events,
+        Arc::clone(&fixture.db),
+        Arc::clone(&fixture.service.providers),
+        Arc::clone(&fixture.service.chat_queues),
+        Arc::clone(&fixture.service.previews),
+        crate::chat_tools::shared(&fixture.service.config.database_path, Arc::clone(&fixture.db))
+            .unwrap(),
+        Arc::clone(&fixture.service.delegations),
+        crate::turn_speed::shared(fixture.db.path()),
+    );
+}
 

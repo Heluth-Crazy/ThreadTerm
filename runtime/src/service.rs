@@ -57,12 +57,19 @@ pub struct RuntimeService {
     pub(crate) editor_navigation: Arc<crate::editor_navigation::EditorNavigation>,
 }
 
+/// A release only has work while the session is live; a released, ended or
+/// unknown status is a successful no-op.
+fn is_releasable_status(status: &str) -> bool {
+    matches!(status, "starting" | "running" | "idle" | "waiting")
+}
+
 /// Opens a session's provider Chat. Shared by `chat.connect` (after the
 /// ChatView lease check) and the runtime-owned delegation start.
 pub(crate) fn connect_chat_session(
     db: &Database,
     providers: &Providers,
     session_id: &str,
+    resume: bool,
 ) -> Result<()> {
     let admission = crate::chat_fork::session_admission(db, session_id)?;
     let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
@@ -72,8 +79,14 @@ pub(crate) fn connect_chat_session(
     if session.mode != "chat" {
         return Err(anyhow::anyhow!("chat_unavailable"));
     }
-    if session.read_only || session.status == "exited" {
+    if session.read_only || (session.status == "exited" && !session.released) {
         return Err(anyhow::anyhow!("session_read_only_resume_required"));
+    }
+    // Releasing kept the native identity, so reopening it starts a new worker.
+    // Only an explicit Continue, send or keystroke may do that; an automatic
+    // reconnect (mount, visibility, disconnected phase, lease renewal) must not.
+    if session.released && !resume {
+        return Err(anyhow::anyhow!("session_resume_required"));
     }
     let connected = ensure_chat_session_open(db, providers, session_id);
     if connected.is_err() {
@@ -98,7 +111,7 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
     if session.mode != "chat" {
         return Ok(());
     }
-    if session.read_only || session.status == "exited" {
+    if session.read_only || (session.status == "exited" && !session.released) {
         return Err(anyhow::anyhow!("session_read_only_resume_required"));
     }
     let config = crate::session_configs::read(db, session_id)?;
@@ -853,6 +866,108 @@ fn repair_operation_lock(database_path: &std::path::Path, operation_id: &str) ->
     Ok(flight)
 }
 
+
+/// The single durability projection loop: every provider event is recorded once,
+/// settles one delegation turn and retries a finished child's release. It owns
+/// the projection receiver, so exactly one of these runs per registry.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn spawn_projection_pump(
+    mut events: crate::provider_events::ProjectionReceiver,
+    event_db: Arc<Database>,
+    event_providers: Arc<Providers>,
+    event_queues: Arc<crate::chat_queue::ChatQueues>,
+    event_previews: Arc<crate::preview::Previews>,
+    event_chat_tools: Arc<crate::chat_tools::ChatTools>,
+    event_delegations: Arc<crate::delegation::Delegations>,
+    turn_speeds: Arc<crate::turn_speed::TurnSpeeds>,
+) {
+    std::thread::spawn(move || loop {
+            // Own the shared tracker for the lifetime of canonical projection.
+            let _keep_speed_tracker_alive = &turn_speeds;
+            match events.blocking_recv() {
+                Ok(event) => {
+                    // Drain a bounded burst before taking the provider/DB locks.
+                    // Only adjacent compatible text deltas combine; approvals,
+                    // completions and worker generations keep their exact order.
+                    let mut batch_bytes = event.data.to_string().len();
+                    let mut batch = vec![event];
+                    let mut failure = None;
+                    for _ in 1..256 {
+                        if batch_bytes >= 4 * 1024 * 1024 { break; }
+                        let event = match events.try_recv() {
+                            Ok(event) => event,
+                            Err(crate::provider_events::TryRecvError::Failed(reason)) => {
+                                // Capture/mark workers at failure detection,
+                                // before drained lifecycle events can unregister them.
+                                report_projection_failure(&event_db, &event_providers, &event_queues, &reason);
+                                failure = Some(reason);
+                                break;
+                            }
+                            Err(_) => break,
+                        };
+                        batch_bytes += event.data.to_string().len();
+                        if !merge_projection_delta(batch.last_mut().unwrap(), &event) {
+                            batch.push(event);
+                        }
+                    }
+                    for event in batch {
+                        if project_provider_event(&event_db, &event_providers, &event) {
+                            event_queues.provider_event(&event_db, &event_providers, &event);
+                            crate::group_chat::provider_event(&event_db, &event_providers, &event_queues, &event);
+                            if matches!(event.kind.as_str(), "chat.turn.completed" | "chat.error" | "chat.approval.resolved") {
+                                // Only the turn that settled a delegation may release its
+                                // child. A turnless event (a Codex compaction, a worker
+                                // restart) never does, and a hold the user's Continue put
+                                // in place is not cleared by events at all.
+                                if let Some(turn) = event.turn_id.as_deref() {
+                                    if let Err(error) = crate::delegation::release_finished_child(
+                                        &event_db,
+                                        &event_providers,
+                                        &event_delegations,
+                                        &event_previews,
+                                        &event.session_id,
+                                        Some(turn),
+                                    ) {
+                                        eprintln!("delegated child release failed for {}: {error}", event.session_id);
+                                    }
+                                }
+                            }
+                            let settled = match event.kind.as_str() {
+                                "chat.turn.completed" | "chat.error" => event.turn_id.as_deref().map(|turn| {
+                                    event_chat_tools.cancel_turn(&event.session_id, turn)?;
+                                    let cancelled = event.kind == "chat.error"
+                                        || matches!(event.data.get("status").and_then(Value::as_str), Some("failed" | "error" | "cancelled" | "canceled" | "interrupted"));
+                                    if cancelled {
+                                        event_chat_tools.clear_waiting_feedback(&event.session_id, Some(turn))?;
+                                    }
+                                    Ok(())
+                                }),
+                                "session.closed" => Some(event_chat_tools.revoke_session(&event.session_id)),
+                                _ => None,
+                            };
+                            if let Some(Err(error)) = settled {
+                                eprintln!("app-hosted Chat tool cleanup failed for {}: {error}", event.session_id);
+                            }
+                            if event.kind == "session.closed" { let _ = event_previews.revoke_disabled(&event_providers); }
+                        } else if qa_projection_failed(&event.session_id) {
+                            report_projection_failure(&event_db, &event_providers, &event_queues, "QA injected projection ingress failure");
+                        }
+                    }
+                    if failure.is_some() {
+                        break;
+                    }
+                }
+                Err(crate::provider_events::RecvError::Closed) => {
+                    event_queues.projection_failed(&event_db);
+                    break;
+                }
+                Err(crate::provider_events::RecvError::Failed(reason)) => {
+                    report_projection_failure(&event_db, &event_providers, &event_queues, &reason);
+                    break;
+                }
+            }
+        });
+}
 impl RuntimeService {
     fn set_pi_project_trust(&self, principal: &str, params: &Value) -> Result<Value> {
         #[derive(Deserialize)]
@@ -929,7 +1044,7 @@ impl RuntimeService {
         // operation resumes connection only; it never replays the decision.
         let mut failure = None;
         for id in &sessions {
-            if let Err(error) = self.connect_chat(id) { failure.get_or_insert(error); }
+            if let Err(error) = self.connect_chat(id, false) { failure.get_or_insert(error); }
         }
         if let Some(error) = failure { return Err(error); }
         let state = self.providers.chat_options(&p.session_id)?;
@@ -1071,80 +1186,23 @@ impl RuntimeService {
             crate::delegation::default_mcp_executable(),
         )));
         let turn_speeds = crate::turn_speed::shared(db.path());
-        let mut events = providers.take_projection_events().expect("new provider projection receiver");
+        let events = providers.take_projection_events().expect("new provider projection receiver");
         let event_db = Arc::clone(&db);
         let event_providers = Arc::clone(&providers);
         let event_queues = Arc::clone(&chat_queues);
         let event_previews = Arc::clone(&previews);
         let event_chat_tools = Arc::clone(&chat_tools);
-        std::thread::spawn(move || loop {
-            // Own the shared tracker for the lifetime of canonical projection.
-            let _keep_speed_tracker_alive = &turn_speeds;
-            match events.blocking_recv() {
-                Ok(event) => {
-                    // Drain a bounded burst before taking the provider/DB locks.
-                    // Only adjacent compatible text deltas combine; approvals,
-                    // completions and worker generations keep their exact order.
-                    let mut batch_bytes = event.data.to_string().len();
-                    let mut batch = vec![event];
-                    let mut failure = None;
-                    for _ in 1..256 {
-                        if batch_bytes >= 4 * 1024 * 1024 { break; }
-                        let event = match events.try_recv() {
-                            Ok(event) => event,
-                            Err(crate::provider_events::TryRecvError::Failed(reason)) => {
-                                // Capture/mark workers at failure detection,
-                                // before drained lifecycle events can unregister them.
-                                report_projection_failure(&event_db, &event_providers, &event_queues, &reason);
-                                failure = Some(reason);
-                                break;
-                            }
-                            Err(_) => break,
-                        };
-                        batch_bytes += event.data.to_string().len();
-                        if !merge_projection_delta(batch.last_mut().unwrap(), &event) {
-                            batch.push(event);
-                        }
-                    }
-                    for event in batch {
-                        if project_provider_event(&event_db, &event_providers, &event) {
-                            event_queues.provider_event(&event_db, &event_providers, &event);
-                            crate::group_chat::provider_event(&event_db, &event_providers, &event_queues, &event);
-                            let settled = match event.kind.as_str() {
-                                "chat.turn.completed" | "chat.error" => event.turn_id.as_deref().map(|turn| {
-                                    event_chat_tools.cancel_turn(&event.session_id, turn)?;
-                                    let cancelled = event.kind == "chat.error"
-                                        || matches!(event.data.get("status").and_then(Value::as_str), Some("failed" | "error" | "cancelled" | "canceled" | "interrupted"));
-                                    if cancelled {
-                                        event_chat_tools.clear_waiting_feedback(&event.session_id, Some(turn))?;
-                                    }
-                                    Ok(())
-                                }),
-                                "session.closed" => Some(event_chat_tools.revoke_session(&event.session_id)),
-                                _ => None,
-                            };
-                            if let Some(Err(error)) = settled {
-                                eprintln!("app-hosted Chat tool cleanup failed for {}: {error}", event.session_id);
-                            }
-                            if event.kind == "session.closed" { let _ = event_previews.revoke_disabled(&event_providers); }
-                        } else if qa_projection_failed(&event.session_id) {
-                            report_projection_failure(&event_db, &event_providers, &event_queues, "QA injected projection ingress failure");
-                        }
-                    }
-                    if failure.is_some() {
-                        break;
-                    }
-                }
-                Err(crate::provider_events::RecvError::Closed) => {
-                    event_queues.projection_failed(&event_db);
-                    break;
-                }
-                Err(crate::provider_events::RecvError::Failed(reason)) => {
-                    report_projection_failure(&event_db, &event_providers, &event_queues, &reason);
-                    break;
-                }
-            }
-        });
+        let event_delegations = Arc::clone(&delegations);
+        spawn_projection_pump(
+            events,
+            event_db,
+            event_providers,
+            event_queues,
+            event_previews,
+            event_chat_tools,
+            event_delegations,
+            turn_speeds,
+        );
         Self {
             config,
             db,
@@ -1579,7 +1637,15 @@ impl RuntimeService {
                 if let Some(operation_id) = request.params.get("operationId").and_then(Value::as_str) {
                     self.db.bind_operation(operation_id, &request.method, &request.params)?;
                 }
-                return self.chat_queues.dispatch(&self.db, &self.providers, &self.leases, principal, &request.method, &request.params);
+                let touched = request.params.get("sessionId").and_then(Value::as_str).map(str::to_owned);
+                let result = self.chat_queues.dispatch(&self.db, &self.providers, &self.leases, principal, &request.method, &request.params)?;
+                // A child whose queue just emptied (or lost its follow-up) is a
+                // release candidate again; removing an item emits no provider event.
+                // A read changes nothing, and every chat view reads on mount.
+                if let Some(session_id) = touched.filter(|_| request.method != "chat.queue.read") {
+                    self.retry_finished_child_release(&session_id);
+                }
+                return Ok(result);
             }
             crate::plugin_services::validate(&request.method, &request.params)?;
             crate::quick_launch::validate(&request.method, &request.params)?;
@@ -1882,6 +1948,25 @@ impl RuntimeService {
                     crate::group_chat::kick(&self.db, &self.providers, &self.chat_queues);
                     self.record_null(&p.operation_id, "session.stop")?;
                     Ok(Value::Null)
+                }
+                "session.releaseResources" => {
+                    let p: SessionReleaseResources = parse(&request.params)?;
+                    if let Some(prior) = self.db.operation(&p.operation_id)? {
+                        return Ok(prior);
+                    }
+                    let session = self.release_session_resources(&p.session_id)?;
+                    let result = serde_json::to_value(&session)?;
+                    self.db.complete_operation(&p.operation_id, "session.releaseResources", &result)?;
+                    Ok(result)
+                }
+                "session.releaseResources.bulk" => {
+                    let p: SessionReleaseResourcesBulk = parse(&request.params)?;
+                    if let Some(prior) = self.db.operation(&p.operation_id)? {
+                        return Ok(prior);
+                    }
+                    let result = self.release_sessions_bulk(&p.session_ids)?;
+                    self.db.complete_operation(&p.operation_id, "session.releaseResources.bulk", &result)?;
+                    Ok(result)
                 }
                 "session.update" => {
                     let p: SessionUpdate = parse(&request.params)?;
@@ -2299,7 +2384,12 @@ impl RuntimeService {
                     if let Some(result) = self.db.operation(&p.operation_id)? {
                         return Ok(result);
                     }
-                    self.connect_chat(&p.session_id)?;
+                    self.connect_chat(&p.session_id, p.resume)?;
+                    if p.resume {
+                        // A user Continue or send on a finished delegation keeps
+                        // the child open until its new turn finishes.
+                        self.delegations.note_user_resume(&p.session_id);
+                    }
                     let state = self.connection_state(&p.session_id)?;
                     self.db
                         .complete_operation(&p.operation_id, "chat.connect", &state)?;
@@ -2919,7 +3009,7 @@ impl RuntimeService {
         let mut state = self.providers.chat_connection(session_id);
         state["runtimeEpoch"] = json!(self.db.epoch()?);
         if session.mode != "chat"
-            || ((session.read_only || session.status == "exited")
+            || ((session.read_only || (session.status == "exited" && !session.released))
                 && state.get("phase").and_then(Value::as_str) != Some("ready"))
         {
             state["phase"] = json!("unavailable");
@@ -2931,8 +3021,177 @@ impl RuntimeService {
         }
         Ok(state)
     }
-    fn connect_chat(&self, session_id: &str) -> Result<()> {
-        connect_chat_session(&self.db, &self.providers, session_id)
+    fn connect_chat(&self, session_id: &str, resume: bool) -> Result<()> {
+        connect_chat_session(&self.db, &self.providers, session_id, resume)
+    }
+    /// Retry an auto-release after the child's queue changed: a removed or
+    /// drained follow-up leaves nothing to keep the worker for.
+    fn retry_finished_child_release(&self, session_id: &str) {
+        if crate::chat_queue::pending_work(&self.db, session_id).unwrap_or(true) {
+            return;
+        }
+        if let Err(error) = crate::delegation::release_finished_child(
+            &self.db,
+            &self.providers,
+            &self.delegations,
+            &self.previews,
+            session_id,
+            None,
+        ) {
+            eprintln!("delegated child release failed for {session_id}: {error}");
+        }
+    }
+    /// Stops a live session's process tree without ending the session. The
+    /// native identity is kept, so a later Chat connect or terminal resume
+    /// continues the same conversation. Releasing an already released or
+    /// already ended session is a successful no-op.
+    fn release_session_resources(&self, session_id: &str) -> Result<Session> {
+        // One admission lock per session: chat.send, chat.connect, queue dispatch
+        // and group delivery take the same lock, so none of them can start work
+        // between the checks below, the kill, and the single status write.
+        let admission = crate::chat_fork::session_admission(&self.db, session_id)?;
+        let _admission = admission
+            .lock()
+            .map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        let session = self
+            .db
+            .session_by_id(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+        if let Some((code, message)) = self.release_refusal(&session)? {
+            return Err(anyhow::anyhow!("{code}: {message}"));
+        }
+        if session.released || !is_releasable_status(&session.status) {
+            return Ok(session);
+        }
+        self.release_session_locked(&session)
+    }
+    /// Why this session cannot be released now, as a stable code and a sentence
+    /// the UI can show. `None` means it can be released (or already is).
+    fn release_refusal(&self, session: &Session) -> Result<Option<(&'static str, String)>> {
+        let session_id = session.id.as_str();
+        if session.read_only {
+            return Ok(Some(("session_release_unavailable", "read-only history".into())));
+        }
+        if session.released || !is_releasable_status(&session.status) {
+            return Ok(None);
+        }
+        if session.status == "starting"
+            || session.activity.as_ref().is_some_and(|activity| {
+                matches!(activity.state.as_str(), "running" | "awaiting_approval" | "awaiting_parent")
+            })
+        {
+            return Ok(Some(("session_release_blocked", "the session is working or waiting for your answer".into())));
+        }
+        if session.mode == "chat" {
+            if matches!(session.status.as_str(), "running" | "waiting") {
+                return Ok(Some(("session_release_blocked", "the session is working or waiting for your answer".into())));
+            }
+            if self.db.chat_items(session_id)?.iter().any(|item| {
+                item.parts.iter().any(|part| {
+                    part.get("type").and_then(Value::as_str) == Some("approval")
+                        && matches!(part.get("status").and_then(Value::as_str), Some("pending" | "submitting"))
+                })
+            }) {
+                return Ok(Some(("session_release_blocked", "answer or dismiss the pending request first".into())));
+            }
+            if crate::chat_queue::pending_work(&self.db, session_id)? {
+                return Ok(Some(("session_release_blocked", "send or remove the queued messages first".into())));
+            }
+        }
+        if session.native_id.is_none() {
+            return Ok(Some(("session_release_unavailable", "no native session ID was recorded".into())));
+        }
+        // Static adapter information only: a release must never start a provider
+        // probe (version/login checks) just to decide whether resume can work.
+        if session.mode == "terminal"
+            && self.providers.terminal_capture(&session.provider) == crate::providers::TerminalCapture::None
+        {
+            return Ok(Some(("session_release_unavailable", "this provider cannot resume a terminal by ID".into())));
+        }
+        Ok(None)
+    }
+    /// The kill and the single status write. The caller holds the session's
+    /// admission lock and has already run `release_refusal`.
+    fn release_session_locked(&self, session: &Session) -> Result<Session> {
+        let session_id = session.id.as_str();
+        crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
+            .revoke_session(session_id)?;
+        self.browser_tools.revoke_session(session_id);
+        crate::retry_scheduler::cancel_session(&self.db, session_id)?;
+        if session.run.is_some() {
+            crate::quick_launch::request_stop(&self.db, session_id)?;
+        }
+        {
+            let mut gate = self
+                .deferred_launch
+                .lock()
+                .map_err(|_| anyhow::anyhow!("deferred launch gate poisoned"))?;
+            if gate.generations.remove(session_id).is_some() {
+                self.db.cancel_deferred_codex_launch(session_id)?;
+            }
+        }
+        if session.mode == "chat" {
+            self.providers.chat_stop(session_id)?;
+            self.previews.revoke_disabled(&self.providers)?;
+            // status + released are written by one transaction, so a crash
+            // cannot leave the session ended with no way to resume.
+            self.db.release_session(session_id)?;
+        } else {
+            match self.pty.stop_for_release(&self.db, session_id) {
+                Ok(()) => {}
+                // The process may already be gone between the snapshot and the kill.
+                Err(error) if error.to_string().contains("no live PTY") => {
+                    self.db.release_session(session_id)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.db
+            .session_by_id(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("session_not_found"))
+    }
+    /// Release a list of sessions all or none: every admission lock is taken in
+    /// sorted order first, every session is checked, and only if nothing refuses
+    /// is anything stopped. One refusal changes nothing and names the sessions.
+    fn release_sessions_bulk(&self, session_ids: &[String]) -> Result<Value> {
+        let mut ordered: Vec<String> = session_ids.to_vec();
+        ordered.sort();
+        ordered.dedup();
+        let mut locks = Vec::with_capacity(ordered.len());
+        for id in &ordered {
+            locks.push(crate::chat_fork::session_admission(&self.db, id)?);
+        }
+        let mut guards = Vec::with_capacity(locks.len());
+        for lock in &locks {
+            guards.push(lock.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?);
+        }
+        let mut ready = Vec::new();
+        let mut refused = Vec::new();
+        for id in &ordered {
+            let Some(session) = self.db.session_by_id(id)? else {
+                refused.push(json!({"sessionId": id, "code": "session_not_found", "message": "The session no longer exists."}));
+                continue;
+            };
+            match self.release_refusal(&session)? {
+                Some((code, message)) => {
+                    refused.push(json!({"sessionId": id, "code": code, "message": message}))
+                }
+                None => ready.push(session),
+            }
+        }
+        if !refused.is_empty() {
+            return Ok(json!({"released": Vec::<Value>::new(), "refused": refused}));
+        }
+        let mut released = Vec::with_capacity(ready.len());
+        for session in ready {
+            let session = if session.released || !is_releasable_status(&session.status) {
+                session
+            } else {
+                self.release_session_locked(&session)?
+            };
+            released.push(serde_json::to_value(session)?);
+        }
+        Ok(json!({"released": released, "refused": Vec::<Value>::new()}))
     }
     /// One Stop: fence the queue, apply the turn-scoped effects, then let the
     /// provider decide. A provider that refuses did not stop a turn, so the
@@ -3044,12 +3303,24 @@ impl RuntimeService {
             session_id: String,
             cwd: Option<String>,
             operation_id: String,
+            #[serde(default)]
+            resume: bool,
         }
         let p: Resume = parse(params)?;
         let existing = self
             .db
             .session_by_id(&p.session_id)?
             .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+        // A released terminal kept its native identity but its process is gone.
+        // Only an explicit Continue, send or keystroke may start it again.
+        if existing.released && !p.resume {
+            return Err(anyhow::anyhow!("session_resume_required"));
+        }
+        if p.resume {
+            // Like an explicit chat.connect: the user resumed this child, so the
+            // delegation path must not stop it again.
+            self.delegations.note_user_resume(&p.session_id);
+        }
         if self.db.operation(&p.operation_id)?.is_some() {
             return Ok(serde_json::to_value(existing)?);
         }
@@ -3622,6 +3893,18 @@ struct SessionRelease {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SessionReleaseResources {
+    session_id: String,
+    operation_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionReleaseResourcesBulk {
+    session_ids: Vec<String>,
+    operation_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TerminalInput {
     session_id: String,
     data: String,
@@ -3805,6 +4088,8 @@ struct ChatConnect {
     session_id: String,
     lease_epoch: i64,
     operation_id: String,
+    #[serde(default)]
+    resume: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -4139,17 +4424,17 @@ mod tests {
         let db = Arc::new(Database::open(&path).unwrap()); let session = oc_option_session(&db,root.path());
         let removed = Arc::new(AtomicBool::new(false)); let variants = Arc::new(AtomicBool::new(false)); let calls = Arc::new(Mutex::new(Vec::new()));
         let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
-        runtime.connect_chat(&session.id).unwrap();
+        runtime.connect_chat(&session.id, false).unwrap();
         for (id,value) in [("next-model",OC_MODEL_A),("agent","plan"),("variant","high")] { set_chat_option(&db,&runtime.providers,&session.id,"opencode",id,value).unwrap(); }
         let saved = db.chat_option_selections(&session.id,"opencode").unwrap();
-        runtime.providers.chat_stop(&session.id).unwrap(); calls.lock().unwrap().clear(); runtime.connect_chat(&session.id).unwrap();
+        runtime.providers.chat_stop(&session.id).unwrap(); calls.lock().unwrap().clear(); runtime.connect_chat(&session.id, false).unwrap();
         assert_eq!(selected_chat_options(&runtime.providers.chat_options(&session.id).unwrap()),saved);
         assert_eq!(calls.lock().unwrap()[0],format!("next-model={OC_MODEL_A}"));
         assert_eq!(calls.lock().unwrap()[2],"variant=high");
         runtime.providers.chat_stop(&session.id).unwrap(); drop(runtime); drop(db);
         let reopened = Arc::new(Database::open(&path).unwrap());
         let restarted = oc_option_service(root.path(),Arc::clone(&reopened),&removed,&variants,&calls);
-        restarted.connect_chat(&session.id).unwrap();
+        restarted.connect_chat(&session.id, false).unwrap();
         assert_eq!(selected_chat_options(&restarted.providers.chat_options(&session.id).unwrap()),saved);
     }
     #[test]
@@ -4157,14 +4442,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap(); let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
         let session = oc_option_session(&db,root.path()); let removed = Arc::new(AtomicBool::new(false)); let variants = Arc::new(AtomicBool::new(false)); let calls = Arc::new(Mutex::new(Vec::new()));
         let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
-        runtime.connect_chat(&session.id).unwrap();
+        runtime.connect_chat(&session.id, false).unwrap();
         for (id,value) in [("next-model",OC_MODEL_A),("agent","plan"),("variant","high")] { set_chat_option(&db,&runtime.providers,&session.id,"opencode",id,value).unwrap(); }
-        runtime.providers.chat_stop(&session.id).unwrap(); variants.store(true,Ordering::SeqCst); runtime.connect_chat(&session.id).unwrap();
+        runtime.providers.chat_stop(&session.id).unwrap(); variants.store(true,Ordering::SeqCst); runtime.connect_chat(&session.id, false).unwrap();
         let state = runtime.providers.chat_options(&session.id).unwrap();
         assert_eq!(oc_option_value(&state,"next-model").as_deref(),Some(OC_MODEL_A));
         assert_eq!(oc_option_value(&state,"variant").as_deref(),Some(""));
         assert_eq!(state["error"]["code"],"chat_option_invalid");
-        runtime.providers.chat_stop(&session.id).unwrap(); removed.store(true,Ordering::SeqCst); calls.lock().unwrap().clear(); runtime.connect_chat(&session.id).unwrap();
+        runtime.providers.chat_stop(&session.id).unwrap(); removed.store(true,Ordering::SeqCst); calls.lock().unwrap().clear(); runtime.connect_chat(&session.id, false).unwrap();
         let state = runtime.providers.chat_options(&session.id).unwrap();
         assert_eq!(oc_option_value(&state,"next-model").as_deref(),Some("")); assert_eq!(oc_option_value(&state,"agent").as_deref(),Some(""));
         assert!(oc_option_value(&state,"variant").is_none()); assert_eq!(state["error"]["code"],"chat_option_invalid");
@@ -4178,12 +4463,12 @@ mod tests {
         let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
         db.set_chat_option_selections(&session.id,"opencode",&json!([{"id":"next-model","value":OC_MODEL_B},{"id":"agent","value":"plan"},{"id":"variant","value":"low"}])).unwrap();
         db.transaction(|tx| { tx.execute("INSERT INTO session_fork_options(session_id,data) VALUES (?,?)",rusqlite::params![session.id,json!([{"id":"next-model","value":OC_MODEL_A},{"id":"variant","value":"high"}]).to_string()])?; Ok(()) }).unwrap();
-        runtime.connect_chat(&session.id).unwrap();
+        runtime.connect_chat(&session.id, false).unwrap();
         let state = runtime.providers.chat_options(&session.id).unwrap();
         assert_eq!(oc_option_value(&state,"next-model").as_deref(),Some(OC_MODEL_A)); assert_eq!(oc_option_value(&state,"variant").as_deref(),Some("high"));
         assert_eq!(db.pending_fork_options(&session.id).unwrap(),json!([]));
         assert_eq!(db.chat_option_selections(&session.id,"opencode").unwrap(),selected_chat_options(&state));
-        runtime.providers.chat_stop(&session.id).unwrap(); runtime.connect_chat(&session.id).unwrap();
+        runtime.providers.chat_stop(&session.id).unwrap(); runtime.connect_chat(&session.id, false).unwrap();
         assert_eq!(oc_option_value(&runtime.providers.chat_options(&session.id).unwrap(),"next-model").as_deref(),Some(OC_MODEL_A));
     }
     #[test]
@@ -4197,7 +4482,7 @@ mod tests {
         assert!(!failed.chat_is_open(&session.id)); assert!(calls.lock().unwrap().is_empty());
         assert_eq!(db.chat_option_selections(&session.id,"opencode").unwrap(),saved);
         let runtime = oc_option_service(root.path(),Arc::clone(&db),&removed,&variants,&calls);
-        runtime.connect_chat(&session.id).unwrap();
+        runtime.connect_chat(&session.id, false).unwrap();
         assert!(set_chat_option(&db,&runtime.providers,&session.id,"opencode","next-model","missing").is_err());
         assert_eq!(db.chat_option_selections(&session.id,"opencode").unwrap(),saved);
         set_chat_option(&db,&runtime.providers,&session.id,"opencode","agent","build").unwrap();
@@ -4761,19 +5046,19 @@ mod tests {
         let values = Arc::new(Mutex::new(Vec::new()));
         let providers = pi_test_providers(Arc::clone(&values), Arc::new(AtomicBool::new(false)));
 
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
         let result = set_chat_option(&db, &providers, &session.id, "pi", "auto-retry", "false").unwrap();
         assert_eq!(result["value"], "false");
         assert_eq!(db.pi_auto_retry(&session.id).unwrap(), Some(false));
         providers.chat_stop(&session.id).unwrap();
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
         assert_eq!(values.lock().unwrap().as_slice(), ["auto-retry=false", "auto-retry=false"]);
         providers.chat_stop(&session.id).unwrap();
         drop(db);
 
         let reopened = Arc::new(Database::open(&path).unwrap());
         let restarted_providers = pi_test_providers(Arc::clone(&values), Arc::new(AtomicBool::new(false)));
-        connect_chat_session(&reopened, &restarted_providers, &session.id).unwrap();
+        connect_chat_session(&reopened, &restarted_providers, &session.id, false).unwrap();
         assert_eq!(reopened.pi_auto_retry(&session.id).unwrap(), Some(false));
         assert_eq!(
             values.lock().unwrap().as_slice(),
@@ -4790,7 +5075,7 @@ mod tests {
         let values = Arc::new(Mutex::new(Vec::new()));
         let fail_set = Arc::new(AtomicBool::new(false));
         let providers = pi_test_providers(Arc::clone(&values), Arc::clone(&fail_set));
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
 
         fail_set.store(true, Ordering::SeqCst);
         assert!(set_chat_option(&db, &providers, &session.id, "pi", "auto-retry", "false").is_err());
@@ -4902,7 +5187,7 @@ mod tests {
     fn codex_full_access_survives_reconnect_and_runtime_restart() {
         let root = tempfile::tempdir().unwrap();
         let (db, providers, session, calls, _) = codex_permission_fixture(root.path());
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
         assert!(calls.lock().unwrap().is_empty(), "nothing is restored before the user chooses");
 
         set_chat_option(&db, &providers, &session.id, "codex", "model", "other-model").unwrap();
@@ -4914,14 +5199,14 @@ mod tests {
         );
 
         providers.chat_stop(&session.id).unwrap();
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
         assert_eq!(codex_sandbox(&providers, &session.id), "danger-full-access");
         providers.chat_stop(&session.id).unwrap();
         drop(db);
 
         let reopened = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
         let restarted = Providers::for_test(vec![Arc::new(CodexPermissionAdapter { calls: Arc::clone(&calls), fail_set: Arc::new(AtomicBool::new(false)) })]);
-        connect_chat_session(&reopened, &restarted, &session.id).unwrap();
+        connect_chat_session(&reopened, &restarted, &session.id, false).unwrap();
         assert_eq!(codex_sandbox(&restarted, &session.id), "danger-full-access");
         assert_eq!(
             calls.lock().unwrap().iter().filter(|call| call.as_str() == "sandbox=danger-full-access").count(),
@@ -4934,7 +5219,7 @@ mod tests {
     fn codex_sandbox_slash_command_is_remembered_and_restore_failures_are_explicit() {
         let root = tempfile::tempdir().unwrap();
         let (db, providers, session, calls, fail_set) = codex_permission_fixture(root.path());
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
         send_chat_message(&db, &providers, &session.id, "/sandbox status", &[], "status").unwrap();
         assert_eq!(db.chat_option_selections(&session.id, "codex").unwrap(), json!([]), "a status query saves nothing");
         send_chat_message(&db, &providers, &session.id, "/sandbox read-only", &[], "slash").unwrap();
@@ -4943,7 +5228,7 @@ mod tests {
             json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"read-only"}]),
         );
         providers.chat_stop(&session.id).unwrap();
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
         assert_eq!(codex_sandbox(&providers, &session.id), "read-only", "a stricter choice must not widen on reconnect");
         providers.chat_stop(&session.id).unwrap();
 
@@ -4953,7 +5238,7 @@ mod tests {
         fail_set.store(false, Ordering::SeqCst);
 
         db.set_chat_option_selections(&session.id, "codex", &json!([{"id":"sandbox","value":"retired"}])).unwrap();
-        assert!(connect_chat_session(&db, &providers, &session.id).is_err());
+        assert!(connect_chat_session(&db, &providers, &session.id, false).is_err());
         assert!(!providers.chat_is_open(&session.id), "an unknown permission value must not fall back to the native default");
         assert!(!calls.lock().unwrap().iter().any(|call| call == "sandbox=retired"));
     }

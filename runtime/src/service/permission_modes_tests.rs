@@ -209,7 +209,7 @@ fn permission_modes_survive_reconnect_and_database_restart_for_each_provider() {
         let mismatch = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(Mutex::new(vec![]));
         let registry = providers(provider, &reject, &mismatch, &calls);
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         assert_eq!(
             calls.lock().unwrap().len(),
             1,
@@ -230,14 +230,14 @@ fn permission_modes_survive_reconnect_and_database_restart_for_each_provider() {
             .iter()
             .any(|row| row["id"] == "unrelated"));
         registry.chat_stop(&chat.id).unwrap();
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         assert_eq!(selected(&registry, &chat.id), value, "{provider}");
         registry.chat_stop(&chat.id).unwrap();
         drop(registry);
         drop(db);
         let db = Database::open(&path).unwrap();
         let registry = providers(provider, &reject, &mismatch, &calls);
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         assert_eq!(selected(&registry, &chat.id), value, "{provider} restart");
         assert!(calls
             .lock()
@@ -258,7 +258,7 @@ fn rejected_unknown_or_mismatched_permissions_fail_closed_and_remain_recoverable
         let mismatch = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(Mutex::new(vec![]));
         let registry = providers(provider, &reject, &mismatch, &calls);
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         let id = if provider == "fixture-acp" {
             "approval-policy"
         } else {
@@ -278,7 +278,7 @@ fn rejected_unknown_or_mismatched_permissions_fail_closed_and_remain_recoverable
             reject.store(reject_value, Ordering::SeqCst);
             mismatch.store(mismatch_value, Ordering::SeqCst);
             assert!(
-                connect_chat_session(&db, &registry, &chat.id).is_err(),
+                connect_chat_session(&db, &registry, &chat.id, false).is_err(),
                 "{provider}"
             );
             assert!(!registry.chat_is_open(&chat.id));
@@ -309,7 +309,7 @@ fn rejected_unknown_or_mismatched_permissions_fail_closed_and_remain_recoverable
         let unknown = json!([{"id":id,"value":"retired","category":"mode"}]);
         db.set_chat_option_selections(&chat.id, provider, &unknown)
             .unwrap();
-        assert!(connect_chat_session(&db, &registry, &chat.id).is_err());
+        assert!(connect_chat_session(&db, &registry, &chat.id, false).is_err());
         assert_eq!(
             db.chat_option_selections(&chat.id, provider).unwrap(),
             unknown
@@ -336,7 +336,7 @@ fn rejected_unknown_or_mismatched_permissions_fail_closed_and_remain_recoverable
             unknown,
             "recovery choices are not saved as confirmed yet"
         );
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         assert_eq!(selected(&registry, &chat.id), "default");
         assert_eq!(db.pending_fork_options(&chat.id).unwrap(), json!([]));
         assert!(db
@@ -382,7 +382,7 @@ fn pending_permission_fork_overrides_win_and_delegates_keep_defaults() {
         let mismatch = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(Mutex::new(vec![]));
         let registry = providers(provider, &reject, &mismatch, &calls);
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         assert_eq!(selected(&registry, &chat.id), "plan");
         assert_eq!(
             calls
@@ -395,10 +395,10 @@ fn pending_permission_fork_overrides_win_and_delegates_keep_defaults() {
             "no redundant post-connect setter"
         );
         registry.chat_stop(&chat.id).unwrap();
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         assert_eq!(selected(&registry, &chat.id), "plan");
         let delegate = session(&db, root.path(), provider, "delegate-permission");
-        connect_chat_session(&db, &registry, &delegate.id).unwrap();
+        connect_chat_session(&db, &registry, &delegate.id, false).unwrap();
         assert_eq!(selected(&registry, &delegate.id), "default");
     }
 }
@@ -413,7 +413,7 @@ fn kimi_permission_slash_commands_and_approved_transitions_are_saved() {
     let mismatch = Arc::new(AtomicBool::new(false));
     let calls = Arc::new(Mutex::new(vec![]));
     let registry = providers("kimi", &reject, &mismatch, &calls);
-    connect_chat_session(&db, &registry, &chat.id).unwrap();
+    connect_chat_session(&db, &registry, &chat.id, false).unwrap();
     for (index, (command, expected)) in [("/yolo", "yolo"), ("/auto", "auto"), ("/plan", "plan")]
         .iter()
         .enumerate()
@@ -458,7 +458,7 @@ fn startup_ui_does_not_overwrite_saved_mode_but_confirmed_transition_does() {
     let mismatch = Arc::new(AtomicBool::new(false));
     let calls = Arc::new(Mutex::new(vec![]));
     let registry = providers("claude", &reject, &mismatch, &calls);
-    connect_chat_session(&db, &registry, &chat.id).unwrap();
+    connect_chat_session(&db, &registry, &chat.id, false).unwrap();
     set_chat_option(&db, &registry, &chat.id, "claude", "mode", "plan").unwrap();
     let mut event = ProviderEvent {
         session_id: chat.id.clone(),
@@ -516,7 +516,7 @@ fn removed_acp_permission_ids_can_be_explicitly_reset_without_changing_saved_sta
     let mismatch = Arc::new(AtomicBool::new(false));
     let calls = Arc::new(Mutex::new(vec![]));
     let registry = providers("fixture-acp", &reject, &mismatch, &calls);
-    assert!(connect_chat_session(&db, &registry, &chat.id).is_err());
+    assert!(connect_chat_session(&db, &registry, &chat.id, false).is_err());
     let restore = &registry.chat_connection(&chat.id)["error"]["permissionRestore"];
     assert_eq!(restore["reason"], "missing");
     assert_eq!(restore["optionId"], "removed-policy");
@@ -563,7 +563,7 @@ fn removed_acp_permission_ids_can_be_explicitly_reset_without_changing_saved_sta
         db.chat_option_selections(&chat.id, "fixture-acp").unwrap(),
         saved
     );
-    connect_chat_session(&db, &registry, &chat.id).unwrap();
+    connect_chat_session(&db, &registry, &chat.id, false).unwrap();
     let final_rows = db.chat_option_selections(&chat.id, "fixture-acp").unwrap();
     assert!(!final_rows
         .as_array()
@@ -668,7 +668,7 @@ fn initial_launch_finalizes_permission_overrides_before_the_next_selection() {
         assert_eq!(db.pending_fork_options(&chat.id).unwrap(), json!([]));
         set_chat_option(&db, &registry, &chat.id, provider, id, "auto").unwrap();
         registry.chat_stop(&chat.id).unwrap();
-        connect_chat_session(&db, &registry, &chat.id).unwrap();
+        connect_chat_session(&db, &registry, &chat.id, false).unwrap();
         assert_eq!(
             selected(&registry, &chat.id),
             "auto",

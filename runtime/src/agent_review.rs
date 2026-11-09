@@ -372,7 +372,7 @@ pub(crate) fn mark(db: &Database, params: &Value) -> Result<Value> {
 }
 
 fn run_start(db: &Database, providers: &Providers, id: &str, reviewer: &str, agent: &str, prompt: &str, operation: &str) -> Result<()> {
-    crate::service::connect_chat_session(db, providers, reviewer)?;
+    crate::service::connect_chat_session(db, providers, reviewer, false)?;
     if agent == "codex" {
         if providers.chat_options(reviewer).ok().and_then(|v| v["options"].as_array().cloned()).is_some_and(|options| options.iter().any(|o| o["id"] == "sandbox" && o["choices"].as_array().is_some_and(|c| c.iter().any(|c| c["value"] == "read-only")))) {
             let _ = providers.chat_set_option(reviewer, "sandbox", "read-only");

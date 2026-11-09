@@ -462,6 +462,7 @@ function MachineApp() {
           <MachineRows zh={locale === 'zh-CN'} onAddComputer={() => { if (remoteMachine) void machineBridge()?.machineSettings(); else { setSettingsInitialTab('computers'); setSettingsOpen(true); } }}>
           <ProjectCatalog
             sessions={rawData?.sessions}
+            providers={data?.providers}
             visibility={catalogVisibility}
             onChanged={() => void refresh()}
             selectedProjectId={project?.id ?? session?.projectId}

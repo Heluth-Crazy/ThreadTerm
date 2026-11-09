@@ -195,7 +195,7 @@ impl Fixture {
             fail_send,
             gate,
         })]));
-        connect_chat_session(&db, &providers, &session.id).unwrap();
+        connect_chat_session(&db, &providers, &session.id, false).unwrap();
         Self {
             _root: root,
             db,

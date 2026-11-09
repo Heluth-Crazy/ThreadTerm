@@ -68,6 +68,9 @@ function fixture(provider = 'opencode', withLease = false, sessionPatch = {}) {
     runInContext('var connection = link.connection; var connected = connection.phase === "ready" && link.transport === "up";', context);
     context.canControl = !context.session.readOnly && context.session.status !== 'exited';
     context.ended = Boolean(context.session.readOnly) || context.session.status === 'exited';
+    // Run 2: a released chat never connects until Continue or a send asks for it.
+    context.released = Boolean(context.session.released) && !context.session.readOnly;
+    context.resumeRequested = false;
     runInContext(controlEligibility.replace('const ', 'var '), context);
     if (withLease) runInContext(leaseEffect, context);
     runInContext(effects, context);

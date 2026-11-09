@@ -85,7 +85,7 @@ export function HistoryRail({ onClose, onPresented }: Props) {
   };
   const resume = async (session: Session) => {
     setLoading(true); setIssue(undefined);
-    try { let path = cwd ?? session.worktreePath ?? selected?.cwd; if (!path) { path = await chooseDirectory() ?? undefined; if (!path) return; } await present(await request("session.resume", { sessionId: session.id, cwd: path, operationId: operationId() })); }
+    try { let path = cwd ?? session.worktreePath ?? selected?.cwd; if (!path) { path = await chooseDirectory() ?? undefined; if (!path) return; } await present(await request("session.resume", { sessionId: session.id, cwd: path, operationId: operationId(), resume: true })); }
     catch (error) { setIssue(error instanceof Error ? error.message : copy("The session could not be resumed. Choose a valid directory to relocate it.", "无法恢复会话，请选择有效目录重新定位。")); }
     finally { setLoading(false); setResumeCandidate(undefined); }
   };

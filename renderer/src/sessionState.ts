@@ -20,7 +20,8 @@ const labels: Record<"en" | "zh", Record<SessionViewState, string>> = {
 };
 
 /** One wording for a state everywhere (pills, tooltips, summaries); read-only records say so. */
-export function sessionStateLabel(state: SessionViewState, zh: boolean, readOnly = false): string {
+export function sessionStateLabel(state: SessionViewState, zh: boolean, readOnly = false, released = false): string {
+  if (released) return zh ? "已停止" : "Stopped";
   if (readOnly) return zh ? "只读" : "Read-only";
   return labels[zh ? "zh" : "en"][state];
 }

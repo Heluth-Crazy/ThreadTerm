@@ -1255,6 +1255,9 @@
         },
         "operationId": {
           "type": "string"
+        },
+        "resume": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -2147,6 +2150,41 @@
       },
       "required": [
         "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.releaseResources\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.releaseResources.bulk\">": {
+      "type": "object",
+      "properties": {
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionIds",
         "operationId"
       ],
       "additionalProperties": false
@@ -3782,6 +3820,9 @@
         },
         "operationId": {
           "type": "string"
+        },
+        "resume": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -9004,6 +9045,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22session.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.releaseResources"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.releaseResources%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.releaseResources.bulk"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.releaseResources.bulk%22%3E"
         }
       },
       "required": [

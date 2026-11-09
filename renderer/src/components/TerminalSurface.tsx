@@ -5,6 +5,7 @@ import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import "@xterm/xterm/css/xterm.css";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { browserHandoff, onBrowserHandoffEvent, openExternal, operationId, outputSubscription, request, subscribeEvents } from "../bridge";
 import { acquireControl, takeTerminalControl } from '../controlLease';
 import { createTerminalControl, type TerminalControlState } from '../terminalControl';
@@ -36,6 +37,7 @@ import { TerminalContextAction } from './TerminalContextAction';
 import { useTerminalContextMenu } from './TerminalContextMenu';
 import { claimDevServerOffer, createDevServerLineDetector, type DevServerOffer } from '../../../desktop/src/browser/devServer';
 import { replayRetentionBoundary, retainedOutputTrimmedNote } from './terminalReplayRetention';
+import { StoppedState } from './StoppedState';
 
 type Props = { sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
 // A failed screen recovery is shown once, in the overlay: a plain-language reason for the
@@ -594,7 +596,8 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       }
       // Native resume keeps this sessionId and its retained output; the next
       // snapshot refresh turns this same surface back into the live terminal.
-      await request("session.resume", { sessionId, operationId: operationId() });
+      // Only this explicit action may resume a released session.
+      await request("session.resume", { sessionId, operationId: operationId(), resume: true });
       onChanged?.();
     }
     catch (error) { setIssue(error instanceof Error ? error.message : String(error)); }
@@ -644,10 +647,27 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       ? (zh ? "部分历史输出已缺失，无法完整重建画面。" : "Part of the saved output is missing, so the screen can't be rebuilt exactly.")
       : (zh ? "无法加载历史输出。" : "The saved output couldn't be loaded.");
   const retryReplay = () => { setReplayFailure(undefined); setReplay({ key: replayKey, phase: "catching" }); setReplayAttempt(value => value + 1); };
+  const resumeOnTyping = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!session?.released || session.readOnly || !ended || actionBusy || resuming || resumeBlocked) return;
+    // Only the terminal's own input line starts the conversation again; the
+    // surrounding menus and buttons keep their normal keys.
+    const target = event.target as HTMLElement | null;
+    if (!target?.classList?.contains("xterm-helper-textarea")) return;
+    if (event.key.length !== 1 && event.key !== "Enter") return;
+    void resume();
+  };
   // One footer states why the terminal takes no input and offers the next step. It sits where
   // input would go; the overlay owns failed/pending launches, so the footer waits for them.
   const endedBanner = session && (session.readOnly || ended) && !launchFailed && !(launchPending && !showTerminal)
-    ? {
+    ? session.released && !session.readOnly
+      ? {
+        title: "",
+        detail: undefined as string | undefined,
+        action: agentProvider && !resumeBlocked
+          ? <StoppedState zh={zh} busy={actionBusy || resuming} onContinue={() => void resume()} />
+          : undefined,
+      }
+      : {
       title: session.readOnly ? (zh ? "只读记录" : "Read-only record") : (zh ? "会话已结束" : "Session ended"),
       detail: session.readOnly ? (zh ? "这是保存的终端输出，无法继续输入。" : "Showing saved terminal output; it can't take input.")
         : resumeBlocked ?? (zh ? "正在显示保存的输出。" : "Showing saved output."),
@@ -666,7 +686,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     const element = host.current;
     if (hasEndedBanner && sawControl.value && element) element.scrollTop = element.scrollHeight;
   }, [hasEndedBanner, sawControl.value]);
-  return <div className="terminal-wrap term">
+  return <div className="terminal-wrap term" onKeyDown={resumeOnTyping}>
     <div className="terminal-local-action-row">
     <SurfaceActions slot="primary">
       {launchPending && !replaying && !showTerminal && <button type="button" className="btn" onClick={() => setShowTerminal(true)}>{zh ? "显示终端" : "Show terminal"}</button>}
@@ -723,7 +743,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     </div>
     {endedBanner && <div className={`term-ended-banner${session?.readOnly ? " is-readonly" : ""}`} role="note">
       <span className="term-ended-dot" aria-hidden="true" />
-      <p><strong>{endedBanner.title}</strong><span>{endedBanner.detail}</span></p>
+      <p>{endedBanner.title && <strong>{endedBanner.title}</strong>}{endedBanner.detail && <span>{endedBanner.detail}</span>}</p>
       {endedBanner.action}
     </div>}
     </div>;

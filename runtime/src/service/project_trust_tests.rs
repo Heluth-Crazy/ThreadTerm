@@ -169,7 +169,7 @@ impl Fixture {
         let session = self.db.create_session(CreateSession { project_id: Some(project_id), title: None, provider: "pi", mode: "chat", native_id: None, operation_id: operation }).unwrap();
         self.db.bind_session(&session.id, Some(self.root.path().to_str().unwrap()), None).unwrap();
         crate::session_configs::save_new(&self.db, &session.id, &crate::session_configs::LaunchSpec { provider: "pi".into(), mode: "chat".into(), cwd: self.root.path().to_str().unwrap().into(), project_id: Some(project_id.into()), title: None, executable: None, args: Vec::new() }, None).unwrap();
-        connect_chat_session(&self.db, &self.service.providers, &session.id).unwrap();
+        connect_chat_session(&self.db, &self.service.providers, &session.id, false).unwrap();
         let lease = self.service.leases.claim(&self.db, &session.id, "desktop").unwrap();
         (session.id, lease)
     }

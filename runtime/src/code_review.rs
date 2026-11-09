@@ -1561,7 +1561,7 @@ fn run_one_finder(
     let reviewer = planned.session_id.as_str();
     let index = planned.stage_index;
     let (prompt, _, _) = build_finder_prompt(root, scope_label, files, focus, lens);
-    crate::service::connect_chat_session(db, providers, reviewer)?;
+    crate::service::connect_chat_session(db, providers, reviewer, false)?;
     apply_read_only_after_connect(providers, reviewer, provider);
     let result = crate::service::send_chat_message(
         db,
@@ -1716,7 +1716,7 @@ fn run_pipeline(
             Some(verifier) => {
                 let prompt = build_verifier_prompt(&root, &scope_label, &files, &candidates, focus.as_deref());
                 match (|| -> Result<Option<Vec<Value>>> {
-                    crate::service::connect_chat_session(&db, &providers, &verifier.session_id)?;
+                    crate::service::connect_chat_session(&db, &providers, &verifier.session_id, false)?;
                     apply_read_only_after_connect(&providers, &verifier.session_id, &provider);
                     let result = crate::service::send_chat_message(
                         &db,
