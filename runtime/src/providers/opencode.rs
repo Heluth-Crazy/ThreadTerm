@@ -90,15 +90,26 @@ impl OpenCodeAdapter {
 
     /// P4: exact-ID reads walk the bounded native message pages and then use the
     /// same canonical conversion as the live snapshot, so a re-opened history is
-    /// the transcript the stream would have produced.
+    /// the transcript the stream would have produced. A session that is live in
+    /// this runtime is read through the server that owns it, and an empty read of
+    /// a session that has native activity is an explicit error, never a blank
+    /// transcript.
     fn v2_history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
-        v2_with_history_server(".", |server| {
-            let api = server.native_api();
+        let (api, cached) = v2_read_api(".", native_id)?;
+        let result = (|| {
             let items = v2_history_transcript(native_id, |cursor| {
                 api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
             })?;
+            v2_require_visible(native_id, items.len(), || api.read_session(native_id))?;
             Ok(Value::Array(items))
-        })
+        })();
+        if result.is_err() {
+            if let Some(server) = cached {
+                drop(server);
+                v2_forget_history_server(".");
+            }
+        }
+        result
     }
 }
 
@@ -321,6 +332,10 @@ impl ProviderAdapter for OpenCodeAdapter {
         // `v2::attach`. Terminal preparation and history reads stay fenced.
         let session = server.native_api().open_session(native_id)?;
         let native_id = api::session_identity(&session, native_id)?;
+        // A session that is live here is read through this server: 2.2.5 keeps a
+        // session's live message projection in the owning server process, so a
+        // separate reader must not be preferred over the owner.
+        v2_register_live_owner(&native_id, &server);
         // The event stream binds only after the native identity is known; a
         // failed event channel fails the connect instead of leaving a blind
         // "ready" worker behind.
@@ -3913,8 +3928,106 @@ fn v2_with_history_server<T>(
     }
 }
 
-/// One native history page. Read errors are errors: they never become an empty
-/// listing, and the cursor is carried through unchanged.
+/// One live 2.x session owned by a Chat worker in this runtime. Reading it
+/// through the owning server is the only way to see what the owner has not yet
+/// persisted; `stopped` is the owner's own flag, so a closed worker leaves a
+/// dead entry that is dropped on the next lookup.
+struct V2LiveOwner {
+    api: NativeApi,
+    stopped: Arc<AtomicBool>,
+}
+
+type V2LiveOwners = Mutex<Option<HashMap<String, V2LiveOwner>>>;
+
+fn v2_live_owners() -> &'static V2LiveOwners {
+    static OWNERS: V2LiveOwners = Mutex::new(None);
+    &OWNERS
+}
+
+fn with_v2_live_owners<T>(
+    run: impl FnOnce(&mut HashMap<String, V2LiveOwner>) -> T,
+) -> Option<T> {
+    let mut guard = v2_live_owners().lock().ok()?;
+    let owners = guard.get_or_insert_with(HashMap::new);
+    Some(run(owners))
+}
+
+fn v2_store_live_owner(native_id: &str, api: NativeApi, stopped: Arc<AtomicBool>) {
+    with_v2_live_owners(|owners| {
+        owners.retain(|_, owner| !owner.stopped.load(Ordering::SeqCst));
+        owners.insert(native_id.to_owned(), V2LiveOwner { api, stopped });
+    });
+}
+
+fn v2_register_live_owner(native_id: &str, server: &OpenCodeServer) {
+    // Only the 2.x dialect splits live state from the persisted history.
+    if server.dialect != ApiDialect::V2 {
+        return;
+    }
+    v2_store_live_owner(native_id, server.native_api(), Arc::clone(&server.stopped));
+}
+
+fn v2_live_owner(native_id: &str) -> Option<NativeApi> {
+    with_v2_live_owners(|owners| {
+        owners.retain(|_, owner| !owner.stopped.load(Ordering::SeqCst));
+        owners.get(native_id).map(|owner| owner.api.clone())
+    })
+    .flatten()
+}
+
+/// The server a history read or fork must use: the owning Chat worker when the
+/// session is live in this runtime, otherwise the shared owned history server
+/// (`Some` there, so a failed request drops that cached process).
+fn v2_read_api(
+    cwd: &str,
+    native_id: &str,
+) -> Result<(NativeApi, Option<Arc<OpenCodeServer>>), ProviderError> {
+    if let Some(api) = v2_live_owner(native_id) {
+        return Ok((api, None));
+    }
+    let server = v2_history_server(cwd)?;
+    Ok((server.native_api(), Some(server)))
+}
+
+/// Native evidence that a session has produced output: cumulative tokens, cost,
+/// or a terminal outcome. A session that was just created has none of these, so
+/// an empty transcript is its real history.
+fn v2_session_has_activity(info: &Value) -> bool {
+    let count = |pointer: &str| {
+        let value = info.pointer(pointer).and_then(Value::as_u64).unwrap_or(0);
+        value
+    };
+    count("/tokens/input") + count("/tokens/output") + count("/tokens/reasoning") > 0
+        || count("/tokens/cache/read") > 0
+        || info.get("cost").and_then(Value::as_f64).is_some_and(|cost| cost > 0.0)
+        || info
+            .get("outcome")
+            .and_then(Value::as_str)
+            .is_some_and(|outcome| !outcome.is_empty())
+}
+
+/// A read that cannot see the owner's messages is an explicit error, never an
+/// empty transcript. `info` is only read when the transcript is empty, so a
+/// normal read never pays for it.
+fn v2_require_visible(
+    native_id: &str,
+    messages: usize,
+    info: impl FnOnce() -> Result<Value, ProviderError>,
+) -> Result<(), ProviderError> {
+    if messages > 0 {
+        return Ok(());
+    }
+    if v2_session_has_activity(&info()?) {
+        return Err(ProviderError::new(
+            "session_history_unreadable",
+            format!(
+                "OpenCode reports completed work for session {native_id}, but this server cannot read its messages; another OpenCode process owns the live session, so no transcript or fork is produced from an empty history"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn v2_history_page(payload: &Value) -> Result<Value, ProviderError> {
     let rows = payload
         .get("data")
@@ -4089,44 +4202,57 @@ fn opencode_v2_fork(
     if anchor.is_none() && !is_latest {
         return Ok(None);
     }
-    let server = v2_history_server(cwd)?;
-    let api = server.native_api();
-    let before = match anchor {
-        None => None,
-        Some(anchor) => {
-            if anchor.native_id != native_id {
-                return Ok(None);
+    let (api, cached) = v2_read_api(cwd, native_id)?;
+    let result = (|| {
+        // A fork copies native history, so it must never act on a session whose
+        // messages this server cannot see. One cheap page proves visibility
+        // before the non-idempotent native fork is requested.
+        let first = v2_message_page(&api.messages_page(native_id, 1, "asc", None)?)?.0;
+        v2_require_visible(native_id, first.len(), || api.read_session(native_id))?;
+        let before = match anchor {
+            None => None,
+            Some(anchor) => {
+                if anchor.native_id != native_id {
+                    return Ok(None);
+                }
+                let Some(message) = anchor.message_id.as_deref() else {
+                    return Ok(None);
+                };
+                validate_native_id(message)?;
+                v2_fork_cutoff(message, |cursor| {
+                    api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
+                })?
             }
-            let Some(message) = anchor.message_id.as_deref() else {
-                return Ok(None);
-            };
-            validate_native_id(message)?;
-            v2_fork_cutoff(message, |cursor| {
-                api.messages_page(native_id, V2_HISTORY_PAGE, "asc", cursor)
-            })?
-        }
-    };
-    let result = api.fork_before(native_id, before.as_deref()).map_err(|error| {
-        ProviderError::new(
-            "operation_outcome_unknown",
-            format!(
-                "OpenCode fork was not confirmed; do not retry this operation: {}",
-                error.message
-            ),
-        )
-    })?;
-    let id = result
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| *id != native_id)
-        .ok_or_else(|| {
+        };
+        let result = api.fork_before(native_id, before.as_deref()).map_err(|error| {
             ProviderError::new(
                 "operation_outcome_unknown",
-                "OpenCode fork returned no distinct session identity",
+                format!(
+                    "OpenCode fork was not confirmed; do not retry this operation: {}",
+                    error.message
+                ),
             )
         })?;
-    validate_native_id(id).map_err(|error| ProviderError::new("operation_outcome_unknown", error.message))?;
-    Ok(Some(id.to_owned()))
+        let id = result
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| *id != native_id)
+            .ok_or_else(|| {
+                ProviderError::new(
+                    "operation_outcome_unknown",
+                    "OpenCode fork returned no distinct session identity",
+                )
+            })?;
+        validate_native_id(id).map_err(|error| ProviderError::new("operation_outcome_unknown", error.message))?;
+        Ok(Some(id.to_owned()))
+    })();
+    if result.is_err() {
+        if let Some(server) = cached {
+            drop(server);
+            v2_forget_history_server(cwd);
+        }
+    }
+    result
 }
 
 #[cfg(test)]

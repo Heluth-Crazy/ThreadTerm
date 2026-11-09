@@ -400,3 +400,54 @@ fn legacy_empty_session_list_is_an_empty_page_not_a_protocol_error() {
         "provider_protocol"
     );
 }
+
+#[test]
+fn an_empty_transcript_of_a_session_with_native_activity_is_an_explicit_error() {
+    // Run 12 finding: a live 2.2.5 session belongs to the server process that
+    // owns it, and reading it from another process must never become a blank
+    // transcript. Native evidence (tokens/cost/outcome) proves work happened.
+    let worked = json!({"id":"ses_busy","cost":0,"tokens":{"input":3487,"output":3,"reasoning":0},"outcome":"succeeded"});
+    let error = v2_require_visible("ses_busy", 0, || Ok(worked.clone())).unwrap_err();
+    assert_eq!(error.code, "session_history_unreadable");
+    assert!(error.message.contains("ses_busy"));
+    // A paid turn with no token figures still proves activity through cost.
+    assert!(v2_session_has_activity(&json!({"cost":0.25,"tokens":{}})));
+    // Outcome alone is activity too: the messages existed even if the figures
+    // are zero for a free model.
+    assert!(v2_session_has_activity(&json!({"cost":0,"tokens":{"input":0},"outcome":"interrupted"})));
+    // A freshly created session has no native activity, so an empty read is
+    // its real history and stays a valid empty transcript.
+    let fresh = json!({"id":"ses_new","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}});
+    assert!(!v2_session_has_activity(&fresh));
+    assert!(v2_require_visible("ses_new", 0, || Ok(fresh.clone())).is_ok());
+    // A non-empty transcript never pays for the extra native read.
+    let mut called = false;
+    v2_require_visible("ses_busy", 3, || {
+        called = true;
+        Ok(Value::Null)
+    })
+    .unwrap();
+    assert!(!called, "a readable transcript must not trigger the guard read");
+}
+
+#[test]
+fn a_session_live_in_this_runtime_is_read_through_its_owning_server() {
+    // The Chat worker registers its server; history reads and forks then use
+    // that exact server instead of a second history process. A closed worker
+    // leaves a dead entry that is dropped, never used.
+    let stopped = Arc::new(AtomicBool::new(false));
+    let api = NativeApi::new(
+        Client::builder().build().unwrap(),
+        "http://127.0.0.1:1".into(),
+        "D:/project/one".into(),
+        "pw".into(),
+        ApiDialect::V2,
+    );
+    v2_store_live_owner("ses_owner_run12", api, Arc::clone(&stopped));
+    assert!(v2_live_owner("ses_owner_run12").is_some());
+    // An unknown session has no owner: the caller falls back to the history
+    // server, it never guesses a server.
+    assert!(v2_live_owner("ses_unknown_run12").is_none());
+    stopped.store(true, Ordering::SeqCst);
+    assert!(v2_live_owner("ses_owner_run12").is_none(), "a stopped owner is never served");
+}
