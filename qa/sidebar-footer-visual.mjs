@@ -126,6 +126,32 @@ async function runtimeProblem(label,language,state){
 async function runtimeConnected(label,language){
  assert.equal(await page.locator('[data-runtime-badge],[data-runtime-chip]').count(),0,`${label}: connected runtime remains silent outside the account menu`);await account(label,language,'connected');
 }
+async function localResourceTotals() {
+ await app.evaluate(({ app }) => {
+   const metrics = app.getAppMetrics.bind(app);
+   let reads = 0;
+   app.getAppMetrics = () => { reads += 1; return metrics(); };
+   globalThis.resourceMetricReads = () => reads;
+ });
+ const accountButton = page.getByRole('button', { name: 'Local user', exact: true });
+ await accountButton.click();
+ const totals = page.getByRole('group', { name: 'Local ThreadTerm resource usage' });
+ await totals.getByText(/^CPU\s+\d+(?:\.\d+)?\s*%$/).waitFor({ timeout: 10_000 });
+ await totals.getByText(/^Memory\s+[1-9][\d.,]*\s+(?:MiB|GiB)$/).waitFor();
+ await totals.getByRole('button', { name: 'By session', exact: true }).click();
+ await totals.waitFor({ state: 'detached' });
+ await page.getByRole('heading', { name: 'Running agents', exact: true }).waitFor();
+ assert.equal(await page.getByRole('heading', { name: 'Running agents', exact: true }).evaluate(heading => {
+   const { top, bottom } = heading.getBoundingClientRect();
+   return top >= 0 && bottom <= innerHeight;
+ }), true, 'By session brings Running agents into view');
+ const reads = await app.evaluate(() => globalThis.resourceMetricReads());
+ assert.ok(reads >= 2, 'CPU uses multiple samples');
+ await sleep(2200);
+ assert.equal(await app.evaluate(() => globalThis.resourceMetricReads()), reads, 'Closing the menu stops sampling');
+ await page.keyboard.press('Escape');
+ check('local account menu shows measured CPU and memory and opens Running agents');
+}
 async function openWorkspace(){
  const snapshot=await request('runtime.snapshot'),project=snapshot.projects[0]??await request('project.add',{path:work,name:'Sidebar footer QA',operationId:randomUUID()});
  const session=await request('session.create',{projectId:project.id,cwd:work,provider:'codex',mode:'chat',title:'Sidebar footer workspace QA',operationId:randomUUID()});
@@ -187,8 +213,10 @@ try{
  app=await electron.launch({args:['--disable-features=CalculateNativeWinOcclusion',appDir],cwd:root,env:env(),timeout:60000});
  page=await app.firstWindow({timeout:45000});page.setDefaultTimeout(20000);page.on('pageerror',error=>report.errors.push(error.message));
  await page.waitForFunction(()=>Boolean(window.threadterm?.request));await page.locator('#boot-splash').waitFor({state:'detached'});
- await until(async()=>(await request('provider.list')).some(provider=>provider.id==='codex'&&provider.chat),'fake Codex discovery');
  await settings('en','light');
+ await localResourceTotals();
+ if (process.env.THREADTERM_QA_RESOURCE_TOTALS_ONLY !== '1') {
+ await until(async()=>(await request('provider.list')).some(provider=>provider.id==='codex'&&provider.chat),'fake Codex discovery');
 
  await matrix();
  await settings('en','light');await standaloneRoutes();
@@ -222,6 +250,7 @@ try{
  holdSnapshot=false;const delayed=held;held=[];for(const respond of delayed)respond();await page.locator('#boot-splash').waitFor({state:'detached'});await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(1280,900));
  await page.locator('#boot-splash').waitFor({state:'detached'});await shot('boot-delayed-no-runtime-chip.png');
  check('boot splash: delayed initial snapshot stays free of a runtime badge or header chip');
+ }
  report.passed=report.errors.length===0;
 }catch(error){report.errors.push(error.stack??String(error));if(page)await shot('failure.png').catch(()=>{});process.exitCode=1}
 finally{
