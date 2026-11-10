@@ -197,6 +197,43 @@ fn v2_catalogues_decode_the_decoded_native_payloads() {
 }
 
 #[test]
+fn v2_partial_agent_catalogue_preserves_the_selected_agent() {
+    let rows = crate::providers::conformance::fixture("opencode-v2-partial-agent-catalogue.jsonl");
+    let [partial, complete] = rows.as_slice() else {
+        panic!("expected a cold and a complete catalogue response");
+    };
+    assert_eq!(partial["status"], 200);
+    assert_eq!(complete["status"], 200);
+    let providers = fixture("catalogue_provider")["data"].clone();
+    let models = crate::providers::conformance::fixture("opencode-v2-native-persistence.jsonl")
+        .into_iter()
+        .find(|row| row["case"] == "models")
+        .expect("captured v2 model catalogue")["value"]["data"]
+        .clone();
+    let commands = fixture("catalogue_command")["data"].clone();
+    let complete_agents = complete["value"]["data"].clone();
+    let mut ui = OpenCodeOptions::from_catalogues_v2(
+        Ok(providers.clone()), Ok(models.clone()), Ok(complete_agents.clone()),
+    );
+    ui.select("agent", "qa-plugin").unwrap();
+
+    for agents in [partial["value"]["data"].clone(), complete_agents] {
+        ui.refresh_catalogues_v2(
+            Ok(providers.clone()), Ok(models.clone()), Ok(agents), Ok(commands.clone()),
+        );
+        assert_eq!(ui.agent, "qa-plugin", "the next turn must retain the explicit agent");
+        let wire = ui.wire();
+        let agent = wire["options"].as_array().unwrap().iter()
+            .find(|option| option["id"] == "agent").unwrap();
+        assert_eq!(agent["value"], "qa-plugin");
+        assert_eq!(agent["choices"].as_array().unwrap().iter()
+            .filter(|choice| choice["value"] == "qa-plugin").count(), 1);
+        assert!(!ui.models.is_empty());
+        assert!(ui.commands.iter().any(|command| command["name"] == "review"));
+    }
+}
+
+#[test]
 fn v2_catalogues_decode_the_captured_provider_model_agent_and_command_shapes() {
     let providers = fixture("catalogue_provider");
     let agents = fixture("catalogue_agent");

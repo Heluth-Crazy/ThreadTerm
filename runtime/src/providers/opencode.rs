@@ -1030,8 +1030,14 @@ impl OpenCodeOptions {
                 refreshed.variant = self.variant.clone();
             }
         }
-        if !self.agent.is_empty() && refreshed.agents.iter().any(|agent| agent["value"].as_str() == Some(self.agent.as_str())) {
-            refreshed.agent = self.agent.clone();
+        if !self.agent.is_empty() {
+            // A successful v2 catalogue can be incomplete during plugin activation.
+            // Keep the selected choice visible; the native turn still verifies it.
+            let is_selected = |agent: &Value| agent["value"].as_str() == Some(self.agent.as_str());
+            if !refreshed.agents.iter().any(is_selected) {
+                refreshed.agents.extend(self.agents.iter().find(|agent| is_selected(agent)).cloned());
+            }
+            refreshed.agent.clone_from(&self.agent);
         }
         *self = refreshed;
     }
