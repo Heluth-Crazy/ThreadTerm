@@ -21,6 +21,8 @@ const row = (id,parts,extra={}) => ({id,role:'assistant',turnId:'t1',createdAt:'
 const items = [row('u',[text('Test message')],{role:'user'}),
   row('a',[text('I will inspect the project instructions before continuing.')]),
   row('tool',[{type:'tool',toolName:'commandExecution',status:'completed',data:{command:'Get-Content AGENTS.md',output:'Project instructions'}}]),
+  row('guardian-review',[{type:'status',status:'complete',data:{kind:'guardianReview',outcome:'denied',
+    action:'command',detail:'echo hello',rationale:'Outside requested scope',riskLevel:'high'}}]),
   row('answer',[text('The test message completed successfully.')]),
   row('done',[],{elapsedMs:22000})];
 const listeners = new Set();
@@ -59,6 +61,10 @@ try {
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
     for (const width of [1280, 1440, 1920]) {
       await app.evaluate(({BrowserWindow}, width) => BrowserWindow.getAllWindows()[0].setContentSize(width, 900), width);
+      const review = page.getByTestId('codex-automatic-review');
+      await review.waitFor({state:'visible'});
+      assert.match(await review.innerText(), /Codex 自动审查[\s\S]*已拒绝[\s\S]*echo hello[\s\S]*风险等级[\s\S]*高[\s\S]*Outside requested scope/);
+      assert.equal(await review.getByRole('button').count(), 0);
       await page.screenshot({path:join(out,`${theme}-${width}-collapsed.png`)});
       await page.locator('.codex-work > summary').focus();
       await page.keyboard.press('Enter');

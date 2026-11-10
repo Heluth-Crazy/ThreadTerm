@@ -1,4 +1,4 @@
-import type { ChatItem } from '@threadterm/protocol';
+import type { ChatItem, ChatPart } from '@threadterm/protocol';
 
 export interface CodexTurn {
   id: string;
@@ -11,15 +11,25 @@ export interface CodexTurn {
   turnStatus?: ChatItem['turnStatus'];
 }
 
+export function isGuardianReview(part: ChatPart): boolean {
+  const data = part.data;
+  return part.type === 'status' && typeof data === 'object' && data !== null
+    && 'kind' in data && data.kind === 'guardianReview';
+}
+
+function isTurnBoundary(item: ChatItem): boolean {
+  return item.role === 'user' || item.role === 'system'
+    || item.parts.some(part => part.type === 'status' && !isGuardianReview(part));
+}
+
 // Native Codex items are separate records. A duration can arrive on an empty
 // completion record, so assemble the turn before choosing its disclosure body.
 export function groupCodexTranscript(items: ChatItem[], collapseCommentary = true): CodexTurn[] {
   const groups: CodexTurn[] = [];
   for (const item of items) {
     const previous = groups.at(-1);
-    const standalone = item.role === 'user' || item.role === 'system' || item.parts.some(part => part.type === 'status');
-    if (!standalone && item.turnId && previous?.items[0]?.turnId === item.turnId
-      && previous.items[0]!.role !== 'user' && previous.items[0]!.role !== 'system' && !previous.items[0]!.parts.some(part => part.type === 'status')) {
+    if (!isTurnBoundary(item) && item.turnId && previous?.items[0]?.turnId === item.turnId
+      && !isTurnBoundary(previous.items[0])) {
       previous.items.push(item);
     } else {
       groups.push({ id: item.id, items: [item], activity: [], response: [], completed: false, settled: false });
