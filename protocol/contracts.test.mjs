@@ -28,6 +28,13 @@ test('fork requires a lease and stable operation identity and carries additive n
  assert.throws(()=>validateResult('chat.fork',{session,mode:'other'}));
  validateResult('chat.read',[{id:'reply',role:'assistant',parts:[{type:'text',text:'Done',status:'complete'}],createdAt:'now',forkAnchor:{nativeId:'native',turnId:'turn',messageId:'msg'}}]);
 });
+test('chat.read takes an optional bounded item limit',()=>{
+ validateRequest('chat.read',{sessionId:'session'});
+ validateRequest('chat.read',{sessionId:'session',limit:5});
+ validateRequest('chat.read',{sessionId:'session',limit:1});
+ validateRequest('chat.read',{sessionId:'session',limit:2000});
+ for(const limit of [0,2001,1.5,'5',-1,null,NaN]) assert.throws(()=>validateRequest('chat.read',{sessionId:'session',limit}),Error,`limit ${String(limit)}`);
+});
 test('Session.terminalAgent is an optional additive provider id on shell/custom terminals',()=>{
  const base={id:'s',title:'PowerShell',provider:'shell',mode:'terminal',status:'running',createdAt:'now',updatedAt:'now'};
  // Older runtimes omit the field; newer ones may set a detected agent id.

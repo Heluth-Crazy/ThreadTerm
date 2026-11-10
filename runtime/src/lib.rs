@@ -10,6 +10,8 @@ macro_rules! eprintln {
     ($($arg:tt)*) => { $crate::runtime_log::emit(format_args!($($arg)*)) };
 }
 pub mod runtime_log;
+#[cfg(test)]
+mod bounded_read_tests;
 
 #[cfg(windows)]
 pub mod bootstrap;

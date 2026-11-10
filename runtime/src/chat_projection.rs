@@ -1076,25 +1076,30 @@ pub(crate) fn pending_approval_route(
     tx: &rusqlite::Transaction<'_>,
     session_id: &str,
 ) -> Result<Option<&'static str>> {
-    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=?")?;
-    let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
+    // Only pending approval parts, in transcript order: the whole transcript is
+    // never deserialized just to learn who waits for them.
+    let routes: Vec<Option<String>> = {
+        let mut statement = tx.prepare(
+            "SELECT json_extract(part.value,'$.data.delegation.route') \
+             FROM chat_items item, json_each(item.data,'$.parts') part \
+             WHERE item.session_id=? \
+               AND json_extract(part.value,'$.type')='approval' \
+               AND json_extract(part.value,'$.status') IN ('pending','submitting') \
+             ORDER BY item.rowid, part.key",
+        )?;
+        let rows = statement.query_map([session_id], |row| row.get::<_, Option<String>>(0))?;
+        let mut routes = Vec::new();
+        for row in rows {
+            routes.push(row?);
+        }
+        routes
+    };
     let mut route = None;
-    for row in rows {
-        let item: ChatItem = serde_json::from_str(&row?)?;
-        for part in &item.parts {
-            if part.get("type").and_then(Value::as_str) != Some("approval")
-                || !matches!(
-                    part.get("status").and_then(Value::as_str),
-                    Some("pending" | "submitting")
-                )
-            {
-                continue;
-            }
-            if part.pointer("/data/delegation/route").and_then(Value::as_str) == Some("parent") {
-                route.get_or_insert("parent");
-            } else {
-                return Ok(Some("user"));
-            }
+    for route_value in routes {
+        if route_value.as_deref() == Some("parent") {
+            route.get_or_insert("parent");
+        } else {
+            return Ok(Some("user"));
         }
     }
     Ok(route)

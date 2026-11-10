@@ -1322,6 +1322,12 @@
       "properties": {
         "sessionId": {
           "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Newest `limit` items (1..2000, integer), in chronological order. A remote peer that omits it gets a bounded tail.",
+          "minimum": 1,
+          "maximum": 2000
         }
       },
       "required": [

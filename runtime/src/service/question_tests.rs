@@ -138,6 +138,27 @@ impl Fixture {
         crate::chat_projection::record(&self.db, session_id, Some(turn_id), "chat.approval", &json!({"approvalId":approval_id,"part":{"type":"approval","approvalId":approval_id,"data":data}})).unwrap();
     }
 
+    /// Decision Y: a non-approval part reusing the approval's id, stored ahead of the
+    /// real card, must not hide it from approve or answer.
+    fn decoy_part(&self, session_id: &str, approval_id: &str) {
+        let data = json!({
+            "id": format!("{session_id}:decoy:{approval_id}"),
+            "role": "assistant",
+            "turnId": "turn-0",
+            "parts": [{"type":"tool","approvalId":approval_id,"data":{"tool":"run"}}],
+            "createdAt": "2000-01-01T00:00:00Z"
+        });
+        self.db
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,'message',?,?)",
+                    rusqlite::params![data["id"].as_str().unwrap(), session_id, "turn-0", data.to_string(), "2000-01-01T00:00:00Z"],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
     fn answer(&self, session_id: &str, lease: i64, turn_id: &str, approval_id: &str, response: Value, operation_id: &str) -> std::result::Result<Value, RpcError> {
         self.service.dispatch("desktop", RpcRequest { v: 1, id: operation_id.into(), method: "chat.answer".into(), params: json!({"sessionId":session_id,"turnId":turn_id,"approvalId":approval_id,"leaseEpoch":lease,"operationId":operation_id,"response":response}) })
     }
@@ -293,4 +314,58 @@ fn submitted_local_resolution_after_expiry_keeps_the_turn_idle_and_masks_the_rec
     let current = fixture.db.session_by_id(&session).unwrap().unwrap();
     assert_eq!(current.status, "idle");
     assert_eq!(current.activity.unwrap().state, "idle");
+}
+
+/// Item 8: `chat.answer` reads only the card it answers, never the transcript
+/// (the fixture chat writes nothing, so any whole-transcript read is the runtime's).
+#[test]
+fn answering_a_question_does_not_load_the_whole_transcript() {
+    let fixture = Fixture::new(false);
+    let (session, lease) = fixture.create();
+    fixture.decoy_part(&session, "question");
+    fixture.question(&session, "turn", "question", questions(false));
+    crate::db::reset_whole_transcript_reads();
+    // The fixture adapter refuses the answer itself; the runtime's card lookup
+    // has already run by then, which is what this test counts.
+    let failure = fixture
+        .answer(&session, lease, "turn", "question", json!({"action":"submit","values":{"color":["Blue"]}}), "answer-bounded")
+        .unwrap_err();
+    assert_eq!(failure.code, "answer_unsupported");
+    assert_eq!(
+        crate::db::whole_transcript_read_count(),
+        0,
+        "chat.answer loaded a whole transcript"
+    );
+}
+
+/// Item 8: `chat.approve` reads only the card it approves.
+#[test]
+fn approving_a_request_does_not_load_the_whole_transcript() {
+    let fixture = Fixture::new(false);
+    let (session, lease) = fixture.create();
+    fixture.decoy_part(&session, "permission");
+    fixture.question(
+        &session,
+        "turn",
+        "permission",
+        json!({"interaction":"permission","choices":[{"choiceId":"allow","title":"Allow"}]}),
+    );
+    crate::db::reset_whole_transcript_reads();
+    fixture
+        .service
+        .dispatch("desktop", RpcRequest {
+            v: 1,
+            id: "approve-bounded".into(),
+            method: "chat.approve".into(),
+            params: json!({
+                "sessionId":session,"turnId":"turn","approvalId":"permission",
+                "choiceId":"allow","leaseEpoch":lease,"operationId":"approve-bounded"
+            }),
+        })
+        .unwrap();
+    assert_eq!(
+        crate::db::whole_transcript_read_count(),
+        0,
+        "chat.approve loaded a whole transcript"
+    );
 }

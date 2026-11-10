@@ -569,14 +569,15 @@ pub(crate) fn approve_chat_request(
     let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
     db.require_interactive(session_id)?;
     // Runtime eval approvals are never forwarded to providers or delegation.
-    if db.chat_items(session_id)?.iter().any(|item| item.parts.iter().any(|part| {
-        part["type"] == "approval" && part["approvalId"] == approval_id
+    if let Some((_, part)) = db.chat_approval_part(session_id, approval_id)? {
+        if part["type"] == "approval"
             && part.pointer("/data/runtimeOwned").and_then(Value::as_bool) == Some(true)
             && part.pointer("/data/requestType").and_then(Value::as_str) == Some("threadterm.browser_eval")
-    })) {
-        return Err(crate::providers::ProviderError::new(
-            "browser_approval_required", "Use the browser approval controls for this request"
-        ).into());
+        {
+            return Err(crate::providers::ProviderError::new(
+                "browser_approval_required", "Use the browser approval controls for this request"
+            ).into());
+        }
     }
     if let Some(result) = db.operation(operation_id)? {
         return Ok(result);
@@ -605,22 +606,24 @@ fn question_request_data(
     approval_id: &str,
     require_pending: bool,
 ) -> Result<Option<Value>> {
-    for item in db.chat_items(session_id)? {
-        for part in item.parts {
-            if part["type"] != "approval" || part["approvalId"].as_str() != Some(approval_id) { continue; }
-            if !matches!(part.pointer("/data/interaction").and_then(Value::as_str), Some("question" | "plan")) {
-                if require_pending { return Err(crate::providers::ProviderError::new("answer_invalid", "This part is not a question").into()); }
-                return Ok(None);
-            }
-            if require_pending && (item.turn_id.as_deref() != Some(turn_id) || part["status"] != "pending") {
-                return Err(crate::providers::ProviderError::new("approval_expired", "This question is no longer pending for this turn").into());
-            }
-            return Ok(Some(part["data"].clone()));
+    let Some((item_turn, part)) = db.chat_approval_part(session_id, approval_id)? else {
+        if require_pending {
+            return Err(crate::providers::ProviderError::new("approval_expired", "This question is no longer pending").into());
         }
+        return Ok(None);
+    };
+    if part["type"] != "approval" {
+        if require_pending { return Err(crate::providers::ProviderError::new("answer_invalid", "This part is not a question").into()); }
+        return Ok(None);
     }
-    if require_pending {
-        Err(crate::providers::ProviderError::new("approval_expired", "This question is no longer pending").into())
-    } else { Ok(None) }
+    if !matches!(part.pointer("/data/interaction").and_then(Value::as_str), Some("question" | "plan")) {
+        if require_pending { return Err(crate::providers::ProviderError::new("answer_invalid", "This part is not a question").into()); }
+        return Ok(None);
+    }
+    if require_pending && (item_turn.as_deref() != Some(turn_id) || part["status"] != "pending") {
+        return Err(crate::providers::ProviderError::new("approval_expired", "This question is no longer pending for this turn").into());
+    }
+    Ok(Some(part["data"].clone()))
 }
 
 struct AnswerChatRequest<'a> {
@@ -2252,8 +2255,18 @@ impl RuntimeService {
                     }
                 }
                 "chat.read" => {
-                    let p: ChatRead = parse(&request.params)?;
-                    Ok(serde_json::to_value(self.db.chat_items(&p.session_id)?)?)
+                    let p: ChatReadTranscript = parse(&request.params)?;
+                    let limit = p.limit.map(|limit| limit.clamp(1, CHAT_READ_MAX_ITEMS));
+                    let limit = match (limit, principal.starts_with("peer:")) {
+                        (Some(limit), _) => Some(limit),
+                        (None, true) => Some(CHAT_READ_REMOTE_ITEMS),
+                        (None, false) => None,
+                    };
+                    let items = match limit {
+                        Some(limit) => self.db.chat_items_tail(&p.session_id, limit)?,
+                        None => self.db.chat_items(&p.session_id)?,
+                    };
+                    Ok(serde_json::to_value(items)?)
                 }
                 "chat.subagent.read" => {
                     let p: ChatSubagentRead = parse(&request.params)?;
@@ -2639,10 +2652,8 @@ impl RuntimeService {
     fn resolve_widening_card(&self, session_id: &str, approval_id: &str, allow: bool) -> Result<()> {
         let turn = self
             .db
-            .chat_items(session_id)?
-            .into_iter()
-            .find(|item| item.parts.iter().any(|part| part["approvalId"] == approval_id))
-            .and_then(|item| item.turn_id);
+            .chat_approval_part(session_id, approval_id)?
+            .and_then(|(turn, _)| turn);
         crate::chat_projection::record(
             &self.db,
             session_id,
@@ -2713,11 +2724,12 @@ impl RuntimeService {
         let send_operation_id = format!("{}:send", p.operation_id);
         // The user's own words from the parent chat, copied by the runtime so
         // the delegating agent cannot paraphrase them (task 10-02-delegation-handoff).
-        let (words, left_out) = crate::delegation::user_words(
-            &self.db.chat_items(&parent.id)?,
+        let (words, left_out) = crate::delegation::user_words_from_chat(
+            &self.db,
+            &parent.id,
             p.user_messages
                 .unwrap_or(crate::delegation::DEFAULT_USER_MESSAGES),
-        );
+        )?;
         let first_message = crate::delegation::first_message(&words, left_out, &p.prompt);
         crate::delegation::insert(
             &self.db,
@@ -4513,6 +4525,18 @@ struct ChatConnect {
 struct ChatRead {
     session_id: String,
 }
+/// `chat.read`: the newest `limit` items in chronological order. A remote peer
+/// without a limit gets a bounded tail instead of the whole transcript.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatReadTranscript {
+    session_id: String,
+    limit: Option<u32>,
+}
+/// `chat.read` bounds: a caller may ask for at most this many items, and a
+/// remote peer that asks for none gets a bounded tail instead of everything.
+const CHAT_READ_MAX_ITEMS: u32 = 2000;
+const CHAT_READ_REMOTE_ITEMS: u32 = 500;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChatSnapshotRead {
@@ -6672,6 +6696,7 @@ mod tests {
             }).unwrap();
             db.set_session_status(&session.id, "running", None).unwrap();
             db.append_output(&session.id, 0, b"durable-prefix").unwrap();
+            crate::output::refuse_output_writes(&db);
             db.refuse_terminal_marker.store(refuse_marker, std::sync::atomic::Ordering::Relaxed);
             let service = test_service(root.path(), Arc::clone(&db));
             // No retry worker owns the DB during the simulated hard kill.
@@ -6700,7 +6725,7 @@ mod tests {
         assert_eq!(base64::engine::general_purpose::STANDARD.decode(read["data"].as_str().unwrap()).unwrap(), b"durable-prefix");
         assert_eq!(status, "interrupted");
         assert_eq!(read["storageDegraded"]["reason"], crate::db::TERMINAL_OUTPUT_LOST);
-        assert_eq!(read["storageDegraded"]["cursor"], 0);
+        assert_eq!(read["storageDegraded"]["cursor"], 14, "the pending tail starts at the durable end");
         if refuse_marker { assert_eq!(read["storageDegraded"]["pendingBytes"], 19); }
     }
 
@@ -6719,7 +6744,7 @@ mod tests {
             project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None,
             operation_id: "shutdown-blocked-sqlite",
         }).unwrap();
-        db.append_output(&session.id, 0, b"occupied").unwrap();
+        crate::output::refuse_output_writes(&db);
         let service = test_service(root.path(), Arc::clone(&db));
         let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -6763,7 +6788,7 @@ mod tests {
             project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None,
             operation_id: "shutdown-pending-output",
         }).unwrap();
-        db.append_output(&session.id, 0, b"occupied").unwrap();
+        crate::output::refuse_output_writes(&db);
         let service = test_service(root.path(), Arc::clone(&db));
         assert!(service.output.append_shared(&db, &session.id, b"pending").is_err());
         let started = std::time::Instant::now();

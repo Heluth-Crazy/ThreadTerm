@@ -358,13 +358,13 @@ pub(crate) fn project_child_event(tx: &Transaction<'_>, link: &ChildLink, turn: 
                 Some("failed" | "error") => "failed",
                 _ => "completed",
             };
-            let answer = final_answer(tx, &child_of(tx, &link.id)?)?;
+            let answer = final_answer(tx, &child_of(tx, &link.id)?, link.turn_id.as_deref())?;
             let error = (state == "failed").then(|| data.get("message").and_then(Value::as_str).unwrap_or("The delegated turn failed"));
             set_state(tx, &link.id, state, Some(&answer), error)
         }
         "chat.error" if started => {
             let message = data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed");
-            let answer = final_answer(tx, &child_of(tx, &link.id)?)?;
+            let answer = final_answer(tx, &child_of(tx, &link.id)?, link.turn_id.as_deref())?;
             let state = if stopping { "cancelled" } else { "failed" };
             set_state(tx, &link.id, state, Some(&answer), Some(message))
         }
@@ -389,14 +389,21 @@ fn child_of(tx: &Transaction<'_>, delegation_id: &str) -> Result<String> {
 }
 
 /// The delegate's answer: its assistant text, in transcript order.
-fn final_answer(tx: &Transaction<'_>, child_session_id: &str) -> Result<String> {
-    final_answer_for_turn(tx, child_session_id, None)
+fn final_answer(tx: &Transaction<'_>, child_session_id: &str, turn: Option<&str>) -> Result<String> {
+    Ok(truncate_answer(final_answer_for_turn(tx, child_session_id, turn)?))
 }
 
+/// The delegate's answer text for one turn (or, unbound, its whole chat). Only
+/// assistant rows are read, and collection stops once the result can no longer
+/// fit, so a long child transcript never has to be joined in full.
 pub(crate) fn final_answer_for_turn(tx: &Transaction<'_>, child_session_id: &str, turn_id: Option<&str>) -> Result<String> {
-    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=? AND (? IS NULL OR turn_id=?) ORDER BY created_at,rowid")?;
+    let mut statement = tx.prepare(
+        "SELECT data FROM chat_items WHERE session_id=? AND (? IS NULL OR turn_id=?) \
+         AND json_extract(data,'$.role')='assistant' ORDER BY created_at,rowid",
+    )?;
     let rows = statement.query_map(params![child_session_id,turn_id,turn_id], |row| row.get::<_, String>(0))?;
-    let mut texts = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
+    let mut chars = 0usize;
     for row in rows {
         let Ok(item) = serde_json::from_str::<crate::domain::ChatItem>(&row?) else { continue };
         if item.role != "assistant" {
@@ -405,13 +412,17 @@ pub(crate) fn final_answer_for_turn(tx: &Transaction<'_>, child_session_id: &str
         for part in &item.parts {
             if part.get("type").and_then(Value::as_str) == Some("text") {
                 if let Some(text) = part.get("text").and_then(Value::as_str).filter(|text| !text.trim().is_empty()) {
-                    texts.push(text.trim().to_owned());
+                    let text = text.trim();
+                    chars += text.chars().count();
+                    texts.push(text.to_owned());
                 }
             }
         }
+        if chars > MAX_RESULT_CHARS {
+            break;
+        }
     }
-    let answer = texts.join("\n\n");
-    Ok(if turn_id.is_none() { truncate_answer(answer) } else { answer })
+    Ok(texts.join("\n\n"))
 }
 
 /// Keeps a result small enough for the delegating agent's context.
@@ -752,10 +763,9 @@ pub(crate) fn settle_widening(db: &Database, id: &str, approved: bool) -> Result
 /// The approval card part that asks for a widening, if this is one of ours.
 pub(crate) fn widening_part(db: &Database, session_id: &str, approval_id: &str) -> Result<Option<Value>> {
     Ok(db
-        .chat_items(session_id)?
-        .into_iter()
-        .flat_map(|item| item.parts)
-        .find(|part| {
+        .chat_approval_part(session_id, approval_id)?
+        .map(|(_, part)| part)
+        .filter(|part| {
             part.get("type").and_then(Value::as_str) == Some("approval")
                 && part.get("approvalId").and_then(Value::as_str) == Some(approval_id)
                 && part.pointer("/data/requestType").and_then(Value::as_str)
@@ -803,6 +813,36 @@ pub(crate) fn expire_widening(db: &Database) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The user's own words for a delegate, read without loading the parent's
+/// transcript: only its newest `count` user items are deserialized.
+pub(crate) fn user_words_from_chat(
+    db: &Database,
+    session_id: &str,
+    count: u32,
+) -> Result<(Vec<String>, usize)> {
+    if count == 0 {
+        return Ok((Vec::new(), 0));
+    }
+    let rows: Vec<String> = db.transaction(|tx| {
+        let mut statement = tx.prepare(
+            "SELECT data FROM chat_items WHERE session_id=? AND json_extract(data,'$.role')='user' \
+             ORDER BY created_at DESC, id DESC LIMIT ?",
+        )?;
+        let rows = statement.query_map(params![session_id, count], |row| row.get::<_, String>(0))?;
+        let mut rows_out = Vec::new();
+        for row in rows {
+            rows_out.push(row?);
+        }
+        Ok(rows_out)
+    })?;
+    let mut items: Vec<crate::domain::ChatItem> = rows
+        .iter()
+        .filter_map(|row| serde_json::from_str(row).ok())
+        .collect();
+    items.reverse();
+    Ok(user_words(&items, count))
 }
 
 /// The user's own words for a delegate: the latest `count` user messages of the
@@ -1197,31 +1237,40 @@ fn status(db: &Database, providers: &Providers, parent: &Session, ids: &[String]
 
 /// Requests routed to the parent and still pending, without the choices the
 /// parent may not pick (`persistent`, i.e. "always allow" rules).
-fn pending_requests(db: &Database, child_session_id: &str) -> Result<Vec<Value>> {
-    let items = db.chat_items(child_session_id)?;
-    let mut requests = Vec::new();
-    for item in items {
-        for part in &item.parts {
-            if part.get("type").and_then(Value::as_str) != Some("approval")
-                || !matches!(part.get("status").and_then(Value::as_str), Some("pending"))
-                || part.pointer("/data/delegation/route").and_then(Value::as_str) != Some("parent")
-            {
-                continue;
-            }
-            let data = part.get("data").cloned().unwrap_or(Value::Null);
-            let choices = data
-                .get("choices")
-                .and_then(Value::as_array)
-                .map(|choices| choices.iter().filter(|choice| choice.get("scope").and_then(Value::as_str) != Some("persistent")).cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
-            requests.push(json!({
-                "requestId": part.get("approvalId").cloned().unwrap_or(Value::Null),
-                "interaction": data.get("interaction").cloned().unwrap_or(json!("permission")),
-                "title": data.get("title").cloned().unwrap_or(Value::Null),
-                "details": data.get("details").cloned().unwrap_or(Value::Null),
-                "choices": choices,
-            }));
+pub(crate) fn pending_requests(db: &Database, child_session_id: &str) -> Result<Vec<Value>> {
+    // One indexed scan over the parts of this child's items, never the transcript.
+    let parts: Vec<String> = db.transaction(|tx| {
+        let mut statement = tx.prepare(
+            "SELECT part.value FROM chat_items item, json_each(item.data,'$.parts') part \
+             WHERE item.session_id=? \
+               AND json_extract(part.value,'$.type')='approval' \
+               AND json_extract(part.value,'$.status')='pending' \
+               AND json_extract(part.value,'$.data.delegation.route')='parent' \
+             ORDER BY item.rowid, part.key",
+        )?;
+        let rows = statement.query_map([child_session_id], |row| row.get::<_, String>(0))?;
+        let mut parts = Vec::new();
+        for row in rows {
+            parts.push(row?);
         }
+        Ok(parts)
+    })?;
+    let mut requests = Vec::new();
+    for part in parts {
+        let Ok(part) = serde_json::from_str::<Value>(&part) else { continue };
+        let data = part.get("data").cloned().unwrap_or(Value::Null);
+        let choices = data
+            .get("choices")
+            .and_then(Value::as_array)
+            .map(|choices| choices.iter().filter(|choice| choice.get("scope").and_then(Value::as_str) != Some("persistent")).cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        requests.push(json!({
+            "requestId": part.get("approvalId").cloned().unwrap_or(Value::Null),
+            "interaction": data.get("interaction").cloned().unwrap_or(json!("permission")),
+            "title": data.get("title").cloned().unwrap_or(Value::Null),
+            "details": data.get("details").cloned().unwrap_or(Value::Null),
+            "choices": choices,
+        }));
     }
     Ok(requests)
 }
@@ -1232,13 +1281,9 @@ fn respond(db: &Database, providers: &Providers, parent: &Session, request: &Res
         return Err(anyhow!("delegation_not_awaiting_parent"));
     }
     let part = db
-        .chat_items(&row.child)?
-        .into_iter()
-        .flat_map(|item| item.parts)
-        .find(|part| {
-            part.get("type").and_then(Value::as_str) == Some("approval")
-                && part.get("approvalId").and_then(Value::as_str) == Some(request.request_id.as_str())
-        })
+        .chat_approval_part(&row.child, request.request_id.as_str())?
+        .map(|(_, part)| part)
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("approval"))
         .ok_or_else(|| anyhow!("request_not_found"))?;
     if part.get("status").and_then(Value::as_str) != Some("pending")
         || part.pointer("/data/delegation/route").and_then(Value::as_str) != Some("parent")

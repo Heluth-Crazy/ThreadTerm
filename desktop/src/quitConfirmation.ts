@@ -22,14 +22,20 @@ export function quitConfirmationOptions(zh: boolean, icon: NativeImage): Message
 }
 
 export type HostingQuitChoice = 'keep' | 'stop' | 'cancel';
-export interface HostingQuitContext { connectedNames: string[] }
+export interface HostingQuitContext {
+  connectedNames: string[];
+  /** False when the device list could not be read, so "nobody connected" is unknown, not known-empty. */
+  known: boolean;
+}
 
 /** Unknown device data on a running host is conservative; stale lastSeenAt is never live presence. */
 export function hostingQuitContext(runtimeRunning: boolean, enabled: boolean, devices?: PairedDevice[]): HostingQuitContext | undefined {
   if (!runtimeRunning || !enabled) return undefined;
-  if (!devices) return { connectedNames: [] };
+  if (!devices) return { connectedNames: [], known: false };
   const desktops = devices.filter(device => device.profile === 'desktop' && !device.revokedAt);
-  return desktops.length ? { connectedNames: desktops.filter(device => device.connected).map(device => device.name) } : undefined;
+  return desktops.length
+    ? { connectedNames: desktops.filter(device => device.connected).map(device => device.name), known: true }
+    : undefined;
 }
 
 export function hostingQuitChoice(response: number): HostingQuitChoice {
@@ -44,6 +50,21 @@ export function hostingQuitQaChoice(isPackaged: boolean, env: Record<string, str
 }
 
 export function hostingQuitOptions(zh: boolean, icon: NativeImage, context: HostingQuitContext): MessageBoxOptions {
+  const buttons = zh ? ['退出，保持运行', '全部停止', '取消'] : ['Quit, keep running', 'Stop everything', 'Cancel'];
+  // A known-empty device list is the only case that knows nobody is connected, so
+  // it is the only case that defaults to stopping the sessions.
+  if (context.known && context.connectedNames.length === 0) {
+    return {
+      type: 'warning', noLink: true, icon,
+      title: zh ? '退出 ThreadTerm？' : 'Exit ThreadTerm?',
+      message: zh ? '没有其他电脑在使用本机' : 'No other computer is using this PC',
+      detail: zh
+        ? '“退出，保持运行”会让智能体及其工具继续在后台运行并占用内存，直到再次打开 ThreadTerm。'
+        : '"Quit, keep running" leaves the agents and their tools running in the background, using memory, until ThreadTerm is opened again.',
+      buttons,
+      defaultId: 1, cancelId: 2,
+    };
+  }
   const names = context.connectedNames.join(zh ? '、' : ', ');
   const who = names || (zh ? '其他电脑' : 'other computers');
   const several = context.connectedNames.length !== 1;
@@ -52,7 +73,7 @@ export function hostingQuitOptions(zh: boolean, icon: NativeImage, context: Host
     title: zh ? '退出 ThreadTerm？' : 'Exit ThreadTerm?',
     message: names ? (zh ? `${names} 正在使用本机` : `${names} ${several ? 'are' : 'is'} using this PC`) : (zh ? '其他电脑可以使用本机' : 'Other computers can use this PC'),
     detail: zh ? `退出时可以让会话继续运行，${who}就能继续工作。之后可以在这里或在 ${who} 上停止它们。` : `Quitting can leave your sessions running so ${who} ${several ? 'keep' : 'keeps'} working. You can stop them later from here or from ${who}.`,
-    buttons: zh ? ['退出，保持运行', '全部停止', '取消'] : ['Quit, keep running', 'Stop everything', 'Cancel'],
+    buttons,
     defaultId: 0, cancelId: 2,
   };
 }

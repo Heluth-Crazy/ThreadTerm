@@ -904,7 +904,14 @@ export interface RequestMap {
  'session.resume': [{sessionId:string;cwd?:string;operationId:string;/** Only an explicit user Continue or keystroke may resume a released session. */resume?:boolean},Session];
  'session.rerun': [{sessionId:string;operationId:string},Session];
  'session.present': [{sessionId:string;placement:'workspace'|'window';presentation:'background'|'focused';workspacePath?:string;operationId:string},{queued:boolean}];
- 'chat.read': [{sessionId:string},ChatItem[]];
+ 'chat.read': [{
+  sessionId:string;
+  /** Newest `limit` items (1..2000, integer), in chronological order. A remote peer that omits it gets a bounded tail.
+   * @minimum 1
+   * @maximum 2000
+   */
+  limit?:number;
+ },ChatItem[]];
  'chat.subagent.read': [{sessionId:string;key:string;afterRev?:number},SubagentTranscriptRead];
  'chat.snapshot': [{sessionId:string;/** Continue with the page strictly older than this cursor. */before?:string;/** Requested page byte budget; the runtime clamps it. */maxBytes?:number},{items:ChatItem[];revision:number;repair:ChatRepairAvailability;/** Older items exist behind `nextBefore`. */hasEarlier:boolean;nextBefore?:string}];
  /** One inline image that a byte-budgeted snapshot page replaced with a reference. */
@@ -1374,6 +1381,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(params.limit!==undefined&&Number(params.limit)>1024*1024) throw new Error('Invalid limit');
   if(m==='attachment.upload'&&(Number(params.size)>256*1024*1024||typeof params.chunk!=='string'||params.chunk.length>Math.ceil(1024*1024/3)*4)) throw new Error('Invalid upload');
  }
+ if(m==='chat.read'&&params.limit!==undefined&&(!Number.isSafeInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>2000)) throw new Error('Invalid limit');
  if(m==='device.tailscaleOnly.set'&&typeof params.enabled!=='boolean') throw new Error('Invalid Tailscale-only option');
  if(m==='device.iroh.set'&&(typeof params.enabled!=='boolean'||params.relayUrl!==undefined&&params.relayUrl!==null&&(typeof params.relayUrl!=='string'||params.relayUrl.length>2048))) throw new Error('Invalid cross-network option');
  if(m==='device.peer.dial'&&(typeof params.endpointId!=='string'||!/^[0-9a-f]{64}$/.test(params.endpointId)||params.relayUrl!==undefined&&(typeof params.relayUrl!=='string'||params.relayUrl.length>2048))) throw new Error('Invalid computer key');
@@ -1679,7 +1687,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m.startsWith('group.')&&m!=='group.create'&&m!=='group.list'&&m!=='group.read'&&m!=='group.prerequisites'&&params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid group revision');
  // Relative to the session's worktree root: no drive, no leading separator, no `..` segment.
  if((m==='session.documents.pin'||m==='session.documents.unpin')&&(!pathOk(params.path)||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(String(params.path)))) throw new Error('Invalid path');
- const maxLimit=m==='filesystem.preview.read'||m==='attachment.read'?1024*1024:m==='terminal.read'?(params.tail===true?8192:1024*1024):200;
+ const maxLimit=m==='filesystem.preview.read'||m==='attachment.read'?1024*1024:m==='terminal.read'?(params.tail===true?8192:1024*1024):m==='chat.read'?2000:200;
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {

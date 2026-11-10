@@ -33,18 +33,11 @@ fn flush_pending_recovers_a_quiet_tail_once_without_new_data() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let session_id = session(&db, "flush-pending-quiet-tail");
-    db.append_output(&session_id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     let store = OutputStore::default();
 
     assert!(store.append(&db, &session_id, b"tail").is_err());
-    db.transaction(|tx| {
-        tx.execute(
-            "DELETE FROM output_chunks WHERE session_id=?",
-            [&session_id],
-        )?;
-        Ok(())
-    })
-    .unwrap();
+    accept_output_writes(&db);
 
     assert_eq!(
         store.flush_pending(&db, &session_id).unwrap(),
@@ -82,20 +75,13 @@ fn retry_worker_commits_a_quiet_tail_after_storage_recovers() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let session_id = session(&db, "retry-worker-quiet-tail");
-    db.append_output(&session_id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     let store = Arc::new(OutputStore::default());
 
     assert!(store
         .append_shared(&db, &session_id, b"quiet-tail")
         .is_err());
-    db.transaction(|tx| {
-        tx.execute(
-            "DELETE FROM output_chunks WHERE session_id=?",
-            [&session_id],
-        )?;
-        Ok(())
-    })
-    .unwrap();
+    accept_output_writes(&db);
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && db.output_end(&session_id).unwrap() != 10 {
         thread::sleep(Duration::from_millis(25));
@@ -109,14 +95,9 @@ fn prolonged_refusal_caps_pending_and_leaves_one_durable_gap() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let session_id = session(&db, "pending-cap-gap");
-    db.append_output(&session_id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     let store = Arc::new(OutputStore::default());
     assert!(store.append_shared(&db, &session_id, b"first").is_err());
-    db.transaction(|tx| {
-        tx.execute("DELETE FROM output_chunks WHERE session_id=?", [&session_id])?;
-        tx.execute("CREATE TEMP TRIGGER reject_output BEFORE INSERT ON output_chunks BEGIN SELECT RAISE(ABORT, 'storage refused'); END", [])?;
-        Ok(())
-    }).unwrap();
 
     assert!(store
         .append_shared(&db, &session_id, &vec![b'x'; MAX_PENDING_BYTES + 5])
@@ -139,11 +120,7 @@ fn prolonged_refusal_caps_pending_and_leaves_one_durable_gap() {
     let pending = stream.pending.len();
     drop(stream);
     assert_eq!(pending, MAX_PENDING_BYTES);
-    db.transaction(|tx| {
-        tx.execute("DROP TRIGGER reject_output", [])?;
-        Ok(())
-    })
-    .unwrap();
+    accept_output_writes(&db);
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && db.output_end(&session_id).unwrap() == 0 {
         thread::sleep(Duration::from_millis(25));
@@ -214,14 +191,11 @@ fn a_failed_recovery_marker_clear_retries_without_rewriting_output() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let session_id = session(&db, "retry-marker-clear");
-    db.append_output(&session_id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     let store = OutputStore::default();
     assert!(store.append(&db, &session_id, b"tail").is_err());
+    accept_output_writes(&db);
     db.transaction(|tx| {
-        tx.execute(
-            "DELETE FROM output_chunks WHERE session_id=?",
-            [&session_id],
-        )?;
         tx.execute(
             "CREATE TEMP TRIGGER reject_recovery_event BEFORE INSERT ON outbox \
              WHEN NEW.event = 'terminal.storage' AND json_extract(NEW.data, '$.degraded') = 0 \
@@ -262,7 +236,7 @@ fn drain_pending_returns_by_its_deadline_while_the_database_mutex_is_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let session_id = session(&db, "bounded-output-drain");
-    db.append_output(&session_id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     let store = Arc::new(OutputStore::default());
     assert!(store.append(&db, &session_id, b"tail").is_err());
 
@@ -289,14 +263,7 @@ fn drain_pending_returns_by_its_deadline_while_the_database_mutex_is_blocked() {
     release_tx.send(()).unwrap();
     holder.join().unwrap();
     // Let the one in-flight drain attempt complete before the fixture drops.
-    db.transaction(|tx| {
-        tx.execute(
-            "DELETE FROM output_chunks WHERE session_id=?",
-            [&session_id],
-        )?;
-        Ok(())
-    })
-    .unwrap();
+    accept_output_writes(&db);
     assert!(matches!(
         store.flush_pending(&db, &session_id).unwrap(),
         FlushOutcome::Clean { .. }
@@ -367,7 +334,7 @@ fn retry_worker_makes_a_refused_marker_durable_without_new_output() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let id = session(&db, "retry-refused-marker");
-    db.append_output(&id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     db.refuse_terminal_marker.store(true, Ordering::Relaxed);
     let store = Arc::new(OutputStore::default());
     assert!(store.append_shared(&db, &id, b"quiet-lost-tail").is_err());
@@ -387,7 +354,7 @@ fn recovering_pending_output_removes_the_sidecar() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let id = session(&db, "recover-sidecar");
-    db.append_output(&id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     db.refuse_terminal_marker.store(true, Ordering::Relaxed);
     let store = OutputStore::default();
     assert!(store.append(&db, &id, b"tail").is_err());
@@ -396,10 +363,7 @@ fn recovering_pending_output_removes_the_sidecar() {
     while !sidecar.exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }
     assert!(sidecar.exists());
     db.refuse_terminal_marker.store(false, Ordering::Relaxed);
-    db.transaction(|tx| {
-        tx.execute("DELETE FROM output_chunks WHERE session_id=?", [&id])?;
-        Ok(())
-    }).unwrap();
+    accept_output_writes(&db);
     assert_eq!(store.flush_pending(&db, &id).unwrap(), FlushOutcome::Clean { durable_end: 4 });
     let deadline = Instant::now() + Duration::from_secs(2);
     while sidecar.exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }
@@ -412,7 +376,7 @@ fn shutdown_loss_sidecar_does_not_wait_for_the_database_or_stream_lock() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
     let id = session(&db, "blocked-loss-diagnostic");
-    db.append_output(&id, 0, b"occupied").unwrap();
+    refuse_output_writes(&db);
     let store = Arc::new(OutputStore::default());
     assert!(store.append(&db, &id, b"tail").is_err());
     let stream = store.stream(&id);

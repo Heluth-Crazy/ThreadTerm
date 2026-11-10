@@ -223,6 +223,9 @@ impl PtyManager {
                 }
                 // The final drain can race the process-exit status write.
                 reader_db.schedule_retention();
+                // Nothing reads this session's in-memory entry any more; the
+                // retry worker keeps it only while bytes are still pending.
+                output.forget(&id);
             })?;
         let live = Arc::new(LivePty {
             master: Mutex::new(pair.master),
@@ -789,8 +792,16 @@ mod tests {
         let session = db
             .create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "pty-storage-degraded" })
             .unwrap();
-        // Cursor 0 is occupied, so the reader's first durable append is refused.
-        db.append_output(&session.id, 0, b"occupied").unwrap();
+        // A TEMP trigger refuses every durable append (a full disk or a locked
+        // database, not a taken cursor: an entry now seeds itself).
+        db.transaction(|tx| {
+            tx.execute(
+                "CREATE TEMP TRIGGER reject_output BEFORE INSERT ON output_chunks BEGIN SELECT RAISE(ABORT, 'storage refused'); END",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
         let output = Arc::new(OutputStore::default());
         let manager = PtyManager::new(Arc::clone(&output));
         #[cfg(windows)]
@@ -815,7 +826,7 @@ mod tests {
         assert!(manager.live(&session.id).is_ok());
         // Storage recovers, then the live process writes again.
         db.transaction(|tx| {
-            tx.execute("DELETE FROM output_chunks WHERE session_id=?", [&session.id])?;
+            tx.execute("DROP TRIGGER reject_output", [])?;
             Ok(())
         })
         .unwrap();
@@ -843,8 +854,15 @@ mod tests {
         let session = db
             .create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "pty-exit-tail" })
             .unwrap();
-        // Occupy the reader's first cursor so the final output becomes pending.
-        db.append_output(&session.id, 0, b"occupied").unwrap();
+        // Refuse the reader's appends so the final output becomes pending.
+        db.transaction(|tx| {
+            tx.execute(
+                "CREATE TEMP TRIGGER reject_output BEFORE INSERT ON output_chunks BEGIN SELECT RAISE(ABORT, 'storage refused'); END",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
         let output = Arc::new(OutputStore::default());
         let manager = PtyManager::new(Arc::clone(&output));
         #[cfg(windows)]
@@ -870,7 +888,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         db.transaction(|tx| {
-            tx.execute("DELETE FROM output_chunks WHERE session_id=?", [&session.id])?;
+            tx.execute("DROP TRIGGER reject_output", [])?;
             Ok(())
         })
         .unwrap();
@@ -883,6 +901,79 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(db.terminal_storage_degraded(&session.id).unwrap().is_none());
+    }
+
+    /// Item 7: a closed terminal leaves nothing behind in the runtime's output
+    /// store, so its memory does not grow with the number of exited sessions.
+    #[test]
+    fn exited_terminals_leave_no_output_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let output = Arc::new(OutputStore::default());
+        let manager = PtyManager::new(Arc::clone(&output));
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe",
+            vec![
+                "/Q".to_owned(),
+                "/C".to_owned(),
+                format!(
+                    "for /L %i in (1,1,3000) do @echo {}",
+                    "x".repeat(200)
+                ),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "/bin/sh",
+            vec![
+                "-c".to_owned(),
+                format!(
+                    "i=0; while [ $i -lt 3000 ]; do printf '%0200d\\n' $i; i=$((i+1)); done"
+                ),
+            ],
+        );
+        let mut ids = Vec::new();
+        for index in 0..3 {
+            let session = db
+                .create_session(CreateSession {
+                    project_id: None,
+                    title: None,
+                    provider: "shell",
+                    mode: "terminal",
+                    native_id: None,
+                    operation_id: &format!("pty-forget-{index}"),
+                })
+                .unwrap();
+            manager
+                .launch(
+                    Arc::clone(&db),
+                    &session.id,
+                    dir.path().to_str().unwrap(),
+                    Some(program),
+                    &args,
+                )
+                .unwrap();
+            ids.push(session.id);
+        }
+        let deadline = Instant::now() + Duration::from_secs(120);
+        for id in &ids {
+            while db.session_by_id(id).unwrap().unwrap().status != "exited" {
+                assert!(Instant::now() < deadline, "the terminal did not exit");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                db.output_end(id).unwrap() > 400 * 1024,
+                "the terminal did not print its ~600 KB"
+            );
+        }
+        while output.stream_count() != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "an exited terminal kept its output entry"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

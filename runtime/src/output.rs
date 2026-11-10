@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::output_loss::{LossRecord, SidecarWriter};
 use anyhow::Result;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Condvar, Mutex, OnceLock,
@@ -20,7 +20,6 @@ mod output_bench_tests;
 #[path = "output_retry_tests.rs"]
 mod output_retry_tests;
 
-const RETAINED_MEMORY_BYTES: usize = 512 * 1024;
 /// Bytes a stream may hold while the database refuses them. Dropping older
 /// bytes advances the durable cursor past them, so a client reads an explicit
 /// history gap instead of silently missing output.
@@ -54,9 +53,10 @@ struct RetryState {
 struct Stream {
     /// The durable cursor: only advanced after the database accepted the bytes.
     cursor: i64,
+    /// Set by `seed` or by the first commit with bytes, which reads the persisted
+    /// end itself so a relaunched session never reuses a taken offset.
+    seeded: bool,
     retention_check_at: i64,
-    chunks: VecDeque<(i64, Vec<u8>)>,
-    bytes: usize,
     /// Drained bytes the database has not accepted yet (see `append`).
     pending: Vec<u8>,
     degraded: bool,
@@ -68,9 +68,8 @@ impl Stream {
     fn new() -> Self {
         Self {
             cursor: 0,
+            seeded: false,
             retention_check_at: crate::retention::ACTIVE_TERMINAL_BYTES + crate::retention::ACTIVE_OUTPUT_MARGIN,
-            chunks: VecDeque::new(),
-            bytes: 0,
             pending: Vec::new(),
             degraded: false,
             marker_pending: false,
@@ -160,6 +159,24 @@ impl OutputStore {
             self.recover_marker(db, session_id, stream);
             return Ok(stream.cursor);
         }
+        // Include in-flight bytes from the first moment: a shutdown cannot take
+        // this stream lock while the append is waiting for the database, and the
+        // self-seed read below is such a wait.
+        self.losses.lock().unwrap().insert(
+            session_id.to_owned(), LossRecord::new(session_id, stream.cursor, batch.len()),
+        );
+        // A relaunched session continues the retained byte stream: the entry
+        // learns the persisted end itself, so an append can never reuse a taken
+        // offset even when the caller forgot (or had no reason) to `seed`.
+        if !stream.seeded {
+            match db.output_end(session_id) {
+                Ok(end) => {
+                    stream.seeded = true;
+                    stream.cursor = stream.cursor.max(end);
+                }
+                Err(error) => return self.refuse(db, session_id, stream, batch, error),
+            }
+        }
         // Bounded memory: discarded bytes are skipped by advancing the durable
         // cursor, which leaves a gap the output transport reports explicitly.
         if batch.len() > MAX_PENDING_BYTES {
@@ -179,17 +196,7 @@ impl OutputStore {
             db.append_output(session_id, start, &batch)
         };
         if let Err(error) = written {
-            stream.pending = batch;
-            if !stream.degraded {
-                stream.degraded = true;
-                stream.retry_at = Instant::now() + Duration::from_millis(250);
-                eprintln!("Terminal output for {session_id} could not be saved: {error}");
-                // Record independently before trying the marker: its connection
-                // mutex may itself be blocked after the refused output INSERT.
-                self.sidecars(db).write(LossRecord::new(session_id, start, stream.pending.len()));
-                stream.marker_pending = db.mark_terminal_storage_degraded(session_id, start).is_err();
-            }
-            return Err(error);
+            return self.refuse(db, session_id, stream, batch, error);
         }
         self.pending_bytes.fetch_sub(batch.len(), Ordering::Relaxed);
         self.losses.lock().unwrap().remove(session_id);
@@ -210,15 +217,52 @@ impl OutputStore {
                 Err(error) => eprintln!("Output retention check deferred: {error:#}"),
             }
         }
-        stream.bytes += batch.len();
-        stream.chunks.push_back((start, batch));
-        while stream.bytes > RETAINED_MEMORY_BYTES {
-            if let Some((_, chunk)) = stream.chunks.pop_front() {
-                stream.bytes -= chunk.len()
-            }
-        }
         self.recover_marker(db, session_id, stream);
         Ok(start)
+    }
+
+    /// A refused write and a refused self-seed take the same path: the bytes stay
+    /// pending, the terminal is marked storage-degraded, and the retry worker
+    /// owns the stream until the database accepts them.
+    fn refuse(
+        &self,
+        db: &Database,
+        session_id: &str,
+        stream: &mut Stream,
+        batch: Vec<u8>,
+        error: anyhow::Error,
+    ) -> Result<i64> {
+        let start = stream.cursor;
+        stream.pending = batch;
+        if !stream.degraded {
+            stream.degraded = true;
+            stream.retry_at = Instant::now() + Duration::from_millis(250);
+            eprintln!("Terminal output for {session_id} could not be saved: {error}");
+            // Record independently before trying the marker: its connection
+            // mutex may itself be blocked after the refused output INSERT.
+            self.losses.lock().unwrap().insert(
+                session_id.to_owned(), LossRecord::new(session_id, start, stream.pending.len()),
+            );
+            self.sidecars(db).write(LossRecord::new(session_id, start, stream.pending.len()));
+            stream.marker_pending = db.mark_terminal_storage_degraded(session_id, start).is_err();
+        }
+        Err(error)
+    }
+
+    /// Drops a finished session's entry. The retry worker still owns a stream
+    /// with pending bytes or a degraded marker, so those stay.
+    pub fn forget(&self, session_id: &str) {
+        let mut streams = self.streams.lock().expect("output lock poisoned");
+        let idle = match streams.get(session_id) {
+            None => false,
+            Some(stream) => match stream.try_lock() {
+                Err(_) => false,
+                Ok(stream) => stream.pending.is_empty() && !stream.degraded,
+            },
+        };
+        if idle {
+            streams.remove(session_id);
+        }
     }
 
     fn sidecars(&self, db: &Database) -> &SidecarWriter {
@@ -428,9 +472,15 @@ impl OutputStore {
     pub fn seed(&self, session_id: &str, cursor: i64) {
         let stream = self.stream(session_id);
         let mut stream = stream.lock().expect("stream lock poisoned");
+        stream.seeded = true;
         if cursor > stream.cursor {
             stream.cursor = cursor;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stream_count(&self) -> usize {
+        self.streams.lock().expect("output lock poisoned").len()
     }
 }
 impl Default for OutputStore {
@@ -451,6 +501,31 @@ impl Drop for OutputStore {
     fn drop(&mut self) {
         self.stop_retry_worker();
     }
+}
+
+/// Test hook: every durable output INSERT fails, the same shape as a full disk.
+/// An entry now learns its own cursor from the database, so a taken cursor is no
+/// longer a way to refuse a write.
+#[cfg(test)]
+pub(crate) fn refuse_output_writes(db: &Database) {
+    db.transaction(|tx| {
+        tx.execute(
+            "CREATE TEMP TRIGGER reject_terminal_output BEFORE INSERT ON output_chunks BEGIN SELECT RAISE(ABORT, 'storage refused'); END",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// Test hook: storage accepts durable output again.
+#[cfg(test)]
+pub(crate) fn accept_output_writes(db: &Database) {
+    db.transaction(|tx| {
+        tx.execute("DROP TRIGGER reject_terminal_output", [])?;
+        Ok(())
+    })
+    .unwrap();
 }
 
 #[cfg(test)]
@@ -524,9 +599,9 @@ mod tests {
                 operation_id: "storage-failure",
             })
             .unwrap();
-        // Cursor 0 is occupied, so the first append is refused by the primary key
-        // (the same shape as a full disk or a locked database file).
-        db.append_output(&session.id, 0, b"occupied").unwrap();
+        // A TEMP trigger makes every output INSERT fail (the same shape as a full
+        // disk or a locked database file).
+        refuse_output_writes(&db);
         let store = OutputStore::default();
         assert!(store.append(&db, &session.id, b"first").is_err());
         assert_eq!(
@@ -554,14 +629,7 @@ mod tests {
         assert_eq!(reported[0]["sessionId"], session.id.as_str());
         // Storage recovers: the pending bytes and the next chunk land together at
         // the unchanged cursor, then the degraded state clears.
-        db.transaction(|tx| {
-            tx.execute(
-                "DELETE FROM output_chunks WHERE session_id=?",
-                [&session.id],
-            )?;
-            Ok(())
-        })
-        .unwrap();
+        accept_output_writes(&db);
         assert_eq!(store.append(&db, &session.id, b"second").unwrap(), 0);
         let bytes: Vec<u8> = db
             .output_from(&session.id, 0, 1024)
@@ -593,17 +661,10 @@ mod tests {
                 operation_id: "storage-overflow",
             })
             .unwrap();
-        db.append_output(&session.id, 0, b"occupied").unwrap();
+        refuse_output_writes(&db);
         let store = OutputStore::default();
         assert!(store.append(&db, &session.id, b"first").is_err());
-        db.transaction(|tx| {
-            tx.execute(
-                "DELETE FROM output_chunks WHERE session_id=?",
-                [&session.id],
-            )?;
-            Ok(())
-        })
-        .unwrap();
+        accept_output_writes(&db);
         // Simulate the bound being exceeded without allocating 4 MiB of test data.
         {
             store
@@ -626,5 +687,98 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(gap.contains("terminal_history_gap"), "{gap}");
+    }
+
+    /// Item 7: the runtime keeps no per-session output buffer. Finished sessions
+    /// are dropped, so memory does not grow with the number of closed terminals.
+    #[test]
+    fn exited_sessions_leave_no_output_entry_after_about_half_a_megabyte_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("runtime.sqlite")).unwrap();
+        let store = OutputStore::default();
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut ids = Vec::new();
+        for index in 0..50 {
+            let session = db
+                .create_session(CreateSession {
+                    project_id: None,
+                    title: None,
+                    provider: "shell",
+                    mode: "terminal",
+                    native_id: None,
+                    operation_id: &format!("many-terminals-{index}"),
+                })
+                .unwrap();
+            for _ in 0..10 {
+                store.append(&db, &session.id, &chunk).unwrap();
+            }
+            ids.push(session.id);
+        }
+        assert_eq!(db.output_end(&ids[0]).unwrap(), 10 * 64 * 1024);
+        assert_eq!(store.stream_count(), 50);
+        for id in &ids {
+            store.forget(id);
+        }
+        assert_eq!(store.stream_count(), 0, "an exited session kept its entry");
+    }
+
+    /// Item 7: a forgotten session continues the persisted stream without an
+    /// explicit `seed`, so a relaunch never reuses a taken offset.
+    #[test]
+    fn a_forgotten_session_relaunches_at_the_persisted_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("runtime.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "forget-then-relaunch",
+            })
+            .unwrap();
+        let store = OutputStore::default();
+        store.append(&db, &session.id, b"first-run").unwrap();
+        store.forget(&session.id);
+        assert_eq!(store.stream_count(), 0);
+
+        // The relaunch path appends without calling `seed` first.
+        store.append(&db, &session.id, b"+relaunch").unwrap();
+        let chunks = db.output_from(&session.id, 0, 1024).unwrap();
+        let bytes: Vec<u8> = chunks.iter().flat_map(|(_, data)| data.clone()).collect();
+        assert_eq!(bytes, b"first-run+relaunch");
+        assert_eq!(chunks[1].0, 9, "the relaunched chunk must follow the old end");
+    }
+
+    /// Item 7: the retry worker still owns a stream with pending bytes.
+    #[test]
+    fn a_pending_stream_is_not_forgotten_until_the_bytes_are_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("runtime.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "forget-degraded",
+            })
+            .unwrap();
+        refuse_output_writes(&db);
+        let store = OutputStore::default();
+        assert!(store.append(&db, &session.id, b"pending").is_err());
+        store.forget(&session.id);
+        assert_eq!(store.stream_count(), 1, "a degraded stream was forgotten");
+        assert_eq!(store.cursor(&session.id), 0);
+
+        accept_output_writes(&db);
+        assert_eq!(
+            store.flush_pending(&db, &session.id).unwrap(),
+            FlushOutcome::Clean { durable_end: 7 }
+        );
+        store.forget(&session.id);
+        assert_eq!(store.stream_count(), 0);
     }
 }

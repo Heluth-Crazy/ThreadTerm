@@ -28,6 +28,29 @@ pub struct Database {
     pub(crate) retention: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
 }
 
+/// Counts whole-transcript loads per thread, so a test can prove that a path
+/// reads only the rows it needs (`Database::chat_snapshot`).
+#[cfg(test)]
+thread_local! {
+    static WHOLE_TRANSCRIPT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn whole_transcript_reads(update: impl Fn(usize) -> usize) {
+    WHOLE_TRANSCRIPT_READS.with(|count| count.set(update(count.get())));
+}
+
+/// Resets the counter for the current thread and returns the previous value.
+#[cfg(test)]
+pub(crate) fn reset_whole_transcript_reads() -> usize {
+    WHOLE_TRANSCRIPT_READS.with(|count| count.replace(0))
+}
+
+#[cfg(test)]
+pub(crate) fn whole_transcript_read_count() -> usize {
+    WHOLE_TRANSCRIPT_READS.with(|count| count.get())
+}
+
 /// Identifier-only recovery metadata for a completed destructive Git action.
 /// File contents remain exclusively in Git's object store.
 #[derive(Debug, Clone, PartialEq)]
@@ -868,6 +891,50 @@ impl Database {
     pub fn chat_items(&self, session_id: &str) -> Result<Vec<ChatItem>> {
         Ok(self.chat_snapshot(session_id)?.0)
     }
+    /// The newest `limit` items of a chat, in chronological order.
+    pub fn chat_items_tail(&self, session_id: &str, limit: u32) -> Result<Vec<ChatItem>> {
+        let rows: Vec<String> = self.transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
+            )?;
+            let rows = statement.query_map(params![session_id, limit], |row| row.get::<_, String>(0))?;
+            let mut rows_out = Vec::new();
+            for row in rows {
+                rows_out.push(row?);
+            }
+            Ok(rows_out)
+        })?;
+        let mut items: Vec<ChatItem> = rows
+            .iter()
+            .map(|row| serde_json::from_str(row).map_err(anyhow::Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        items.reverse();
+        Ok(items)
+    }
+    /// One approval part by id, without loading the transcript. Long chats must
+    /// not be deserialized to answer, approve or route a single request.
+    /// Returns the owning item's turn id and the part itself. Only approval parts
+    /// match: a tool or other part that reuses the id must not hide the card.
+    pub fn chat_approval_part(
+        &self,
+        session_id: &str,
+        approval_id: &str,
+    ) -> Result<Option<(Option<String>, Value)>> {
+        let row: Option<(Option<String>, String)> = self.transaction(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT item.turn_id, part.value FROM chat_items item, json_each(item.data,'$.parts') part \
+                     WHERE item.session_id=? AND json_extract(part.value,'$.approvalId')=? \
+                       AND json_extract(part.value,'$.type')='approval' \
+                     ORDER BY item.rowid, part.key LIMIT 1",
+                    params![session_id, approval_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?)
+        })?;
+        row.map(|(turn_id, part)| Ok((turn_id, serde_json::from_str(&part)?)))
+            .transpose()
+    }
     /// On-demand read of one inline image that a bounded snapshot page replaced
     /// with a reference. The item must belong to the session.
     pub fn chat_image(
@@ -1023,6 +1090,8 @@ impl Database {
         })
     }
     pub fn chat_snapshot(&self, session_id: &str) -> Result<(Vec<ChatItem>, i64)> {
+        #[cfg(test)]
+        whole_transcript_reads(|count| count + 1);
         self.transaction(|tx| {
             let mut statement = tx
                 .prepare("SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at,id")?;
@@ -3056,20 +3125,20 @@ fn session_activity(conn: &Connection, id: &str) -> Result<Option<SessionActivit
     .map_err(Into::into)
 }
 
-fn has_pending_attention_approval_tx(
+pub(crate) fn has_pending_attention_approval_tx(
     tx: &Transaction<'_>,
     session_id: &str,
 ) -> Result<bool> {
-    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=?")?;
-    let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
-    for row in rows {
-        let item: ChatItem = serde_json::from_str(&row?)?;
-        if item.parts.iter().any(|part| {
-            part.get("type").and_then(Value::as_str) == Some("approval")
-                && matches!(part.get("status").and_then(Value::as_str), Some("pending" | "submitting"))
-        }) {
-            return Ok(true);
-        }
+    let pending = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chat_items item, json_each(item.data,'$.parts') part \
+         WHERE item.session_id=? \
+           AND json_extract(part.value,'$.type')='approval' \
+           AND json_extract(part.value,'$.status') IN ('pending','submitting'))",
+        [session_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if pending {
+        return Ok(true);
     }
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM inbox WHERE session_id=? AND kind='approval' AND resolved=0)",

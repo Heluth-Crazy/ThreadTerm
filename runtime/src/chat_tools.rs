@@ -119,6 +119,31 @@ pub(crate) fn shared(path: &Path, db: Arc<Database>) -> Result<Arc<ChatTools>> {
     Ok(registry)
 }
 
+/// Pending app-hosted questions (`ask_user` cards) of every session, as
+/// `(session_id, turn_id, approval_id)`. One query, no transcript load: a runtime
+/// start expires them without deserializing each chat. A malformed card (no
+/// approval id, or no turn) is skipped instead of failing the whole start.
+pub(crate) fn pending_ask_user_parts(db: &Database) -> Result<Vec<(String, String, String)>> {
+    db.transaction(|tx| {
+        let mut statement = tx.prepare(
+            "SELECT item.session_id, item.turn_id, json_extract(part.value,'$.approvalId') \
+             FROM chat_items item, json_each(item.data,'$.parts') part \
+             WHERE json_extract(part.value,'$.type')='approval' \
+               AND json_extract(part.value,'$.status')='pending' \
+               AND json_extract(part.value,'$.data.threadtermTool')='ask_user' \
+               AND json_extract(part.value,'$.approvalId') IS NOT NULL \
+               AND item.turn_id IS NOT NULL \
+             ORDER BY item.rowid, part.key",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    })
+}
+
 impl ChatTools {
     fn new(db: Arc<Database>) -> Result<Self> {
         db.transaction(|tx| Ok(tx.execute_batch(SCHEMA)?))?;
@@ -489,33 +514,18 @@ impl ChatTools {
     }
 
     fn expire_orphaned_asks(&self) -> Result<()> {
-        let sessions = self.db.snapshot()?.sessions;
-        for session in sessions {
-            for item in self.db.chat_items(&session.id)? {
-                for part in item.parts {
-                    if part["type"] == "approval"
-                        && part["status"] == "pending"
-                        && part.pointer("/data/threadtermTool").and_then(Value::as_str)
-                            == Some("ask_user")
-                    {
-                        if let (Some(turn_id), Some(approval_id)) =
-                            (item.turn_id.as_deref(), part["approvalId"].as_str())
-                        {
-                            self.db.record_provider_event(
-                                &session.id,
-                                Some(turn_id),
-                                "chat.approval.resolved",
-                                &json!({
-                                    "approvalId":approval_id,
-                                    "status":"expired",
-                                    "outcome":"cancelled",
-                                    "message":"Runtime restarted",
-                                }),
-                            )?;
-                        }
-                    }
-                }
-            }
+        for (session_id, turn_id, approval_id) in pending_ask_user_parts(&self.db)? {
+            self.db.record_provider_event(
+                &session_id,
+                Some(&turn_id),
+                "chat.approval.resolved",
+                &json!({
+                    "approvalId":approval_id,
+                    "status":"expired",
+                    "outcome":"cancelled",
+                    "message":"Runtime restarted",
+                }),
+            )?;
         }
         Ok(())
     }

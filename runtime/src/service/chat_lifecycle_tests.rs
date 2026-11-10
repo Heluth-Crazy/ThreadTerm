@@ -3982,3 +3982,47 @@ fn process_ids_do_not_wait_for_a_busy_worker_and_report_the_last_read() {
     sender.join().unwrap().unwrap();
 }
 
+
+/// Item 8, decision Z: the two delegation paths that make no provider call are
+/// proved through their real entry points — `delegation.status` through
+/// `RuntimeService::dispatch`, and delegated turn completion through the
+/// projection of the child'"'"'s completed turn. Neither may load a transcript.
+#[test]
+fn delegation_status_and_turn_completion_do_not_load_whole_transcripts() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-bounded-reads");
+    let child = running_delegate(&fixture, &parent, &token, "start-bounded-reads");
+    parent_in_turn(&fixture, &parent);
+    child_approval(&fixture, &child, "a1");
+    assert_eq!(activity_state(&fixture, &child), "awaiting_parent");
+
+    crate::db::reset_whole_transcript_reads();
+    let status = status_of(&fixture, &parent, &token);
+    assert_eq!(
+        status["delegates"][0]["pendingRequests"][0]["requestId"],
+        "a1",
+        "delegation.status must still report the parent-routed request"
+    );
+    assert_eq!(
+        crate::db::whole_transcript_read_count(),
+        0,
+        "delegation.status loaded a whole transcript"
+    );
+
+    crate::db::reset_whole_transcript_reads();
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({"status":"completed"}),
+        )
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+    assert_eq!(
+        crate::db::whole_transcript_read_count(),
+        0,
+        "delegated turn completion loaded a whole transcript"
+    );
+}
