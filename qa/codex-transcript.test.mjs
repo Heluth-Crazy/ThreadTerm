@@ -108,3 +108,16 @@ test('status cards remain standalone even when native turn identity matches adja
   assert.equal(groups[2].completed,true);
   assert.deepEqual(groups[2].activity.map(row=>row.id),['after']);
 });
+
+test('automatic review stays visible inside its native turn', () => {
+  const groups = groupCodexTranscript([
+    item('tool', [{type:'tool', toolName:'commandExecution'}]),
+    item('review', [{type:'status', data:{kind:'guardianReview', outcome:'denied'}}]),
+    item('answer', [text('The command was denied.')]),
+    item('done', [], {turnStatus:'completed', elapsedMs:22000}),
+  ]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].elapsedMs, 22000);
+  assert.deepEqual(groups[0].activity.map(row => row.id), ['tool']);
+  assert.deepEqual(groups[0].response.map(row => row.id), ['review', 'answer']);
+});

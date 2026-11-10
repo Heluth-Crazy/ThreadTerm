@@ -5572,10 +5572,11 @@ mod tests {
         fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({})) }
         fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
         fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
-            // Like native `thread/resume`: the approval policy survives, the sandbox does not.
+            // Restore the saved sandbox and reviewer over the worker's defaults.
             Ok(Box::new(CodexPermissionChat {
                 mode: "never".into(),
                 sandbox: "workspace-write".into(),
+                reviewer: "auto_review".into(),
                 calls: Arc::clone(&self.calls),
                 fail_set: Arc::clone(&self.fail_set),
             }))
@@ -5585,6 +5586,7 @@ mod tests {
     struct CodexPermissionChat {
         mode: String,
         sandbox: String,
+        reviewer: String,
         calls: Arc<Mutex<Vec<String>>>,
         fail_set: Arc<AtomicBool>,
     }
@@ -5596,6 +5598,7 @@ mod tests {
                 {"id":"model","value":"fixture-model"},
                 {"id":"mode","value":self.mode},
                 {"id":"sandbox","value":self.sandbox},
+                {"id":"reviewer","value":self.reviewer},
             ]})
         }
         fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
@@ -5616,6 +5619,7 @@ mod tests {
             match option_id {
                 "mode" => self.mode = value.into(),
                 "sandbox" => self.sandbox = value.into(),
+                "reviewer" => self.reviewer = value.into(),
                 _ => {}
             }
             Ok(self.ui_state())
@@ -5657,9 +5661,10 @@ mod tests {
         set_chat_option(&db, &providers, &session.id, "codex", "model", "other-model").unwrap();
         assert_eq!(db.chat_option_selections(&session.id, "codex").unwrap(), json!([]), "only permission options are remembered");
         set_chat_option(&db, &providers, &session.id, "codex", "sandbox", "danger-full-access").unwrap();
+        set_chat_option(&db, &providers, &session.id, "codex", "reviewer", "user").unwrap();
         assert_eq!(
             db.chat_option_selections(&session.id, "codex").unwrap(),
-            json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"}]),
+            json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"},{"id":"reviewer","value":"user"}]),
         );
 
         providers.chat_stop(&session.id).unwrap();
@@ -5672,6 +5677,8 @@ mod tests {
         let restarted = Providers::for_test(vec![Arc::new(CodexPermissionAdapter { calls: Arc::clone(&calls), fail_set: Arc::new(AtomicBool::new(false)) })]);
         connect_chat_session(&reopened, &restarted, &session.id, false).unwrap();
         assert_eq!(codex_sandbox(&restarted, &session.id), "danger-full-access");
+        assert!(restarted.chat_options(&session.id).unwrap()["options"].as_array().unwrap()
+            .iter().any(|option| option["id"] == "reviewer" && option["value"] == "user"));
         assert_eq!(
             calls.lock().unwrap().iter().filter(|call| call.as_str() == "sandbox=danger-full-access").count(),
             3,
@@ -5689,7 +5696,7 @@ mod tests {
         send_chat_message(&db, &providers, &session.id, "/sandbox read-only", &[], "slash").unwrap();
         assert_eq!(
             db.chat_option_selections(&session.id, "codex").unwrap(),
-            json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"read-only"}]),
+            json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"read-only"},{"id":"reviewer","value":"auto_review"}]),
         );
         providers.chat_stop(&session.id).unwrap();
         connect_chat_session(&db, &providers, &session.id, false).unwrap();

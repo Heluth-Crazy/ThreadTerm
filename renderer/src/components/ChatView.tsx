@@ -23,7 +23,7 @@ import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
 import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
 import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
-import { groupCodexTranscript, type CodexTurn } from "../codexTranscript";
+import { groupCodexTranscript, isGuardianReview, type CodexTurn } from "../codexTranscript";
 import { completedTurnPresentation, groupToolActivity, shouldShowWorkingIndicator, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
 import { ChatWorkingIndicator } from './ChatWorkingIndicator';
 import { ToolActivity } from './ToolActivity';
@@ -227,6 +227,40 @@ const rateResetText = (window: JsonRecord, copy: (en: string, zh: string) => str
   if (!Number.isFinite(date.getTime())) return "";
   return `${copy("resets", "重置") } ${date.toLocaleString()}`;
 };
+
+function GuardianReviewCard({ part, copy }: { part: ChatPart; copy: (en: string, zh: string) => string }) {
+  const data = asRecord(part.data);
+  const actionLabels: Record<string, string> = {
+    command: copy("Command", "命令"),
+    execve: copy("Command", "命令"),
+    writeStdin: copy("Process input", "进程输入"),
+    applyPatch: copy("File changes", "文件更改"),
+    networkAccess: copy("Network access", "网络访问"),
+    mcpToolCall: copy("MCP tool", "MCP 工具"),
+    requestPermissions: copy("Permission request", "权限请求"),
+  };
+  const riskLabels: Record<string, string> = {
+    low: copy("Low", "低"),
+    medium: copy("Medium", "中"),
+    high: copy("High", "高"),
+    critical: copy("Critical", "严重"),
+  };
+  const action = actionLabels[asString(data.action, "")] ?? copy("Action", "操作");
+  const detail = asString(data.detail, "");
+  const rationale = asString(data.rationale, "");
+  const risk = riskLabels[asString(data.riskLevel, "")];
+  return <div className="codex-status-card" data-testid="codex-automatic-review">
+    <div className="codex-status-title">
+      <strong>{copy("Codex automatic review", "Codex 自动审查")}</strong>
+      <span>{data.outcome === "timedOut" ? copy("Timed out", "已超时") : copy("Denied", "已拒绝")}</span>
+    </div>
+    <dl className="codex-status-grid">
+      <div className="codex-status-wide"><dt>{action}</dt><dd>{detail || action}</dd></div>
+      {risk && <div><dt>{copy("Risk level", "风险等级")}</dt><dd>{risk}</dd></div>}
+      {rationale && <div className="codex-status-wide"><dt>{copy("Rationale", "理由")}</dt><dd>{rationale}</dd></div>}
+    </dl>
+  </div>;
+}
 
 function CodexStatusCard({ part, copy }: { part: ChatPart; copy: (en: string, zh: string) => string }) {
   const data = asRecord(part.data);
@@ -1868,6 +1902,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         }
         if (part.type === "thinking") return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
         if (part.type === 'status' && providerRetryPresentation(part.data)) return <ProviderRetryStatus key={`retry-${index}`} data={part.data} copy={copy} />;
+        if (isGuardianReview(part)) return <GuardianReviewCard key={`review-${index}`} part={part} copy={copy} />;
         if (part.type === "status") return <CodexStatusCard key={`status-${index}`} part={part} copy={copy} />;
         if (part.type === "text" && asRecord(part.data).kind === "plan") return <PlanUsageCard key={`usage-${index}`} part={part} zh={zh} copy={copy} />;
         if (part.type === "text" && (session.provider === "kimi" || session.provider === "grok") && item.role !== "user" && typeof part.text === "string") {

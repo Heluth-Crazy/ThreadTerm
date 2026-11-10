@@ -4,7 +4,7 @@ use crate::providers::ProviderError;
 pub(super) fn is_permission_option(provider: &str, option: &Value) -> bool {
     let id = option.get("id").and_then(Value::as_str).unwrap_or_default();
     match provider {
-        "codex" => matches!(id, "mode" | "sandbox"),
+        "codex" => matches!(id, "mode" | "sandbox" | "reviewer"),
         "claude" => matches!(id, "mode" | "roundtable-tools"),
         "kimi" | "grok" => id == "mode",
         "opencode" => false,
@@ -321,6 +321,7 @@ fn fallback_choices(provider: &str, id: &str) -> &'static [&'static str] {
     match (provider, id) {
         ("codex", "sandbox") => &["read-only", "workspace-write", "danger-full-access"],
         ("codex", "mode") => &["on-request", "never"],
+        ("codex", "reviewer") => &["user", "auto_review", "guardian_subagent"],
         ("claude", "mode") => &["default", "acceptEdits", "plan", "dontAsk"],
         ("grok", "mode") => &[
             "default",

@@ -178,6 +178,9 @@ impl CodexAdapter {
         if let Some(sandbox) = permissions.sandbox.as_deref() {
             params["sandbox"] = json!(sandbox);
         }
+        if let Some(reviewer) = permissions.reviewer.as_deref() {
+            params["approvalsReviewer"] = json!(reviewer);
+        }
         let response = process.request("thread/start", params)?;
         let thread = response.get("thread").unwrap_or(&response);
         let native_id = thread.get("id").and_then(Value::as_str).ok_or_else(|| {
@@ -331,6 +334,7 @@ fn codex_cli_version(raw: &str) -> String {
 struct CodexStartupPermissions {
     mode: Option<String>,
     sandbox: Option<String>,
+    reviewer: Option<String>,
 }
 
 fn codex_startup_permissions(options: &Value) -> Result<CodexStartupPermissions, ProviderError> {
@@ -348,7 +352,8 @@ fn codex_startup_permissions(options: &Value) -> Result<CodexStartupPermissions,
         let destination = match id {
             "mode" if matches!(value, "on-request" | "never") => &mut permissions.mode,
             "sandbox" if matches!(value, "read-only" | "workspace-write" | "danger-full-access") => &mut permissions.sandbox,
-            "mode" | "sandbox" => return Err(ProviderError::new(
+            "reviewer" if matches!(value, "user" | "auto_review" | "guardian_subagent") => &mut permissions.reviewer,
+            "mode" | "sandbox" | "reviewer" => return Err(ProviderError::new(
                 "chat_permission_restore_failed",
                 format!("Saved Codex permission {id}={value} is no longer supported. Select another mode and retry."),
             )),
@@ -906,6 +911,9 @@ impl CodexAdapter {
             }
             if let Some(sandbox) = permissions.sandbox.as_deref() {
                 params["sandbox"] = json!(sandbox);
+            }
+            if let Some(reviewer) = permissions.reviewer.as_deref() {
+                params["approvalsReviewer"] = json!(reviewer);
             }
             process.request("thread/resume", params)?
         } else {
@@ -3574,18 +3582,20 @@ fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
             "choices":[{"value":"true","name":"On"},{"value":"false","name":"Off"}]
         }));
     }
-    let reviewer = thread
+    if let Some(reviewer) = thread
         .get("approvalsReviewer")
         .and_then(Value::as_str)
-        .unwrap_or("user");
-    options.push(json!({
-        "id":"reviewer","name":"Approval reviewer","value":reviewer,
-        "choices":[
-            {"value":"user","name":"User"},
-            {"value":"auto_review","name":"Auto review"},
-            {"value":"guardian_subagent","name":"Guardian subagent"}
-        ]
-    }));
+        .filter(|value| matches!(*value, "user" | "auto_review" | "guardian_subagent"))
+    {
+        options.push(json!({
+            "id":"reviewer","name":"Approval reviewer","category":"mode","value":reviewer,
+            "choices":[
+                {"value":"user","name":"User"},
+                {"value":"auto_review","name":"Auto review"},
+                {"value":"guardian_subagent","name":"Guardian subagent"}
+            ]
+        }));
+    }
     options
 }
 
@@ -4218,6 +4228,53 @@ fn emit_codex_plan_text(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn guardian_review_item(params: &Value) -> Option<Value> {
+    let review_id = params["reviewId"].as_str().filter(|id| !id.is_empty() && id.len() <= 256)?;
+    let review = &params["review"];
+    let outcome = review["status"].as_str()?;
+    if !matches!(outcome, "denied" | "timedOut") || params["decisionSource"] != "agent" {
+        return None;
+    }
+    let risk = match &review["riskLevel"] {
+        Value::Null => None,
+        Value::String(risk) if matches!(risk.as_str(), "low" | "medium" | "high" | "critical") => Some(risk),
+        _ => return None,
+    };
+    let rationale = match &review["rationale"] {
+        Value::Null => None,
+        Value::String(text) => Some(text.chars().take(4096).collect::<String>()),
+        _ => return None,
+    };
+    let action = &params["action"];
+    let detail = match action["type"].as_str()? {
+        "command" => action["command"].as_str()?.to_owned(),
+        "execve" => {
+            let mut args = vec![action["program"].as_str()?];
+            for arg in action["argv"].as_array()?.iter().take(64) {
+                args.push(arg.as_str()?);
+            }
+            args.join(" ")
+        }
+        "networkAccess" => action["target"].as_str()?.to_owned(),
+        "mcpToolCall" => format!("{} / {}", action["server"].as_str()?, action["toolName"].as_str()?),
+        "applyPatch" => action["files"].as_array()?.iter().take(32)
+            .map(Value::as_str).collect::<Option<Vec<_>>>()?.join(", "),
+        // The stdin may contain credentials. Identify the process instead.
+        "writeStdin" if action["stdin"].is_string() => action["processId"].as_str()?.to_owned(),
+        "requestPermissions" if action["permissions"].is_object() =>
+            action["reason"].as_str().unwrap_or_default().to_owned(),
+        _ => return None,
+    };
+    let detail = detail.chars().take(2048).collect::<String>();
+    Some(json!({
+        "item": {"id": format!("guardian-review:{review_id}")},
+        "parts": [{"type":"status", "status":"complete", "data":{
+            "kind":"guardianReview", "outcome":outcome, "action":action["type"],
+            "detail":detail, "rationale":rationale, "riskLevel":risk
+        }}]
+    }))
+}
+
 fn emit_codex_message(
     events: &crate::provider_events::Sender,
     session_id: &str,
@@ -4253,6 +4310,28 @@ fn emit_codex_message(
         return;
     }
     let mut params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
+    if raw.get("id").is_none() && matches!(method,
+        "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" | "guardianWarning"
+    ) {
+        // Only a completed, attributable review belongs in the transcript.
+        if method == "item/autoApprovalReview/completed"
+            && native_id.is_some()
+            && params["threadId"].as_str() == native_id.as_deref()
+        {
+            let turn_id = params["turnId"].as_str().and_then(|native_turn| {
+                active_turn.0.lock().ok().and_then(|active| {
+                    active.as_ref()
+                        .filter(|turn| turn.native_id.as_deref() == Some(native_turn))
+                        .map(|turn| turn.public_id.clone())
+                })
+            });
+            if let (Some(turn_id), Some(item)) = (turn_id, guardian_review_item(&params)) {
+                emit_scoped(events, "codex", session_id, native_id.as_deref(), Some(&turn_id),
+                    "chat.item", item, Some(worker_token));
+            }
+        }
+        return;
+    }
     let thread_id = params
         .get("threadId")
         .and_then(Value::as_str)
@@ -5547,6 +5626,45 @@ mod tests {
         assert_eq!(error[0].data["item"]["parts"][0]["type"], "error");
         assert_eq!(error[0].data["item"]["parts"][0]["text"], "child failed");
         replay.stop_target();
+    }
+
+    #[test]
+    fn automatic_reviews_project_only_attributable_denials_and_timeouts() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.drain();
+        let mut params = json!({
+            "threadId":SUBAGENT_PARENT, "turnId":"parent-turn", "reviewId":"review-1",
+            "decisionSource":"agent", "startedAtMs":1, "completedAtMs":2,
+            "action":{"type":"command","command":"echo hello","cwd":".","source":"shell"},
+            "review":{"status":"denied","rationale":"Outside requested scope","riskLevel":"high"}
+        });
+        for outcome in ["denied", "timedOut"] {
+            params["review"]["status"] = json!(outcome);
+            replay.emit("item/autoApprovalReview/completed", params.clone());
+            let events = replay.drain();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].kind, "chat.item");
+            assert_eq!(events[0].turn_id.as_deref(), Some("public-turn"));
+            assert_eq!(events[0].worker_token.as_deref(), Some("subagent-worker"));
+            assert_eq!(events[0].data["item"]["id"], "guardian-review:review-1");
+            assert_eq!(events[0].data["parts"][0]["data"], json!({
+                "kind":"guardianReview","outcome":outcome,"action":"command",
+                "detail":"echo hello","rationale":"Outside requested scope","riskLevel":"high"
+            }));
+        }
+        for (field, bad_value) in [
+            ("threadId", json!(SUBAGENT_CHILD)), ("turnId", json!("stale-turn")),
+            ("action", json!({"type":"command"})), ("action", json!({"type":"unknown"})),
+            ("review", json!({"status":"approved"})), ("review", json!({"status":42})),
+        ] {
+            let mut invalid = params.clone();
+            invalid[field] = bad_value;
+            replay.emit("item/autoApprovalReview/completed", invalid);
+        }
+        replay.emit("item/autoApprovalReview/started", params);
+        replay.emit("guardianWarning", json!({"threadId":SUBAGENT_PARENT,"message":"Warning"}));
+        assert!(replay.drain().is_empty());
+        assert!(replay.approvals.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -7123,7 +7241,7 @@ process.on('exit', () => clearTimeout(timeout));
             &process_input,
             &json!({"model":"gpt-5.5-luna","reasoningEffort":"xhigh"}),
         );
-        assert_eq!(options.len(), 6);
+        assert_eq!(options.len(), 5);
         assert_eq!(options[0]["id"], "model");
         assert_eq!(options[0]["value"], "gpt-5.5-luna");
         assert_eq!(options[0]["choices"].as_array().unwrap().len(), 2);
@@ -7132,7 +7250,7 @@ process.on('exit', () => clearTimeout(timeout));
         assert_eq!(options[1]["choices"][1]["name"], "Xhigh");
         assert_eq!(options[2]["id"], "collaboration");
         assert_eq!(options[2]["value"], "default");
-        assert_eq!(options[5]["id"], "reviewer");
+        assert!(!options.iter().any(|option| option["id"] == "reviewer"));
     }
 
     #[test]
@@ -7193,7 +7311,7 @@ process.on('exit', () => clearTimeout(timeout));
         });
         let options = codex_options_from_catalog(
             &process_input,
-            &json!({"model":"custom-model","reasoningEffort":"low"}),
+            &json!({"model":"custom-model","reasoningEffort":"low","approvalsReviewer":"user"}),
         );
         assert_eq!(options.len(), 5);
         assert_eq!(options[0]["value"], "custom-model");
@@ -7992,16 +8110,19 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         crate::providers::conformance::assert_stop_of_finished_turn_succeeds(chat.cancel("turn-b"));
     }
     #[test]
-    fn codex_startup_permissions_accept_only_mode_and_sandbox() {
+    fn codex_startup_permissions_accept_only_known_choices() {
         let permissions = codex_startup_permissions(&json!([
             {"id":"mode","value":"never"},
-            {"id":"sandbox","value":"danger-full-access"}
+            {"id":"sandbox","value":"danger-full-access"},
+            {"id":"reviewer","value":"user"}
         ])).unwrap();
         assert_eq!(permissions.mode.as_deref(), Some("never"));
         assert_eq!(permissions.sandbox.as_deref(), Some("danger-full-access"));
+        assert_eq!(permissions.reviewer.as_deref(), Some("user"));
         for options in [
             json!([{"id":"mode","value":"approve"}]),
             json!([{"id":"sandbox","value":"unrestricted"}]),
+            json!([{"id":"reviewer","value":"unknown"}]),
             json!([{"id":"model","value":"gpt-6-luna"}]),
             json!([{"id":"mode","value":"never"},{"id":"mode","value":"on-request"}]),
         ] {
@@ -8139,14 +8260,14 @@ import {{ createInterface }} from 'node:readline';
 for (const key of Object.keys(process.env)) if (key.toLowerCase() === 'path') delete process.env[key];
 const log = {log};
 const thread = {{ id: 'thread-resume', model: 'qa-model', status: {{ type: 'idle' }} }};
-const response = params => ({{ thread, threadSettings: {{ model: 'qa-model' }}, approvalPolicy: params.approvalPolicy ?? 'never', sandboxPolicy: {{ type: params.sandbox === 'danger-full-access' ? 'dangerFullAccess' : 'readOnly' }} }});
+const response = params => ({{ thread, threadSettings: {{ model: 'qa-model' }}, approvalPolicy: params.approvalPolicy ?? 'never', sandboxPolicy: {{ type: params.sandbox === 'danger-full-access' ? 'dangerFullAccess' : 'readOnly' }}, approvalsReviewer: params.cwd.endsWith('missing-reviewer') ? undefined : (params.approvalsReviewer ?? 'auto_review') }});
 const write = value => process.stdout.write(JSON.stringify(value) + '\n');
 createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
   const request = JSON.parse(line); const params = request.params ?? {{}};
   appendFileSync(log, JSON.stringify({{ method: request.method, params }}) + '\n');
   if (request.method === 'initialize') return write({{ id: request.id, result: {{ capabilities: {{}} }} }});
   if (request.method === 'thread/read') return write({{ id: request.id, result: {{ thread }} }});
-  if (request.method === 'thread/resume') return write({{ id: request.id, result: response(params) }});
+  if (request.method === 'thread/resume' || request.method === 'thread/start') return write({{ id: request.id, result: response(params) }});
   if (request.method === 'model/list') return write({{ id: request.id, result: {{ data: [{{ id: 'qa-model', supportedReasoningEfforts: [] }}] }} }});
   if (request.method === 'skills/list' || request.method === 'account/rateLimits/read') return write({{ id: request.id, result: {{ data: [] }} }});
   if (request.method === 'account/read') return write({{ id: request.id, result: {{ account: {{ type: 'chatgpt' }} }} }});
@@ -8157,17 +8278,26 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         let (events, _) = crate::provider_events::tap_channel(8);
         let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
         let cwd = scratch.path().to_string_lossy().into_owned();
-        let mut chat = adapter.open_chat_with_startup_options(
-            "card-resume", &cwd, Some("thread-resume"), "worker-resume", None,
-            &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"}]), pi_read_only_tools:false},
-        ).unwrap();
-        chat.stop().unwrap();
+        let startup = super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":"never"},{"id":"sandbox","value":"danger-full-access"},{"id":"reviewer","value":"user"}]), pi_read_only_tools:false};
+        for native_id in [None, Some("thread-resume")] {
+            let mut chat = adapter.open_chat_with_startup_options(
+                "card-resume", &cwd, native_id, "worker-resume", None, &startup,
+            ).unwrap();
+            chat.stop().unwrap();
+        }
+        let missing_cwd = scratch.path().join("missing-reviewer");
+        std::fs::create_dir(&missing_cwd).unwrap();
+        let error = adapter.open_chat_with_startup_options(
+            "card-resume", missing_cwd.to_str().unwrap(), Some("thread-resume"), "worker-resume", None, &startup,
+        ).err().expect("missing native reviewer must not confirm a saved choice");
+        assert_eq!(error.code, "chat_permission_restore_failed");
         let calls = std::fs::read_to_string(requests).unwrap().lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
         assert!(calls.iter().any(|call| call["method"] == "thread/resume" && call["params"] == json!({
             "threadId":"thread-resume", "cwd":cwd, "approvalPolicy":"never", "sandbox":"danger-full-access",
-            "excludeTurns":true
+            "excludeTurns":true, "approvalsReviewer":"user"
         })));
+        assert!(calls.iter().any(|call| call["method"] == "thread/start" && call["params"]["approvalsReviewer"] == "user"));
     }
 
     #[test]
