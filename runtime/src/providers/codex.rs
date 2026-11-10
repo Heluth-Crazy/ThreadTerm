@@ -666,6 +666,23 @@ impl ProviderAdapter for CodexAdapter {
         tools: Option<&ChatToolServer>,
         startup: &super::ChatStartupOptions<'_>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_and_state(session_id, cwd, native_id, worker_token, tools, startup)
+            .map(|(chat, _)| chat)
+    }
+}
+
+impl CodexAdapter {
+    /// The connect path, with the connection's live UI state returned beside the
+    /// Chat so a test can inspect exactly what the connection keeps.
+    fn open_chat_and_state(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+        startup: &super::ChatStartupOptions<'_>,
+    ) -> Result<(Box<dyn ChatSession>, Arc<Mutex<CodexUiState>>), ProviderError> {
         let options = startup.permissions;
         let permissions = codex_startup_permissions(options)?;
         if let Some(native_id) = native_id {
@@ -691,7 +708,7 @@ impl ProviderAdapter for CodexAdapter {
         if let Ok(mut slot) = responder.lock() {
             *slot = Some(process.responder());
         }
-        let thread_response = if let Some(native_id) = native_id {
+        let mut thread_response = if let Some(native_id) = native_id {
             // Report missing identities precisely; only a caller that knows
             // the durable Chat history may authorize empty-chat recovery.
             let existing = process.request(
@@ -699,7 +716,9 @@ impl ProviderAdapter for CodexAdapter {
                 json!({"threadId":native_id,"includeTurns":false}),
             ).map_err(|error| codex_missing_thread_error(native_id, error))?;
             validate_resume_thread(existing.get("thread").unwrap_or(&existing))?;
-            let mut params = json!({"threadId":native_id,"cwd":cwd});
+            // Full-history hydration is deprecated upstream; nothing here reads
+            // the saved turns, so do not ask for them.
+            let mut params = json!({"threadId":native_id,"cwd":cwd,"excludeTurns":true});
             if let Some(mode) = permissions.mode.as_deref() {
                 params["approvalPolicy"] = json!(mode);
             }
@@ -710,6 +729,8 @@ impl ProviderAdapter for CodexAdapter {
         } else {
             self.start_persistent_thread(&process, cwd, &permissions, false)?
         };
+        // Drop the saved history before this reply is cloned, merged or stored.
+        strip_codex_turns(&mut thread_response);
         let thread = thread_response
             .get("thread")
             .cloned()
@@ -757,7 +778,7 @@ impl ProviderAdapter for CodexAdapter {
             worker_token,
         );
         schedule_codex_status_reads(&process, &ui, None);
-        Ok(Box::new(CodexChat {
+        Ok((Box::new(CodexChat {
             process,
             native_id,
             approvals,
@@ -765,9 +786,9 @@ impl ProviderAdapter for CodexAdapter {
             session_id: session_id.to_owned(),
             cwd: cwd.to_owned(),
             events: self.events.clone(),
-            ui,
+            ui: Arc::clone(&ui),
             worker_token: worker_token.to_owned(),
-        }))
+        }), ui))
     }
 }
 
@@ -3033,6 +3054,27 @@ fn effort_for_model(ui: Option<&CodexUiState>, model_id: &str) -> Option<String>
                 .and_then(|effort| effort.get("reasoningEffort").and_then(Value::as_str))
                 .map(ToOwned::to_owned)
         })
+}
+
+/// Removes a resume or start reply's saved history in place.
+///
+/// `thread/resume` answers with every saved turn and item unless the server
+/// honours `excludeTurns`, and an app-server that ignores the field sends the
+/// whole rollout anyway. No reader of these values needs it: the status card
+/// reads metadata only, and transcript items come from `thread/read`
+/// `includeTurns:true`. Keeping it would hold the entire conversation, twice,
+/// for the life of the Chat.
+fn strip_codex_turns(reply: &mut Value) {
+    let envelope = reply.get("thread").is_some_and(Value::is_object);
+    let thread = if envelope {
+        let Some(thread) = reply.get_mut("thread") else { return };
+        thread
+    } else {
+        reply
+    };
+    if let Some(object) = thread.as_object_mut() {
+        object.remove("turns");
+    }
 }
 
 fn load_codex_ui(
@@ -7834,6 +7876,73 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
         }
     }
 
+    /// A resume reply carries the thread's whole saved history. Nothing reads
+    /// it (the status card needs metadata; transcript items come from
+    /// `thread/read`), so the Chat must not keep it: neither under `thread` nor
+    /// under `thread_response`, and not in the settings merged from both.
+    #[test]
+    fn resume_reply_history_is_not_kept_by_the_chat() {
+        fn holds_turns(value: &Value) -> bool {
+            match value {
+                Value::Object(map) => {
+                    map.contains_key("turns") || map.values().any(holds_turns)
+                }
+                Value::Array(items) => items.iter().any(holds_turns),
+                _ => false,
+            }
+        }
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping Codex resume-history fixture");
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let script = scratch.path().join("fake-codex-resume-history.mjs");
+        std::fs::write(&script, r#"import { createInterface } from 'node:readline';
+for (const key of Object.keys(process.env)) if (key.toLowerCase() === 'path') delete process.env[key];
+const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+const output = 'x'.repeat(2048);
+const turns = Array.from({ length: 13 }, (_, turn) => ({ id: `turn-${turn}`, status: 'completed',
+  items: Array.from({ length: 30 }, (_, item) => ({ id: `item-${turn}-${item}`, type: 'commandExecution', command: 'qa', aggregatedOutput: output })) }));
+const metadata = { id: 'thread-resume', model: 'qa-model', cliVersion: '0.167.0', status: { type: 'idle' } };
+createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') return write({ id: request.id, result: { capabilities: {}, userAgent: 'codex_cli_rs/0.167.0 (Windows)' } });
+  if (request.method === 'thread/read') return write({ id: request.id, result: { thread: metadata } });
+  if (request.method === 'thread/resume') return write({ id: request.id, result: { thread: { ...metadata, turns },
+    threadSettings: { model: 'qa-model' }, approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly' } } });
+  if (request.method === 'model/list') return write({ id: request.id, result: { data: [{ id: 'qa-model', supportedReasoningEfforts: [] }] } });
+  if (request.method === 'skills/list' || request.method === 'account/rateLimits/read') return write({ id: request.id, result: { data: [] } });
+  if (request.method === 'account/read') return write({ id: request.id, result: { account: { type: 'chatgpt' } } });
+  write({ id: request.id, result: {} });
+});
+"#).unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned()]).unwrap();
+        let (events, _) = crate::provider_events::tap_channel(8);
+        let adapter = CodexAdapter::with_test_app_server_spec(events, spec);
+        let cwd = scratch.path().to_string_lossy().into_owned();
+        let (mut chat, ui) = adapter.open_chat_and_state(
+            "card-resume", &cwd, Some("thread-resume"), "worker-resume", None,
+            &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([]), pi_read_only_tools:false},
+        ).unwrap();
+        let state = ui.lock().unwrap();
+        for (name, value) in [
+            ("thread", &state.status.thread),
+            ("thread_response", &state.status.thread_response),
+            ("thread_settings", &state.status.thread_settings),
+        ] {
+            assert!(!holds_turns(value), "the Chat still keeps the saved history in {name}");
+        }
+        // Metadata the status card and the permission options read is unchanged.
+        assert_eq!(state.status.thread["id"], "thread-resume");
+        assert_eq!(state.status.thread["cliVersion"], "0.167.0");
+        assert_eq!(state.status.thread_response["thread"]["id"], "thread-resume");
+        assert_eq!(state.status.thread_response["approvalPolicy"], "never");
+        assert_eq!(state.status.thread_settings["model"], "qa-model");
+        assert_eq!(state.options[0]["choices"][0]["value"], "qa-model");
+        drop(state);
+        chat.stop().unwrap();
+    }
+
     #[test]
     fn startup_permissions_are_sent_in_the_resume_frame() {
         let Some(node) = crate::providers::common::find_executable("node") else {
@@ -7874,7 +7983,8 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         let calls = std::fs::read_to_string(requests).unwrap().lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
         assert!(calls.iter().any(|call| call["method"] == "thread/resume" && call["params"] == json!({
-            "threadId":"thread-resume", "cwd":cwd, "approvalPolicy":"never", "sandbox":"danger-full-access"
+            "threadId":"thread-resume", "cwd":cwd, "approvalPolicy":"never", "sandbox":"danger-full-access",
+            "excludeTurns":true
         })));
     }
 
