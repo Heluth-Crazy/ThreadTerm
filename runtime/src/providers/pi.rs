@@ -3899,6 +3899,70 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         assert!(saw_delta, "kinds: {kinds:?}");
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "mutates PATH; run alone with --test-threads=1"]
+    fn delegated_pi_keeps_the_startup_allowlist_on_reconnect() {
+        use crate::providers::{ProviderRuntime, Providers};
+
+        let dir = tempdir().unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../qa/fixtures/fake-pi-trust.cjs");
+        let launch_log = dir.path().join("launch.jsonl");
+        fs::write(
+            dir.path().join("pi.cmd"),
+            format!(
+                "@echo off\r\nif \"%~1\"==\"--version\" (echo 1.4.0 & exit /b 0)\r\nif \"%~1\"==\"--help\" (type \"%~dp0help.txt\" & exit /b 0)\r\nset \"THREADTERM_QA_PI_TRUST_LOG={}\"\r\nset \"PI_CODING_AGENT_DIR=%~dp0agent\"\r\nnode \"{}\" %*\r\n",
+                launch_log.display(), fixture.display(),
+            ),
+        ).unwrap();
+        let help = dir.path().join("help.txt");
+        fs::write(&help, "--tools\n--no-mcp\n--no-extensions\n").unwrap();
+        let previous = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{};{previous}", dir.path().display()));
+
+        let (sender, _) = tap_channel(256);
+        let providers = Providers::for_test(vec![Arc::new(PiAdapter::new(sender))]);
+        let _ = providers.capabilities();
+        assert!(providers.pi_read_only_probe().supported);
+        let db = Database::open(&dir.path().join("runtime.sqlite")).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let child = db.create_session(CreateSession {
+            project_id: None, title: None, provider: "pi", mode: "chat",
+            native_id: None, operation_id: "delegated-pi",
+        }).unwrap();
+        db.bind_session(&child.id, dir.path().to_str(), None).unwrap();
+        db.set_session_status(&child.id, "idle", None).unwrap();
+        let rungs = crate::delegation_authority::child_rungs("pi", true);
+        crate::delegation::stage_authority(&db, &child.id, rungs[0].rows).unwrap();
+
+        for _ in 0..2 {
+            crate::service::connect_chat_session(&db, &providers, &child.id).unwrap();
+            assert_eq!(providers.roundtable_read_only_report(&child.id).unwrap()["enforced"], true);
+            assert_eq!(db.pending_fork_options(&child.id).unwrap(), json!([]));
+            providers.chat_stop(&child.id).unwrap();
+            providers.refresh_capabilities();
+        }
+
+        fs::write(&help, "--tools\n").unwrap();
+        let error = crate::service::connect_chat_session(&db, &providers, &child.id).unwrap_err();
+        assert!(error.to_string().contains("Pi could not enforce the read-only tool allowlist"));
+        assert!(!providers.chat_is_open(&child.id));
+
+        let launches: Vec<Value> = fs::read_to_string(launch_log).unwrap().lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|row: &Value| row["kind"] == "launch")
+            .collect();
+        assert_eq!(launches.len(), 2);
+        for launch in launches {
+            assert!(launch["argv"].as_array().unwrap().windows(4).any(|args| {
+                args == [json!("--no-mcp"), json!("--no-extensions"), json!("--tools"), json!("read,grep,find,ls")]
+            }));
+        }
+
+        std::env::set_var("PATH", previous);
+    }
+
     /// Deterministic end-to-end turn through the real adapter and transport,
     /// driven by a fake `pi --mode rpc` executable on PATH.
     #[cfg(windows)]

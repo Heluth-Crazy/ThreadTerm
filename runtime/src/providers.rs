@@ -2386,15 +2386,30 @@ impl Providers {
 
         // Resolved per open: reconnects rotate the session token.
         let tools = self.tool_server(session_id, provider);
+        let requires_pi_allowlist = provider == "pi"
+            && options.as_array().into_iter().flatten()
+                .any(crate::delegation_authority::is_pi_delegate_allowlist);
+        if requires_pi_allowlist {
+            // A reconnect after runtime restart may be first to need provider
+            // detection. Wait for the shared probe before deciding authority.
+            let _ = self.capabilities();
+        }
         let pi_read_only_tools = provider == "pi"
             && options.as_array().into_iter().flatten().any(|option| {
                 option.get("id").and_then(Value::as_str) == Some("roundtable-tools")
                     && option.get("value").and_then(Value::as_str) == Some("read,grep,find,ls")
             })
             && self.pi_read_only_probe().supported;
-        let opened = self.project_trust(session_id, provider).and_then(|trust| {
-            adapter.open_chat_with_startup_options(session_id, cwd, native_id, &worker_token, tools.as_ref(), &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options, pi_read_only_tools })
-        });
+        let opened = if requires_pi_allowlist && !pi_read_only_tools {
+            Err(ProviderError::new(
+                "chat_permission_restore_failed",
+                "Pi could not enforce the read-only tool allowlist. Install Pi with --tools, --no-mcp and --no-extensions support, then refresh providers.",
+            ))
+        } else {
+            self.project_trust(session_id, provider).and_then(|trust| {
+                adapter.open_chat_with_startup_options(session_id, cwd, native_id, &worker_token, tools.as_ref(), &ChatStartupOptions { project_trust:trust.as_deref(), permissions:options, pi_read_only_tools })
+            })
+        };
         if native_id.is_some()
             && opened
                 .as_ref()

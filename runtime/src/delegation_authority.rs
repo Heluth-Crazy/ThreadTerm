@@ -54,6 +54,12 @@ pub(crate) struct Rung {
 
 const PI_READ_ONLY_TOOLS: &str = "read,grep,find,ls";
 
+pub(crate) fn is_pi_delegate_allowlist(option: &Value) -> bool {
+    // Delegation stages an authority requirement. Group Chat saves the same
+    // startup key without a mode category and may fall back to instructions.
+    option["id"] == "roundtable-tools" && option["category"] == "mode"
+}
+
 /// The closest thing every parent provider does by default: ask first. Used
 /// when a parent has not saved a permission choice yet, so an existing Chat
 /// that never changed its modes keeps delegating as it did before F07.
