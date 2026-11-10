@@ -944,6 +944,7 @@ export interface RequestMap {
 
  'runtime.events.filter': [{preset:'tree'},{preset:'tree';tree:{worktrees:Worktree[];visibility?:CatalogVisibility[]}}];
  'runtime.health': [{},{version:string;epoch:string;contract:number}];
+ 'runtime.resourceSample': [{},Array<{pid:number;started:string;cpuSeconds:number;memoryBytes:number}> | null];
  /** Which console host Windows terminals run on: the in-box ConPTY or ThreadTerm's bundled OpenConsole. */
  'terminal.host': [{},{conptyHost:'system'|'bundled';bundledAvailable:boolean;pwshAvailable?:boolean}];
  'runtime.shutdown': [{operationId:string},null];
@@ -1241,6 +1242,7 @@ export interface ThreadTermBridge {
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
  revealFile?(sessionId:string,path:string):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;
+ localResourceUsage?():Promise<{cpuPercent?:number;memoryBytes:number} | null>;
  testNotification():Promise<{sent:boolean;reason?:string}>;
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
@@ -1263,6 +1265,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'quickLaunch.recent','quickLaunch.proposals.list','quickLaunch.proposals.accept','quickLaunch.proposals.reject','chat.tool.run.propose',
  'session.releaseResources.bulk',
  'session.releaseIdle','session.processes',
+ 'runtime.resourceSample',
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {

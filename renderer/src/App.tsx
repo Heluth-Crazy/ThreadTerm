@@ -135,7 +135,7 @@ function MachineApp() {
   const [error, setError] = useState<unknown>();
   const [runtimeState, setRuntimeState] = useState<RuntimeStatusState>("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools" | "computers">();
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools" | "computers" | "data">();
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorRevision, setCreatorRevision] = useState(0);
   const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string;draft?:string;mode?:"chat"|"terminal"}>();
@@ -629,7 +629,11 @@ function MachineApp() {
             onChanged={() => void refresh()}
           />
         )}
-        {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} runtimeState={runtimeState} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}} onUsage={()=>{setShellMenu(undefined);openUsage();}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
+        {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} runtimeState={runtimeState} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}} onUsage={()=>{setShellMenu(undefined);openUsage();}} onRunningAgents={remoteMachine ? undefined : () => {
+          setShellMenu(undefined);
+          setSettingsInitialTab("data");
+          setSettingsOpen(true);
+        }}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
         {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>{setGroupCreate(false);setGroupContext(undefined);setCreatorOpen(true);}} onCreateGroup={()=>{setGroupCreate(true);setGroupContext(undefined);setCreatorOpen(true);}} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onSettings={()=>setSettingsOpen(true)} onUsage={()=>{setPaletteOpen(false);openUsage();}}/>}
         {creatorOpen && data && (
           <SessionCreateDialog key={creatorRevision} data={data}
@@ -665,6 +669,7 @@ function MachineApp() {
             }}
             onOpenSession={(sessionId) => {
               setSettingsOpen(false);
+              setSettingsInitialTab(undefined);
               void navigate({ kind: "session", id: sessionId });
             }}
           />

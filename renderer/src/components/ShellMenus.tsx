@@ -44,7 +44,40 @@ export function NotificationMenu({ data, onClose, onChanged, onSession, onInbox,
   </aside>, document.body);
 }
 
-export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUsage, runtimeState = "connected" }: MenuBase & { onSettings: () => void; onUsage?: () => void; runtimeState?: RuntimeStatusState }) {
+function LocalResources({ zh, onRunningAgents }: { zh: boolean; onRunningAgents: () => void }) {
+  const readUsage = window.threadterm?.platform === "win32" ? window.threadterm.localResourceUsage : undefined;
+  const [usage, setUsage] = useState<Awaited<ReturnType<NonNullable<typeof readUsage>>>>();
+  useEffect(() => {
+    if (!readUsage) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      const next = await readUsage().catch(() => null);
+      if (!active) return;
+      setUsage(next);
+      timer = setTimeout(refresh, 2000);
+    };
+    void refresh();
+    return () => { active = false; clearTimeout(timer); };
+  }, [readUsage]);
+  const scope = zh ? "本机 ThreadTerm 资源用量" : "Local ThreadTerm resource usage";
+  const memory = usage ? `${(usage.memoryBytes / 2 ** 20).toFixed(1)} MiB` : "—";
+  return <div className="account-resources" role="group" aria-label={scope}>
+    <div>
+      <strong>{scope}</strong>
+      <small>{zh ? "桌面端、运行时与受管理的会话进程" : "Desktop, runtime and managed session processes"}</small>
+      {usage ? <div className="account-resource-values">
+        <span>CPU {usage.cpuPercent === undefined ? "—" : `${usage.cpuPercent.toFixed(1)}%`}</span>
+        <span>{zh ? "内存" : "Memory"} {memory}</span>
+      </div> : <small>{readUsage && usage === undefined
+        ? (zh ? "正在测量…" : "Measuring…")
+        : (zh ? "暂无法读取" : "Measurements unavailable")}</small>}
+    </div>
+    <button className="menu-item" onClick={onRunningAgents}>{zh ? "按会话" : "By session"}</button>
+  </div>;
+}
+
+export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUsage, onRunningAgents, runtimeState = "connected" }: MenuBase & { onSettings: () => void; onUsage?: () => void; onRunningAgents?: () => void; runtimeState?: RuntimeStatusState }) {
   const { locale } = useTranslation(); const zh = locale === "zh-CN"; const copy = (en: string, cn: string) => zh ? cn : en; const layer = useDismiss(onClose, anchor);
   const [issue, setIssue] = useState<string>();
   const language = locale;
@@ -62,6 +95,7 @@ export function AccountMenu({ data, onClose, onSettings, onChanged, anchor, onUs
     <header className="account-row"><span className="avatar account-avatar"><WbIcon name="person" /></span><span><strong>{label}</strong><small>{copy("Local profile", "本地配置")}</small></span><button className="icon-btn" aria-label={copy("Close account menu", "关闭账户菜单")} onClick={onClose}><Icon name="close" /></button></header>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
     <RuntimeStatusMenuRow state={runtimeState} locale={locale} />
+    {onRunningAgents && <LocalResources zh={zh} onRunningAgents={onRunningAgents} />}
     <div className="menu-label">{copy("Appearance", "外观")}</div>{(['light','dark','system'] as const).map(mode=><button className="menu-item" disabled={busy} key={mode} onClick={() => { const themeSelection=selectionForFamilyMode(family?.id,mode); void update({ theme: appearanceModeForSelection(themeSelection)??data.settings.theme??"system", themeSelection }); }}><Icon name={mode === "light" ? "sun" : mode === "dark" ? "moon" : "sun"} />{mode === "light" ? copy("Light", "浅色") : mode === "dark" ? copy("Dark", "深色") : copy("System", "跟随系统")}<span className="dim">{theme === mode ? "✓" : ""}</span></button>)}<button className="menu-item" disabled={busy} onClick={onSettings}><Icon name="gear" />{copy("More themes…", "更多主题…")}</button><div className="menu-sep" />
     <label className="shell-menu-field">{copy("Language", "语言")}<Select disabled={busy} value={language} onChange={event => void update({ language: event.target.value })}><option value="zh-CN">简体中文</option><option value="en">English</option></Select></label>
     <footer className="shell-menu-foot">{onUsage && <button className="menu-item" onClick={onUsage}><Icon name="layers" />{copy("Usage", "用量")}</button>}<button className="menu-item" onClick={onSettings}><Icon name="gear" />{copy("Settings", "设置")}</button></footer>

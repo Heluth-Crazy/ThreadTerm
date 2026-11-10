@@ -1866,6 +1866,10 @@
       "type": "object",
       "additionalProperties": false
     },
+    "RequestParams<\"runtime.resourceSample\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
     "RequestParams<\"terminal.host\">": {
       "type": "object",
       "additionalProperties": false
@@ -8720,6 +8724,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22runtime.health%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.resourceSample"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22runtime.resourceSample%22%3E"
         }
       },
       "required": [

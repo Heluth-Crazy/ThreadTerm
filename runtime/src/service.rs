@@ -1866,6 +1866,7 @@ impl RuntimeService {
                 "runtime.health" => Ok(
                     json!({"version":RUNTIME_VERSION,"epoch":self.db.epoch()?,"contract":crate::PROTOCOL_CONTRACT}),
                 ),
+                "runtime.resourceSample" => self.resource_sample(),
                 // The console host actually in use (conpty.rs), so xterm's Windows heuristics match it.
                 "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str(), "bundledAvailable": crate::conpty::bundled_available(), "pwshAvailable": crate::providers::common::find_executable("pwsh.exe").is_some()})),
                 "runtime.snapshot" => {
@@ -3531,6 +3532,28 @@ impl RuntimeService {
         }
         Ok(result)
     }
+    fn resource_sample(&self) -> Result<Value> {
+        #[cfg(windows)]
+        {
+            let runtime_pid = std::process::id();
+            let Some(runtime) = crate::idle_release::process_sample(runtime_pid) else {
+                return Ok(Value::Null);
+            };
+            let pids: std::collections::BTreeSet<_> = self
+                .db
+                .sessions()?
+                .iter()
+                .flat_map(|session| self.session_process_ids(session))
+                .filter(|&pid| pid != runtime_pid)
+                .collect();
+            let mut processes = vec![runtime];
+            processes.extend(pids.into_iter().filter_map(crate::idle_release::process_sample));
+            Ok(serde_json::to_value(processes)?)
+        }
+        #[cfg(not(windows))]
+        Ok(Value::Null)
+    }
+
     /// Running agents: live session trees, with memory on Windows. On demand only.
     fn session_processes(
         &self,
