@@ -288,6 +288,7 @@ fn request_lane(method: &str) -> Lane {
         "chat.tool.run.list" | "chat.tool.run.status" | "chat.tool.run.logs" => Lane::Concurrent,
         "group.prerequisites"
         | "terminal.read"
+        | "runtime.resourceSample"
         | "project.catalog.list"
         | "quickLaunch.detect"
         | "quickLaunch.port.read"

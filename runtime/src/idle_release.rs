@@ -129,9 +129,75 @@ pub(crate) fn process_memory_bytes(_pid: u32) -> Option<u64> {
     None
 }
 
+#[cfg(windows)]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProcessSample {
+    pid: u32,
+    started: String,
+    cpu_seconds: f64,
+    memory_bytes: u64,
+}
+
+#[cfg(windows)]
+pub(crate) fn process_sample(pid: u32) -> Option<ProcessSample> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT},
+        System::{
+            ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::{
+                GetProcessTimes, OpenProcess, WaitForSingleObject,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            },
+        },
+    };
+    fn ticks(time: FILETIME) -> u64 {
+        (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let (mut created, mut exit, mut kernel, mut user) = (
+            std::mem::zeroed(),
+            std::mem::zeroed(),
+            std::mem::zeroed(),
+            std::mem::zeroed(),
+        );
+        let mut memory: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        let timed = GetProcessTimes(handle, &mut created, &mut exit, &mut kernel, &mut user);
+        let measured = GetProcessMemoryInfo(
+            handle,
+            &raw mut memory,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        );
+        let running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        CloseHandle(handle);
+        (timed != 0 && measured != 0 && running).then(|| ProcessSample {
+            pid,
+            started: ticks(created).to_string(),
+            cpu_seconds: (ticks(kernel) + ticks(user)) as f64 / 10_000_000.0,
+            memory_bytes: memory.WorkingSetSize as u64,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn process_sample_keeps_identity_and_returns_resident_memory() {
+        let pid = std::process::id();
+        let first = process_sample(pid).unwrap();
+        let second = process_sample(pid).unwrap();
+        assert_eq!(first.pid, pid);
+        assert_eq!(first.started, second.started);
+        assert!(first.memory_bytes > 0);
+        assert!(second.cpu_seconds >= first.cpu_seconds);
+    }
     use chrono::Duration;
 
     #[test]

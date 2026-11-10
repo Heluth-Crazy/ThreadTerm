@@ -33,6 +33,7 @@ pub(crate) const DENIED_METHODS: &[&str] = &[
     "device.renew",
     "device.revoke",
     "runtime.shutdown",
+    "runtime.resourceSample",
     "data.status",
     "data.backup",
     "data.backup.verify",

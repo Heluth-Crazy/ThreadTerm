@@ -6,3 +6,7 @@
 .shell-menu-foot { display:flex; gap:4px; padding:6px; border-top:1px solid var(--border); }.shell-menu-foot .menu-item { flex:1; }
 .account-avatar { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; background:var(--primary-tint); color:var(--primary); font-size:12px; }.account-row small { display:block; margin-top:2px; color:var(--muted); font-size:11px; }
 .shell-menu-field { display:grid; gap:5px; padding:9px 10px; color:var(--muted); font-size:11px; }.shell-menu-field .tt-select { min-height:30px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--text); }.shell-menu-field .tt-select-trigger { min-height:28px; padding:4px 7px; }
+.account-resources { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-bottom:1px solid var(--border); font-size:12px; }
+.account-resources small { display:block; margin-top:2px; color:var(--muted); }
+.account-resources .menu-item { width:auto; flex-shrink:0; }
+.account-resource-values { display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:4px; font-variant-numeric:tabular-nums; }

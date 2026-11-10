@@ -2,7 +2,8 @@ import { app, BrowserWindow, WebContentsView, View, Menu, Tray, dialog, ipcMain,
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { release } from 'node:os';
+import { availableParallelism, release } from 'node:os';
+import { ResourceUsage } from './resourceUsage.js';
 import { canonicalRelocationPath } from './relocationPaths.js';
 import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent, type Settings } from '@threadterm/protocol';
@@ -585,6 +586,7 @@ function registerIpc(): void {
     validateRequest(method, params);
     // Narrowing a connection's events is for main's watchers; a renderer doing it would silently lose its Chat stream.
     if (method === 'runtime.events.filter') throw new Error('runtime.events.filter is not available to windows');
+    if (method === 'runtime.resourceSample') throw new Error('Raw resource samples are not available to windows');
     const runtime = runtimeFor(event);
     if (method === 'data.backup') await event.sender.session.flushStorageData();
     const requestParams = method === 'data.backup' ? { ...params as RequestParams<'data.backup'>, desktopDataRoot: app.getPath('userData') } : params;
@@ -709,6 +711,25 @@ function registerIpc(): void {
     assertTrustedRenderer(_event);
     if (!isWindowOptions(options)) throw new Error('Invalid window options');
     openFloatingWindow({ ...options, machineId: machineBindings.get(_event.sender.id).machineId });
+  });
+  const resourceUsage = new WeakMap<Electron.WebContents, ResourceUsage>();
+  ipcMain.handle('threadterm:local-resource-usage', async event => {
+    assertTrustedRenderer(event);
+    assertLocalMachine(event);
+    const runtime = await runtimeFor(event).request('runtime.resourceSample', {});
+    if (!runtime?.length) return null;
+    const desktop = app.getAppMetrics().map(metric => ({
+      pid: metric.pid,
+      started: String(metric.creationTime),
+      cpuSeconds: metric.cpu.cumulativeCPUUsage,
+      memoryBytes: metric.memory.workingSetSize * 1024,
+    }));
+    let sampler = resourceUsage.get(event.sender);
+    if (!sampler) {
+      sampler = new ResourceUsage();
+      resourceUsage.set(event.sender, sampler);
+    }
+    return sampler.measure([...desktop, ...runtime], performance.now(), availableParallelism());
   });
   ipcMain.handle('threadterm:desktop-preferences', async (event) => { assertTrustedRenderer(event); return refreshDesktopPreferences(); });
   ipcMain.handle('threadterm:open-directory', async (event, projectId: unknown, worktreeId: unknown) => {
