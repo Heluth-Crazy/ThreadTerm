@@ -307,7 +307,7 @@ fn restore_chat_options(db: &Database, providers: &Providers, session_id: &str, 
 }
 
 fn apply_pending_chat_options(db: &Database, providers: &Providers, session_id: &str, provider: &str) -> Result<()> {
-    if matches!(provider, "opencode" | "pi") {
+    if provider == "opencode" {
         crate::chat_fork::apply_pending_options(db, providers, session_id)?;
     } else {
         permission_modes::apply_pending(db, providers, session_id, provider)?;

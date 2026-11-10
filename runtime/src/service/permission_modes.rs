@@ -246,6 +246,18 @@ pub(super) fn apply_pending(
         if option["id"] == RESET_OPTION {
             continue;
         }
+        if provider == "pi" && crate::delegation_authority::is_pi_delegate_allowlist(option) {
+            // The flags were set at launch. Save the restriction for the next
+            // worker before clearing the pending options.
+            if providers.roundtable_read_only_report(session_id)?["enforced"] != true {
+                return Err(ProviderError::new(
+                    "chat_permission_restore_failed",
+                    "Pi did not report the read-only tool allowlist after launch.",
+                ).into());
+            }
+            remember(db, session_id, provider, &json!({"options": [option]}))?;
+            continue;
+        }
         if provider == "claude"
             && option["id"] == "model"
             && startup.as_array().into_iter().flatten().any(|row| {
