@@ -97,6 +97,7 @@ pub mod mcp_delegation;
 pub(crate) mod preview;
 pub(crate) mod browser_tools;
 pub mod mcp_host;
+pub mod mcp_lazy;
 
 pub mod turn_speed;
 pub mod chat_projection;

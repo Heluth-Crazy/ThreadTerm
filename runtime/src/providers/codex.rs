@@ -59,6 +59,8 @@ impl CodexAdapter {
         // One app-server per Chat, so `-c` overrides attach this session's
         // tool server without touching the user's config.toml.
         let mut args = codex_tool_server_overrides(tools);
+        #[cfg(not(test))]
+        args.extend(codex_mcp_lazy_overrides_for_process());
         args.push("app-server".into());
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         #[cfg(test)]
@@ -365,20 +367,22 @@ fn codex_startup_permissions(options: &Value) -> Result<CodexStartupPermissions,
     Ok(permissions)
 }
 
-/// `-c mcp_servers.<name>.*` overrides for a session's tool server. Values
-/// are TOML literal strings (Windows backslashes kept), or JSON-escaped
-/// basic strings when a value contains a quote or newline.
+/// TOML value quoting for `-c` overrides: literal strings keep Windows
+/// backslashes readable, basic strings carry quotes and newlines.
+fn codex_toml_value(value: &str) -> String {
+    if value.contains('\'') || value.contains('\n') {
+        serde_json::to_string(value).unwrap_or_default()
+    } else {
+        format!("'{value}'")
+    }
+}
+
+/// `-c mcp_servers.<name>.*` overrides for a session's tool server.
 fn codex_tool_server_overrides(tools: Option<&ChatToolServer>) -> Vec<String> {
     let Some(tools) = tools else {
         return Vec::new();
     };
-    let toml = |value: &str| {
-        if value.contains('\'') || value.contains('\n') {
-            serde_json::to_string(value).unwrap_or_default()
-        } else {
-            format!("'{value}'")
-        }
-    };
+    let toml = codex_toml_value;
     let prefix = format!("mcp_servers.{}", tools.name);
     let args = tools.args.iter().map(|arg| toml(arg)).collect::<Vec<_>>().join(",");
     let env = tools
@@ -406,6 +410,184 @@ fn codex_tool_server_overrides(tools: Option<&ChatToolServer>) -> Vec<String> {
         overrides.extend(["-c".into(),format!("{prefix}.tools.{tool}.approval_mode='approve'")]);
     }
     overrides
+}
+
+/// Default idle stop for a lazily started MCP server.
+const MCP_LAZY_IDLE_SECS: u64 = 600;
+
+/// Inputs of the lazy wrapping, injected so tests never read the real
+/// `~/.codex` or the real runtime data directory.
+#[derive(Debug, Clone)]
+struct McpLazySettings {
+    mcp_executable: std::path::PathBuf,
+    cache_dir: std::path::PathBuf,
+    idle_secs: u64,
+}
+
+/// Reads the user's Codex config text and wraps the Playwright and CodeGraph
+/// stdio servers in the on-demand shim. Every other server is untouched.
+fn codex_mcp_lazy_overrides(config_text: &str, settings: &McpLazySettings) -> Vec<String> {
+    let Ok(document) = config_text.parse::<toml_edit::DocumentMut>() else {
+        return Vec::new();
+    };
+    let Some(servers) = document
+        .get("mcp_servers")
+        .and_then(toml_edit::Item::as_table)
+    else {
+        return Vec::new();
+    };
+    let names = servers
+        .iter()
+        .map(|(name, _)| name.to_owned())
+        .collect::<Vec<_>>();
+    let mut overrides = Vec::new();
+    for name in names {
+        let Some((key, item)) = servers.get_key_value(&name) else {
+            continue;
+        };
+        // Only a bare key can be addressed as `mcp_servers.<name>`; a quoted
+        // key (dots, spaces) needs a different spelling and is left alone.
+        if !is_bare_toml_key(key) || name == "threadterm" {
+            continue;
+        }
+        let Some(server) = item.as_table_like() else {
+            continue;
+        };
+        if server.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(command) = server.get("command").and_then(toml_edit::Item::as_str) else {
+            continue;
+        };
+        let server_args = server
+            .get("args")
+            .and_then(toml_edit::Item::as_array)
+            .map(|args| {
+                args.iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !is_playwright_server(&name, command, &server_args)
+            && !is_codegraph_server(&name, command)
+        {
+            continue;
+        }
+        let mut lazy_args = vec![
+            "lazy".to_owned(),
+            "--name".to_owned(),
+            name.clone(),
+            "--cache-dir".to_owned(),
+            settings.cache_dir.to_string_lossy().into_owned(),
+            "--idle-secs".to_owned(),
+            settings.idle_secs.to_string(),
+            "--".to_owned(),
+            command.to_owned(),
+        ];
+        lazy_args.extend(server_args);
+        let prefix = format!("mcp_servers.{name}");
+        overrides.extend([
+            "-c".to_owned(),
+            format!(
+                "{prefix}.command={}",
+                codex_toml_value(&settings.mcp_executable.to_string_lossy())
+            ),
+        ]);
+        overrides.extend([
+            "-c".to_owned(),
+            format!(
+                "{prefix}.args=[{}]",
+                lazy_args
+                    .iter()
+                    .map(|arg| codex_toml_value(arg))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ]);
+    }
+    overrides
+}
+
+fn is_bare_toml_key(key: &toml_edit::Key) -> bool {
+    match key.as_repr().and_then(|repr| repr.as_raw().as_str()) {
+        Some(raw) => raw == key.get(),
+        None => key
+            .get()
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-')),
+    }
+}
+
+fn is_playwright_server(name: &str, command: &str, args: &[String]) -> bool {
+    let mentions = |value: &str| value.to_ascii_lowercase().contains("@playwright/mcp");
+    name.eq_ignore_ascii_case("playwright")
+        || mentions(command)
+        || args.iter().any(|arg| mentions(arg))
+}
+
+fn is_codegraph_server(name: &str, command: &str) -> bool {
+    name.eq_ignore_ascii_case("codegraph")
+        || std::path::Path::new(command)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("codegraph"))
+}
+
+/// `THREADTERM_MCP_LAZY=0` turns the wrapping off in every build.
+fn mcp_lazy_enabled(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// Debug-only idle override, gated like `THREADTERM_QA_PROVIDER_BIN`.
+#[cfg(not(test))]
+fn mcp_lazy_idle_secs() -> u64 {
+    #[cfg(debug_assertions)]
+    if let Ok(value) = std::env::var("THREADTERM_MCP_LAZY_IDLE_SECS") {
+        if let Ok(seconds) = value.trim().parse::<u64>() {
+            return seconds;
+        }
+    }
+    MCP_LAZY_IDLE_SECS
+}
+
+#[cfg(not(test))]
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("HOME").filter(|value| !value.is_empty()))
+        .map(std::path::PathBuf::from)
+}
+
+/// The wiring used by a real Codex launch. Missing config, shim or data
+/// directory means no wrapping, exactly as the Chat opened before.
+#[cfg(not(test))]
+fn codex_mcp_lazy_overrides_for_process() -> Vec<String> {
+    if !mcp_lazy_enabled(std::env::var("THREADTERM_MCP_LAZY").ok().as_deref()) {
+        return Vec::new();
+    }
+    let Some(mcp_executable) = crate::delegation::default_mcp_executable() else {
+        return Vec::new();
+    };
+    let environment = crate::environment::provider_environment();
+    let codex_home = crate::environment::value(&environment.vars, "CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".codex")));
+    let Some(codex_home) = codex_home else {
+        return Vec::new();
+    };
+    let Ok(config_text) = std::fs::read_to_string(codex_home.join("config.toml")) else {
+        return Vec::new();
+    };
+    let Ok(config) = crate::config::RuntimeConfig::load() else {
+        return Vec::new();
+    };
+    let settings = McpLazySettings {
+        mcp_executable,
+        cache_dir: config.data_dir.join("mcp-lazy"),
+        idle_secs: mcp_lazy_idle_secs(),
+    };
+    codex_mcp_lazy_overrides(&config_text, &settings)
 }
 
 fn codex_auto_approved_threadterm_tools(tools: &ChatToolServer) -> Vec<&'static str> {
@@ -8243,6 +8425,114 @@ createInterface({input:process.stdin}).on('line', line => {
         assert!(count <= before + 1, "concurrent calls started {} refreshes", count - before);
         wait_catalog_ui(&mut receiver);
         assert_eq!(std::fs::read_to_string(scratch.path().join("requests")).unwrap().lines().count(), before + 1);
+    }
+
+    fn lazy_settings() -> McpLazySettings {
+        McpLazySettings {
+            mcp_executable: std::path::PathBuf::from(r"C:\rt\threadterm-v3-mcp.exe"),
+            cache_dir: std::path::PathBuf::from(r"D:\data\mcp-lazy"),
+            idle_secs: 600,
+        }
+    }
+
+    #[test]
+    fn mcp_lazy_wraps_playwright_and_codegraph_with_exact_args() {
+        let config = r#"
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+
+[mcp_servers.codegraph]
+command = "codegraph.cmd"
+args = ["serve", "--mcp"]
+"#;
+        assert_eq!(
+            codex_mcp_lazy_overrides(config, &lazy_settings()),
+            vec![
+                "-c",
+                r"mcp_servers.playwright.command='C:\rt\threadterm-v3-mcp.exe'",
+                "-c",
+                r"mcp_servers.playwright.args=['lazy','--name','playwright','--cache-dir','D:\data\mcp-lazy','--idle-secs','600','--','npx','@playwright/mcp@latest']",
+                "-c",
+                r"mcp_servers.codegraph.command='C:\rt\threadterm-v3-mcp.exe'",
+                "-c",
+                r"mcp_servers.codegraph.args=['lazy','--name','codegraph','--cache-dir','D:\data\mcp-lazy','--idle-secs','600','--','codegraph.cmd','serve','--mcp']",
+            ]
+        );
+        // The `-y` spelling and a full path are recognized too.
+        let config = r#"
+[mcp_servers.pw]
+command = "npx"
+args = ["-y", "@playwright/mcp"]
+
+[mcp_servers.cg]
+command = "C:\\Tools\\codegraph.exe"
+args = ["serve", "--mcp"]
+"#;
+        let overrides = codex_mcp_lazy_overrides(config, &lazy_settings()).join("\n");
+        assert!(overrides.contains("mcp_servers.pw.args=['lazy','--name','pw','--cache-dir','D:\\data\\mcp-lazy','--idle-secs','600','--','npx','-y','@playwright/mcp']"));
+        assert!(overrides.contains("mcp_servers.cg.args=['lazy','--name','cg','--cache-dir','D:\\data\\mcp-lazy','--idle-secs','600','--','C:\\Tools\\codegraph.exe','serve','--mcp']"));
+    }
+
+    #[test]
+    fn mcp_lazy_leaves_other_servers_alone() {
+        let config = r#"
+[mcp_servers.node_repl]
+command = "node"
+args = ["repl.js"]
+
+[mcp_servers.docs]
+url = "https://example.com/mcp"
+
+[mcp_servers.disabled]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+enabled = false
+
+[mcp_servers.threadterm]
+command = "C:\\rt\\threadterm-v3-mcp.exe"
+args = []
+
+[mcp_servers."play wright"]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+"#;
+        assert!(codex_mcp_lazy_overrides(config, &lazy_settings()).is_empty());
+        assert!(codex_mcp_lazy_overrides("not toml", &lazy_settings()).is_empty());
+        assert!(codex_mcp_lazy_overrides("", &lazy_settings()).is_empty());
+    }
+
+    #[test]
+    fn mcp_lazy_quotes_windows_paths_and_values() {
+        let settings = McpLazySettings {
+            mcp_executable: std::path::PathBuf::from(r"C:\Tools\O'Brien\threadterm-v3-mcp.exe"),
+            cache_dir: std::path::PathBuf::from(r"D:\data\mcp lazy"),
+            idle_secs: 30,
+        };
+        let config = r#"
+[mcp_servers.codegraph]
+command = "C:\\Tools\\O'Brien\\codegraph.exe"
+args = ["serve", "it's"]
+"#;
+        let overrides = codex_mcp_lazy_overrides(config, &settings);
+        assert_eq!(
+            overrides,
+            vec![
+                "-c",
+                r#"mcp_servers.codegraph.command="C:\\Tools\\O'Brien\\threadterm-v3-mcp.exe""#,
+                "-c",
+                r#"mcp_servers.codegraph.args=['lazy','--name','codegraph','--cache-dir','D:\data\mcp lazy','--idle-secs','30','--',"C:\\Tools\\O'Brien\\codegraph.exe",'serve',"it's"]"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_lazy_kill_switch_disables_wrapping() {
+        assert!(mcp_lazy_enabled(None));
+        assert!(mcp_lazy_enabled(Some("1")));
+        assert!(mcp_lazy_enabled(Some("true")));
+        assert!(!mcp_lazy_enabled(Some("0")));
+        assert_eq!(MCP_LAZY_IDLE_SECS, 600);
     }
 
 }
