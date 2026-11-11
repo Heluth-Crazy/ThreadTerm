@@ -108,6 +108,7 @@ export function createLocalFileTarget(options: {
             case 'filesystem.files': result = await service.files(path); break;
             case 'filesystem.search': result = await service.search(path, params as RequestParams<'filesystem.search'>); break;
             case 'filesystem.preview.read': result = await service.preview(path, params as RequestParams<'filesystem.preview.read'>); break;
+            case 'filesystem.document.read': result = await service.document(path, params as RequestParams<'filesystem.document.read'>); break;
             default: throw new Error('Unsupported local file method');
           }
         }

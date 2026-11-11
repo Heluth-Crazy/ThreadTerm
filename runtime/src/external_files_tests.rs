@@ -308,6 +308,29 @@ fn text_reads_are_readonly_bounded_fingerprinted_and_do_not_write() {
 }
 
 #[test]
+fn document_reads_are_registered_word_only_and_signature_checked() {
+    let f = Fixture::new();
+    let path = f.file("report.docx", b"PK\x03\x04external word bytes");
+    let file = f.open(&path);
+    let first = call(&f, "document.read", json!({"id":file["id"],"offset":0,"limit":1024}));
+    assert_eq!(first["offset"], 0);
+    assert_eq!(first["size"], 23);
+    assert_eq!(first["eof"], true);
+    assert_eq!(
+        BASE64.decode(first["chunk"].as_str().unwrap()).unwrap(),
+        b"PK\x03\x04external word bytes"
+    );
+    f.file("protected.docx", &[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    let protected = f.open(&f.path("protected.docx"));
+    fails(&f, "document.read", json!({"id":protected["id"],"offset":0,"limit":1}), "document_protected");
+    f.file("damaged.docx", b"not a zip");
+    let damaged = f.open(&f.path("damaged.docx"));
+    fails(&f, "document.read", json!({"id":damaged["id"],"offset":0,"limit":1}), "unsupported_document");
+    fails(&f, "document.read", json!({"id":file["id"],"offset":0,"limit":1024*1024+1}), "invalid_limit");
+    fails(&f, "document.read", json!({"id":"unknown","offset":0,"limit":1}), "external_file_unknown");
+}
+
+#[test]
 fn images_use_magic_bytes_and_a_four_megabyte_cap() {
     let f = Fixture::new();
     let path = f.file("picture.PNG", b"\x89PNG\r\n\x1a\nimage");

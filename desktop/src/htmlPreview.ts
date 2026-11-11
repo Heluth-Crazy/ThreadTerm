@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { open, realpath, stat } from 'node:fs/promises';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
+import { open, readFile, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { OFFICE_PREVIEW_MAX_BYTES } from '@threadterm/protocol';
 import type {
   BrowserWindow,
   CustomScheme,
@@ -33,6 +35,9 @@ const MIME_TYPES: Readonly<Record<string, string>> = Object.freeze({
 
 export interface HtmlPreviewGrant {
   id: string;
+  /** `html` is a saved page (or a remote page streamed through the runtime); `document` is one
+   * Word file and the bundled viewer that draws it (`design.md` §4.2). */
+  kind: 'html' | 'document';
   url: string;
   rootRealPath: string;
   entryPath: string;
@@ -43,6 +48,17 @@ export interface HtmlPreviewGrant {
   rendererProcessId?: number;
   rendererOsProcessId?: number;
   hostSource?: HtmlPreviewHostSource;
+  document?: HtmlPreviewDocument;
+}
+
+export interface HtmlPreviewDocumentSource {
+  read(offset: number, limit: number): Promise<{ path: string; size: number; offset: number; fingerprint?: string; chunk: string; eof: boolean }>;
+}
+
+export interface HtmlPreviewDocument {
+  source: HtmlPreviewDocumentSource;
+  size: number;
+  fingerprint: string;
 }
 
 export interface HtmlPreviewHostSource {
@@ -68,6 +84,9 @@ export interface HtmlPreviewResolvedFile {
 export interface HtmlPreviewGrantManagerOptions {
   capacity?: number;
   randomId?: () => string;
+  /** `viewer/<name>` for a document grant: the exact files of the packaged viewer, mapped
+   * from name to real path once at startup. Never a project file. */
+  documentViewer?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
 }
 
 export interface HtmlPreviewRequestDecisionInput {
@@ -139,6 +158,19 @@ export function parsePreviewUrl(value: string): { grantId: string; path: string 
   } catch { return undefined; }
 }
 
+/** Build the exact-name allow list for `viewer/<name>` from the packaged viewer directory. */
+export function loadDocumentViewerFiles(directory: string): Map<string, string> {
+  const files = new Map<string, string>();
+  try {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const real = realpathSync(join(directory, entry.name));
+      if (statSync(real).isFile()) files.set(entry.name, real);
+    }
+  } catch { /* an unbuilt viewer simply cannot open a document */ }
+  return files;
+}
+
 function cspAncestor(value: string): string {
   if (value === 'file:') return value;
   try {
@@ -167,6 +199,28 @@ export function buildPreviewCsp(grantId: string, appFrameAncestor: string, remot
     `base-uri ${own}`,
     "object-src 'none'",
     `frame-ancestors ${cspAncestor(appFrameAncestor)} ${own}`,
+  ].join('; ');
+}
+
+/** Word viewer CSP (`design.md` §4.2, measured in spike B §5): no remote, no eval, no worker,
+ * no frame. The viewer's own script/style and the grant's `/document` are the only loads. */
+export function buildDocumentCsp(grantId: string, appFrameAncestor: string): string {
+  if (!GRANT_ID.test(grantId)) throw new Error('Invalid preview grant');
+  const own = `${HTML_PREVIEW_SCHEME}://${grantId}`;
+  return [
+    "default-src 'none'",
+    `script-src ${own}`,
+    `style-src ${own} 'unsafe-inline'`,
+    `img-src ${own} data: blob:`,
+    `font-src ${own} data: blob:`,
+    `connect-src ${own}`,
+    "media-src 'none'",
+    "worker-src 'none'",
+    "frame-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    `frame-ancestors ${cspAncestor(appFrameAncestor)}`,
   ].join('; ');
 }
 
@@ -219,12 +273,16 @@ export class HtmlPreviewGrantManager {
   private readonly grants = new Map<string, HtmlPreviewGrant>();
   private readonly retiredOwners = new Set<number>();
   private readonly randomId: () => string;
+  private readonly documentViewer: Map<string, string>;
   private readonly revokeListeners = new Set<(grant: HtmlPreviewGrant) => void>();
 
   constructor(options: HtmlPreviewGrantManagerOptions = {}) {
     this.capacity = options.capacity ?? HTML_PREVIEW_DEFAULT_CAPACITY;
     if (!Number.isSafeInteger(this.capacity) || this.capacity < 1 || this.capacity > 4096) throw new Error('Invalid preview grant capacity');
     this.randomId = options.randomId ?? (() => randomBytes(16).toString('hex'));
+    this.documentViewer = options.documentViewer instanceof Map
+      ? new Map(options.documentViewer)
+      : new Map(Object.entries(options.documentViewer ?? {}));
   }
 
   async create(input: HtmlPreviewGrantInput): Promise<HtmlPreviewGrant> {
@@ -238,15 +296,9 @@ export class HtmlPreviewGrantManager {
       if (!(await stat(rootRealPath)).isDirectory()) throw new Error('Preview root is not a directory');
       await this.resolvePath(rootRealPath, entryPath);
     }
-    let id = '';
-    for (let attempts = 0; attempts < 8 && !id; attempts += 1) {
-      const candidate = this.randomId();
-      if (!GRANT_ID.test(candidate)) throw new Error('Preview grant ids must contain 128 random bits');
-      if (!this.grants.has(candidate)) id = candidate;
-    }
-    if (!id) throw new Error('Could not allocate a preview grant');
+    const id = this.allocateId();
     const grant: HtmlPreviewGrant = {
-      id, rootRealPath, entryPath, ownerWebContentsId: input.ownerWebContentsId,
+      id, kind: 'html', rootRealPath, entryPath, ownerWebContentsId: input.ownerWebContentsId,
       frameName: input.frameName, remoteContentAllowed: input.remoteContentAllowed === true,
       url: `${HTML_PREVIEW_SCHEME}://${id}/${encodedPreviewPath(entryPath)}`,
       ...(input.hostSource ? { hostSource: input.hostSource } : {}),
@@ -254,6 +306,41 @@ export class HtmlPreviewGrantManager {
     this.grants.set(id, grant);
     while (this.grants.size > this.capacity) this.revoke(this.grants.keys().next().value!);
     return cloneGrant(grant);
+  }
+
+  /** A document grant (`design.md` §4.2): one Word file, streamed through its source, and the
+   * bundled viewer. The first read supplies the size and fingerprint every later chunk is checked
+   * against; nothing is buffered here. Remote content is impossible by construction. */
+  async createDocument(input: { ownerWebContentsId: number; frameName: string; source: HtmlPreviewDocumentSource }): Promise<HtmlPreviewGrant> {
+    if (!Number.isSafeInteger(input.ownerWebContentsId) || input.ownerWebContentsId < 1 || !validFrameName(input.frameName)) throw new Error('Invalid preview owner');
+    if (!this.documentViewer.has('docx.html')) throw new Error('The document viewer is unavailable. Rebuild the desktop application.');
+    const first = await input.source.read(0, 1);
+    if (first.offset !== 0 || !Number.isSafeInteger(first.size) || first.size < 0 || first.size > OFFICE_PREVIEW_MAX_BYTES
+      || typeof first.fingerprint !== 'string' || !first.fingerprint || first.fingerprint.length > 1024) {
+      throw new PreviewRequestError(404, 'Document source is invalid');
+    }
+    const id = this.allocateId();
+    const entryPath = 'viewer/docx.html';
+    const grant: HtmlPreviewGrant = {
+      id, kind: 'document', rootRealPath: '', entryPath, ownerWebContentsId: input.ownerWebContentsId,
+      frameName: input.frameName, remoteContentAllowed: false,
+      url: `${HTML_PREVIEW_SCHEME}://${id}/${entryPath}`,
+      document: { source: input.source, size: first.size, fingerprint: first.fingerprint },
+    };
+    this.grants.set(id, grant);
+    while (this.grants.size > this.capacity) this.revoke(this.grants.keys().next().value!);
+    return cloneGrant(grant);
+  }
+
+  private allocateId(): string {
+    let id = '';
+    for (let attempts = 0; attempts < 8 && !id; attempts += 1) {
+      const candidate = this.randomId();
+      if (!GRANT_ID.test(candidate)) throw new Error('Preview grant ids must contain 128 random bits');
+      if (!this.grants.has(candidate)) id = candidate;
+    }
+    if (!id) throw new Error('Could not allocate a preview grant');
+    return id;
   }
 
   get(id: string): HtmlPreviewGrant | undefined {
@@ -280,6 +367,7 @@ export class HtmlPreviewGrantManager {
   setRemoteContentAllowed(id: string, allowed: boolean): HtmlPreviewGrant {
     const grant = this.touch(id);
     if (!grant) throw new Error('Unknown preview grant');
+    if (grant.kind === 'document') throw new Error('Document previews do not allow remote content');
     grant.remoteContentAllowed = allowed;
     return cloneGrant(grant);
   }
@@ -334,6 +422,22 @@ export class HtmlPreviewGrantManager {
     if (!parsed) throw new PreviewRequestError(404, 'Preview not found');
     const grant = this.touch(parsed.grantId);
     if (!grant) throw new PreviewRequestError(404, 'Preview not found');
+    if (grant.kind === 'document') {
+      if (parsed.path === 'document') {
+        return { grant: cloneGrant(grant), path: 'document', size: grant.document!.size, mimeType: 'application/octet-stream' };
+      }
+      if (parsed.path.startsWith('viewer/') && !parsed.path.slice(7).includes('/')) {
+        const name = parsed.path.slice(7);
+        const file = this.documentViewer.get(name);
+        if (file) {
+          try {
+            const metadata = await stat(file);
+            if (metadata.isFile()) return { grant: cloneGrant(grant), path: file, size: metadata.size, mimeType: mimeTypeForPath(name) };
+          } catch { /* fall through to the 404 below */ }
+        }
+      }
+      throw new PreviewRequestError(404, 'Preview not found');
+    }
     if (grant.hostSource) {
       const metadata = await grant.hostSource.read(parsed.path, 0, 1);
       if (!Number.isSafeInteger(metadata.size) || metadata.size < 0 || metadata.size > HTML_PREVIEW_MAX_BYTES) throw new PreviewRequestError(413, 'Preview file is too large');
@@ -393,7 +497,11 @@ function responseHeaders(file: HtmlPreviewResolvedFile, appFrameAncestor: string
     'Access-Control-Allow-Origin': 'null',
     'Vary': 'Origin',
   });
-  if (/^text\/html(?:;|$)/.test(file.mimeType)) headers.set('Content-Security-Policy', buildPreviewCsp(file.grant.id, appFrameAncestor, file.grant.remoteContentAllowed));
+  if (/^text\/html(?:;|$)/.test(file.mimeType)) {
+    headers.set('Content-Security-Policy', file.grant.kind === 'document'
+      ? buildDocumentCsp(file.grant.id, appFrameAncestor)
+      : buildPreviewCsp(file.grant.id, appFrameAncestor, file.grant.remoteContentAllowed));
+  }
   return headers;
 }
 
@@ -445,6 +553,33 @@ async function readHostPreviewFile(file: HtmlPreviewResolvedFile, manager: HtmlP
   return bytes.buffer as ArrayBuffer;
 }
 
+/** The document body is pulled one 1 MiB chunk at a time (`design.md` §4.2). The main process
+ * never holds the file: only the chunk in flight, and it is released with the response.
+ * A mismatch, a revoked grant or a vanished source errors the stream. */
+function streamDocument(file: HtmlPreviewResolvedFile, manager: HtmlPreviewGrantManager): ReadableStream<Uint8Array> {
+  const document = file.grant.document!;
+  let offset = 0;
+  let ended = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        if (!manager.get(file.grant.id)) throw new PreviewRequestError(404, 'Preview grant was revoked');
+        if (ended || file.size === 0) { ended = true; controller.close(); return; }
+        const result = await document.source.read(offset, 1024 * 1024);
+        const chunk = Buffer.from(result.chunk, 'base64');
+        if (result.offset !== offset || result.size !== file.size || result.fingerprint !== document.fingerprint
+          || chunk.length > 1024 * 1024 || offset + chunk.length > file.size || (!chunk.length && offset < file.size)
+          || result.eof !== (offset + chunk.length === file.size)) throw new PreviewRequestError(404, 'Preview file changed');
+        offset += chunk.length;
+        if (chunk.length) controller.enqueue(new Uint8Array(chunk));
+        if (result.eof) { ended = true; controller.close(); }
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+}
+
 async function protocolResponse(request: Request, manager: HtmlPreviewGrantManager, appFrameAncestor: string): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-DNS-Prefetch-Control': 'off' } });
   try {
@@ -453,6 +588,13 @@ async function protocolResponse(request: Request, manager: HtmlPreviewGrantManag
       const active = manager.get(file.grant.id);
       if (!active) throw new PreviewRequestError(404, 'Preview grant was revoked');
       return new Response(null, { status: 200, headers: responseHeaders({ ...file, grant: active }, appFrameAncestor) });
+    }
+    if (file.grant.kind === 'document') {
+      const active = manager.get(file.grant.id);
+      if (!active) throw new PreviewRequestError(404, 'Preview grant was revoked');
+      const headers = responseHeaders({ ...file, grant: active }, appFrameAncestor);
+      if (file.path === 'document') return new Response(streamDocument(file, manager), { status: 200, headers });
+      return new Response(new Uint8Array(await readFile(file.path)), { status: 200, headers });
     }
     const body = file.grant.hostSource ? await readHostPreviewFile(file, manager) : await readExactPreviewFile(file);
     const active = manager.get(file.grant.id);

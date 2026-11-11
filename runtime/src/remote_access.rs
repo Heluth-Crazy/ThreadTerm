@@ -1920,6 +1920,8 @@ mod tests {
         for denied in [
             "filesystem.browse",
             "filesystem.preview.read",
+            "filesystem.document.read",
+            "filesystem.external.document.read",
             "attachment.upload",
             "attachment.read",
             "runtime.shutdown",

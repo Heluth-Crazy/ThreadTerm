@@ -151,6 +151,17 @@ test('external files have a small read-only registration contract',()=>{
  validateRequest('filesystem.sheet.close',{handle:sheetHandle});
  for(const params of [{},{handle:''},{handle:'not-hex'},{handle:sheetHandle,extra:1}])assert.throws(()=>validateRequest('filesystem.sheet.close',params));
  validateResult('filesystem.sheet.close',null);
+ // Word preview (design.md §4.1): the preview chunk shape with the Office cap and 1 MiB limit.
+ const chunk={path:'D:/docs/Report.docx',size:2048,offset:0,fingerprint:'12:3:2048:modified',chunk:'UEsDBA==',eof:false};
+ validateRequest('filesystem.document.read',{projectId:'project',path:'Report.docx',offset:0,limit:1024*1024});
+ validateRequest('filesystem.document.read',{projectId:'project',worktreePath:'D:/w',path:'Report.docm',offset:1024,limit:1024});
+ validateRequest('filesystem.external.document.read',{id:opened.id,offset:0,limit:1024*1024});
+ for(const params of [{},{projectId:'project',path:'Report.docx'},{projectId:'project',path:'Report.docx',offset:-1,limit:1},{projectId:'project',path:'Report.docx',offset:0,limit:0},{projectId:'project',path:'Report.docx',offset:0,limit:1024*1024+1},{projectId:'project',path:'Report.docx',offset:0,limit:1,extra:true}])assert.throws(()=>validateRequest('filesystem.document.read',params));
+ for(const params of [{},{id:opened.id},{id:opened.id,offset:0},{id:opened.id,offset:0,limit:1024*1024+1},{id:opened.id,offset:0,limit:1,path:'x'}])assert.throws(()=>validateRequest('filesystem.external.document.read',params));
+ validateResult('filesystem.document.read',chunk);
+ validateResult('filesystem.external.document.read',chunk);
+ for(const result of [{},{...chunk,size:'2048'},{...chunk,chunk:3},{...chunk,eof:'no'}])assert.throws(()=>validateResult('filesystem.document.read',result));
+ for(const method of ['filesystem.document.read','filesystem.external.document.read'])assert.ok(METHODS.includes(method),method);
  for(const method of ['filesystem.sheet.open','filesystem.external.sheet.open','filesystem.sheet.rows','filesystem.sheet.close'])assert.ok(METHODS.includes(method),method);
  assert.equal(OFFICE_PREVIEW_MAX_BYTES,100*1024*1024);
  assert.equal(SHEET_MAX_ROWS_REQUEST,500);

@@ -31,6 +31,7 @@ import { isLargeFileError } from "../largeFileWindow";
 import { officeKind } from "../officeFiles";
 /** The sheet grid is a rare viewer: it loads only when a workbook is opened. */
 const SheetView = lazy(() => import("./SheetView").then((module) => ({ default: module.SheetView })));
+const DocxPreview = lazy(() => import("./DocxPreview").then((module) => ({ default: module.DocxPreview })));
 import "./file-workspace.css";
 import "./file-bar.css";
 import { FileBarActions, FileBreadcrumb } from "./FileBarActions";
@@ -449,8 +450,8 @@ function FileWorkspaceInstance({
         }
       };
       const imageHint = path === initialPath ? assetKind : undefined;
-      if (nextView !== "diff" && officeKind(path) === "sheet") {
-        // Before the image and text reads: a workbook is never read as bytes here, and no
+      if (nextView !== "diff" && (officeKind(path) === "sheet" || officeKind(path) === "docx")) {
+        // Before the image and text reads: an Office file is never read as bytes here, and no
         // document, editor, Git or blame state survives the switch (R1, R4).
         loaded.current = undefined;
         base.current = "";
@@ -1218,9 +1219,12 @@ function FileWorkspaceInstance({
               ]} />
               {embeddedClose()}
             </div>
-            <Suspense fallback={<p className="note" role="status">{zh ? '正在加载表格视图…' : 'Loading sheet view…'}</p>}>
-              <SheetView key={officeFile.key} {...scope} path={officeFile.path} externalId={officeFile.externalId} zh={zh} active={active}
-                comments={commentsHost} onExternalChange={onExternalChange} />
+            <Suspense fallback={<p className="note" role="status">{officeKind(officeFile.path) === "docx" ? (zh ? '正在加载文档视图…' : 'Loading document view…') : (zh ? '正在加载表格视图…' : 'Loading sheet view…')}</p>}>
+              {officeKind(officeFile.path) === "docx"
+                ? <DocxPreview key={officeFile.key} {...scope} path={officeFile.path} externalId={officeFile.externalId} zh={zh} active={active}
+                    onIssue={message => setIssue(message)} onExternalChange={onExternalChange} />
+                : <SheetView key={officeFile.key} {...scope} path={officeFile.path} externalId={officeFile.externalId} zh={zh} active={active}
+                    comments={commentsHost} onExternalChange={onExternalChange} />}
             </Suspense>
           </>
         ) : largeFile ? (

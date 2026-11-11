@@ -89,6 +89,7 @@ pub mod transport;
 pub mod windows_security;
 pub mod workspace_services;
 pub mod host_files;
+pub(crate) mod document_read;
 pub mod attachments;
 
 pub const PROTOCOL_VERSION: u32 = 1;

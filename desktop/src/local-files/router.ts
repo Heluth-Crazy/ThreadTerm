@@ -17,9 +17,9 @@ export interface BackendPreference {
 }
 
 const fileMethods = new Set<string>([
-  'filesystem.browse', 'filesystem.preview.read', 'filesystem.list', 'filesystem.resolve',
+  'filesystem.browse', 'filesystem.preview.read', 'filesystem.document.read', 'filesystem.list', 'filesystem.resolve',
   'filesystem.external.open', 'filesystem.external.read', 'filesystem.external.image',
-  'filesystem.external.readWindow', 'filesystem.external.list', 'filesystem.external.forget',
+  'filesystem.external.readWindow', 'filesystem.external.document.read', 'filesystem.external.list', 'filesystem.external.forget',
   'filesystem.read', 'filesystem.readWindow', 'filesystem.image',
   'filesystem.write', 'filesystem.create', 'filesystem.rename', 'filesystem.delete',
   'filesystem.files', 'filesystem.search',

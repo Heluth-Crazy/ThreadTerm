@@ -313,6 +313,9 @@ fn request_lane(method: &str) -> Lane {
         | "filesystem.list"
         | "filesystem.read"
         | "filesystem.readWindow"
+        // Word chunks are read-lane work: a document stream must not queue behind other requests.
+        | "filesystem.document.read"
+        | "filesystem.external.document.read"
         // Sheet windows are read-lane work: a load runs in the helper and a window is
         // an in-memory slice, so a slow one must not queue behind other requests.
         | "filesystem.sheet.open"
@@ -1290,6 +1293,8 @@ mod decoder_tests {
             "review.changes",
             "filesystem.search",
             "filesystem.readWindow",
+            "filesystem.document.read",
+            "filesystem.external.document.read",
             "filesystem.sheet.open",
             "filesystem.sheet.rows",
             "filesystem.sheet.close",

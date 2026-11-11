@@ -1085,6 +1085,10 @@ export interface RequestMap {
  'chat.connect': [{sessionId:string;leaseEpoch:number;operationId:string;/** Only an explicit Continue or send may resume a released chat. */resume?:boolean},ChatConnectionState];
  'filesystem.browse': [{path?:string},{path?:string;parent?:string|null;entries:{name:string;path:string;kind:'directory'|'file';size:number}[];truncated:boolean}];
  'filesystem.preview.read': [FileScope&{path:string;offset:number;limit:number},{path:string;size:number;offset:number;fingerprint:string;chunk:string;eof:boolean}];
+ /** Word preview: the same bounded chunk shape, but only `.docx .docm`, the 100 MiB Office cap
+  * and a zip/OLE2 signature check at offset 0 (`design.md` §4.1). */
+ 'filesystem.document.read': [FileScope&{path:string;offset:number;limit:number},{path:string;size:number;offset:number;fingerprint:string;chunk:string;eof:boolean}];
+ 'filesystem.external.document.read': [{id:string;offset:number;limit:number},{path:string;size:number;offset:number;fingerprint:string;chunk:string;eof:boolean}];
  'attachment.upload': [{uploadId:string;sessionId:string;name:string;size:number;offset:number;chunk:string;final:boolean},{offset:number;assetId?:string;hostPath?:string}];
  'attachment.read': [{assetId:string;offset?:number;limit?:number},{assetId:string;hostPath:string;name:string;size:number;offset:number;chunk:string;eof:boolean}];
  'filesystem.list': [FileScope&{path:string},FileEntry[]];
@@ -1271,6 +1275,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 (METHODS as unknown as string[]).unshift(
  'editorNavigation.configuration','editorNavigation.configure','editorNavigation.prepare','editorNavigation.status','editorNavigation.sync','editorNavigation.definition','editorNavigation.documentSymbols','editorNavigation.cancel','editorNavigation.release',
  'filesystem.browse','filesystem.preview.read','attachment.upload','attachment.read',
+ 'filesystem.document.read','filesystem.external.document.read',
  'filesystem.external.readWindow','filesystem.readWindow',
  'filesystem.sheet.open','filesystem.sheet.rows','filesystem.sheet.close','filesystem.external.sheet.open',
  'git.undo','git.undo.list',
@@ -1285,7 +1290,9 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'editorNavigation.prepare':['projectId','bufferGroup'],'editorNavigation.status':['contextId'],'editorNavigation.sync':['contextId'],'editorNavigation.definition':['contextId','path','requestId'],'editorNavigation.documentSymbols':['contextId','path','requestId'],'editorNavigation.cancel':['contextId','requestId'],'editorNavigation.release':['contextId'],
- 'filesystem.preview.read':['projectId','path'],'attachment.upload':['uploadId','sessionId','name'],'attachment.read':['assetId'],
+ 'filesystem.preview.read':['projectId','path'],'filesystem.document.read':['projectId','path'],
+ 'filesystem.external.document.read':['id'],
+ 'attachment.upload':['uploadId','sessionId','name'],'attachment.read':['assetId'],
  'git.history.plan':['projectId','hash'],'git.cherryPick':['projectId','hash','operationId'],'git.revert':['projectId','hash','operationId'],
  'git.reset':['projectId','hash','expectedHead','operationId'],'git.operation.abort':['projectId','kind','operationId'],'git.operation.continue':['projectId','kind','operationId'],
  'browser.approval.read':['sessionId','turnId','approvalId'],
@@ -1393,7 +1400,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(m==='editorNavigation.documentSymbols'&&(!id(params.contextId)||!id(params.requestId)||!path(params.path)||!Number.isSafeInteger(params.version)||Number(params.version)<0)) throw new Error('Invalid editor navigation symbols request');
   if(m==='editorNavigation.cancel'&&(!id(params.contextId)||!id(params.requestId))) throw new Error('Invalid editor navigation cancellation');
  }
- if(m==='filesystem.preview.read'||m==='attachment.upload'||m==='attachment.read') {
+ if(m==='filesystem.preview.read'||m==='filesystem.document.read'||m==='filesystem.external.document.read'||m==='attachment.upload'||m==='attachment.read') {
   for(const key of ['offset','limit',...(m==='attachment.upload'?['size']:[])]) {
    const value=params[key];
    if(value!==undefined&&(!Number.isSafeInteger(value)||Number(value)<(key==='limit'?1:0))) throw new Error(`Invalid ${key}`);
@@ -1725,7 +1732,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m.startsWith('group.')&&m!=='group.create'&&m!=='group.list'&&m!=='group.read'&&m!=='group.prerequisites'&&params.expectedRevision!==undefined&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<1)) throw new Error('Invalid group revision');
  // Relative to the session's worktree root: no drive, no leading separator, no `..` segment.
  if((m==='session.documents.pin'||m==='session.documents.unpin')&&(!pathOk(params.path)||/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(String(params.path)))) throw new Error('Invalid path');
- const maxLimit=m==='filesystem.preview.read'||m==='attachment.read'?1024*1024:m==='terminal.read'?(params.tail===true?8192:1024*1024):m==='chat.read'?2000:200;
+ const maxLimit=m==='filesystem.preview.read'||m==='filesystem.document.read'||m==='filesystem.external.document.read'||m==='attachment.read'?1024*1024:m==='terminal.read'?(params.tail===true?8192:1024*1024):m==='chat.read'?2000:200;
  if(params.limit!==undefined&&(!Number.isInteger(params.limit)||Number(params.limit)<1||Number(params.limit)>maxLimit)) throw new Error('Invalid page limit');
 }
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {

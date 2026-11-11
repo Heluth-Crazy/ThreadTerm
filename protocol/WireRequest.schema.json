@@ -3911,6 +3911,53 @@
         "projectId"
       ]
     },
+    "RequestParams<\"filesystem.document.read\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"filesystem.external.document.read\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "offset",
+        "limit"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"attachment.upload\">": {
       "type": "object",
       "properties": {
@@ -11085,6 +11132,58 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22filesystem.preview.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.document.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.document.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.document.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.document.read%22%3E"
         }
       },
       "required": [

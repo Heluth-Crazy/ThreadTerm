@@ -89,6 +89,24 @@ test('external windows resolve registered IDs and preserve stale-token errors',a
   }finally{await rm(fixture.folder,{recursive:true,force:true});}
 });
 
+test('external document reads use the registered ID and the shared Word checks',async()=>{
+  const folder=await mkdtemp(join(tmpdir(),'tt-local-doc-'));
+  const file=join(folder,'report.docx');
+  await writeFile(file,Buffer.concat([Buffer.from('PK\x03\x04','binary'),Buffer.from('word bytes')]));
+  try{
+    const row={id:'doc-1',canonicalPath:file,name:'report.docx',source:'dialog' as const,openedAt:source};
+    const calls:string[]=[];
+    const target=createLocalFileReferenceTarget({service:new LocalFileService({trashItem:async()=>{}}),coordination:async command=>{calls.push(command);if(command==='desktop.files.external.get')return row;throw Error(`unexpected ${command}`);}});
+    const first=await target.request('filesystem.external.document.read',{id:row.id,offset:0,limit:1024});
+    assert.equal(first.offset,0);
+    assert.equal(first.size,14);
+    assert.equal(first.eof,true);
+    assert.deepEqual(Buffer.from(first.chunk,'base64'),Buffer.from('PK\x03\x04word bytes','binary'));
+    await assert.rejects(target.request('filesystem.external.document.read',{id:row.id,offset:0,limit:1024*1024+1}),/invalid_limit/);
+    assert.ok(calls.includes('desktop.files.external.get'));
+  }finally{await rm(folder,{recursive:true,force:true});}
+});
+
 test('external open, list and read preserve Runtime filesystem timestamp precision', async () => {
   const fixture = await setup();
   try {

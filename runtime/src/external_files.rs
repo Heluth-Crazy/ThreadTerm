@@ -20,6 +20,10 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "external_file_unavailable",
     "file_too_large",
     "file_changed",
+    "unsupported_document",
+    "document_protected",
+    "invalid_offset",
+    "invalid_limit",
     "file_not_found",
     "file_unavailable",
     "binary_file",
@@ -51,6 +55,7 @@ pub(crate) fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Op
         "filesystem.external.open"
             | "filesystem.external.read"
             | "filesystem.external.readWindow"
+            | "filesystem.external.document.read"
             | "filesystem.external.image"
             | "filesystem.external.list"
             | "filesystem.external.forget"
@@ -65,6 +70,7 @@ pub(crate) fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Op
         "filesystem.external.list" => &[],
         "filesystem.external.forget" => &["id", "operationId"],
         "filesystem.external.readWindow" => &["id", "offset", "maxBytes", "changeToken"],
+        "filesystem.external.document.read" => &["id", "offset", "limit"],
         _ => &["id"],
     };
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -101,6 +107,12 @@ pub(crate) fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Op
             object.get("offset").and_then(Value::as_u64).ok_or_else(|| anyhow!("invalid_request"))?,
             object.get("maxBytes").map(|value| value.as_u64().ok_or_else(|| anyhow!("invalid_request"))).transpose()?,
             object.get("changeToken").map(|value| value.as_str().ok_or_else(|| anyhow!("invalid_request"))).transpose()?,
+        )?,
+        "filesystem.external.document.read" => read_document(
+            db,
+            string("id")?,
+            object.get("offset").and_then(Value::as_u64).ok_or_else(|| anyhow!("invalid_offset"))?,
+            object.get("limit").and_then(Value::as_u64).ok_or_else(|| anyhow!("invalid_limit"))?,
         )?,
         "filesystem.external.image" => read(db, string("id")?, true)?,
         "filesystem.external.list" => list(db)?,
@@ -356,6 +368,21 @@ fn read_window(db: &Database, id: &str, offset: u64, max_bytes: Option<u64>, cha
         }
     })?;
     Ok(json!({"content":window.content,"start":window.start,"end":window.end,"size":window.size,"changeToken":window.change_token,"startsMidLine":window.starts_mid_line,"endsMidLine":window.ends_mid_line}))
+}
+
+/// The external variant of `filesystem.document.read`: only a registered ID, resolved to the same
+/// canonical path `readWindow` uses, then the shared bounded/signature-checked reader.
+fn read_document(db: &Database, id: &str, offset: u64, limit: u64) -> Result<Value> {
+    let path = lookup(db, id)?;
+    let (canonical, _) = canonical_file(Path::new(&path))?;
+    crate::document_read::read_page(&canonical, offset, limit).map_err(|error| {
+        match error.to_string().as_str() {
+            "file_not_file" => anyhow!("external_file_not_file"),
+            "file_not_found" => anyhow!("external_file_not_found"),
+            "file_unavailable" => anyhow!("external_file_unavailable"),
+            _ => error,
+        }
+    })
 }
 
 fn list(db: &Database) -> Result<Value> {

@@ -29,8 +29,8 @@ import { localPageShotPath } from './pageComments.js';
 import { qaOpenExternalPathsOverride } from './externalFiles.js';
 import { createLocalFileBackend, registerLocalFileBackendIpc } from './local-files/index.js';
 
-import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
-import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
+import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow, loadDocumentViewerFiles } from './htmlPreview.js';
+import { registerHtmlPreviewIpc, type HtmlPreviewDocumentChunk } from './htmlPreviewIpc.js';
 import { BACKGROUND_IMAGE_PRIVILEGED_SCHEME, backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc } from './backgroundImages.js';
 import { buildThemeExport, importThemePackImages, qaThemeExportOverride } from './themePackCore.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
@@ -45,7 +45,7 @@ import type { TLSSocket } from 'node:tls';
 // One call for every privileged scheme: Electron keeps only the last registerSchemesAsPrivileged call.
 protocol.registerSchemesAsPrivileged([HTML_PREVIEW_PRIVILEGED_SCHEME, BACKGROUND_IMAGE_PRIVILEGED_SCHEME]);
 app.commandLine.appendSwitch('enable-features', mergePreviewIsolationFeatures(app.commandLine.getSwitchValue('enable-features')));
-const htmlPreviewGrants = new HtmlPreviewGrantManager();
+const htmlPreviewGrants = new HtmlPreviewGrantManager({ documentViewer: loadDocumentViewerFiles(join(__dirname, 'doc-viewer')) });
 let htmlPreviewPreloadReady = false;
 const prepareAppSession = createAppSessionPreparer((appSession: Electron.Session) => {
   installAppCspHeader(appSession);
@@ -536,7 +536,8 @@ function registerIpc(): void {
     prepare: async event => { const {machineId}=machineBindings.get(event.sender.id);if(machineId!=='local')await machineBrowsers!.prepare(machineId,machines.list().find(machine=>machine.id===machineId)?.name??'Computer',event.sender,runtimeFor(event)); },
     released: partition => machineBrowsers?.release(partition),
   });
-  registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady, event => machineBindings.get(event.sender.id).machineId !== 'local');
+  registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady, event => machineBindings.get(event.sender.id).machineId !== 'local',
+    async (event, method, params) => (await localFiles.request(machineBindings.get(event.sender.id).machineId, runtimeFor(event), method as Method, params as RequestParams<Method>)) as unknown as HtmlPreviewDocumentChunk);
   registerBackgroundImageIpc({ folder: backgroundImagesFolder(), assertTrusted: assertTrustedRenderer, isPackaged: app.isPackaged });
   registerPageComments(assertTrustedRenderer, async after => {
     const references = await adminRuntime.request('reviewDrafts.assetReferences', after ? { after, limit: 200 } : { limit: 200 });

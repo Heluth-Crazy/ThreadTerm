@@ -7788,6 +7788,70 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"filesystem.document.read\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "offset",
+        "fingerprint",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.external.document.read\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "offset",
+        "fingerprint",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"attachment.upload\">": {
       "type": "object",
       "properties": {
@@ -15560,6 +15624,58 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22filesystem.preview.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.document.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.document.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.document.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.document.read%22%3E"
         }
       },
       "required": [

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IpcMainInvokeEvent } from 'electron';
@@ -8,17 +8,56 @@ import type { RuntimeClient } from './runtime-client.js';
 import { createHtmlPreviewHandler, parseHtmlPreviewCommand } from './htmlPreviewIpc.js';
 import { HtmlPreviewGrantManager } from './htmlPreview.js';
 
-test('preview IPC accepts only bounded grant and revoke commands', () => {
+test('preview IPC accepts only bounded grant, document grant and revoke commands', () => {
   const grant = { type: 'grant', projectId: 'project', path: 'site/index.html', frameName: 'tt-preview-fixture123', remote: false };
   assert.deepEqual(parseHtmlPreviewCommand(grant), grant);
+  const workspaceDocument = { type: 'grantDocument', projectId: 'project', path: 'docs/report.docx', frameName: 'tt-preview-fixture123' };
+  assert.deepEqual(parseHtmlPreviewCommand(workspaceDocument), workspaceDocument);
+  assert.deepEqual(parseHtmlPreviewCommand({ ...workspaceDocument, worktreePath: 'D:/w' }), { ...workspaceDocument, worktreePath: 'D:/w' });
+  const externalDocument = { type: 'grantDocument', externalId: 'external-1', frameName: 'tt-preview-fixture123' };
+  assert.deepEqual(parseHtmlPreviewCommand(externalDocument), externalDocument);
   assert.deepEqual(parseHtmlPreviewCommand({ type: 'selectAll', frameName: 'tt-preview-fixture123' }), { type: 'selectAll', frameName: 'tt-preview-fixture123' });
   assert.deepEqual(parseHtmlPreviewCommand({ type: 'revoke', id: 'a'.repeat(32) }), { type: 'revoke', id: 'a'.repeat(32) });
   for (const input of [null, [], {}, { ...grant, root: '/private' }, { ...grant, remote: 'yes' },
     { ...grant, path: '' }, { ...grant, path: 'a'.repeat(16385) }, { ...grant, projectId: 'x\0y' },
     { ...grant, frameName: 'other-frame' }, { ...grant, worktreePath: 1 },
+    { ...workspaceDocument, remote: false }, { ...workspaceDocument, externalId: 'external-1' },
+    { ...workspaceDocument, projectId: '' }, { ...workspaceDocument, path: '' }, { ...workspaceDocument, path: 'a'.repeat(16385) },
+    { ...externalDocument, projectId: 'project' }, { ...externalDocument, path: 'report.docx' }, { ...externalDocument, externalId: '' },
+    { type: 'grantDocument', frameName: 'tt-preview-fixture123' },
     { type: 'revoke', id: '../grant' }, { type: 'revoke', id: 'a'.repeat(32), owner: 2 }]) {
     assert.throws(() => parseHtmlPreviewCommand(input), /Invalid preview command/);
   }
+});
+
+test('a document grant reads through the injected local-file router', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tt-doc-ipc-'));
+  await writeFile(join(root, 'docx.html'), '<!doctype html>');
+  const uploaded = Buffer.from('PK\x03\x04word bytes');
+  const manager = new HtmlPreviewGrantManager({ documentViewer: new Map([['docx.html', join(root, 'docx.html')]]) });
+  const frame = { detached: false, framesInSubtree: [] };
+  const sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
+  const event = { sender, senderFrame: frame, trusted: true };
+  const calls: { method: string; params: Record<string, unknown> }[] = [];
+  const handler = createHtmlPreviewHandler(manager, () => {}, () => ({ request: async () => ({}) }) as unknown as RuntimeClient, () => true, () => false,
+    async (_event, method, params) => {
+      calls.push({ method, params });
+      const offset = params.offset as number, limit = params.limit as number;
+      const chunk = uploaded.subarray(offset, offset + limit);
+      return { path: 'report.docx', size: uploaded.length, offset, fingerprint: 'f', chunk: chunk.toString('base64'), eof: offset + chunk.length === uploaded.length };
+    });
+  const workspace = await handler(event as never, { type: 'grantDocument', projectId: 'project', path: 'docs/report.docx', frameName: 'tt-preview-document123' });
+  assert.ok(workspace?.id);
+  assert.equal(calls[0]?.method, 'filesystem.document.read');
+  assert.deepEqual(calls[0]?.params, { projectId: 'project', path: 'docs/report.docx', offset: 0, limit: 1 });
+  manager.revoke(workspace!.id);
+  const external = await handler(event as never, { type: 'grantDocument', externalId: 'external-1', frameName: 'tt-preview-document123' });
+  assert.ok(external?.id);
+  assert.equal(calls.at(-1)?.method, 'filesystem.external.document.read');
+  assert.deepEqual(calls.at(-1)?.params, { id: 'external-1', offset: 0, limit: 1 });
+  manager.revoke(external!.id);
+  await assert.rejects(createHtmlPreviewHandler(manager, () => {}, () => ({ request: async () => ({}) }) as unknown as RuntimeClient, () => true, () => false)(event as never, { type: 'grantDocument', externalId: 'external-1', frameName: 'tt-preview-document123' }), /unavailable/);
+  await rm(root, { recursive: true, force: true });
 });
 
 test('preview IPC requires a trusted main frame and fences grant ownership', async () => {

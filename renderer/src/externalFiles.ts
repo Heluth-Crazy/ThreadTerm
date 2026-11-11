@@ -46,6 +46,13 @@ export function externalFileError(error:unknown,zh:boolean):string {
  const code=externalFileErrorCode(error);
  return code&&errors[code]?errors[code][zh?1:0]:(zh?'无法打开文件，请重新连接后重试。':'Unable to open the file. Reconnect and retry.');
 }
+/** The Word line for any registered or workspace document: `file_too_large` means 100 MiB here. */
+export function externalDocumentError(error:unknown,zh:boolean):string {
+ const message=error instanceof Error?error.message:String(error);
+ if(/\bfile_too_large\b/.test(message)) return zh?'文件太大，无法预览（超过 100 MiB）。':'Too large to preview (over 100 MiB).';
+ return externalFileError(error,zh);
+}
+
 /** The workbook line for a registered external file: `file_too_large` means 100 MiB here. */
 export function externalSheetError(error:unknown,zh:boolean):string {
  const message=error instanceof Error?error.message:String(error);

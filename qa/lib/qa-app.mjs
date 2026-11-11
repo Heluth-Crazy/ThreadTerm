@@ -1,7 +1,7 @@
 // Builds a throwaway ThreadTerm app (desktop main/preload/html-preview preload bundles plus the renderer) into a temp
 // directory. A harness hands Electron that directory instead of the repository root, so it never runs the user's own
 // desktop-dist bundle: that one can be stale, and rebuilding it while the user's dev app is running is not allowed.
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,8 @@ export async function buildQaApp({ root = repoRoot, outDir, viteOptions = {} } =
       ...viteOptions,
       build: { outDir: join(appDir, 'renderer'), emptyOutDir: true, ...viteOptions.build },
     });
+    // Word previews load the built viewer beside main.cjs, exactly as the packaged app does.
+    await cp(join(root, 'desktop-dist/doc-viewer'), join(appDir, 'doc-viewer'), { recursive: true, force: true }).catch(() => {});
     // Electron reads name and version from here (app.getName/app.getVersion); keep them equal to the repository's.
     const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
     await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, main: 'main.cjs' }));
