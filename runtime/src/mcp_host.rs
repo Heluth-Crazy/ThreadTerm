@@ -466,6 +466,10 @@ mod tests {
             "filesystem.external.image",
             "filesystem.external.list",
             "filesystem.external.forget",
+            "filesystem.external.sheet.open",
+            "filesystem.sheet.open",
+            "filesystem.sheet.rows",
+            "filesystem.sheet.close",
         ] {
             assert!(!names.contains(&name.to_owned()));
             let result = call(&config, json!({"name":name,"arguments":{}})).await;

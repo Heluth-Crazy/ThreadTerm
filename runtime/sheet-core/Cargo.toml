@@ -1,0 +1,20 @@
+[package]
+name = "threadterm-sheet-core"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+description = "Workbook parsing, store and windowing shared by the runtime helper and the main-process WebAssembly reader"
+
+[lib]
+name = "threadterm_sheet_core"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# One parser for every host (design.md §3.2). The streaming cell reader keeps a
+# 100 MiB workbook at ~365 MiB instead of ~1.2 GiB (spike A, validation.md S1).
+calamine = "0.38"
+serde_json = "1.0"
+# The decompressed-size cap is read from the zip central directory before calamine
+# parses anything, so the archive crate is a dependency here too. Same version and
+# features calamine resolves (owner approved, prd.md 2026-11-11 / validation.md S3).
+zip = { version = "=9.5.1", default-features = false, features = ["deflate"] }

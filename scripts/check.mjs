@@ -391,7 +391,9 @@ if (!fast) {
   if (!cargo) fail('cargo is required for the full gate; install Rust (rustup) or run npm run check:fast');
   if (!workingTree) notes.push('rust tests always run on the working tree of runtime/');
   for (const note of notes) console.log(`     ${note}`);
-  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
+  // `--workspace`: the sheet core (runtime/sheet-core) is a workspace member with its own
+  // tests, and a bare `cargo test` at this manifest would test only the runtime package.
+  const rustArgs = ['test', '--locked', '--workspace', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
   for (const skip of skips) rustArgs.push('--skip', skip);
   // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
   // The explicit --test-threads argument above still enforces the caller's concurrency limit.

@@ -313,6 +313,12 @@ fn request_lane(method: &str) -> Lane {
         | "filesystem.list"
         | "filesystem.read"
         | "filesystem.readWindow"
+        // Sheet windows are read-lane work: a load runs in the helper and a window is
+        // an in-memory slice, so a slow one must not queue behind other requests.
+        | "filesystem.sheet.open"
+        | "filesystem.sheet.rows"
+        | "filesystem.sheet.close"
+        | "filesystem.external.sheet.open"
         | "filesystem.external.read"
         | "filesystem.external.readWindow"
         | "filesystem.external.image"
@@ -599,6 +605,8 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     // Leases follow the principal's control connections; this one counts until serve_control returns.
     let _presence = service.leases.connect(&principal);
     let _preview_presence = service.previews.connect(&principal);
+    // Sheet preview handles end with the principal's last control connection.
+    let _sheet_presence = crate::sheet_preview::connect(&principal);
     let _browser_presence = service.browser_tools.connect_control(&principal)?;
     // A dropped control connection revokes all contexts owned by that principal,
     // including a concurrent startup or lookup that ignored client cancellation.
@@ -1282,6 +1290,10 @@ mod decoder_tests {
             "review.changes",
             "filesystem.search",
             "filesystem.readWindow",
+            "filesystem.sheet.open",
+            "filesystem.sheet.rows",
+            "filesystem.sheet.close",
+            "filesystem.external.sheet.open",
             "filesystem.external.read",
             "filesystem.external.readWindow",
             "filesystem.external.image",

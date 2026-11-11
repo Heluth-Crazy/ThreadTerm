@@ -2065,7 +2065,9 @@ pub fn read_window_path(path: &Path, offset: u64, max_bytes: Option<u64>, expect
     Ok(FileWindow { content, start, end, size, change_token: token, starts_mid_line, ends_mid_line: end < size && line_end.is_none() })
 }
 
-fn file_change_token(metadata: &fs::Metadata) -> Result<String> {
+/// The size + nanosecond mtime version fence, shared with the sheet host so the two
+/// cannot drift (`design.md` §2).
+pub(crate) fn file_change_token(metadata: &fs::Metadata) -> Result<String> {
     let modified = metadata.modified()?.duration_since(std::time::UNIX_EPOCH).map_err(|_| anyhow!("file_unavailable"))?;
     Ok(format!("{}:{}:{}", metadata.len(), modified.as_secs(), modified.subsec_nanos()))
 }

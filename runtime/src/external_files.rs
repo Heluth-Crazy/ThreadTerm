@@ -284,6 +284,14 @@ fn open(db: &Database, path: &str, source: &str, session_id: Option<&str>) -> Re
     )
 }
 
+/// A registered external file's canonical path, for a caller that needs the file but
+/// not its bytes (`filesystem.external.sheet.open`). Same checks as `read_window`.
+pub(crate) fn resolve_registered(db: &Database, id: &str) -> Result<PathBuf> {
+    let path = lookup(db, id)?;
+    let (canonical, _) = canonical_file(Path::new(&path))?;
+    Ok(canonical)
+}
+
 fn lookup(db: &Database, id: &str) -> Result<String> {
     db.transaction(|tx| {
         tx.query_row("SELECT path FROM external_files WHERE id=?", [id], |row| {

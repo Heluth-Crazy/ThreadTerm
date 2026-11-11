@@ -15,6 +15,10 @@ mod bounded_read_tests;
 
 #[cfg(windows)]
 pub mod bootstrap;
+// Sheet preview host and its helper loop (design.md §3.3). `sheet_worker` also builds
+// without Windows; the host's helper job is Windows-only.
+pub mod sheet_preview;
+pub mod sheet_worker;
 pub mod config;
 pub mod agent_review;
 #[cfg(test)] mod agent_review_tests;

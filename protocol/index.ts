@@ -14,6 +14,13 @@ export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 6 * 1024 * 1024;
 /** Byte budget of one `chat.snapshot` page (newest page when no cursor is sent). */
 export const CHAT_SNAPSHOT_PAGE_BYTES = 2 * 1024 * 1024;
+/** D2/R3: the largest Office file either read method previews. One definition per
+ * language; the sheet core and the runtime host check the same value. */
+export const OFFICE_PREVIEW_MAX_BYTES = 100 * 1024 * 1024;
+/** Rows one `filesystem.sheet.rows` call may ask for. */
+export const SHEET_MAX_ROWS_REQUEST = 500;
+/** Columns one `filesystem.sheet.rows` call may ask for. */
+export const SHEET_MAX_COLS_REQUEST = 200;
 /** Composer image attachments: at most this many images, whose data-URL strings sum to at most MAX_CHAT_IMAGE_BYTES.
  * Shared by the renderer composer and the desktop attach path so the picker never inlines more than the composer accepts. */
 export const MAX_CHAT_IMAGES = 4;
@@ -1091,6 +1098,13 @@ export interface RequestMap {
  'filesystem.external.forget': [{id:string;operationId:string},null];
  'filesystem.read': [FileScope&{path:string},FileDocument];
  'filesystem.readWindow': [FileScope&{path:string}&LargeFileWindowRequest,LargeFileWindow];
+ /** Opens a workbook for windowed preview. Reads only the sheet list; `rows` starts the load. */
+ 'filesystem.sheet.open': [FileScope&{path:string},SheetWorkbook];
+ 'filesystem.external.sheet.open': [{id:string},SheetWorkbook];
+ /** One window, or `state:'loading'` while the sheet loads. Never waits for a load. */
+ 'filesystem.sheet.rows': [{handle:string;sheet:number;start:number;count:number;columnStart?:number;columnCount?:number},SheetRows];
+ /** Idempotent: ends the helper (runtime host) or reader (main host) for this handle. */
+ 'filesystem.sheet.close': [{handle:string},null];
  'filesystem.image': [FileScope&{path:string},{mime:'image/png'|'image/jpeg'|'image/gif'|'image/webp';data:string}];
  'filesystem.write': [FileScope&{path:string;content:string;expectedFingerprint:string;operationId:string},FileDocument];
  'draft.list': [FileScope,Draft[]];
@@ -1258,6 +1272,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'editorNavigation.configuration','editorNavigation.configure','editorNavigation.prepare','editorNavigation.status','editorNavigation.sync','editorNavigation.definition','editorNavigation.documentSymbols','editorNavigation.cancel','editorNavigation.release',
  'filesystem.browse','filesystem.preview.read','attachment.upload','attachment.read',
  'filesystem.external.readWindow','filesystem.readWindow',
+ 'filesystem.sheet.open','filesystem.sheet.rows','filesystem.sheet.close','filesystem.external.sheet.open',
  'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
@@ -1283,6 +1298,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'filesystem.external.open':['path','source'],
  'filesystem.external.read':['id'],'filesystem.external.readWindow':['id'],'filesystem.external.image':['id'],'filesystem.external.forget':['id','operationId'],
+ 'filesystem.external.sheet.open':['id'],'filesystem.sheet.rows':['handle'],'filesystem.sheet.close':['handle'],
  'session.launch.read':['sessionId'],
  'catalog.visibility.update':['kind','id','visibility','operationId'],
  'session.resume':['sessionId','operationId'],
@@ -1315,6 +1331,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'chat.options':['sessionId'],'chat.backgroundTasks.list':['sessionId'],'chat.backgroundTask.stop':['sessionId','taskId','operationId'],'chat.option.set':['sessionId','optionId','value','operationId'],
  'chat.connection':['sessionId'],'chat.context.read':['sessionId'],'chat.connect':['sessionId','operationId'],
  'filesystem.list':['projectId'], 'filesystem.read':['projectId','path'], 'filesystem.readWindow':['projectId','path'],
+ 'filesystem.sheet.open':['projectId','path'],
  'filesystem.write':['projectId','path','expectedFingerprint','operationId'],
  'draft.list':['projectId'],'draft.put':['projectId','path','baseFingerprint','operationId'],
  'draft.delete':['id','operationId'],'git.status':['projectId'],'git.diff':['projectId','path'],
@@ -1394,6 +1411,24 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   const allowed=m==='filesystem.readWindow'?['projectId','worktreePath','path','offset','maxBytes','changeToken']:['id','offset','maxBytes','changeToken'];
   if(Object.keys(params).some(key=>!allowed.includes(key))||!Number.isSafeInteger(params.offset)||Number(params.offset)<0||params.maxBytes!==undefined&&(!Number.isSafeInteger(params.maxBytes)||Number(params.maxBytes)<4||Number(params.maxBytes)>256*1024)||params.changeToken!==undefined&&(typeof params.changeToken!=='string'||!params.changeToken||params.changeToken.length>128)) throw new Error('Invalid file window request');
  }
+ // Sheet windows (design.md §3.1): four methods, the same limits the host and the core enforce.
+ if(m==='filesystem.sheet.open'||m==='filesystem.external.sheet.open') {
+  const allowed=m==='filesystem.sheet.open'?['projectId','worktreePath','path']:['id'];
+  if(Object.keys(params).some(key=>!allowed.includes(key))) throw new Error('Invalid sheet open request');
+  for(const key of m==='filesystem.sheet.open'?['projectId','path']:['id']) if(typeof params[key]!=='string'||!params[key]) throw new Error('Invalid sheet open request');
+ }
+ if(m==='filesystem.sheet.rows') {
+  const allowed=['handle','sheet','start','count','columnStart','columnCount'];
+  if(Object.keys(params).some(key=>!allowed.includes(key))||typeof params.handle!=='string'||!/^[0-9a-f]{1,64}$/.test(params.handle)) throw new Error('Invalid sheet window request');
+  const bounded=(key:string,max:number,min=0)=>{
+   const value=params[key];
+   if(value===undefined) return;
+   if(!Number.isSafeInteger(value)||Number(value)<min||Number(value)>max) throw new Error('Invalid sheet window request');
+  };
+  bounded('sheet',1_000_000); bounded('start',1_000_000_000); bounded('count',SHEET_MAX_ROWS_REQUEST,1); bounded('columnStart',100_000); bounded('columnCount',SHEET_MAX_COLS_REQUEST,1);
+  if(!Number.isSafeInteger(params.sheet)||!Number.isSafeInteger(params.start)||!Number.isSafeInteger(params.count)) throw new Error('Invalid sheet window request');
+ }
+ if(m==='filesystem.sheet.close'&&(Object.keys(params).length!==1||typeof params.handle!=='string'||!/^[0-9a-f]{1,64}$/.test(params.handle))) throw new Error('Invalid sheet close request');
  if((m==='git.undo'||m==='git.undo.list')&&Object.keys(params).some(key=>!['projectId','worktreePath',...(m==='git.undo'?['id','operationId']:[])].includes(key))) throw new Error('Invalid undo request');
  if(['git.history.plan','git.cherryPick','git.revert','git.reset'].includes(m)&&!/^[a-fA-F0-9]{7,64}$/.test(String(params.hash))) throw new Error('Invalid commit hash');
  if(m==='git.revert'&&params.mainline!==undefined&&(!Number.isSafeInteger(params.mainline)||Number(params.mainline)<1)) throw new Error('Invalid mainline parent');
@@ -1866,6 +1901,21 @@ export interface FileDocument { path:string; content:string; fingerprint:string;
 export interface LargeFileWindow { content:string; start:number; end:number; size:number; changeToken:string; startsMidLine:boolean; endsMidLine:boolean }
 /** The opaque token fences navigation against a file changed after the first window. */
 export interface LargeFileWindowRequest { offset:number; maxBytes?:number; changeToken?:string }
+/** One cell of a sheet window: `null`, text, or `[text, kind]` for a number, date,
+ * boolean or error. The renderer draws `text` only; nothing here is a formula. */
+export type SheetCell = null | string | [text:string, kind:'n'|'d'|'b'|'e'];
+export interface SheetInfo { name:string; visible:boolean }
+/** What `filesystem.sheet.open` answers: the sheet list only, no cells. */
+export interface SheetWorkbook { handle:string; size:number; changeToken:string; sheets:SheetInfo[] }
+/** One window of rows, absolute 0-based coordinates so a used range that starts at C5 keeps
+ * its real row numbers and letters. `loading` answers immediately; the client polls. */
+export interface SheetRows { state:'loading'|'ready'; /** 0..1 while loading, when known. */ progress?:number;
+ /** Last used row + 1; 0 while loading. */ totalRows:number; totalColumns:number; start:number; columnStart:number;
+ /** Row-major, trailing empty cells trimmed; empty while loading. */ rows:SheetCell[][];
+ /** Merged regions touching the window: `[row, column, rowSpan, columnSpan]`. */
+ merges?:[row:number, column:number, rowSpan:number, columnSpan:number][];
+ /** A cell's text was cut at the cell text limit. */ clipped?:boolean;
+ /** The sheet passed a store limit; rows beyond `totalRows` are not available. */ truncated?:boolean }
 export interface Draft { id:string; projectId:string; worktreePath?:string; path:string; content:string; baseFingerprint:string; revision:number; updatedAt:string }
 export interface GitChange { path:string; originalPath?:string; indexStatus:string; worktreeStatus:string; untracked:boolean }
 export type GitHeadSnapshot = {kind:'branch';oid:string;target:string}|{kind:'detached';oid:string}|{kind:'unborn';target:string};

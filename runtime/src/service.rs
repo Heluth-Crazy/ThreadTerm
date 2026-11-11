@@ -1684,6 +1684,27 @@ impl RuntimeService {
             )
             .map_err(file_reference_rpc_error);
         }
+        if request.method.starts_with("filesystem.sheet.")
+            || request.method == "filesystem.external.sheet.open"
+        {
+            // Handles are bound to the principal, so this dispatch needs it: the sheet
+            // host sits here rather than inside the two method dispatchers.
+            return crate::sheet_preview::dispatch(
+                &self.db,
+                principal,
+                &request.method,
+                &request.params,
+            )
+            .and_then(|value| value.ok_or_else(|| anyhow::anyhow!("unknown_method")))
+            .map_err(|failure| {
+                let message = failure.to_string();
+                if crate::sheet_preview::ERROR_CODES.contains(&message.as_str()) {
+                    error(&message, &message)
+                } else {
+                    map_error(&message)
+                }
+            });
+        }
         if request.method.starts_with("filesystem.external.") {
             return crate::external_files::dispatch(&self.db, &request.method, &request.params)
                 .and_then(|value| value.ok_or_else(|| anyhow::anyhow!("unknown_method")))
