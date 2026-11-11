@@ -15,6 +15,15 @@ const errors:Record<string,[string,string]> = {
  external_file_unavailable:['This file cannot be accessed. Check its permissions or network connection and retry.','无法访问此文件。请检查权限或网络连接后重试。'],
  external_file_unknown:['This recent file entry is no longer registered. Open the file again.','此最近文件记录已失效，请重新打开文件。'],
  file_too_large:['This file exceeds the 1 MiB text preview limit.','此文件超过 1 MiB 的文本预览上限。'],
+ // Workbook preview (`design.md` §6): the same codes as the workspace viewer, and a dedicated
+ // `file_too_large` line because the entry above is the 1 MiB text-reader limit.
+ unsupported_document:['Cannot read this file; it may be damaged.','无法读取此文件，它可能已损坏。'],
+ document_protected:['This file is password-protected.','此文件受密码保护。'],
+ file_changed:['The file changed. Reload.','文件已更改，请重新载入。'],
+ sheet_out_of_memory:['This workbook is too large to preview.','此工作簿过大，无法预览。'],
+ sheet_too_complex:['This workbook is too large to preview.','此工作簿过大，无法预览。'],
+ sheet_worker_failed:['Preview stopped. Reload.','预览已停止，请重新载入。'],
+ sheet_not_found:['The workbook was closed. Reload.','工作簿已关闭，请重新载入。'],
  binary_file:['This file is not supported UTF-8 text.','此文件不是受支持的 UTF-8 文本。'],
  image_too_large:['This image exceeds the 4 MiB preview limit.','此图片超过 4 MiB 的预览上限。'],
  unsupported_image:['This file is not a supported PNG, JPEG, GIF, or WebP image.','此文件不是受支持的 PNG、JPEG、GIF 或 WebP 图片。'],
@@ -36,6 +45,12 @@ export function externalFileErrorCode(error:unknown):string|undefined {
 export function externalFileError(error:unknown,zh:boolean):string {
  const code=externalFileErrorCode(error);
  return code&&errors[code]?errors[code][zh?1:0]:(zh?'无法打开文件，请重新连接后重试。':'Unable to open the file. Reconnect and retry.');
+}
+/** The workbook line for a registered external file: `file_too_large` means 100 MiB here. */
+export function externalSheetError(error:unknown,zh:boolean):string {
+ const message=error instanceof Error?error.message:String(error);
+ if(/\bfile_too_large\b/.test(message)) return zh?'文件过大，无法预览（超过 100 MiB）。':'Too large to preview (over 100 MiB).';
+ return externalFileError(error,zh);
 }
 
 export type ExternalOpenTarget = {projectId:string;worktreePath?:string;path:string;kind:'file'|'preview';assetKind:'image'|'text';externalId?:string;ownerSessionId:string;line?:number;column?:number};

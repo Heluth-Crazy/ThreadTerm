@@ -1,6 +1,6 @@
 import { Select } from "./ui/Select";
 import { Icon } from "./PrototypeIcon";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, lazy, Suspense, type ReactNode } from "react";
 import type {
   Draft,
   FileDocument,
@@ -28,6 +28,9 @@ import { SurfaceDialog } from "./SurfaceDialog";
 import { FilePreview } from "./FilePreview";
 import { LargeFileView } from "./LargeFileView";
 import { isLargeFileError } from "../largeFileWindow";
+import { officeKind } from "../officeFiles";
+/** The sheet grid is a rare viewer: it loads only when a workbook is opened. */
+const SheetView = lazy(() => import("./SheetView").then((module) => ({ default: module.SheetView })));
 import "./file-workspace.css";
 import "./file-bar.css";
 import { FileBarActions, FileBreadcrumb } from "./FileBarActions";
@@ -164,6 +167,8 @@ function FileWorkspaceInstance({
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [document, setDocument] = useState<FileDocument>();
   const [largeFile, setLargeFile] = useState<{ path: string; externalId?: string; key: number }>();
+  /** Excel/ODS preview (`design.md` §3.6). Word stays on the text path until step 5. */
+  const [officeFile, setOfficeFile] = useState<{ path: string; externalId?: string; key: number }>();
   const [image, setImage] = useState<{ mime: string; data: string }>();
   const [text, setText] = useState("");
   const [resolvedNotice, setResolvedNotice] = useState<string>();
@@ -444,6 +449,28 @@ function FileWorkspaceInstance({
         }
       };
       const imageHint = path === initialPath ? assetKind : undefined;
+      if (nextView !== "diff" && officeKind(path) === "sheet") {
+        // Before the image and text reads: a workbook is never read as bytes here, and no
+        // document, editor, Git or blame state survives the switch (R1, R4).
+        loaded.current = undefined;
+        base.current = "";
+        currentText.current = "";
+        setText("");
+        setDocument(undefined);
+        setImage(undefined);
+        setLargeFile(undefined);
+        setDiff(undefined);
+        setGitBaseText(null);
+        gutterBase.current = undefined;
+        setBlame(undefined);
+        setBlameOn(false);
+        setView("file");
+        setOfficeFile({ path: externalPath.current ?? path, externalId: resolvedExternalId, key: ticket });
+        setOpenPaths(paths => paths.includes(path) ? paths : [...paths, path]);
+        setIssue(undefined);
+        onDocumentChange?.({ path, dirty: false });
+        return true;
+      }
       if (nextView !== "diff" && (imageHint === "image" || imagePath(path))) {
         const asset = externalId
           ? await externalRead(externalId, path, true) as { mime: string; data: string }
@@ -460,6 +487,7 @@ function FileWorkspaceInstance({
         loaded.current = imageDocument;
         base.current = "image";
         setLargeFile(undefined);
+        setOfficeFile(undefined);
         setDocument(imageDocument);
         setImage(asset);
         setText("");
@@ -483,6 +511,7 @@ function FileWorkspaceInstance({
       loaded.current = value;
       base.current = saved?.baseFingerprint ?? value.fingerprint;
       setLargeFile(undefined);
+      setOfficeFile(undefined);
       setDocument(value);
       setImage(undefined);
       setText(saved?.content ?? value.content);
@@ -520,6 +549,7 @@ function FileWorkspaceInstance({
           setBlame(undefined);
           setBlameOn(false);
           setView("file");
+          setOfficeFile(undefined);
           setLargeFile({ path: externalPath.current ?? path, externalId: resolvedExternalId, key: ticket });
           setOpenPaths(paths => paths.includes(path) ? paths : [...paths, path]);
           setIssue(undefined);
@@ -528,6 +558,7 @@ function FileWorkspaceInstance({
         }
         if (external) { setDocument(undefined); setImage(undefined); }
         setLargeFile(undefined);
+        setOfficeFile(undefined);
         setIssue(external ? { externalError: error } : message(error));
       }
       return false;
@@ -593,7 +624,7 @@ function FileWorkspaceInstance({
       setInternalView(controlledView);
   }, [controlledView, internalView]);
   useEffect(() => {
-    if (!initialPath || initialPath === (document?.path ?? largeFile?.path)) return;
+    if (!initialPath || initialPath === (document?.path ?? largeFile?.path ?? officeFile?.path)) return;
     if (dirty) {
       setPending({ path: initialPath, view });
       return;
@@ -784,7 +815,7 @@ function FileWorkspaceInstance({
     void open(path, nextView);
   };
   const closeOpenTabs = (kind: "current" | "others" | "all") => {
-    const active = document?.path ?? largeFile?.path;
+    const active = document?.path ?? largeFile?.path ?? officeFile?.path;
     const remaining =
       kind === "all"
         ? []
@@ -800,6 +831,7 @@ function FileWorkspaceInstance({
     if (kind === "all" || kind === "current") {
       loaded.current = undefined;
       setLargeFile(undefined);
+      setOfficeFile(undefined);
       setDocument(undefined);
       setImage(undefined);
       setText("");
@@ -807,7 +839,7 @@ function FileWorkspaceInstance({
     }
   };
   const requestClose = (kind: "current" | "others" | "all") => {
-    if ((!document && !largeFile) || (kind === "others" && openPaths.length < 2)) return;
+    if ((!document && !largeFile && !officeFile) || (kind === "others" && openPaths.length < 2)) return;
     if (dirty) {
       setPending({ view, close: kind });
       return;
@@ -903,13 +935,13 @@ function FileWorkspaceInstance({
       setOpenPaths((paths) =>
         paths.map((path) => (coveredBy(path, from) ? to + path.slice(from.length) : path)),
       );
-      const path = document?.path ?? largeFile?.path;
+      const path = document?.path ?? largeFile?.path ?? officeFile?.path;
       if (path && coveredBy(path, from))
-        void open(to + path.slice(from.length), largeFile ? "file" : view === "preview" ? "file" : view, true);
+        void open(to + path.slice(from.length), largeFile || officeFile ? "file" : view === "preview" ? "file" : view, true);
     },
     deleted: (path) => {
       setOpenPaths((paths) => paths.filter((candidate) => !coveredBy(candidate, path)));
-      const activePath = document?.path ?? largeFile?.path;
+      const activePath = document?.path ?? largeFile?.path ?? officeFile?.path;
       if (activePath && coveredBy(activePath, path)) closeOpenTabs("current");
     },
   };
@@ -1026,7 +1058,7 @@ function FileWorkspaceInstance({
   const activePreviewFile = previewNavigation?.files.find(
     (file) => file.id === previewNavigation.activeId,
   );
-  const embeddedPath = document?.path ?? largeFile?.path ?? activePreviewFile?.path ?? initialPath;
+  const embeddedPath = document?.path ?? largeFile?.path ?? officeFile?.path ?? activePreviewFile?.path ?? initialPath;
   const previewLabel = (file: { id: string; path: string; kind: View }) =>
     `${file.path.split(/[\\/]/).join(" › ")}${
       file.kind === "diff" ? ` · ${copy.diff}` : file.kind === "preview" ? ` · ${copy.preview}` : ""
@@ -1162,7 +1194,31 @@ function FileWorkspaceInstance({
         </aside>
       )}
       <div className="editor-area">
-        {largeFile ? (
+        {officeFile ? (
+          <>
+            <div className="tt-editor-tabs file-view-tabs file-workspace-bar">
+              {external ? <ExternalFileBoundary path={officeFile.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen(value => !value)} onCopy={() => void navigator.clipboard.writeText(officeFile.path)} onReload={() => void open(officeFile.path, "file", true)} /> : embedded && previewNavigation ? embeddedNavigation() : <FileBreadcrumb path={officeFile.path} />}
+              {!embedded && !external && openPaths.length > 1 && <Select className="embedded-file-navigation" value={officeFile.path} aria-label={zh ? "切换文件预览" : "Switch file preview"} onChange={event => choose(event.target.value, "file")}>{openPaths.map(path => <option key={path} value={path}>{path}</option>)}</Select>}
+              {!external && <span className="ws-chip">{copy.readOnly}</span>}
+              <span className="grow" />
+              <FileBarActions zh={zh} items={[
+                { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(officeFile.path) },
+                { id: 'file-reload', label: copy.reload, onSelect: () => open(officeFile.path, 'file', true) },
+                ...(!embedded ? [
+                  ...(!external ? [{ id: 'file-tools', label: zh ? '文件与 Git' : 'Files & Git', onSelect: () => setToolsOpen(value => !value) }] : []),
+                  { id: 'file-close', label: zh ? '关闭当前' : 'Close current', onSelect: () => requestClose('current') },
+                  ...(openPaths.length > 1 ? [{ id: 'file-close-others', label: zh ? '关闭其他' : 'Close others', onSelect: () => requestClose('others') }] : []),
+                  { id: 'file-close-all', label: zh ? '关闭全部文件' : 'Close all files', onSelect: () => requestClose('all') },
+                ] : []),
+              ]} />
+              {embeddedClose()}
+            </div>
+            <Suspense fallback={<p className="note" role="status">{zh ? '正在加载表格视图…' : 'Loading sheet view…'}</p>}>
+              <SheetView key={officeFile.key} {...scope} path={officeFile.path} externalId={officeFile.externalId} zh={zh} active={active}
+                comments={commentsHost} onExternalChange={onExternalChange} />
+            </Suspense>
+          </>
+        ) : largeFile ? (
           <>
             <div className="tt-editor-tabs file-view-tabs file-workspace-bar">
               {external ? <ExternalFileBoundary path={largeFile.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen(value => !value)} onCopy={() => void navigator.clipboard.writeText(largeFile.path)} onReload={() => void open(largeFile.path, "file", true)} /> : embedded && previewNavigation ? embeddedNavigation() : <FileBreadcrumb path={largeFile.path} />}
