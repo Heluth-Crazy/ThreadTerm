@@ -10,7 +10,7 @@ import { WorktreeManager } from '../../renderer/src/components/WorktreeManager';
 import { TaskMapView } from '../../renderer/src/components/TaskMapView';
 import { GitHistoryView } from '../../renderer/src/components/GitHistoryView';
 import { ReviewDiffView } from '../../renderer/src/components/ReviewDiffView';
-import { DelegationPanel } from '../../renderer/src/components/DelegationPanel';
+import { ChatOverview } from '../../renderer/src/components/ChatOverview';
 import { TerminalSurface } from '../../renderer/src/components/TerminalSurface';
 import { SessionHistoryRail } from '../../renderer/src/components/SessionHistoryRail';
 import { taskMapFixture } from '../../renderer/src/fixtures/taskMapFixtures';
@@ -109,7 +109,7 @@ function SurfaceView({ surface, locale }: { surface: Surface; locale: Locale }) 
   if (surface === 'review-diff') return <main className="qa-panel-surface pane-tab-surface"><ReviewDiffView projectId={project.id} worktreePath={project.path} path="renderer/src/components/BlockInspector.tsx" sessionId={rootSession.id} checkpointId="qa-before" editorId="qa-review-diff" zh={zh}/></main>;
   if (surface === 'terminal') return <main className="qa-panel-surface"><TerminalSurface sessionId={terminalSession.id} session={terminalSession} provider="codex" theme={document.documentElement.dataset.theme==='dark'?'dark':'light'} terminalCompatibility={{}}/></main>;
   if (surface === 'local-history') return <main className="qa-panel-surface"><SessionHistoryRail data={historySnapshot} onClose={() => undefined} onNavigateAll={() => undefined} onChanged={() => undefined}/></main>;
-  return <main className="qa-panel-surface"><DelegationPanel session={rootSession} delegates={delegates} onOpenSession={() => undefined} copy={copy} zh={zh}/></main>;
+  return <main className="qa-panel-surface" style={{position:'relative',minHeight:360,width:320}}><ChatOverview session={rootSession} delegates={delegates} items={[]} onOpenSession={() => undefined} copy={copy} zh={zh} docked/></main>;
 }
 
 window.qaPanelSurfaces = {

@@ -288,7 +288,24 @@ try {
   });
   await until(async () => (await scope.locator('.chat-tool-activity').count()) > 0, 'tool drawer appears');
   await until(async () => (await request('chat.snapshot', { sessionId: chat.id })).items.some(item => item.parts?.some(part => part.type === 'text' && /Chat visual fixture complete/.test(part.text ?? ''))), 'turn completion');
-  await until(() => scope.locator('.chat-plan-panel').count(), 'plan panel appears');
+  const openOverviewPlan = async () => {
+    const popover = page.locator('.chat-overview-popover');
+    const docked = scope.locator('.chat-overview-dock');
+    if (await popover.count() === 0 && await docked.count() === 0) {
+      const button = page.locator('.chat-overview-button');
+      await button.waitFor({ timeout: 30_000 });
+      await button.click();
+      await popover.waitFor();
+    }
+    const card = await popover.count() ? popover : docked;
+    const planRow = card.locator('.chat-overview-plan');
+    await planRow.waitFor({ timeout: 30_000 });
+    if (await planRow.getAttribute('aria-expanded') === 'false') await planRow.click();
+    await card.locator('.chat-overview-plan-list').waitFor();
+    return card;
+  };
+  await until(async () => (await page.locator('.chat-overview-button').count()) + (await scope.locator('.chat-overview-dock').count()) > 0, 'overview control appears');
+  await openOverviewPlan();
   await delay(400);
 
   const drawer = scope.locator('.chat-tool-activity');
@@ -321,7 +338,7 @@ try {
 
   const custom = { background: '#0b1016', surface: '#182430', text: '#f2f6fb', muted: '#93a3b5', accent: '#ff7a45', border: '#26323f' };
   const surfaces = [
-    ['plan panel', '.chat-plan-panel'],
+    ['plan panel', '.chat-overview-card'],
     ['tool card', '.chat-tool-entry'],
     ['tool drawer', '.chat-tool-activity-card'],
     ['reply actions', '.v3-chat-message.has-reply-actions'],
@@ -336,6 +353,7 @@ try {
       : { language: locale, theme, themeSelection: theme };
     await request('settings.update', { patch, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
     await sizeChatPane(scope, width);
+    await openOverviewPlan();
     await until(async () => (await scope.locator('.chat-tool-activity').count()) > 0, `${theme}/${locale}/${width} drawer`);
     await page.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme === 'custom' ? 'dark' : theme);
     if (theme === 'custom') await page.waitForFunction(() => document.documentElement.dataset.customTheme === 'true');

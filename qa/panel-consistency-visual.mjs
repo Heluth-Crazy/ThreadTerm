@@ -63,7 +63,7 @@ async function capture(name){
   ['Local history intro','content-heading','.history-rail-heading','h3'],
   ['Settings','settings','.settings-panel > header','h2'],['Account','popover','.account-menu > .account-row','strong, b'],
   ['Browser tabs','browser-tabs','.workspace-pane > .workspace-tabbar.ws-strip:has(.browser-page-tab)','.browser-page-tab.active .browser-page-tab-title'],
-  ['DevTools splitter','splitter','.wb-browser-devtools-splitter',null],['Delegated agents','strip','.delegation-header','.delegation-toggle'],
+  ['DevTools splitter','splitter','.wb-browser-devtools-splitter',null],['Delegated agents','strip','.chat-overview-card','.chat-overview-section-head'],
  ];
  const rows=await page.evaluate(definitions=>{
   const box=node=>{const r=node.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom,right:r.right}};

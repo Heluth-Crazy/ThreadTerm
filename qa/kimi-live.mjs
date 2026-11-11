@@ -539,7 +539,7 @@ try {
       assert.equal(child.delegation.state, 'completed');
       assert.ok((await chatItems(child.id)).some(item => assistantText(item).includes(delegateMarker)));
       assert.ok(turn.items.some(item => assistantText(item).includes(delegateMarker)));
-      await host(row.id).locator(`.delegate-card[data-session-id="${child.id}"]`).waitFor();
+      await host(row.id).locator(`.chat-overview-row[data-session-id="${child.id}"]`).waitFor();
       await shot('01-delegation-parent.png');
       await navigate(child.id);
       await until(async () => (await host(child.id).locator('.v3-chat-message.assistant').allInnerTexts()).some(text => text.includes(delegateMarker)), 'child transcript renders');

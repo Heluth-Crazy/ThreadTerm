@@ -60,6 +60,9 @@ window.threadterm = {onEvent: cb => {listeners.add(cb); return () => listeners.d
   if(method==='chat.feedback.read') return {notes:[]};
   throw Error('Unexpected QA request '+method);
 }};
+const surfaceHost = document.createElement('div');
+surfaceHost.style.cssText = 'position:fixed;top:6px;right:8px;height:32px;display:flex;align-items:center;z-index:50';
+document.body.append(surfaceHost);
 const root = createRoot(document.getElementById('root'));
 window.qaEmitPlan = () => {
   const item = items(scenario).find(item => item.id === 'p');
@@ -68,7 +71,7 @@ window.qaEmitPlan = () => {
 window.qaRender = (locale='en', nextScenario='live') => {
   scenario = nextScenario;
   activeSessionId = 'chat-plan-'+locale+'-'+nextScenario+'-'+(sequence++);
-  return root.render(<I18nProvider locale={locale}><SessionSurfaceContext.Provider value={{primaryHost:null,menuHost:null,focused:true,openFile:()=>{},openDiff:()=>{}}}><ChatView key={activeSessionId} session={{id:activeSessionId,provider:'codex',mode:'chat',status:scenario==='live'?'running':'idle',readOnly:true,title:'Plan QA',createdAt:'now',updatedAt:'now'}} /></SessionSurfaceContext.Provider></I18nProvider>);
+  return root.render(<I18nProvider locale={locale}><SessionSurfaceContext.Provider value={{primaryHost:surfaceHost,menuHost:null,focused:true,openFile:()=>{},openDiff:()=>{}}}><ChatView key={activeSessionId} session={{id:activeSessionId,provider:'codex',mode:'chat',status:scenario==='live'?'running':'idle',readOnly:true,title:'Plan QA',createdAt:'now',updatedAt:'now'}} /></SessionSurfaceContext.Provider></I18nProvider>);
 };
 document.documentElement.dataset.theme='light';
 window.qaRender('en','live');
@@ -90,10 +93,10 @@ async function setState({ theme = 'light', locale = 'en', width = 1280, scenario
   await page.setViewportSize({ width, height: 900 });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   if (scenario === 'live') {
-    await page.locator('.chat-plan-panel').waitFor();
-    assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'false', 'even a running saved-plan snapshot stays closed during hydration');
+    await page.locator('.chat-overview-button').waitFor();
+    assert.equal(await page.locator('.chat-overview-button').getAttribute('aria-expanded'), 'false', 'the overview starts closed');
     await page.evaluate(() => window.qaEmitPlan());
-    await page.waitForFunction(() => document.querySelector('.chat-plan-chip')?.getAttribute('aria-expanded') === 'true');
+    await page.waitForTimeout(100);
   }
 }
 
@@ -103,79 +106,90 @@ try {
   page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForFunction(() => typeof window.qaRender === 'function');
 
-  // Live turn: the panel opens itself once and shows the steps.
+  async function openPlan() {
+    const button = page.locator('.chat-overview-button');
+    await button.waitFor();
+    if (await page.locator('.chat-overview-popover').count() === 0) await button.click();
+    const plan = page.locator('.chat-overview-plan');
+    await plan.waitFor();
+    if (await plan.getAttribute('aria-expanded') === 'false') await plan.click();
+    await page.locator('.chat-overview-plan-list').waitFor();
+  }
+  async function closePlan() {
+    if (await page.locator('.chat-overview-plan').getAttribute('aria-expanded') === 'true') await page.locator('.chat-overview-plan').click();
+  }
+
+  // Live turn: the plan lives in the overview card and opens on click.
   await setState({ scenario: 'live' });
-  await page.locator('.chat-plan-panel').waitFor();
-  assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'true', 'a live plan auto-opens once');
-  assert.equal((await page.locator('.chat-plan-label').textContent()).trim(), 'Plan 1/4');
+  const overviewButton = page.locator('.chat-overview-button');
+  await overviewButton.waitFor();
+  assert.equal(await overviewButton.getAttribute('aria-expanded'), 'false', 'the overview starts closed');
+  await openPlan();
+  assert.match(await page.locator('.chat-overview-plan-text').innerText(), /1\/4/);
   assert.equal(await page.locator('.chat-plan-entry').count(), 4);
   assert.match(await page.locator('.chat-plan-explanation').textContent(), /wrote this plan/);
   assert.equal(await page.locator('.chat-plan-priority.is-high').count(), 1);
   assert.equal(await page.locator('.chat-plan-mark.is-active i').count(), 1, 'the active step spins while the turn runs');
   assert.equal(await page.locator('.chat-part.plan').count(), 0, 'plan parts are never rendered inline');
-  report.checks.push('a live plan auto-opens, counts completed/total, lists entries and stays out of the transcript');
+  report.checks.push('the plan section opens in the overview card, counts completed/total, lists entries and stays out of the transcript');
 
-  // Keyboard: Escape collapses and the chip toggles.
-  await page.locator('.chat-plan-chip').press('Escape');
-  assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'false', 'Escape collapses the card');
-  await page.locator('.chat-plan-chip').click();
-  assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'true', 'the chip toggles the card');
-  report.checks.push('Escape collapses and the chip toggles the card');
+  // Keyboard: Escape closes the popover; the plan row toggles the list.
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.chat-overview-popover').count(), 0, 'Escape closes the overview popover');
+  await openPlan();
+  assert.equal(await page.locator('.chat-overview-plan').getAttribute('aria-expanded'), 'true', 'the plan row toggles the list');
+  await closePlan();
+  assert.equal(await page.locator('.chat-plan-entry').count(), 0, 'the plan list folds back');
+  report.checks.push('Escape closes the popover and the plan row toggles the list');
 
-  // History: shown but never auto-opened.
+  // History: the plan opens on demand and never spins.
   await setState({ scenario: 'history' });
-  await page.locator('.chat-plan-panel').waitFor();
-  assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'false', 'a reloaded plan does not auto-open');
-  await page.locator('.chat-plan-chip').click();
+  await openPlan();
   assert.equal(await page.locator('.chat-plan-mark.is-active i').count(), 0, 'history never shows a running spinner');
-  report.checks.push('a reloaded history plan shows collapsed and never spins');
+  report.checks.push('a reloaded history plan opens on demand and never spins');
 
   // Lane 3: ordinary persisted live rows have no turnOrigin on idle reload.
   await setState({ scenario: 'saved' });
-  await page.locator('.chat-plan-panel').waitFor();
-  assert.equal(await page.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'false', 'an idle saved plan without history origin never auto-opens');
+  await openPlan();
   assert.equal(await page.locator('.chat-plan-mark.is-active i').count(), 0, 'idle saved rows have no active spinner');
-  report.checks.push('idle saved live-origin plans stay collapsed');
+  report.checks.push('idle saved live-origin plans open without a spinner');
 
   // Matrix screenshots.
   for (const theme of ['light', 'dark']) for (const locale of ['en', 'zh-CN']) for (const width of [1280, 420]) {
     await setState({ theme, locale, width, scenario: 'live' });
-    await page.locator('.chat-plan-panel').waitFor();
-    await page.locator('.chat-plan-card').waitFor();
+    await openPlan();
     assert.equal(await page.locator('.chat-plan-entry').count(), 4, `${theme}/${locale}/${width}: the expanded card lists every entry`);
     await shot(`plan-${theme}-${locale}-${width}-expanded.png`);
-    const overflow = await page.locator('.v3-chat-log').evaluate(node => ({ scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, widest: [...node.querySelectorAll('*')].filter(el => el.getBoundingClientRect().right > node.getBoundingClientRect().right + 1).map(el => `${el.tagName}.${el.className}`).slice(0, 8) }));
+    const overflow = await page.locator('.chat-overview-popover').evaluate(node => ({ scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, widest: [...node.querySelectorAll('*')].filter(el => el.getBoundingClientRect().right > node.getBoundingClientRect().right + 1).map(el => `${el.tagName}.${el.className}`).slice(0, 8) }));
     assert.equal(overflow.scrollWidth <= overflow.clientWidth + 1, true, `${theme}/${locale}/${width}: no horizontal clipping ${JSON.stringify(overflow)}`);
-    await page.locator('.chat-plan-chip').press('Escape');
+    await closePlan();
     await shot(`plan-${theme}-${locale}-${width}-collapsed.png`);
   }
   report.checks.push('wide/420 light/dark en/zh-CN expanded and collapsed screenshots have no horizontal clipping');
 
-  // Visual consistency (V1, issue VC): the plan chip and the priority chips.
+  // Visual consistency (V1, issue VC): the plan row and the priority chips.
   await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'live' });
-  await page.locator('.chat-plan-panel').waitFor();
-  if (await page.locator('.chat-plan-chip').getAttribute('aria-expanded') === 'false') await page.locator('.chat-plan-chip').click();
-  const planConsistency = await checkControlConsistency(page, '.chat-plan-panel');
+  await openPlan();
+  const planConsistency = await checkControlConsistency(page, '.chat-overview-card');
   assertNoControlViolations(planConsistency, 'plan panel');
   report.checks.push(`zero visual-consistency violations across ${planConsistency.checked} plan controls`);
 
   // Long entries wrap inside the narrow card.
   await setState({ theme: 'dark', locale: 'en', width: 420, scenario: 'long' });
-  await page.locator('.chat-plan-panel').waitFor();
-  if (await page.locator('.chat-plan-chip').getAttribute('aria-expanded') === 'false') await page.locator('.chat-plan-chip').click();
+  await openPlan();
   assert.equal(await page.locator('.chat-plan-entry').count(), 24);
-  assert.equal(await page.locator('.chat-plan-card').evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, 'the card never scrolls horizontally');
+  assert.equal(await page.locator('.chat-overview-card').evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, 'the card never scrolls horizontally');
   await shot('plan-long-dark-en-420.png');
   report.checks.push('a 24-entry plan wraps inside the 420 px card without horizontal scroll');
 
-  // 0/0 edge and the no-plan empty state render no panel DOM.
+  // 0/0 edge and the no-plan empty state render no card.
   await setState({ scenario: 'zero' });
-  assert.equal(await page.locator('.chat-plan-panel').count(), 0, 'a plan with no usable entries renders nothing');
+  assert.equal(await page.locator('.chat-overview-card').count(), 0, 'a plan with no usable entries renders nothing');
   await shot('plan-zero-light-en-1280.png');
   await setState({ scenario: 'noplan' });
-  assert.equal(await page.locator('.chat-plan-panel').count(), 0, 'a turn without a plan renders no panel');
+  assert.equal(await page.locator('.chat-overview-card').count(), 0, 'a turn without a plan renders no card');
   await shot('plan-none-light-en-1280.png');
-  report.checks.push('a 0/0 plan and a plan-free turn both render no panel DOM');
+  report.checks.push('a 0/0 plan and a plan-free turn both render no card');
 
   assert.deepEqual(report.errors, [], 'the fixture has no renderer page errors');
   report.passed = true;

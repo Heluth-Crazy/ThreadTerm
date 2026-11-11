@@ -151,7 +151,7 @@ async function scenarioRelay(parent) {
       assert.equal((await chip.innerText()).trim(), '', 'a nested delegate shows no "delegate" text');
       assert.match(await chip.getAttribute('title'), /threadterm\/delegate-codex-/);
       report.delegateTitleWidth = await row(current.id).locator('.grow').evaluate(element => ({ shown: element.clientWidth, full: element.scrollWidth }));
-      await page.locator(`.delegate-card[data-session-id="${current.id}"]`).waitFor();
+      await page.locator(`.chat-overview-row[data-session-id="${current.id}"]`).waitFor();
       await bothLanguages('a1-parent-delegate-started');
       check('a delegate appears nested under its parent in the catalog (branch-icon chip), with a card in the parent chat');
     }
@@ -181,11 +181,11 @@ async function scenarioRelay(parent) {
   assert.equal(done.delegation.state, 'completed', `delegate finished: ${done.delegation.state}`);
   assert.ok(waited, 'the delegate waited for its parent at least once');
   await openFromCatalog(parent.id);
-  const card = page.locator(`.delegate-card[data-session-id="${child.id}"]`);
-  await card.locator('.delegate-card-preview').waitFor({ timeout: 20000 });
-  assert.match(await card.locator('.delegate-card-preview').innerText(), /DONE-A/);
+  const card = page.locator(`.chat-overview-row[data-session-id="${child.id}"]`);
+  await card.waitFor({ timeout: 20000 });
+  assert.match(await card.locator('.chat-overview-row-open').getAttribute('title'), /DONE-A/);
   await bothLanguages('a4-parent-delegate-completed', async language => {
-    assert.equal((await card.locator('.delegation-state').innerText()).trim(), language === 'en' ? 'Completed' : '已完成');
+    assert.equal((await card.locator('.chat-overview-state').innerText()).trim(), language === 'en' ? 'Completed' : '已完成');
     // Tool rows live in the (possibly collapsed) tool activity drawer; textContent includes closed <details>.
     const tools = (await chat(parent.id).locator('.chat-tool-activity').evaluateAll(nodes => nodes.map(node => node.textContent ?? ''))).join(' | ');
     const labels = language === 'en'
@@ -197,7 +197,7 @@ async function scenarioRelay(parent) {
   const parentCards = report.relayParentSteps.filter(step => step.startsWith('approval '));
   if (!parentCards.length) note('Claude asked for no approval of its own this run');
   assert.ok(parentCards.every(step => step.includes('[resolved]')), `parent approvals settled: ${parentCards.join(' / ')}`);
-  await click(card.locator('.delegate-card-title'));
+  await click(card.locator('.chat-overview-row-open'));
   await chat(child.id).waitFor();
   await bothLanguages('a5-delegate-completed');
   check('completed delegate: parent card shows the answer preview; delegate chat shows its resolved approval');
@@ -209,11 +209,12 @@ async function captureWaiting(parent, child, held) {
   if (!held) note('the parent had no pending approval of its own when the delegate waited (screenshots race the parent)');
   try {
     await openFromCatalog(parent.id);
-    const card = page.locator(`.delegate-card[data-session-id="${child.id}"]`);
-    await card.locator('.delegation-state.st-awaiting_parent').waitFor({ timeout: 10000 });
+    const card = page.locator(`.chat-overview-row[data-session-id="${child.id}"]`);
+    await card.waitFor({ timeout: 10000 });
+    assert.equal(await card.getAttribute('data-state'), 'awaiting_parent');
     assert.match(await row(child.id).locator('.sess-row').getAttribute('title'), /Waiting for parent agent/);
     await shot('a2-parent-delegate-waiting-en');
-    await click(card.locator('.delegate-card-title'));
+    await click(card.locator('.chat-overview-row-open'));
     await chat(child.id).waitFor();
     const delegated = chat(child.id).locator('.chat-approval-card.pending.is-delegated');
     await delegated.waitFor({ timeout: 15000 });
@@ -253,7 +254,7 @@ async function scenarioEscalation(parent, first) {
   const inbox = (await snapshot()).inbox.filter(item => item.sessionId === child.id && item.kind === 'approval');
   assert.ok(inbox.length >= 1, 'the escalated request is in the Inbox');
   await openFromCatalog(parent.id);
-  await page.locator(`.delegate-card[data-session-id="${child.id}"] .delegation-state.st-awaiting_user`).waitFor();
+  await page.locator(`.chat-overview-row[data-session-id="${child.id}"][data-state="awaiting_user"]`).waitFor();
   await bothLanguages('b1-parent-delegate-needs-you');
   assert.equal(await row(child.id).locator('.delegate-chip').count(), 0, 'a nested shared delegate needs no chip');
   await openFromCatalog(child.id);
@@ -267,7 +268,9 @@ async function scenarioEscalation(parent, first) {
   await delay(800);
   await bothLanguages('b3-delegate-completed');
   await openFromCatalog(parent.id);
-  await page.locator(`.delegate-card[data-session-id="${child.id}"] .delegate-card-preview`).waitFor({ timeout: 20000 });
+  const completedRow = page.locator(`.chat-overview-row[data-session-id="${child.id}"]`);
+  await completedRow.waitFor({ timeout: 20000 });
+  assert.match(await completedRow.locator('.chat-overview-row-open').getAttribute('title'), /DONE-B/);
   await bothLanguages('b4-parent-both-completed');
   await setTheme('dark');
   await shot('b5-parent-both-completed-dark-en');

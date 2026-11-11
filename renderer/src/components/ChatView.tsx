@@ -38,7 +38,8 @@ import { createTurnChangesCache } from '../turnFooter';
 import { liveSpeedGroupIndex, liveTurnSpeed, nextLiveTurnUsage, turnSpeedText, turnSpeedTooltip, type LiveTurnUsage } from '../turnSpeed';
 import { BackgroundTasksStrip } from './BackgroundTasksStrip';
 import { backgroundHasOutput, revealBackgroundOutput } from '../backgroundTasks';
-import { ChatPlanPanel } from './ChatPlanPanel';
+import { ChatOverview } from './ChatOverview';
+import { overviewDocked } from '../chatOverview';
 import { ComposerOptions } from './ComposerOptions';
 import { ChatContextRing } from './ChatContextRing';
 import { useChatContextUsage } from '../useChatContextUsage';
@@ -500,6 +501,22 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [codeReviewOpen, setCodeReviewOpen] = useState(false);
   const [codeReviewFocus, setCodeReviewFocus] = useState("");
   const turnChangesCache = useMemo(() => createTurnChangesCache<import('@threadterm/protocol').ReviewFile[]>(), [session.id]);
+  // The overview docks only when the empty gutter beside the 920 px message column fits it.
+  // Keep only the decision in state: a resize must not re-render the whole Chat per pixel.
+  const chatShellRef = useRef<HTMLDivElement>(null);
+  const [overviewIsDocked, setOverviewIsDocked] = useState(false);
+  useLayoutEffect(() => {
+    const node = chatShellRef.current;
+    if (!node) return;
+    const update = () => {
+      const next = overviewDocked(node.getBoundingClientRect().width);
+      setOverviewIsDocked(current => current === next ? current : next);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
   const [viewportSessionId, setViewportSessionId] = useState<string>();
   const [repair, setRepair] = useState<ChatRepairAvailability>();
   const [repairDiscovery, setRepairDiscovery] = useState<RepairDiscovery>();
@@ -2010,7 +2027,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void navigator.clipboard.writeText(url).catch(error => setLinkIssue(String(error))); }}><Icon name="export" />{copy("Copy link", "复制链接")}</button>
     </CatalogPopover>}
     <SelectionBubble rootRef={logRef} visible={surface?.focused !== false && overlay !== 'full'} copy={copy} quoteEnabled={writable} askEnabled={!!onOpenSession} onQuote={text => insertChatText(session.id, quoteSelection(text))} onAsk={(text, current) => askSelectionChat(session, text, current, id => onOpenSession?.(id))} />
-    <div className="chat-log-shell" onKeyDown={viewport.onKeyDown}>
+    <div className="chat-log-shell" ref={chatShellRef} onKeyDown={viewport.onKeyDown}>
+    <ChatOverview session={session} delegates={delegates} items={items} copy={copy} zh={zh} docked={overviewIsDocked} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} onOpenSession={onOpenSession} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} />
     <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onFocusCapture={viewport.onFocus} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onTouchMoveCapture={viewport.onTouchMove} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
       // Links never navigate the app window (the desktop blocks that, so they used to do nothing).
       const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
@@ -2018,7 +2036,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={() => { viewport.onScroll(); const log = logRef.current; if (log && shouldLoadEarlier(log.scrollTop, earlierPageRef.current.hasEarlier, loadingEarlierRef.current)) loadEarlierRef.current(); }}><ChatPlanPanel items={items} copy={copy} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} historyReady={historyLoaded} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} /><div ref={logContentRef}>{(loadingEarlier || earlierPage.hasEarlier) && <div className="chat-earlier-page"><button type="button" className="btn" disabled={loadingEarlier} role={loadingEarlier ? 'status' : undefined} aria-live="polite" onClick={() => loadEarlierRef.current()}>{loadingEarlier ? copy('Loading earlier messages…', '正在加载更早的消息…') : copy('Load earlier messages', '加载更早的消息')}</button></div>}{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
+    }} onScroll={() => { viewport.onScroll(); const log = logRef.current; if (log && shouldLoadEarlier(log.scrollTop, earlierPageRef.current.hasEarlier, loadingEarlierRef.current)) loadEarlierRef.current(); }}><div ref={logContentRef}>{(loadingEarlier || earlierPage.hasEarlier) && <div className="chat-earlier-page"><button type="button" className="btn" disabled={loadingEarlier} role={loadingEarlier ? 'status' : undefined} aria-live="polite" onClick={() => loadEarlierRef.current()}>{loadingEarlier ? copy('Loading earlier messages…', '正在加载更早的消息…') : copy('Load earlier messages', '加载更早的消息')}</button></div>}{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
       {renderTurn(group, groupIndex)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>

@@ -79,8 +79,25 @@ try {
   await composer(chat.id).fill('Write a plan and start.');
   await page.locator(`[data-testid="session-chat-${chat.id}"] .chat-compose-send[type=submit]`).click();
   const scope = page.locator(`[data-testid="session-chat-${chat.id}"]`);
-  await scope.locator('.chat-plan-panel').waitFor({ timeout: 30_000 });
-  await until(async () => (await scope.locator('.chat-plan-entry').count()) === 3, 'plan entries rendered');
+  const openPlanOverview = async () => {
+    const popover = page.locator('.chat-overview-popover');
+    const docked = scope.locator('.chat-overview-dock');
+    if (await popover.count() === 0 && await docked.count() === 0) {
+      const button = page.locator('.chat-overview-button');
+      await button.waitFor({ timeout: 30_000 });
+      await button.click();
+      await popover.waitFor();
+    }
+    const card = await popover.count() ? popover : docked;
+    const planRow = card.locator('.chat-overview-plan');
+    await planRow.waitFor({ timeout: 30_000 });
+    if (await planRow.getAttribute('aria-expanded') === 'false') await planRow.click();
+    await card.locator('.chat-overview-plan-list').waitFor();
+    return card;
+  };
+  await until(async () => (await page.locator('.chat-overview-button').count()) + (await scope.locator('.chat-overview-dock').count()) > 0, 'overview control appears');
+  let overviewCard = await openPlanOverview();
+  await until(async () => (await overviewCard.locator('.chat-plan-entry').count()) === 3, 'plan entries rendered');
 
   // The runtime projected the native plan into a persisted plan part.
   const items = await request('chat.read', { sessionId: chat.id });
@@ -91,49 +108,40 @@ try {
   assert.equal(planPart.data.entries[1].status, 'in_progress', 'native inProgress maps to in_progress');
   assert.equal(planPart.data.explanation, 'The agent wrote this plan before editing.');
   assert.equal(await scope.locator('.chat-part.plan').count(), 0, 'the plan never renders inline in the transcript');
-  check('a fake Codex turn projects a persisted plan part that the panel shows and the transcript hides');
+  check('a fake Codex turn projects a persisted plan part that the overview shows and the transcript hides');
 
-  assert.equal(await scope.locator('.chat-plan-label').textContent(), 'Plan 1/3', 'the chip count is completed/total');
-  assert.equal(await scope.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'true', 'a live plan auto-opens');
-  assert.match(await scope.locator('.chat-plan-explanation').textContent(), /wrote this plan/);
-  check('the chip shows completed/total and the card auto-opens with the explanation');
+  assert.match(await overviewCard.locator('.chat-overview-plan-text').textContent(), /^1\/3/, 'the overview plan progress is completed/total');
+  assert.equal(await overviewCard.locator('.chat-overview-plan').getAttribute('aria-expanded'), 'true', 'the plan list is open');
+  assert.match(await overviewCard.locator('.chat-plan-explanation').textContent(), /wrote this plan/);
+  check('the overview plan shows completed/total and the explanation');
 
-  await scope.locator('.chat-plan-chip').press('Escape');
-  assert.equal(await scope.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'false', 'Escape collapses the card');
-  await scope.locator('.chat-plan-chip').click();
-  assert.equal(await scope.locator('.chat-plan-chip').getAttribute('aria-expanded'), 'true', 'the chip toggles the card');
-  check('keyboard Escape collapses and the chip toggles');
+  if (await page.locator('.chat-overview-popover').count()) {
+    await page.keyboard.press('Escape');
+    await page.locator('.chat-overview-popover').waitFor({ state: 'detached' });
+    check('Escape closes the overview popover');
+  }
+  overviewCard = await openPlanOverview();
+  await overviewCard.locator('.chat-overview-plan').click();
+  assert.equal(await overviewCard.locator('.chat-overview-plan').getAttribute('aria-expanded'), 'false', 'the plan row folds the list');
+  await overviewCard.locator('.chat-overview-plan').click();
+  assert.equal(await overviewCard.locator('.chat-overview-plan').getAttribute('aria-expanded'), 'true', 'the plan row expands the list');
+  check('the plan row toggles the list');
 
   for (const theme of ['light', 'dark']) for (const width of [1440, 420]) for (const locale of ['en', 'zh-CN']) {
     const snapshot = await request('runtime.snapshot');
     await request('settings.update', { patch: { language: locale, theme }, expectedRevision: snapshot.settings.revision, operationId: randomUUID() });
     await app.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth, 900), width);
-    await until(async () => (await scope.locator('.chat-plan-panel').count()) > 0, `${locale}/${theme}/${width} plan panel`);
-    if (await scope.locator('.chat-plan-chip').getAttribute('aria-expanded') === 'false') await scope.locator('.chat-plan-chip').click();
-    await scope.locator('.chat-plan-card').waitFor();
-    // V1-2: the expanded card stays in flow under the sticky chip, so at the top
-    // of the transcript it sits above the first message and never intersects one.
-    await scope.locator('.v3-chat-log').evaluate(node => { node.scrollTop = 0; });
-    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
-    const planFlow = await scope.locator('.v3-chat-log').evaluate(log => {
-      const card = log.querySelector('.chat-plan-card');
-      if (!card) return { hits: 0, cardBottom: null, firstTop: null };
-      const cardRect = card.getBoundingClientRect();
-      const messages = [...log.querySelectorAll('.v3-chat-message')].map(node => node.getBoundingClientRect());
-      const hits = messages.filter(rect => rect.left < cardRect.right && rect.right > cardRect.left && rect.top < cardRect.bottom && rect.bottom > cardRect.top);
-      const first = [...log.querySelectorAll('.v3-chat-message')].map(node => node.getBoundingClientRect()).sort((a, b) => a.top - b.top)[0];
-      return { hits: hits.length, cardBottom: cardRect.bottom, firstTop: first ? first.top : null };
-    });
-    assert.equal(planFlow.hits, 0, `${locale}/${theme}/${width}: the expanded plan card does not intersect any message bubble in the initial view`);
-    assert.ok(planFlow.firstTop === null || planFlow.cardBottom <= planFlow.firstTop + 0.5, `${locale}/${theme}/${width}: the expanded plan card sits in flow above the first message`);
+    await until(async () => (await page.locator('.chat-overview-button').count()) + (await scope.locator('.chat-overview-dock').count()) > 0, `${locale}/${theme}/${width} overview`);
+    const card = await openPlanOverview();
+    assert.equal(await card.locator('.chat-plan-entry').count(), 3, `${locale}/${theme}/${width} entries`);
+    assert.match(await card.locator('.chat-overview-plan-text').textContent(), /^1\/3/, `${locale}/${theme}/${width} plan progress`);
     await shot(`plan-real-${theme}-${width}-${locale}.png`);
-    const label = await scope.locator('.chat-plan-label').textContent();
-    assert.match(label, /^(Plan|计划) 1\/3$/, `${locale} chip label`);
-    assert.equal(await scope.locator('.chat-plan-entry').count(), 3, `${locale}/${theme}/${width} entries`);
-    const overflow = await scope.locator('.chat-log-shell').evaluate(element => element.scrollWidth - element.clientWidth);
-    assert.ok(overflow <= 1, `${locale}/${theme}/${width} has no horizontal overflow (${overflow})`);
+    const overflow = await card.evaluate(element => element.scrollWidth - element.clientWidth);
+    assert.ok(overflow <= 1, `${locale}/${theme}/${width} overview card has no horizontal overflow (${overflow})`);
+    const logOverflow = await scope.locator('.chat-log-shell').evaluate(element => element.scrollWidth - element.clientWidth);
+    assert.ok(logOverflow <= 1, `${locale}/${theme}/${width} has no horizontal overflow (${logOverflow})`);
   }
-  check('light/dark, en/zh-CN, wide and 420 px matrix shows the plan panel without overflow');
+  check('light/dark, en/zh-CN, wide and 420 px matrix shows the plan overview without overflow');
 
   assert.deepEqual(report.errors, [], report.errors.join('\n'));
   report.passed = true;
