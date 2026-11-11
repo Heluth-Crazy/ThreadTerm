@@ -391,11 +391,19 @@ if (!fast) {
   if (!cargo) fail('cargo is required for the full gate; install Rust (rustup) or run npm run check:fast');
   if (!workingTree) notes.push('rust tests always run on the working tree of runtime/');
   for (const note of notes) console.log(`     ${note}`);
-  const rustArgs = ['test', '--locked', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
+  // `--workspace`: the sheet core (runtime/sheet-core) is a workspace member with its own
+  // tests, and a bare `cargo test` at this manifest would test only the runtime package.
+  const rustArgs = ['test', '--locked', '--workspace', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
   for (const skip of skips) rustArgs.push('--skip', skip);
   // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
   // The explicit --test-threads argument above still enforces the caller's concurrency limit.
   run('rust tests', repo, cargo, rustArgs, 3600000, { ...rustEnv, RUST_TEST_THREADS: undefined });
+
+  // Excel preview in main mode (task 11-10 step 3): the sheet core built for wasm32-unknown-unknown, then
+  // native-vs-wasm parity over every fixture (design.md §8). The parity half needs the 100 MiB fixtures under
+  // `%TEMP%/office-preview/fixtures`, which are scratch-only, so it prints a skip note where they are absent.
+  run('sheet wasm build', repo, process.execPath, [join(repo, 'scripts/build-sheet-wasm.mjs')], 1800000);
+  run('sheet wasm/native parity', repo, process.execPath, [join(repo, 'qa/sheet-parity.mjs'), '--allow-missing-fixtures'], 3600000);
 }
 
 // --- summary ------------------------------------------------------------------------------------------------------

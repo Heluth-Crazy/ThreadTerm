@@ -44,6 +44,20 @@ test('route defaults to runtime; remote and non-file requests never use main', a
   assert.deepEqual(routes, ['runtime:filesystem.read', 'main:filesystem.read', 'runtime:filesystem.read', 'runtime:draft.list']);
 });
 
+test('Word document reads follow the file backend and remote requests stay with their host', async () => {
+  const routes: string[] = [];
+  const runtime = target(async method => { routes.push(`runtime:${method}`); return { path: 'p', size: 1, offset: 0, fingerprint: 'f', chunk: '', eof: true }; });
+  const main = target(async method => { routes.push(`main:${method}`); return { path: 'p', size: 1, offset: 0, fingerprint: 'f', chunk: '', eof: true }; });
+  const router = new LocalFileRouter({ load: async () => 'runtime', save: async () => {} }, main);
+  const params = { projectId: 'project', path: 'report.docx', offset: 0, limit: 1024 };
+  await router.request('local', runtime, 'filesystem.document.read', params);
+  await router.setBackend('main');
+  await router.request('local', runtime, 'filesystem.document.read', params);
+  await router.request('local', runtime, 'filesystem.external.document.read', { id: 'external', offset: 0, limit: 1024 });
+  await router.request('peer', runtime, 'filesystem.document.read', params);
+  assert.deepEqual(routes, ['runtime:filesystem.document.read', 'main:filesystem.document.read', 'main:filesystem.external.document.read', 'runtime:filesystem.document.read']);
+});
+
 test('window reads use the selected backend and drain before lifecycle work', async () => {
   const project=deferred(), external=deferred(), removal=deferred(), log:string[]=[];
   const main=target(async method=>{log.push(`main:${method}`);if(method==='filesystem.readWindow')await project.promise;if(method==='filesystem.external.readWindow')await external.promise;return null;});

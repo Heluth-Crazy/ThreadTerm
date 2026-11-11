@@ -88,6 +88,15 @@ const known:Record<string,[string,string]> = {
  checkpoint_failed:['该检查点创建失败，无法对比。','This checkpoint failed to capture and cannot be compared.'],
  checkpoint_unavailable:['检查点对象已丢失或存储不可用，未显示对比，也未更改任何文件。','The checkpoint objects are missing or their store is unavailable. No diff was shown and no files were changed.'],
  file_too_large:['文件太大（超过 1 MB）。','The file is too large (over 1 MB).'],
+ // Workbook preview (`design.md` §6). The line above is the 1 MiB text-reader limit, so a workbook at
+ // the 100 MiB limit goes through `officeSheetError` instead of `workbenchError`.
+ unsupported_document:['无法读取此文件，它可能已损坏。','Cannot read this file; it may be damaged.'],
+ document_protected:['此文件受密码保护。','This file is password-protected.'],
+ file_changed:['文件已更改，请重新载入。','The file changed. Reload.'],
+ sheet_out_of_memory:['此工作簿过大，无法预览。','This workbook is too large to preview.'],
+ sheet_too_complex:['此工作簿过大，无法预览。','This workbook is too large to preview.'],
+ sheet_worker_failed:['预览已停止，请重新载入。','Preview stopped. Reload.'],
+ sheet_not_found:['工作簿已关闭，请重新载入。','The workbook was closed. Reload.'],
  binary_file:['二进制文件无法以文本显示。','Binary files cannot be shown as text.'],
  invalid_file_type:['目标不是普通文件，无法执行此操作。','The target is not a regular file and cannot be used for this operation.'],
  invalid_search_pattern:['搜索表达式无效。','Invalid search expression.'],
@@ -180,3 +189,15 @@ export function workbenchError(error:unknown, zh:boolean, context?:'discard'):st
 }
 
 export const isUnavailable = (error:unknown) => /unknown_method|Unsupported runtime method|git_unavailable|review_unavailable/.test(error instanceof Error ? error.message : String(error));
+
+/** Workbook preview line (`design.md` §6): the sheet limits differ from the text reader's, so
+ * `file_too_large` means 100 MiB here and the text-reader wording stays for text files. */
+export function officeSheetError(error:unknown, zh:boolean):string {
+ const raw = error instanceof Error ? error.message : String(error);
+ // A view on another computer talks to that computer's runtime; an older one has no sheet method.
+ const remote = typeof window !== 'undefined' && Boolean((window as {threadterm?:{machineId?:string}}).threadterm?.machineId
+  && (window as {threadterm?:{machineId?:string}}).threadterm?.machineId !== 'local');
+ if(remote && /unknown_method|Unsupported runtime method/.test(raw)) return zh ? '请在那台电脑上更新 ThreadTerm。' : 'Update ThreadTerm on that computer.';
+ if(/\bfile_too_large\b/.test(raw)) return zh ? '文件过大，无法预览（超过 100 MiB）。' : 'Too large to preview (over 100 MiB).';
+ return workbenchError(error, zh);
+}

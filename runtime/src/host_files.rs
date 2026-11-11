@@ -72,6 +72,32 @@ pub fn dispatch(db: &Database, method: &str, p: &Value) -> Result<Option<Value>>
                 "chunk":STANDARD.encode(&bytes),"eof":offset + bytes.len() as u64 >= before.len()}),
             ))
         }
+        "filesystem.document.read" => {
+            let project = p["projectId"]
+                .as_str()
+                .ok_or_else(|| anyhow!("invalid_request"))?;
+            let root = db.transaction(|tx| {
+                root_for(tx, project, p.get("worktreePath").and_then(Value::as_str))
+            })?;
+            let path = p["path"].as_str().ok_or_else(|| anyhow!("invalid_path"))?;
+            if path.contains(':') || path.contains('\\') {
+                return Err(anyhow!("invalid_path"));
+            }
+            let resolved = scoped_path(&root, path, true)?;
+            let offset = p["offset"]
+                .as_u64()
+                .ok_or_else(|| anyhow!("invalid_offset"))?;
+            let limit = p["limit"]
+                .as_u64()
+                .filter(|n| *n > 0 && *n <= CHUNK_BYTES as u64)
+                .ok_or_else(|| anyhow!("invalid_limit"))?;
+            let value = crate::document_read::read_page(&resolved, offset, limit)?;
+            // The directory entry may have been swapped for an escape while the chunk was read.
+            if scoped_path(&root, path, true)? != resolved {
+                return Err(anyhow!("file_changed"));
+            }
+            Ok(Some(value))
+        }
         _ => Ok(None),
     }
 }
@@ -258,6 +284,59 @@ mod tests {
             &json!({"projectId":project.id,"path":"escape/escape.html","offset":0,"limit":1})
         )
         .is_err());
+    }
+
+    #[test]
+    fn document_reads_are_word_only_bounded_and_signature_checked() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        let project = db
+            .add_project(temp.path().to_str().unwrap(), Some("Host"), "add")
+            .unwrap();
+        let mut zip = b"PK\x03\x04".to_vec();
+        zip.resize(CHUNK_BYTES + 9, b'x');
+        fs::write(temp.path().join("report.docx"), &zip).unwrap();
+        fs::write(temp.path().join("macro.docm"), b"PK\x03\x04macro").unwrap();
+        fs::write(
+            temp.path().join("protected.docx"),
+            [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1],
+        )
+        .unwrap();
+        fs::write(temp.path().join("damaged.docx"), b"not a zip").unwrap();
+        fs::write(temp.path().join("notes.txt"), b"PK\x03\x04").unwrap();
+
+        let first = dispatch(&db, "filesystem.document.read", &json!({"projectId":project.id,"path":"report.docx","offset":0,"limit":CHUNK_BYTES})).unwrap().unwrap();
+        assert_eq!(first["size"], zip.len());
+        assert_eq!(first["eof"], false);
+        assert_eq!(STANDARD.decode(first["chunk"].as_str().unwrap()).unwrap(), &zip[..CHUNK_BYTES]);
+        let last = dispatch(&db, "filesystem.document.read", &json!({"projectId":project.id,"path":"report.docx","offset":CHUNK_BYTES,"limit":CHUNK_BYTES})).unwrap().unwrap();
+        assert_eq!(last["eof"], true);
+        assert_eq!(last["fingerprint"], first["fingerprint"]);
+        assert!(dispatch(&db, "filesystem.document.read", &json!({"projectId":project.id,"path":"macro.docm","offset":0,"limit":1})).is_ok());
+        for (path, code) in [
+            ("protected.docx", "document_protected"),
+            ("damaged.docx", "unsupported_document"),
+            ("notes.txt", "unsupported_document"),
+        ] {
+            assert_eq!(
+                dispatch(&db, "filesystem.document.read", &json!({"projectId":project.id,"path":path,"offset":0,"limit":1})).unwrap_err().to_string(),
+                code
+            );
+        }
+        fs::File::create(temp.path().join("huge.docx"))
+            .unwrap()
+            .set_len(crate::document_read::MAX_DOCUMENT_BYTES + 1)
+            .unwrap();
+        assert_eq!(
+            dispatch(&db, "filesystem.document.read", &json!({"projectId":project.id,"path":"huge.docx","offset":0,"limit":1})).unwrap_err().to_string(),
+            "file_too_large"
+        );
+        for (offset, limit) in [(zip.len() as u64 + 1, 1), (0, CHUNK_BYTES as u64 + 1)] {
+            assert!(dispatch(&db, "filesystem.document.read", &json!({"projectId":project.id,"path":"report.docx","offset":offset,"limit":limit})).is_err());
+        }
+        for path in ["../report.docx", "C:/outside.docx", "a\\..\\outside.docx"] {
+            assert!(dispatch(&db, "filesystem.document.read", &json!({"projectId":project.id,"path":path,"offset":0,"limit":1})).is_err());
+        }
     }
 
     #[test]

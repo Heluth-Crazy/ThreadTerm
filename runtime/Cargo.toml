@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 license = "UNLICENSED"
 
+# The workspace root stays here so `runtime/Cargo.lock` and `runtime/target` do not
+# move: the sheet core is a member beside the runtime, not a crate of its own tree.
+[workspace]
+members = ["sheet-core"]
+
 [lib]
 name = "threadterm_v3_runtime"
 path = "src/lib.rs"
@@ -40,6 +45,8 @@ serde_json = "1.0"
 sha2 = "0.10"
 socket2 = "0.6"
 subtle = "2.6"
+# One workbook parser for both hosts (design.md §3.2).
+threadterm-sheet-core = { path = "sheet-core" }
 thiserror = "2.0"
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net", "signal"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
@@ -70,4 +77,9 @@ harness = false
 # dependencies (bundled SQLite, serde_json, zstd): a first Usage history scan went
 # from ~11 min to ~2 min. Costs one longer dependency build after a clean.
 [profile.dev.package."*"]
+opt-level = 2
+
+# The sheet core parses 100 MiB workbooks inside a request budget: unoptimized it took
+# 22 s where the optimized dependency build takes a few. Same reason as the line above.
+[profile.dev.package.threadterm-sheet-core]
 opt-level = 2

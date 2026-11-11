@@ -66,7 +66,7 @@ test('all four tool switches remain optional boolean portable settings',()=>{
  validateResult('settings.export',{...bundle,settings:{}});
  for(const key of Object.keys(settings)) assert.throws(()=>validateResult('settings.export',{...bundle,settings:{[key]:'true'}}));
 });
-import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
+import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason,OFFICE_PREVIEW_MAX_BYTES,SHEET_MAX_ROWS_REQUEST,SHEET_MAX_COLS_REQUEST} from './index.ts';
 
 test('push preview and explicit lease contracts preserve plain push and reject unsafe force requests',()=>{
  const scope={projectId:'p'},oid='a'.repeat(40),plain={...scope,operationId:'push'};
@@ -113,6 +113,59 @@ test('external files have a small read-only registration contract',()=>{
  validateResult('filesystem.external.list',{files:[{...opened,exists:true}]});
  validateRequest('filesystem.external.forget',{id:opened.id,operationId:'forget-1'});
  for(const params of [{},{id:''},{id:opened.id},{id:opened.id,operationId:''},{id:opened.id,operationId:'forget-1',extra:true}])assert.throws(()=>validateRequest('filesystem.external.forget',params));
+ // Sheet preview (design.md §3.1): four methods, one window shape and one set of limits.
+ const sheetHandle='0123456789abcdef0123456789abcdef';
+ const sheetWorkbook={handle:sheetHandle,size:1024,changeToken:'1024:1:2',sheets:[{name:'Sheet1',visible:true},{name:'hidden-Rates',visible:false}]};
+ validateRequest('filesystem.sheet.open',{projectId:'project',path:'book.xlsx'});
+ validateRequest('filesystem.sheet.open',{projectId:'project',worktreePath:'D:/w',path:'book.xlsx'});
+ validateRequest('filesystem.external.sheet.open',{id:opened.id});
+ for(const params of [{},{projectId:'project'},{projectId:'project',path:''},{projectId:'project',path:'book.xlsx',extra:true}])assert.throws(()=>validateRequest('filesystem.sheet.open',params));
+ for(const params of [{},{id:''},{id:opened.id,path:'book.xlsx'}])assert.throws(()=>validateRequest('filesystem.external.sheet.open',params));
+ validateResult('filesystem.sheet.open',sheetWorkbook);
+ validateResult('filesystem.external.sheet.open',{...sheetWorkbook,sheets:[]});
+ validateRequest('filesystem.sheet.rows',{handle:sheetHandle,sheet:0,start:0,count:100});
+ validateRequest('filesystem.sheet.rows',{handle:sheetHandle,sheet:0,start:0,count:500,columnStart:2,columnCount:200});
+ for(const params of [
+  {},{handle:sheetHandle},{handle:sheetHandle,sheet:0,start:0},
+  {handle:'not-hex',sheet:0,start:0,count:10},
+  {handle:sheetHandle,sheet:-1,start:0,count:10},
+  {handle:sheetHandle,sheet:0,start:-1,count:10},
+  {handle:sheetHandle,sheet:0,start:0,count:0},
+  {handle:sheetHandle,sheet:0,start:0,count:501},
+  {handle:sheetHandle,sheet:0,start:0,count:10,columnCount:201},
+  {handle:sheetHandle,sheet:0,start:0,count:10,offset:0},
+ ])assert.throws(()=>validateRequest('filesystem.sheet.rows',params));
+ const loading={state:'loading',progress:0,totalRows:0,totalColumns:0,start:0,columnStart:0,rows:[]};
+ const readySheet={state:'ready',totalRows:13,totalColumns:6,start:4,columnStart:0,
+  rows:[[null,null,['42','n'],'Used range starts here'],[],[['2023-03-15','d'],['TRUE','b'],['#DIV/0!','e'],['0.1875','n']]],
+  merges:[[4,2,1,2]],clipped:true,truncated:false};
+ validateResult('filesystem.sheet.rows',loading);
+ validateResult('filesystem.sheet.rows',readySheet);
+ validateResult('filesystem.sheet.rows',{...readySheet,rows:[[null,'plain text']],clipped:false});
+ for(const result of [
+  {},
+  {...loading,state:'failed'},
+  {...readySheet,rows:[[['42','x']]]},
+  {...readySheet,merges:[[4,2]]},
+ ])assert.throws(()=>validateResult('filesystem.sheet.rows',result));
+ validateRequest('filesystem.sheet.close',{handle:sheetHandle});
+ for(const params of [{},{handle:''},{handle:'not-hex'},{handle:sheetHandle,extra:1}])assert.throws(()=>validateRequest('filesystem.sheet.close',params));
+ validateResult('filesystem.sheet.close',null);
+ // Word preview (design.md §4.1): the preview chunk shape with the Office cap and 1 MiB limit.
+ const chunk={path:'D:/docs/Report.docx',size:2048,offset:0,fingerprint:'12:3:2048:modified',chunk:'UEsDBA==',eof:false};
+ validateRequest('filesystem.document.read',{projectId:'project',path:'Report.docx',offset:0,limit:1024*1024});
+ validateRequest('filesystem.document.read',{projectId:'project',worktreePath:'D:/w',path:'Report.docm',offset:1024,limit:1024});
+ validateRequest('filesystem.external.document.read',{id:opened.id,offset:0,limit:1024*1024});
+ for(const params of [{},{projectId:'project',path:'Report.docx'},{projectId:'project',path:'Report.docx',offset:-1,limit:1},{projectId:'project',path:'Report.docx',offset:0,limit:0},{projectId:'project',path:'Report.docx',offset:0,limit:1024*1024+1},{projectId:'project',path:'Report.docx',offset:0,limit:1,extra:true}])assert.throws(()=>validateRequest('filesystem.document.read',params));
+ for(const params of [{},{id:opened.id},{id:opened.id,offset:0},{id:opened.id,offset:0,limit:1024*1024+1},{id:opened.id,offset:0,limit:1,path:'x'}])assert.throws(()=>validateRequest('filesystem.external.document.read',params));
+ validateResult('filesystem.document.read',chunk);
+ validateResult('filesystem.external.document.read',chunk);
+ for(const result of [{},{...chunk,size:'2048'},{...chunk,chunk:3},{...chunk,eof:'no'}])assert.throws(()=>validateResult('filesystem.document.read',result));
+ for(const method of ['filesystem.document.read','filesystem.external.document.read'])assert.ok(METHODS.includes(method),method);
+ for(const method of ['filesystem.sheet.open','filesystem.external.sheet.open','filesystem.sheet.rows','filesystem.sheet.close'])assert.ok(METHODS.includes(method),method);
+ assert.equal(OFFICE_PREVIEW_MAX_BYTES,100*1024*1024);
+ assert.equal(SHEET_MAX_ROWS_REQUEST,500);
+ assert.equal(SHEET_MAX_COLS_REQUEST,200);
  assert.ok(METHODS.includes('filesystem.external.open'));
 });
 

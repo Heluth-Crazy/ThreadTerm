@@ -2,20 +2,30 @@ import type { Method, RequestParams, RequestResult } from '@threadterm/protocol'
 import { isLocalFileBackend, type LocalFileBackend } from './config.js';
 
 export interface FileRequestTarget {
-  request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>>;
+  request<M extends Method>(method: M, params: RequestParams<M>, context?: FileRequestContext): Promise<RequestResult<M>>;
+  /** The window that sent the request: sheet handles are bound to it (`design.md` §3.4). */
+  releaseOwner?(owner: string): void;
+  /** The Local file access setting changed: backend-scoped handles are gone (§3.5). */
+  reset?(): void;
 }
+/** Who asked. The runtime host binds a sheet handle to its principal and connection; the main
+ * host binds it to the window (webContents) that opened it. */
+export type FileRequestContext = { owner?: string };
 export interface BackendPreference {
   load(): Promise<LocalFileBackend>;
   save(backend: LocalFileBackend): Promise<void>;
 }
 
 const fileMethods = new Set<string>([
-  'filesystem.browse', 'filesystem.preview.read', 'filesystem.list', 'filesystem.resolve',
+  'filesystem.browse', 'filesystem.preview.read', 'filesystem.document.read', 'filesystem.list', 'filesystem.resolve',
   'filesystem.external.open', 'filesystem.external.read', 'filesystem.external.image',
-  'filesystem.external.readWindow', 'filesystem.external.list', 'filesystem.external.forget',
+  'filesystem.external.readWindow', 'filesystem.external.document.read', 'filesystem.external.list', 'filesystem.external.forget',
   'filesystem.read', 'filesystem.readWindow', 'filesystem.image',
   'filesystem.write', 'filesystem.create', 'filesystem.rename', 'filesystem.delete',
   'filesystem.files', 'filesystem.search',
+  // Excel preview (`design.md` §3.4): the main backend feeds a WebAssembly reader; the runtime
+  // backend opens a `--sheet-worker` helper. Remote views always go to their host's runtime.
+  'filesystem.sheet.open', 'filesystem.external.sheet.open', 'filesystem.sheet.rows', 'filesystem.sheet.close',
 ]);
 const mutations = new Set<string>([
   'filesystem.write', 'filesystem.create', 'filesystem.rename', 'filesystem.delete',
@@ -33,6 +43,11 @@ export class LocalFileRouter {
   private readonly pending = new Set<Promise<unknown>>();
   private readonly listeners = new Set<(backend: LocalFileBackend) => void>();
   private stopping = false;
+  /** Sheet handles the local runtime opened. A handle belongs to the backend that opened it, and
+   * after a switch the renderer's `close` goes to the new backend; so the router closes these on
+   * the runtime itself when the setting moves to main or their window goes (`design.md` §3.5,
+   * R5), instead of leaving a helper to its idle timer. */
+  private readonly runtimeSheets = new Map<string, { runtime: FileRequestTarget; owner?: string }>();
 
   constructor(private readonly preference: BackendPreference, private readonly main: FileRequestTarget,
     private readonly prepare?: (backend: LocalFileBackend) => Promise<void>,
@@ -52,6 +67,7 @@ export class LocalFileRouter {
         await this.prepare?.(value);
         await this.preference.save(value);
         this.backend = value;
+        if (value === 'main') this.closeRuntimeSheets(() => true);
         for (const listener of this.listeners) { try { listener(value); } catch { /* A closed window cannot roll back saved preferences. */ } }
       }
       return this.backend;
@@ -89,23 +105,53 @@ export class LocalFileRouter {
     return () => { this.listeners.delete(listener); };
   }
 
-  request<M extends Method>(machineId: string, runtime: FileRequestTarget, method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
+  request<M extends Method>(machineId: string, runtime: FileRequestTarget, method: M, params: RequestParams<M>,
+    context?: FileRequestContext): Promise<RequestResult<M>> {
     // Sender bindings choose the machine; host paths must never be interpreted on the controller.
-    if (machineId !== 'local') return runtime.request(method, params);
-    if (!fileMethods.has(method) && !lifecycleMethods.has(method)) return runtime.request(method, params);
+    if (machineId !== 'local') return runtime.request(method, params, context);
+    if (!fileMethods.has(method) && !lifecycleMethods.has(method)) return runtime.request(method, params, context);
     if (this.stopping) return Promise.reject(new Error('ThreadTerm is shutting down'));
     if (lifecycleMethods.has(method)) return this.exclusive(async () => {
       await this.settleAccess?.();
-      return runtime.request(method, params);
+      return runtime.request(method, params, context);
     });
     if (this.pending.size >= 256) return Promise.reject(new Error('local_files_busy: Too many pending file requests'));
     const admission = this.gate;
     const beforeMutation = mutations.has(method) ? this.mutationTail : Promise.resolve();
-    const operation = Promise.all([admission, beforeMutation]).then(() =>
-      (this.backend === 'main' ? this.main : runtime).request(method, params));
+    const operation = Promise.all([admission, beforeMutation]).then(async () => {
+      const target = this.backend === 'main' ? this.main : runtime;
+      const result = await target.request(method, params, context);
+      if (target === runtime) this.trackRuntimeSheet(method, params, result, runtime, context?.owner);
+      return result;
+    });
     this.pending.add(operation);
     void operation.then(() => this.pending.delete(operation), () => this.pending.delete(operation));
     if (mutations.has(method)) this.mutationTail = operation.then(() => {}, () => {});
     return operation;
+  }
+
+  /** A window is gone: drop the sheet handles (and readers or helpers) it opened. */
+  releaseOwner(owner: string): void {
+    try { this.main.releaseOwner?.(owner); } catch { /* a closed window cannot fail the app */ }
+    this.closeRuntimeSheets(entry => entry.owner === owner);
+  }
+
+  private trackRuntimeSheet(method: string, params: unknown, result: unknown, runtime: FileRequestTarget, owner?: string): void {
+    if (method === 'filesystem.sheet.open' || method === 'filesystem.external.sheet.open') {
+      const handle = (result as { handle?: unknown } | null)?.handle;
+      if (typeof handle === 'string') this.runtimeSheets.set(handle, { runtime, owner });
+    } else if (method === 'filesystem.sheet.close') {
+      const handle = (params as { handle?: unknown } | null)?.handle;
+      if (typeof handle === 'string') this.runtimeSheets.delete(handle);
+    }
+  }
+
+  private closeRuntimeSheets(matches: (entry: { runtime: FileRequestTarget; owner?: string }) => boolean): void {
+    for (const [handle, entry] of [...this.runtimeSheets]) {
+      if (!matches(entry)) continue;
+      this.runtimeSheets.delete(handle);
+      // `close` is idempotent on the runtime; a runtime that is gone has already ended its helpers.
+      void entry.runtime.request('filesystem.sheet.close', { handle }).catch(() => {});
+    }
   }
 }

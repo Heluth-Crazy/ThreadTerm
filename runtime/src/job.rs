@@ -9,6 +9,7 @@ use windows_sys::Win32::{
             JobObjectExtendedLimitInformation, QueryInformationJobObject,
             SetInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOB_OBJECT_LIMIT_PROCESS_MEMORY,
         },
         Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
     },
@@ -30,6 +31,16 @@ unsafe impl Sync for SessionJob {}
 #[cfg(windows)]
 impl SessionJob {
     pub fn assign(pid: u32) -> Result<Self> {
+        Self::assign_with_limit(pid, None)
+    }
+
+    /// The same kill-on-close job with a process memory limit: a helper that passes it
+    /// is stopped instead of starving the machine (`design.md` §3.3, S2).
+    pub fn assign_with_memory_limit(pid: u32, memory_bytes: usize) -> Result<Self> {
+        Self::assign_with_limit(pid, Some(memory_bytes))
+    }
+
+    fn assign_with_limit(pid: u32, memory_bytes: Option<usize>) -> Result<Self> {
         unsafe {
             let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
             if job.is_null() {
@@ -40,6 +51,10 @@ impl SessionJob {
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if let Some(bytes) = memory_bytes {
+                info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+                info.ProcessMemoryLimit = bytes;
+            }
             if SetInformationJobObject(
                 job,
                 JobObjectExtendedLimitInformation,
@@ -67,6 +82,23 @@ impl SessionJob {
             CloseHandle(process);
             Ok(Self(job))
         }
+    }
+
+    /// The most memory any one process of this job has committed
+    /// (`PeakProcessMemoryUsed`), or `None` when the job cannot be queried. The sheet
+    /// host reads it to tell a memory-limit stop from another crash.
+    pub fn peak_process_memory(&self) -> Option<usize> {
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { core::mem::zeroed() };
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectExtendedLimitInformation,
+                (&raw mut info).cast(),
+                core::mem::size_of_val(&info) as u32,
+                core::ptr::null_mut(),
+            )
+        };
+        (ok != 0).then_some(info.PeakProcessMemoryUsed)
     }
 
     /// Pids currently assigned to this job: the run's whole process tree, which
@@ -246,6 +278,14 @@ pub struct SessionJob;
 impl SessionJob {
     pub fn assign(_pid: u32) -> anyhow::Result<Self> {
         Ok(Self)
+    }
+    /// No job objects here; the limit is not enforceable.
+    pub fn assign_with_memory_limit(_pid: u32, _memory_bytes: usize) -> anyhow::Result<Self> {
+        Ok(Self)
+    }
+    /// No job objects here, so no peak either.
+    pub fn peak_process_memory(&self) -> Option<usize> {
+        None
     }
     /// No job objects here, so readiness falls back to the output scanner.
     pub fn process_ids(&self) -> Vec<u32> {

@@ -3911,6 +3911,53 @@
         "projectId"
       ]
     },
+    "RequestParams<\"filesystem.document.read\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"filesystem.external.document.read\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "offset",
+        "limit"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"attachment.upload\">": {
       "type": "object",
       "properties": {
@@ -4150,6 +4197,79 @@
         "path",
         "projectId"
       ]
+    },
+    "RequestParams<\"filesystem.sheet.open\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"filesystem.external.sheet.open\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.sheet.rows\">": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string"
+        },
+        "sheet": {
+          "type": "number"
+        },
+        "start": {
+          "type": "number"
+        },
+        "count": {
+          "type": "number"
+        },
+        "columnStart": {
+          "type": "number"
+        },
+        "columnCount": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "handle",
+        "sheet",
+        "start",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.sheet.close\">": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "handle"
+      ],
+      "additionalProperties": false
     },
     "RequestParams<\"filesystem.image\">": {
       "type": "object",
@@ -11034,6 +11154,58 @@
         },
         "method": {
           "type": "string",
+          "const": "filesystem.document.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.document.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.document.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.document.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "attachment.upload"
         },
         "params": {
@@ -11324,6 +11496,110 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22filesystem.readWindow%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.sheet.open"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.sheet.open%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.sheet.open"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.external.sheet.open%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.sheet.rows"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.sheet.rows%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.sheet.close"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.sheet.close%22%3E"
         }
       },
       "required": [

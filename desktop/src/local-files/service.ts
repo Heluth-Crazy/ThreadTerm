@@ -3,7 +3,9 @@ import { isRecord, validateRequest, validateResult, type FileScope, type Method,
 import { isWorkspaceContext, type LocalFileCoordination } from './coordination.js';
 import type { LocalFileService } from './files.js';
 import { canonicalPath } from './paths.js';
-import type { FileRequestTarget } from './router.js';
+import type { FileRequestContext, FileRequestTarget } from './router.js';
+import { registeredExternalFilePath } from './references.js';
+import { createSheetHost, isSheetMethod, type SheetHost, type SheetMethod, type SheetReaderFactory } from './sheet-host.js';
 import { LocalFileAccess } from './access.js';
 
 type Mutation = 'filesystem.write' | 'filesystem.create' | 'filesystem.rename' | 'filesystem.delete';
@@ -17,6 +19,9 @@ export function createLocalFileTarget(options: {
   coordination: LocalFileCoordination;
   references: FileRequestTarget;
   access?: LocalFileAccess;
+  /** The PowerPoint-preview-style sheet host: only the runtime host and the renderer exist
+   * without it, so a build that leaves it out simply cannot open a workbook in main mode. */
+  sheet?: { startReader: SheetReaderFactory; wasmPath: string; log?: (line: string) => void };
 }): FileRequestTarget {
   const { service, coordination, references } = options;
   const access = options.access ?? new LocalFileAccess(coordination);
@@ -25,6 +30,22 @@ export function createLocalFileTarget(options: {
     if (!(await stat(canonical)).isDirectory()) throw new Error('invalid_root');
     return canonical;
   };
+  // The sheet host resolves a scope exactly as `filesystem.readWindow` does: the Runtime
+  // returns the project/worktree root from the database and this module canonicalizes and
+  // rechecks it; external workbooks are registered IDs only.
+  const sheet: SheetHost | undefined = options.sheet ? createSheetHost({
+    access: { run: action => access.run(action) },
+    workspaceRoot: async scope => {
+      const context = await coordination('desktop.files.context', {
+        kind: 'workspace', projectId: scope.projectId,
+        ...(scope.worktreePath !== undefined ? { worktreePath: scope.worktreePath } : {}),
+      });
+      if (!isWorkspaceContext(context)) throw new Error('Invalid file workspace context');
+      return root(context.rootPath);
+    },
+    externalPath: id => registeredExternalFilePath(coordination, id),
+    ...options.sheet,
+  }) : undefined;
   async function mutate(accessId: string, method: Mutation, params: RequestParams<Mutation>): Promise<unknown> {
     const admission = await coordination('desktop.files.mutation.begin', { accessId, method, params });
     if (!isRecord(admission)) throw new Error('Invalid file mutation reservation');
@@ -53,8 +74,16 @@ export function createLocalFileTarget(options: {
   }
 
   return {
-    async request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
+    async request<M extends Method>(method: M, params: RequestParams<M>, context?: FileRequestContext): Promise<RequestResult<M>> {
       validateRequest(method, params);
+      if (isSheetMethod(method)) {
+        // The sheet host takes its own access lease around the byte read (`design.md` §3.4):
+        // the lease covers the feed, not the workbook's whole lifetime.
+        if (!sheet) throw new Error('desktop_files_forbidden');
+        const result = await sheet.request(method as SheetMethod, params, context?.owner ?? 'main');
+        validateResult(method, result);
+        return result as RequestResult<M>;
+      }
       return access.run(async accessId => {
         let result: unknown;
         if (method === 'filesystem.resolve' || method.startsWith('filesystem.external.')) {
@@ -79,6 +108,7 @@ export function createLocalFileTarget(options: {
             case 'filesystem.files': result = await service.files(path); break;
             case 'filesystem.search': result = await service.search(path, params as RequestParams<'filesystem.search'>); break;
             case 'filesystem.preview.read': result = await service.preview(path, params as RequestParams<'filesystem.preview.read'>); break;
+            case 'filesystem.document.read': result = await service.document(path, params as RequestParams<'filesystem.document.read'>); break;
             default: throw new Error('Unsupported local file method');
           }
         }
@@ -86,5 +116,8 @@ export function createLocalFileTarget(options: {
         return result as RequestResult<M>;
       }, isMutation(method));
     },
+    /** A Local file access change invalidates every sheet handle: the client reopens. */
+    reset() { sheet?.reset(); },
+    releaseOwner(owner: string) { sheet?.releaseOwner(owner); },
   };
 }

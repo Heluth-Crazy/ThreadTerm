@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { availableParallelism, release } from 'node:os';
 import { ResourceUsage } from './resourceUsage.js';
 import { canonicalRelocationPath } from './relocationPaths.js';
-import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
+import { appendFileSync, readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent, type Settings } from '@threadterm/protocol';
 import { RuntimeClient, RuntimeRequestError, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
@@ -28,9 +29,12 @@ import { HostFilePickers, hostRevealTarget } from './hostFiles.js';
 import { localPageShotPath } from './pageComments.js';
 import { qaOpenExternalPathsOverride } from './externalFiles.js';
 import { createLocalFileBackend, registerLocalFileBackendIpc } from './local-files/index.js';
+import { registeredExternalFilePath } from './local-files/references.js';
+import { resolveHtmlPreviewRoot } from './htmlPreviewRoot.js';
+import { createOpenFileDefaultAppHandler, qaOpenFileAppRecordPath } from './openFileApp.js';
 
-import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow } from './htmlPreview.js';
-import { registerHtmlPreviewIpc } from './htmlPreviewIpc.js';
+import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow, loadDocumentViewerFiles } from './htmlPreview.js';
+import { registerHtmlPreviewIpc, type HtmlPreviewDocumentChunk } from './htmlPreviewIpc.js';
 import { BACKGROUND_IMAGE_PRIVILEGED_SCHEME, backgroundImagesFolder, installBackgroundImageSession, registerBackgroundImageIpc } from './backgroundImages.js';
 import { buildThemeExport, importThemePackImages, qaThemeExportOverride } from './themePackCore.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
@@ -45,7 +49,7 @@ import type { TLSSocket } from 'node:tls';
 // One call for every privileged scheme: Electron keeps only the last registerSchemesAsPrivileged call.
 protocol.registerSchemesAsPrivileged([HTML_PREVIEW_PRIVILEGED_SCHEME, BACKGROUND_IMAGE_PRIVILEGED_SCHEME]);
 app.commandLine.appendSwitch('enable-features', mergePreviewIsolationFeatures(app.commandLine.getSwitchValue('enable-features')));
-const htmlPreviewGrants = new HtmlPreviewGrantManager();
+const htmlPreviewGrants = new HtmlPreviewGrantManager({ documentViewer: loadDocumentViewerFiles(join(__dirname, 'doc-viewer')) });
 let htmlPreviewPreloadReady = false;
 const prepareAppSession = createAppSessionPreparer((appSession: Electron.Session) => {
   installAppCspHeader(appSession);
@@ -536,7 +540,8 @@ function registerIpc(): void {
     prepare: async event => { const {machineId}=machineBindings.get(event.sender.id);if(machineId!=='local')await machineBrowsers!.prepare(machineId,machines.list().find(machine=>machine.id===machineId)?.name??'Computer',event.sender,runtimeFor(event)); },
     released: partition => machineBrowsers?.release(partition),
   });
-  registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady, event => machineBindings.get(event.sender.id).machineId !== 'local');
+  registerHtmlPreviewIpc(htmlPreviewGrants, assertTrustedRenderer, runtimeFor, () => htmlPreviewPreloadReady, event => machineBindings.get(event.sender.id).machineId !== 'local',
+    async (event, method, params) => (await localFiles.request(machineBindings.get(event.sender.id).machineId, runtimeFor(event), method as Method, params as RequestParams<Method>)) as unknown as HtmlPreviewDocumentChunk);
   registerBackgroundImageIpc({ folder: backgroundImagesFolder(), assertTrusted: assertTrustedRenderer, isPackaged: app.isPackaged });
   registerPageComments(assertTrustedRenderer, async after => {
     const references = await adminRuntime.request('reviewDrafts.assetReferences', after ? { after, limit: 200 } : { limit: 200 });
@@ -590,7 +595,9 @@ function registerIpc(): void {
     const runtime = runtimeFor(event);
     if (method === 'data.backup') await event.sender.session.flushStorageData();
     const requestParams = method === 'data.backup' ? { ...params as RequestParams<'data.backup'>, desktopDataRoot: app.getPath('userData') } : params;
-    return localFiles.request(machineBindings.get(event.sender.id).machineId, runtime, method, requestParams as RequestParams<Method>);
+    return localFiles.request(machineBindings.get(event.sender.id).machineId, runtime, method, requestParams as RequestParams<Method>,
+      // A sheet handle belongs to the window that opened it (`design.md` §3.4).
+      { owner: String(event.sender.id) });
   });
   ipcMain.handle('threadterm:qa-drop-control', (event) => {
     assertTrustedRenderer(event);
@@ -762,6 +769,29 @@ function registerIpc(): void {
     if (!statSync(directory).isDirectory()) throw new Error('Directory is unavailable');
     const error = await shell.openPath(directory);
     if (error) throw new Error(error);
+  });
+  const qaOpenFileAppRecord = qaOpenFileAppRecordPath(process.env.THREADTERM_V3_OPEN_FILE_APP_QA, app.isPackaged);
+  // The tested handler (`openFileApp.ts`): trusted renderer, local machine, strict input, the
+  // allow list and containment, then `shell.openPath` (or the QA recorder).
+  ipcMain.handle('threadterm:open-file-default-app', (event, input: unknown) => {
+    // Looked up only after the handler's trust and local-machine checks have passed.
+    const runtime = () => runtimeFor(event);
+    return createOpenFileDefaultAppHandler({
+      workspaceRoot: request => resolveHtmlPreviewRoot({
+        projects: async () => (await runtime().request('runtime.snapshot', {})).projects,
+        worktrees: projectId => runtime().request('worktree.list', { projectId }),
+      }, request),
+      // Registered external file: the same row and canonical path check as external readWindow.
+      externalPath: id => registeredExternalFilePath((command, params) => runtime().localFileRequest(command, params), id),
+      canonical: path => realpath(path),
+      isFile: async path => (await stat(path)).isFile(),
+      openPath: async path => {
+        // The probe records the target instead of starting Word, Excel or a PDF application.
+        if (qaOpenFileAppRecord) { appendFileSync(qaOpenFileAppRecord, `${JSON.stringify({ path })}
+`); return ''; }
+        return shell.openPath(path);
+      },
+    }, assertTrustedRenderer, assertLocalMachine)(event, input);
   });
   ipcMain.handle('threadterm:reveal-file', async (event, sessionId: unknown, path: unknown) => {
     assertTrustedRenderer(event);
@@ -1115,6 +1145,8 @@ function bindMachineRenderer(contents: Electron.WebContents, machineId: string, 
   });
   contents.once('destroyed', () => {
     cancelPendingPairing(contents.id);
+    // A closed window takes its sheet readers with it (`design.md` §3.5, R5).
+    localFileBackend?.releaseOwner(String(contents.id));
     machineBindings.remove(contents.id);
     machineRenderers.delete(contents.id);
   });

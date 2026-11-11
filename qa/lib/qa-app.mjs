@@ -1,7 +1,7 @@
 // Builds a throwaway ThreadTerm app (desktop main/preload/html-preview preload bundles plus the renderer) into a temp
 // directory. A harness hands Electron that directory instead of the repository root, so it never runs the user's own
 // desktop-dist bundle: that one can be stale, and rebuilding it while the user's dev app is running is not allowed.
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,8 +9,12 @@ import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-// desktop/src/main.ts loads each of these from its own directory (join(__dirname, …)), so all three are built here.
-const mainBundles = ['main', 'preload', 'htmlPreviewSandboxPreload'];
+// desktop/src/main.ts loads each of these from its own directory (join(__dirname, …)), so all of them are built
+// here. The sheet reader is the utility process main mode forks; it is ThreadTerm.exe and opens no files.
+const mainBundles = [
+  ['main', 'main'], ['preload', 'preload'], ['htmlPreviewSandboxPreload', 'htmlPreviewSandboxPreload'],
+  ['local-files/sheet-reader', 'sheet-reader'],
+];
 
 /**
  * Builds the production app into `outDir` (default: a fresh directory under the system temp dir).
@@ -25,8 +29,8 @@ export async function buildQaApp({ root = repoRoot, outDir, viteOptions = {} } =
   const cleanup = () => rm(scratch ?? appDir, { recursive: true, force: true });
   try {
     await mkdir(appDir, { recursive: true });
-    for (const name of mainBundles) {
-      await esbuild({ entryPoints: [join(root, `desktop/src/${name}.ts`)], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, `${name}.cjs`), logLevel: 'error' });
+    for (const [entry, name] of mainBundles) {
+      await esbuild({ entryPoints: [join(root, `desktop/src/${entry}.ts`)], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, `${name}.cjs`), logLevel: 'error' });
     }
     await viteBuild({
       ...(process.env.THREADTERM_QA_RENDERER_ROOT ? { root: resolve(process.env.THREADTERM_QA_RENDERER_ROOT) } : {}),
@@ -35,6 +39,8 @@ export async function buildQaApp({ root = repoRoot, outDir, viteOptions = {} } =
       ...viteOptions,
       build: { outDir: join(appDir, 'renderer'), emptyOutDir: true, ...viteOptions.build },
     });
+    // Word previews load the built viewer beside main.cjs, exactly as the packaged app does.
+    await cp(join(root, 'desktop-dist/doc-viewer'), join(appDir, 'doc-viewer'), { recursive: true, force: true }).catch(() => {});
     // Electron reads name and version from here (app.getName/app.getVersion); keep them equal to the repository's.
     const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
     await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, main: 'main.cjs' }));

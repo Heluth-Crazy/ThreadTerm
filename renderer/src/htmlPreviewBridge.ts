@@ -1,5 +1,7 @@
 export type HtmlPreviewCommand =
   | { type: 'grant'; projectId: string; worktreePath?: string; path: string; frameName: string; remote: boolean }
+  | { type: 'grantDocument'; frameName: string; projectId: string; worktreePath?: string; path: string }
+  | { type: 'grantDocument'; frameName: string; externalId: string }
   | { type: 'revoke'; id: string }
   | { type: 'selectAll'; frameName: string };
 

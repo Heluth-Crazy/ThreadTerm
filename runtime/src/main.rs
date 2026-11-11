@@ -14,6 +14,28 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
+    // The sheet helper is this binary in another process (design.md §3.3): before
+    // config, log and singleton setup, so it opens no database and no pipe.
+    if std::env::args().any(|argument| argument == "--sheet-worker") {
+        std::process::exit(threadterm_v3_runtime::sheet_worker::run());
+    }
+    // QA only: a shorter sheet idle time, so the helper's timeout is observable in
+    // seconds instead of five minutes. An argument, never an environment variable.
+    if let Some(seconds) = std::env::args()
+        .skip_while(|argument| argument != "--sheet-idle-seconds")
+        .nth(1)
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        threadterm_v3_runtime::sheet_preview::configure_idle(seconds);
+    }
+    // QA only: a lower helper memory limit, so the limit path runs on a 100 MiB fixture.
+    if let Some(mebibytes) = std::env::args()
+        .skip_while(|argument| argument != "--sheet-helper-memory-mib")
+        .nth(1)
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        threadterm_v3_runtime::sheet_preview::configure_helper_memory(mebibytes);
+    }
     #[cfg(windows)]
     if std::env::args().any(|argument| argument == "--pty-bootstrap") {
         std::process::exit(threadterm_v3_runtime::bootstrap::run()?);

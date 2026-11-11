@@ -10,6 +10,8 @@ import {
   HtmlPreviewGrantManager,
   attachHtmlPreviewWindow,
   buildPreviewCsp,
+  buildDocumentCsp,
+  loadDocumentViewerFiles,
   decidePreviewRequest,
   installHtmlPreviewSession,
   isPathContained,
@@ -48,6 +50,96 @@ test('remote preview reads host-only paths in bounded pieces and retains the cap
   await assert.rejects(manager.create({ rootPath: '', entryPath: 'huge.html', ownerWebContentsId: 9, frameName: 'tt-preview-huge', hostSource: { read: async () => ({ path: 'huge', size: HTML_PREVIEW_MAX_BYTES + 1, offset: 0, chunk: '', eof: false }) } }), /too large/);
   manager.revoke(grant.id);
   assert.equal((await handler(new Request(grant.url))).status, 404);
+});
+
+test('document grants serve only the bundled viewer and stream the document without buffering', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'threadterm-doc-grant-'));
+  const viewer = join(folder, 'viewer');
+  await mkdir(viewer);
+  await writeFile(join(viewer, 'docx.html'), '<!doctype html><title>viewer</title>');
+  await writeFile(join(viewer, 'docx.js'), 'window.viewer=1');
+  await writeFile(join(viewer, 'docx.css'), 'body{}');
+  await writeFile(join(folder, 'secret'), 'not for the viewer');
+  const files = loadDocumentViewerFiles(viewer);
+  assert.deepEqual([...files.keys()].sort(), ['docx.css', 'docx.html', 'docx.js']);
+  const manager = new HtmlPreviewGrantManager({ randomId: ids(), documentViewer: files });
+  const bytes = Buffer.alloc(7 * 1024 * 1024 + 17, 97);
+  const calls: { offset: number; limit: number }[] = [];
+  const grant = await manager.createDocument({ ownerWebContentsId: 9, frameName: 'tt-preview-doc', source: {
+    read: async (offset, limit) => {
+      calls.push({ offset, limit });
+      const chunk = bytes.subarray(offset, offset + limit);
+      return { path: 'report.docx', size: bytes.length, offset, fingerprint: '12:3:7', chunk: chunk.toString('base64'), eof: offset + chunk.length === bytes.length };
+    },
+  } });
+  assert.equal(grant.kind, 'document');
+  assert.match(grant.url, /\/viewer\/docx\.html$/);
+  assert.equal(grant.remoteContentAllowed, false);
+  assert.throws(() => manager.setRemoteContentAllowed(grant.id, true), /do not allow remote content/);
+  let handler!: (request: Request) => Promise<Response>;
+  installHtmlPreviewSession({ protocol: { handle: (_scheme: string, next: typeof handler) => { handler = next; } }, webRequest: { onBeforeRequest() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} } as unknown as Session, manager, { appFrameAncestor: 'file:' });
+  const viewerResponse = await handler(new Request(grant.url));
+  assert.equal(viewerResponse.status, 200);
+  assert.equal(await viewerResponse.text(), '<!doctype html><title>viewer</title>');
+  const csp = viewerResponse.headers.get('content-security-policy') ?? '';
+  assert.match(csp, new RegExp(`connect-src tt-preview://${grant.id}(?:;|$)`));
+  assert.match(csp, /frame-ancestors file:/);
+  assert.doesNotMatch(csp, /https:|unsafe-eval|unsafe-inline[^;]*script/i);
+  assert.equal((await handler(new Request(grant.url.replace(/docx\.html$/, 'docx.js')))).status, 200);
+  assert.equal((await handler(new Request(grant.url.replace(/viewer\/docx\.html$/, 'viewer/missing.js')))).status, 404);
+  assert.equal((await handler(new Request(grant.url.replace(/viewer\/docx\.html$/, 'viewer/../secret')))).status, 404);
+  const documentUrl = 'tt-preview://' + grant.id + '/document';
+  const head = await handler(new Request(documentUrl, { method: 'HEAD' }));
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('content-length'), String(bytes.length));
+  assert.equal(head.headers.get('access-control-allow-origin'), 'null');
+  const response = await handler(new Request(documentUrl));
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+  assert.ok(calls.some(call => call.offset > 6 * 1024 * 1024));
+  assert.ok(calls.every(call => call.limit <= 1024 * 1024));
+  manager.revoke(grant.id);
+  assert.equal((await handler(new Request(documentUrl))).status, 404);
+  await assert.rejects(manager.createDocument({ ownerWebContentsId: 9, frameName: 'tt-preview-huge', source: { read: async () => ({ path: 'huge.docx', size: 100 * 1024 * 1024 + 1, offset: 0, fingerprint: 'f', chunk: '', eof: false }) } }), /invalid/);
+  await rm(folder, { recursive: true, force: true });
+});
+
+test('a document stream errors on a changed fingerprint or a revoked grant', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'threadterm-doc-stream-'));
+  await writeFile(join(folder, 'docx.html'), '<!doctype html>');
+  const manager = new HtmlPreviewGrantManager({ randomId: ids(), documentViewer: new Map([['docx.html', join(folder, 'docx.html')]]) });
+  let fingerprint = 'f';
+  const grant = await manager.createDocument({ ownerWebContentsId: 9, frameName: 'tt-preview-doc', source: { read: async (offset, limit) => ({
+    path: 'x.docx', size: 4, offset, fingerprint, chunk: Buffer.from('abcd').subarray(offset, offset + limit).toString('base64'), eof: true,
+  }) } });
+  let handler!: (request: Request) => Promise<Response>;
+  installHtmlPreviewSession({ protocol: { handle: (_scheme: string, next: typeof handler) => { handler = next; } }, webRequest: { onBeforeRequest() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} } as unknown as Session, manager, { appFrameAncestor: 'file:' });
+  fingerprint = 'changed';
+  const response = await handler(new Request('tt-preview://' + grant.id + '/document'));
+  assert.equal(response.status, 200);
+  await assert.rejects(response.arrayBuffer());
+  fingerprint = 'f';
+  const live = await handler(new Request('tt-preview://' + grant.id + '/document'));
+  assert.deepEqual(Buffer.from(await live.arrayBuffer()), Buffer.from('abcd'));
+  manager.revoke(grant.id);
+  assert.equal((await handler(new Request('tt-preview://' + grant.id + '/document'))).status, 404);
+  await rm(folder, { recursive: true, force: true });
+});
+
+test('CSP builders keep the document viewer narrower than a saved page', () => {
+  const id = 'a'.repeat(32);
+  const csp = buildDocumentCsp(id, 'http://127.0.0.1:5173');
+  assert.match(csp, new RegExp(`script-src tt-preview://${id}(?:;|$)`));
+  assert.match(csp, new RegExp(`style-src tt-preview://${id} 'unsafe-inline'`));
+  assert.match(csp, new RegExp(`img-src tt-preview://${id} data: blob:`));
+  assert.match(csp, new RegExp(`font-src tt-preview://${id} data: blob:`));
+  assert.match(csp, new RegExp(`connect-src tt-preview://${id}(?:;|$)`));
+  assert.match(csp, /media-src 'none'/);
+  assert.match(csp, /worker-src 'none'/);
+  assert.match(csp, /frame-src 'none'/);
+  assert.match(csp, /frame-ancestors http:\/\/127\.0\.0\.1:5173/);
+  assert.doesNotMatch(csp, /https:|unsafe-eval|blob: (?:tt-preview|https)/);
+  assert.throws(() => buildDocumentCsp('not-a-grant', 'file:'), /Invalid preview grant/);
 });
 
 async function fixture() {

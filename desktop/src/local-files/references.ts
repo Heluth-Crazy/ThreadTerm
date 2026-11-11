@@ -3,6 +3,7 @@ import { open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, toNamespacedPath } from 'node:path';
 import type { ExternalFile, ExternalFileOpenResult, ExternalFileSource, FileDocument, FileReference, Method, RequestParams, RequestResult, ResolvedFileReference } from '@threadterm/protocol';
 import { LocalFileService } from './files.js';
+import type { LocalFileCoordination } from './coordination.js';
 import { canonicalPath, displayPath, isContained } from './paths.js';
 import type { FileRequestTarget } from './router.js';
 
@@ -18,13 +19,32 @@ const sourceSearchSkipped = new Set(['node_modules', 'target', 'build', 'out', '
 const maxSourceSearchSegments = 64, maxSourceSearchBases = 256, maxSourceSearchEntries = 1024, sourceSearchBudgetMs = 150;
 const fileReferenceMethods = new Set<Method>([
   'filesystem.resolve', 'filesystem.external.open', 'filesystem.external.read',
-  'filesystem.external.readWindow', 'filesystem.external.image', 'filesystem.external.list', 'filesystem.external.forget',
+  'filesystem.external.readWindow', 'filesystem.external.document.read', 'filesystem.external.image', 'filesystem.external.list', 'filesystem.external.forget',
 ]);
 
 const fail = (code:string): never => { throw new Error(code); };
 const object = (value:unknown): UnknownRecord | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : undefined;
 const text = (value:unknown): value is string => typeof value === 'string';
 const nonEmptyText = (value:unknown): value is string => text(value) && value.length > 0;
+
+/** One `external_files` registration row as the private coordination channel returns it. */
+function registrationRow(value:unknown):ExternalRow {
+  const result = object(value);
+  if (!result) fail('desktop_files_invalid_external');
+  const item = result!;
+  if (!nonEmptyText(item.id) || !nonEmptyText(item.canonicalPath) || !nonEmptyText(item.name)
+    || !nonEmptyText(item.openedAt) || !externalSources.has(item.source as ExternalFileSource)) fail('desktop_files_invalid_external');
+  if (!absolutePath(item.canonicalPath as string)) fail('desktop_files_invalid_external');
+  return {id:item.id as string, canonicalPath:item.canonicalPath as string, name:item.name as string,
+    source:item.source as ExternalFileSource, openedAt:item.openedAt as string};
+}
+
+/** A **registered** external file's canonical path, by ID only: the main sheet host resolves
+ * exactly what `filesystem.external.readWindow` resolves (`design.md` §3.4). */
+export async function registeredExternalFilePath(coordination:LocalFileCoordination, id:string):Promise<string> {
+  if (!nonEmptyText(id)) fail('invalid_request');
+  return (await registeredFile(registrationRow(await coordination('desktop.files.external.get', {id})))).canonical;
+}
 
 /** A main-only private coordination channel. It never accepts a renderer-selected root. */
 export function createLocalFileReferenceTarget(options:{service:LocalFileService; coordination:Coordination}):FileRequestTarget {
@@ -47,16 +67,7 @@ export function createLocalFileReferenceTarget(options:{service:LocalFileService
       cwd:checkedCwd, provider:value.provider as string, mode:value.mode as string,
       relativeRequiresAbsolute:value.relativeRequiresAbsolute as boolean};
   };
-  const row = (value:unknown):ExternalRow => {
-    const result = object(value);
-    if (!result) fail('desktop_files_invalid_external');
-    const item = result!;
-    if (!nonEmptyText(item.id) || !nonEmptyText(item.canonicalPath) || !nonEmptyText(item.name)
-      || !nonEmptyText(item.openedAt) || !externalSources.has(item.source as ExternalFileSource)) fail('desktop_files_invalid_external');
-    if (!absolutePath(item.canonicalPath as string)) fail('desktop_files_invalid_external');
-    return {id:item.id as string, canonicalPath:item.canonicalPath as string, name:item.name as string,
-      source:item.source as ExternalFileSource, openedAt:item.openedAt as string};
-  };
+  const row = (value:unknown):ExternalRow => registrationRow(value);
 
   const request = async <M extends Method>(method:M, params:RequestParams<M>):Promise<RequestResult<M>> => {
     if (!fileReferenceMethods.has(method)) fail('desktop_files_forbidden');
@@ -65,6 +76,7 @@ export function createLocalFileReferenceTarget(options:{service:LocalFileService
       case 'filesystem.external.open': return openExternal(params as RequestParams<'filesystem.external.open'>, context, row, options.coordination) as Promise<RequestResult<M>>;
       case 'filesystem.external.read': return readExternal(params as RequestParams<'filesystem.external.read'>, row, options.service, options.coordination) as Promise<RequestResult<M>>;
       case 'filesystem.external.readWindow': return readExternalWindow(params as RequestParams<'filesystem.external.readWindow'>, row, options.service, options.coordination) as Promise<RequestResult<M>>;
+      case 'filesystem.external.document.read': return readExternalDocument(params as RequestParams<'filesystem.external.document.read'>, row, options.service, options.coordination) as Promise<RequestResult<M>>;
       case 'filesystem.external.image': return imageExternal(params as RequestParams<'filesystem.external.image'>, row, options.service, options.coordination) as Promise<RequestResult<M>>;
       case 'filesystem.external.list': return listExternal(params as RequestParams<'filesystem.external.list'>, row, options.coordination) as Promise<RequestResult<M>>;
       case 'filesystem.external.forget': return forgetExternal(params as RequestParams<'filesystem.external.forget'>, options.coordination) as Promise<RequestResult<M>>;
@@ -133,8 +145,15 @@ async function readExternalWindow(params:RequestParams<'filesystem.external.read
   catch(error){throw externalReadError(error);}
 }
 
-async function imageExternal(params:RequestParams<'filesystem.external.image'>, row:(value:unknown)=>ExternalRow, service:LocalFileService, coordination:Coordination):Promise<RequestResult<'filesystem.external.image'>> {
-  rejectExtra(params, ['id']);
+async function readExternalDocument(params:RequestParams<'filesystem.external.document.read'>, row:(value:unknown)=>ExternalRow, service:LocalFileService, coordination:Coordination):Promise<RequestResult<'filesystem.external.document.read'>> {
+  rejectExtra(params,['id','offset','limit']);
+  if(!nonEmptyText(params.id))fail('invalid_request');
+  const external=row(await coordination('desktop.files.external.get',{id:params.id}));
+  const file=await registeredFile(external);
+  try{return await service.document(file.root,{path:file.name,offset:params.offset,limit:params.limit});}
+  catch(error){throw externalReadError(error);}
+}
+async function imageExternal(params:RequestParams<'filesystem.external.image'>, row:(value:unknown)=>ExternalRow, service:LocalFileService, coordination:Coordination):Promise<RequestResult<'filesystem.external.image'>> {  rejectExtra(params, ['id']);
   if (!nonEmptyText(params.id)) fail('invalid_request');
   const external = row(await coordination('desktop.files.external.get', {id:params.id}));
   const file = await registeredFile(external);
@@ -266,4 +285,4 @@ function extension(path:string):string { const name=basename(path), index=name.l
 async function referenceKind(path:string, size:number):Promise<'text'|'image'> { const ext=extension(path); if (unsupportedImageExtensions.has(ext)) fail('unsupported_image'); const handle=await open(path, 'r').catch(() => fail('file_reference_not_found')); try { const prefix=Buffer.alloc(12); const {bytesRead}=await handle.read(prefix,0,prefix.length,0); const image=imageMime(prefix.subarray(0,bytesRead)); if (imageExtensions.has(ext) && !image) fail('unsupported_image'); if (image) { if(size>4*1024*1024)fail('image_too_large'); return 'image'; } if(size>1024*1024)fail('file_too_large'); return 'text'; } finally { await handle.close(); } }
 function imageMime(value:Buffer):boolean { return value.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || value.subarray(0,3).equals(Buffer.from([255,216,255])) || ['GIF87a','GIF89a'].includes(value.subarray(0,6).toString()) || value.subarray(0,4).toString()==='RIFF'&&value.subarray(8,12).toString()==='WEBP'; }
 function rejectExtra(value:unknown, allowed:readonly string[]):void { const input=object(value); if (!input || Object.keys(input).some(key=>!allowed.includes(key))) fail('invalid_request'); }
-function externalReadError(error:unknown):Error { const message=error instanceof Error ? error.message : String(error); if (message === 'file_not_found') return new Error('external_file_not_found'); if (message === 'not_a_file' || message === 'file_not_file') return new Error('external_file_not_file'); if (['file_too_large','file_changed','image_too_large','binary_file','unsupported_image'].includes(message)) return new Error(message); return new Error('external_file_unavailable'); }
+function externalReadError(error:unknown):Error { const message=error instanceof Error ? error.message : String(error); if (message === 'file_not_found') return new Error('external_file_not_found'); if (message === 'not_a_file' || message === 'file_not_file') return new Error('external_file_not_file'); if (['file_too_large','file_changed','image_too_large','binary_file','unsupported_image','unsupported_document','document_protected','invalid_offset','invalid_limit','invalid_path'].includes(message)) return new Error(message); return new Error('external_file_unavailable'); }

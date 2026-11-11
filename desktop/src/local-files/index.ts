@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { LocalFileBackendConfig } from './config.js';
 import type { LocalFileCoordination } from './coordination.js';
 import { LocalFileService } from './files.js';
@@ -6,6 +7,8 @@ import { LocalFileRouter } from './router.js';
 import { createLocalFileTarget } from './service.js';
 import { LocalFileAccess } from './access.js';
 import { LocalFileAccessNotCreatedError } from './coordination.js';
+import { startSheetReaderProcess } from './sheet-reader-process.js';
+import type { SheetReaderFactory } from './sheet-host.js';
 import { RuntimeRequestError } from '../runtime-client.js';
 export { registerLocalFileBackendIpc } from './ipc.js';
 
@@ -14,6 +17,10 @@ export function createLocalFileBackend(options: {
   configPath: string;
   coordination: LocalFileCoordination;
   trashItem: (path: string) => Promise<void>;
+  /** Where `desktop-dist/sheet-core.wasm` is; the WebAssembly sheet core of main mode. */
+  sheetWasmPath?: string;
+  /** Overridable so tests and probes can replace the reader process. */
+  startSheetReader?: SheetReaderFactory;
 }): LocalFileRouter {
   const coordination: LocalFileCoordination = async (command, params) => {
     try { return await options.coordination(command, params); }
@@ -34,9 +41,18 @@ export function createLocalFileBackend(options: {
   const service = new LocalFileService({ trashItem: options.trashItem });
   const access = new LocalFileAccess(coordination);
   const references = createLocalFileReferenceTarget({ service, coordination });
-  const main = createLocalFileTarget({ service, coordination, references, access });
+  const sheetWasmPath = options.sheetWasmPath ?? process.env.THREADTERM_SHEET_WASM ?? join(__dirname, 'sheet-core.wasm');
+  const main = createLocalFileTarget({
+    service, coordination, references, access,
+    // Only ThreadTerm.exe parses a workbook in main mode (R22): the reader is a utility
+    // process of this executable, and it opens no files.
+    sheet: { wasmPath: sheetWasmPath, startReader: options.startSheetReader ?? startSheetReaderProcess },
+  });
   return new LocalFileRouter(new LocalFileBackendConfig(options.configPath), main, async backend => {
     await access.flush();
     if (backend === 'main') await access.run(async () => null);
+    // Sheet handles belong to the backend that opened them: after a switch the client
+    // reopens (`design.md` §3.4, §3.5).
+    main.reset?.();
   }, () => access.flush());
 }

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, open, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, toNamespacedPath } from 'node:path';
 import type { FileDocument, FileEntry, FileListResult, LargeFileWindow, LargeFileWindowRequest } from '@threadterm/protocol';
+import { OFFICE_PREVIEW_MAX_BYTES } from '@threadterm/protocol';
 import { readBoundedFile, readFileWindow, validateOpenFilePath } from './bounded-read.js';
 import { streamProjectFiles, walkProjectFiles } from './ignore-walk.js';
 import {
@@ -209,6 +210,41 @@ export class LocalFileService {
       if(!before.isFile()) throw Error('not_a_file');
       if(before.size>BigInt(MAX_PREVIEW_BYTES)) throw Error('file_too_large');
       if(BigInt(params.offset)>before.size) throw Error('invalid_offset');
+      const bytes=Buffer.alloc(Math.min(params.limit,Number(before.size)-params.offset));
+      let length=0;
+      while(length<bytes.length){const read=await handle.read(bytes,length,bytes.length-length,params.offset+length);if(!read.bytesRead)break;length+=read.bytesRead;}
+      const after=await validateOpenFilePath(handle,path);
+      await recheckContainedTarget(root,path);
+      if(before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs) throw Error('file_changed');
+      return {path:toNamespacedPath(path),size:Number(before.size),offset:params.offset,fingerprint:previewFingerprint(before),chunk:bytes.subarray(0,length).toString('base64'),eof:params.offset+length>=Number(before.size)};
+    } finally { await handle.close(); }
+  }
+
+  /** Word preview (`design.md` §4.1): the preview chunk shape, `.docx .docm` only, the Office
+   * size cap and the signature at offset 0 (S8). The sandboxed viewer parses the bytes. */
+  async document(root:string, params:{path:string;offset:number;limit:number}): Promise<Preview> {
+    if(typeof params.path!=='string'||params.path.includes(':')||params.path.includes('\\')) throw Error('invalid_path');
+    if(!Number.isSafeInteger(params.offset)||params.offset<0) throw Error('invalid_offset');
+    if(!Number.isSafeInteger(params.limit)||params.limit<=0||params.limit>PREVIEW_LIMIT) throw Error('invalid_limit');
+    const extension=params.path.slice(params.path.lastIndexOf('.')+1).toLowerCase();
+    if(extension!=='docx'&&extension!=='docm') throw Error('unsupported_document');
+    const path=await containedExisting(root,params.path);
+    const handle=await open(path,'r');
+    try {
+      await recheckContainedTarget(root,path);
+      const before=await validateOpenFilePath(handle,path);
+      if(!before.isFile()) throw Error('not_a_file');
+      if(before.size>BigInt(OFFICE_PREVIEW_MAX_BYTES)) throw Error('file_too_large');
+      if(BigInt(params.offset)>before.size) throw Error('invalid_offset');
+      if(params.offset===0){
+        const signature=Buffer.alloc(8);
+        const read=await handle.read(signature,0,8,0);
+        const first=signature.subarray(0,read.bytesRead);
+        if(!first.subarray(0,4).equals(Buffer.from('PK\x03\x04','binary'))){
+          if(first.length===8&&first.equals(Buffer.from([0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]))) throw Error('document_protected');
+          throw Error('unsupported_document');
+        }
+      }
       const bytes=Buffer.alloc(Math.min(params.limit,Number(before.size)-params.offset));
       let length=0;
       while(length<bytes.length){const read=await handle.read(bytes,length,bytes.length-length,params.offset+length);if(!read.bytesRead)break;length+=read.bytesRead;}

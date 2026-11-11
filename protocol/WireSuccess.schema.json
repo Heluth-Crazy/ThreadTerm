@@ -7788,6 +7788,70 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"filesystem.document.read\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "offset",
+        "fingerprint",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.external.document.read\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "chunk": {
+          "type": "string"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "offset",
+        "fingerprint",
+        "chunk",
+        "eof"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"attachment.upload\">": {
       "type": "object",
       "properties": {
@@ -8156,6 +8220,177 @@
     },
     "RequestResult<\"filesystem.readWindow\">": {
       "$ref": "#/definitions/LargeFileWindow"
+    },
+    "RequestResult<\"filesystem.sheet.open\">": {
+      "$ref": "#/definitions/SheetWorkbook"
+    },
+    "SheetWorkbook": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "changeToken": {
+          "type": "string"
+        },
+        "sheets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SheetInfo"
+          }
+        }
+      },
+      "required": [
+        "handle",
+        "size",
+        "changeToken",
+        "sheets"
+      ],
+      "additionalProperties": false,
+      "description": "What `filesystem.sheet.open` answers: the sheet list only, no cells."
+    },
+    "SheetInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "visible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "visible"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.external.sheet.open\">": {
+      "$ref": "#/definitions/SheetWorkbook"
+    },
+    "RequestResult<\"filesystem.sheet.rows\">": {
+      "$ref": "#/definitions/SheetRows"
+    },
+    "SheetRows": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "loading",
+            "ready"
+          ]
+        },
+        "progress": {
+          "type": "number"
+        },
+        "totalRows": {
+          "type": "number",
+          "description": "Last used row + 1; 0 while loading."
+        },
+        "totalColumns": {
+          "type": "number"
+        },
+        "start": {
+          "type": "number"
+        },
+        "columnStart": {
+          "type": "number"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/SheetCell"
+            }
+          },
+          "description": "Row-major, trailing empty cells trimmed; empty while loading."
+        },
+        "merges": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 4,
+            "items": [
+              {
+                "type": "number",
+                "title": "row"
+              },
+              {
+                "type": "number",
+                "title": "column"
+              },
+              {
+                "type": "number",
+                "title": "rowSpan"
+              },
+              {
+                "type": "number",
+                "title": "columnSpan"
+              }
+            ],
+            "maxItems": 4
+          },
+          "description": "Merged regions touching the window: `[row, column, rowSpan, columnSpan]`."
+        },
+        "clipped": {
+          "type": "boolean",
+          "description": "A cell's text was cut at the cell text limit."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "The sheet passed a store limit; rows beyond `totalRows` are not available."
+        }
+      },
+      "required": [
+        "state",
+        "totalRows",
+        "totalColumns",
+        "start",
+        "columnStart",
+        "rows"
+      ],
+      "additionalProperties": false,
+      "description": "One window of rows, absolute 0-based coordinates so a used range that starts at C5 keeps its real row numbers and letters. `loading` answers immediately; the client polls."
+    },
+    "SheetCell": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "minItems": 2,
+          "items": [
+            {
+              "type": "string",
+              "title": "text"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "n",
+                "d",
+                "b",
+                "e"
+              ],
+              "title": "kind"
+            }
+          ],
+          "maxItems": 2
+        }
+      ],
+      "description": "One cell of a sheet window: `null`, text, or `[text, kind]` for a number, date, boolean or error. The renderer draws `text` only; nothing here is a formula."
+    },
+    "RequestResult<\"filesystem.sheet.close\">": {
+      "type": "null"
     },
     "RequestResult<\"filesystem.image\">": {
       "type": "object",
@@ -15411,6 +15646,58 @@
         },
         "method": {
           "type": "string",
+          "const": "filesystem.document.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.document.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.document.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.document.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "attachment.upload"
         },
         "result": {
@@ -15701,6 +15988,110 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22filesystem.readWindow%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.sheet.open"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.sheet.open%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.external.sheet.open"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.external.sheet.open%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.sheet.rows"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.sheet.rows%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.sheet.close"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.sheet.close%22%3E"
         }
       },
       "required": [

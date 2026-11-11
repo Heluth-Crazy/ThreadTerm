@@ -31,6 +31,11 @@ fn agent_chat_and_browser_dispatch_cannot_forward_external_files() {
         "filesystem.external.image",
         "filesystem.external.list",
         "filesystem.external.forget",
+        // Sheet methods are host-side state, never an agent, MCP or browser tool.
+        "filesystem.external.sheet.open",
+        "filesystem.sheet.open",
+        "filesystem.sheet.rows",
+        "filesystem.sheet.close",
     ] {
         assert_eq!(
             chat_tools

@@ -1,0 +1,24 @@
+:root {
+  color-scheme: light;
+  --body-background: #e8e8e8;
+  --body-color: #1f2328;
+  --muted: #555;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --body-background: #141414;
+  --body-color: #e6e6e6;
+  --muted: #a0a0a0;
+}
+html, body { margin: 0; padding: 0; background: var(--body-background); color: var(--body-color); }
+body { font-family: system-ui, sans-serif; font-size: 13px; }
+.host { padding: 12px; min-height: 100vh; box-sizing: border-box; }
+.loading { padding: 24px; color: var(--muted); }
+/* docx-preview builds one section.docx per page; lazy painting keeps offscreen pages cheap. */
+.docx-wrapper > section.docx { content-visibility: auto; contain-intrinsic-size: auto 1056px; }
+/* docx-preview centres pages with flex; a page wider than a narrow pane then overflows to the
+ * left, hiding the start of every line. Keep the page's left edge reachable instead. */
+.docx-wrapper { align-items: flex-start !important; }
+/* Dark theme darkens the desk around the pages only. A page keeps the document's own paper and
+ * colours: a run with explicit dark text (headings, theme colours) would vanish on a dark page. */
+:root[data-theme="dark"] .docx-wrapper { background: var(--body-background); }

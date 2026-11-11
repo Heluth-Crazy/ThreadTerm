@@ -104,6 +104,28 @@ test('create rename delete and bounded preview remain root-relative', async () =
  } finally { await rm(root,{recursive:true,force:true}); }
 });
 
+test('document reads are Word-only, signature-checked and bounded by the Office cap', async () => {
+ const {root,service}=await fixture();
+ try {
+  const zip=Buffer.concat([Buffer.from('PK\x03\x04','binary'),Buffer.alloc(1024*1024+7,97)]);
+  await writeFile(join(root,'report.docx'),zip); await writeFile(join(root,'macro.docm'),Buffer.from('PK\x03\x04macro','binary'));
+  await writeFile(join(root,'protected.docx'),Buffer.from([0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]));
+  await writeFile(join(root,'damaged.docx'),'not a zip'); await writeFile(join(root,'notes.txt'),Buffer.from('PK\x03\x04','binary'));
+  const first=await service.document(root,{path:'report.docx',offset:0,limit:1024*1024});
+  assert.equal(first.size,zip.length); assert.equal(first.eof,false); assert.deepEqual(Buffer.from(first.chunk,'base64'),zip.subarray(0,1024*1024));
+  const last=await service.document(root,{path:'report.docx',offset:1024*1024,limit:1024*1024});
+  assert.equal(last.eof,true); assert.equal(last.fingerprint,first.fingerprint); assert.equal(Buffer.from(last.chunk,'base64').length,11);
+  await service.document(root,{path:'macro.docm',offset:0,limit:1});
+  await assert.rejects(service.document(root,{path:'protected.docx',offset:0,limit:1}),/document_protected/);
+  await assert.rejects(service.document(root,{path:'damaged.docx',offset:0,limit:1}),/unsupported_document/);
+  await assert.rejects(service.document(root,{path:'notes.txt',offset:0,limit:1}),/unsupported_document/);
+  await assert.rejects(service.document(root,{path:'report.docx',offset:0,limit:1024*1024+1}),/invalid_limit/);
+  await assert.rejects(service.document(root,{path:'report.docx',offset:zip.length+1,limit:1}),/invalid_offset/);
+  const huge=join(root,'huge.docx'); const handle=await open(huge,'w'); await handle.truncate(100*1024*1024+1); await handle.close();
+  await assert.rejects(service.document(root,{path:'huge.docx',offset:0,limit:1}),/file_too_large/);
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
 test('bounded reads reject a canonical parent replaced by an escaping junction', async () => {
  const {root}=await fixture(), outside=await mkdtemp(join(tmpdir(),'threadterm-bounded-outside-')); try {
   const directory=join(root,'inside'), displaced=join(root,'displaced'); await mkdir(directory); await writeFile(join(directory,'data.txt'),'inside'); await writeFile(join(outside,'data.txt'),'outside');
