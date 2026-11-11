@@ -29,6 +29,8 @@ import { FilePreview } from "./FilePreview";
 import { LargeFileView } from "./LargeFileView";
 import { isLargeFileError } from "../largeFileWindow";
 import { officeKind } from "../officeFiles";
+import { canOpenWithSystemApp, openWithSystemApp } from "../openFileApp";
+import { OpenWithSystemAppButton } from "./OpenWithSystemAppButton";
 /** The sheet grid is a rare viewer: it loads only when a workbook is opened. */
 const SheetView = lazy(() => import("./SheetView").then((module) => ({ default: module.SheetView })));
 const DocxPreview = lazy(() => import("./DocxPreview").then((module) => ({ default: module.DocxPreview })));
@@ -1122,6 +1124,7 @@ function FileWorkspaceInstance({
   const fileMenuItems: ContextMenuItem[] = document ? [
     ...navigation.menuItems,
     {id:"file-copy-path",label:zh ? "复制路径" : "Copy path",icon:<WbIcon name="copy" />,onSelect:()=>navigator.clipboard.writeText(document.path)},
+    ...(canOpenWithSystemApp(document.path) ? [{id:"file-open-system",label:zh ? "用系统应用打开" : "Open with system app",icon:<Icon name="folder" />,onSelect:()=>void openWithSystemApp({...scope,path:document.path,externalId},zh,setIssue)}] : []),
     ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="folder" />,onSelect:()=>{if(embedded)dispatchEvent(new CustomEvent("threadterm:workbench",{detail:{view:"files"}}));else setToolsOpen(true);}}] : []),
     ...(!busy ? [{id:"file-reload",label:copy.reload,icon:<WbIcon name="refresh" />,onSelect:()=>{if(external)void open(document.path,view,true);else setPending({path:document.path,view,reload:true});}}] : []),
     ...(view === "file" && !external && !image && gitState.status && (!dirty || blameOn) ? [{id:"file-blame",label:zh ? "逐行追溯" : "Blame",icon:<WbIcon name="person" />,onSelect:()=>setBlameOn(value=>!value)}] : []),
@@ -1209,6 +1212,7 @@ function FileWorkspaceInstance({
               <span className="grow" />
               <FileBarActions zh={zh} items={[
                 { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(officeFile.path) },
+                ...(canOpenWithSystemApp(officeFile.path) ? [{ id: 'file-open-system', label: zh ? '用系统应用打开' : 'Open with system app', onSelect: () => void openWithSystemApp({ ...scope, path: officeFile.path, externalId: officeFile.externalId }, zh, setIssue) }] : []),
                 { id: 'file-reload', label: copy.reload, onSelect: () => open(officeFile.path, 'file', true) },
                 ...(!embedded ? [
                   ...(!external ? [{ id: 'file-tools', label: zh ? '文件与 Git' : 'Files & Git', onSelect: () => setToolsOpen(value => !value) }] : []),
@@ -1236,6 +1240,7 @@ function FileWorkspaceInstance({
               <span className="grow" />
               <FileBarActions zh={zh} items={[
                 { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(largeFile.path) },
+                ...(canOpenWithSystemApp(largeFile.path) ? [{ id: 'file-open-system', label: zh ? '用系统应用打开' : 'Open with system app', onSelect: () => void openWithSystemApp({ ...scope, path: largeFile.path, externalId: largeFile.externalId }, zh, setIssue) }] : []),
                 { id: 'file-reload', label: copy.reload, onSelect: () => open(largeFile.path, 'file', true) },
                 ...(!embedded ? [
                   ...(!external ? [{ id: 'file-tools', label: zh ? '文件与 Git' : 'Files & Git', onSelect: () => setToolsOpen(value => !value) }] : []),
@@ -1400,6 +1405,7 @@ function FileWorkspaceInstance({
                   <strong>{issueText ?? copy.empty}</strong>
                   {external && initialPath && <span className="external-file-error-path" title={displayPath(initialPath)}>{displayPath(initialPath)}</span>}
                   {external && initialPath && <button className="btn btn-sm" onClick={() => void open(initialPath, externalInitialView, true)}>{zh ? "重试" : "Retry"}</button>}
+                  {initialPath && <OpenWithSystemAppButton target={{ ...scope, path: initialPath, externalId }} zh={zh} onIssue={setIssue} testId="empty-open-system-app" />}
                   {!embedded && !toolsOpen && (
                     <button className="btn" onClick={() => setToolsOpen(true)}>
                       {zh ? "浏览文件" : "Browse files"}
@@ -1413,6 +1419,8 @@ function FileWorkspaceInstance({
         {(issueText ?? sessionDocumentIssue) && (
           <div role="alert" className="tt-editor-conflict">
             {issueText ?? sessionDocumentIssue}
+            {((officeFile?.path ?? initialPath) && canOpenWithSystemApp(officeFile?.path ?? initialPath)) && <OpenWithSystemAppButton
+              target={{ ...scope, path: officeFile?.path ?? initialPath ?? '', externalId: officeFile?.externalId ?? externalId }} zh={zh} onIssue={setIssue} testId="issue-open-system-app" />}
             {document && (
               <button
                 onClick={() =>

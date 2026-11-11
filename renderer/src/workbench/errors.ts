@@ -194,6 +194,10 @@ export const isUnavailable = (error:unknown) => /unknown_method|Unsupported runt
  * `file_too_large` means 100 MiB here and the text-reader wording stays for text files. */
 export function officeSheetError(error:unknown, zh:boolean):string {
  const raw = error instanceof Error ? error.message : String(error);
+ // A view on another computer talks to that computer's runtime; an older one has no sheet method.
+ const remote = typeof window !== 'undefined' && Boolean((window as {threadterm?:{machineId?:string}}).threadterm?.machineId
+  && (window as {threadterm?:{machineId?:string}}).threadterm?.machineId !== 'local');
+ if(remote && /unknown_method|Unsupported runtime method/.test(raw)) return zh ? '请在那台电脑上更新 ThreadTerm。' : 'Update ThreadTerm on that computer.';
  if(/\bfile_too_large\b/.test(raw)) return zh ? '文件过大，无法预览（超过 100 MiB）。' : 'Too large to preview (over 100 MiB).';
  return workbenchError(error, zh);
 }

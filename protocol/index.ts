@@ -1259,6 +1259,8 @@ export interface ThreadTermBridge {
   onPageContextMenu(listener:(value:{frameName:string;x:number;y:number;pick?:PagePick;staticFrame?:boolean;selectionText:string})=>void):()=>void;
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
  revealFile?(sessionId:string,path:string):Promise<void>;
+ /** Open a document with the system default application (desktop, local machine only). */
+ openFileDefaultApp?(request:{projectId:string;worktreePath?:string;path:string}|{externalId:string}):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;
  localResourceUsage?():Promise<{cpuPercent?:number;memoryBytes:number} | null>;
  testNotification():Promise<{sent:boolean;reason?:string}>;

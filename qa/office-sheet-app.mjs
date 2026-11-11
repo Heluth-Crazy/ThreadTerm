@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {link,mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {copyFile,link,mkdir,mkdtemp,open as openFile,readFile,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {electron} from './lib/desktop1.mjs';
@@ -42,9 +42,11 @@ const scratch=await mkdtemp(join(scratchBase,`tt-office-sheet-app-${backend}-`))
 const project=join(scratch,'project'),outside=join(scratch,'outside'),appDir=join(scratch,'app');
 const out=join(root,backend==='main'?'qa/results/office-sheet-main':'qa/results/office-sheet');
 // Main-mode budgets (validation.md, spike C decision 7).
-const BUDGETS={numbersFirstWindowMs:10_000,loadedWindowMs:150,sheetsFirstWindowMs:3_000,stringsFirstWindowMs:25_000,mainDeltaMiB:30,mainPeakMiB:200};
-const report={passed:false,backend,startedAt:new Date().toISOString(),runtime,scratch,sheetWasm:backend==='main'?sheetWasm:undefined,checks:[],screenshots:[],measurements:{},budgets:backend==='main'?BUDGETS:undefined,errors:[],limitations:[
- 'The 5-minute hidden-tab release (R5) is not exercised: the probe would have to wait five minutes; the close path is.',
+const BUDGETS={numbersFirstWindowMs:10_000,loadedWindowMs:150,sheetsFirstWindowMs:3_000,stringsFirstWindowMs:25_000,mainDeltaMiB:30,mainPeakMiB:200,rendererDeltaMiB:30,runtimeDeltaMiB:10};
+const hiddenRelease=process.argv.includes('--hidden-release');
+const openAppRecord=join(scratch,'open-file-app.jsonl');
+const report={passed:false,backend,startedAt:new Date().toISOString(),runtime,scratch,sheetWasm:backend==='main'?sheetWasm:undefined,checks:[],screenshots:[],measurements:{},budgets:BUDGETS,errors:[],limitations:[
+ hiddenRelease?'':'The 5-minute hidden-tab release (R5) was not waited for in this run; pass --hidden-release to run it.',
  backend==='runtime'?'Only the Runtime read method runs here; run with --backend main for step 3.':'Only the main read method runs here; the runtime run is the sibling invocation.',
  'Merged cells and find-in-sheet are left out of step 2 (merged-cell parsing measured over the gate in step 1; find needs a core method).',
  'The reader reports no progress number in main mode: a WebAssembly load is synchronous and cannot call back mid-load (design.md §3.1).',
@@ -111,6 +113,23 @@ const mainMemory=()=>app.evaluate(({app:electronApp})=>{
  return browser?.memory??null;
 });
 const mib=kilobytes=>Math.round(((kilobytes??0)/1024)*10)/10;
+/** The app renderer's process id (its WebContents), then its private memory from the OS. */
+const rendererPid=()=>app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(candidate=>!candidate.isDestroyed())?.webContents.getOSProcessId()??0);
+const rendererMiB=async()=>privateMemory(await rendererPid());
+/** The local runtime process this app started. */
+function runtimePid(){
+ const {ok,text}=powershell(`$p=Get-CimInstance Win32_Process -Filter "ParentProcessId=${mainPid}" -ErrorAction SilentlyContinue | Where-Object {$_.Name -like '*threadterm-v3-runtime*'} | Select-Object -First 1
+if($p){[int]$p.ProcessId}else{0}`);
+ return ok&&/^\d+$/.test(text)&&Number(text)>0?Number(text):undefined;
+}
+function privateMemory(pid){
+ const {ok,text}=powershell(`$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue
+if($p){[math]::Round($p.PrivateMemorySize64/1MB,1)}else{'null'}`);
+ return ok&&text!=='null'&&text!==''&&Number.isFinite(Number(text))?Number(text):0;
+}
+const memorySnapshot=async()=>({renderer:await rendererMiB(),runtime:privateMemory(runtimePid()??0)});
+const openAppRecords=async()=>{try{return (await readFile(openAppRecord,'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch{return [];}};
+const resetOpenAppRecords=()=>writeFile(openAppRecord,'');
 /** A 500-row window timed inside the app renderer, so the figure is the wire method (renderer IPC →
  * main → reader → back) and not Playwright's own marshalling of the reply. */
 async function loadedWindowTiming(projectId,name,rowStart){
@@ -161,8 +180,15 @@ const setBackend=mode=>page.evaluate(async value=>window.threadterm.localFiles?.
 async function prepare(){
  await Promise.all([mkdir(project,{recursive:true}),mkdir(outside,{recursive:true}),mkdir(out,{recursive:true})]);
  // Hard links: no 300 MiB of copies, and the fixtures folder keeps its bytes.
- for(const name of ['features.xlsx','sheets-10x10.xlsx','numbers-100.xlsx','date.xls','any_sheets.xlsb','any_sheets.ods','special_cells.ods'])await link(join(fixtures,name),join(project,name));
+ for(const name of ['features.xlsx','sheets-10x10.xlsx','numbers-100.xlsx','date.xls','any_sheets.xlsb','any_sheets.ods','special_cells.ods','truncated.xlsx','features-encrypted.xlsx'])await link(join(fixtures,name),join(project,name));
  await link(join(fixtures,'strings-100.xlsx'),join(outside,'strings-100.xlsx'));
+ // Mutable copies for the changed-while-open case, and the wrong extension for an OLE2 workbook.
+ await copyFile(join(fixtures,'sheets-10x10.xlsx'),join(project,'changed.xlsx'));
+ await copyFile(join(fixtures,'password_protected.xls'),join(project,'protected-wrong.xlsx'));
+ await writeFile(join(project,'evil.exe'),'not a document');
+ await writeFile(openAppRecord,'');
+ // 100 MiB + 1 byte: a sparse file is enough, because the size is checked before any content read.
+ const over=await openFile(join(project,'numbers-100-over.xlsx'),'w');try{await over.truncate(100*1024*1024+1);}finally{await over.close();}
  ({cleanup:cleanupApp}=await buildQaApp({root,outDir:appDir}));
 }
 function environment(){
@@ -172,6 +198,7 @@ function environment(){
   HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),APPDATA:join(scratch,'appdata'),LOCALAPPDATA:join(scratch,'localappdata'),CODEX_HOME:join(scratch,'home','.codex'),
   THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\tt-office-sheet-${randomUUID()}`,
   THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_RUNTIME_BIN:runtime,
+  THREADTERM_V3_OPEN_FILE_APP_QA:openAppRecord,
   ...(backend==='main'?{THREADTERM_SHEET_WASM:sheetWasm}:{}),
   THREADTERM_V3_OPEN_EXTERNAL_QA:JSON.stringify([join(outside,'strings-100.xlsx')])});
  assert.deepEqual(Object.keys(env).filter(key=>key.toLowerCase()==='path'),['Path'],'isolated environment has one PATH');
@@ -340,6 +367,24 @@ try{
  await theme('en','light');
  check('features.xlsx: two tabs with the hidden sheet last and marked, C5 addressed as C5, used range 13 x 6 and file size shown');
 
+ // R20: the system-app IPC opens only allow-listed files inside their scope; the QA seam records
+ // the path instead of starting Excel.
+ await resetOpenAppRecords();
+ await page.evaluate(([projectId,path])=>window.threadterm.openFileDefaultApp({projectId,path}),[projectId,'features.xlsx']);
+ await until(async()=>(await openAppRecords()).length===1,'the project file system-app record');
+ let appRecords=await openAppRecords();
+ assert.equal(appRecords[0].path.toLowerCase(),join(project,'features.xlsx').toLowerCase(),'the project workbook path is the one that would open');
+ const externalOpen=await request('filesystem.external.open',{path:join(outside,'strings-100.xlsx'),source:'recent'});
+ assert.ok('file' in externalOpen,'the external fixture is registered');
+ await page.evaluate(id=>window.threadterm.openFileDefaultApp({externalId:id}),externalOpen.file.id);
+ appRecords=await until(async()=>{const values=await openAppRecords();return values.length===2?values:null;},'the external file system-app record');
+ assert.equal(appRecords[1].path.toLowerCase(),join(outside,'strings-100.xlsx').toLowerCase(),'the registered external workbook path is the one that would open');
+ await assert.rejects(page.evaluate(([projectId,path])=>window.threadterm.openFileDefaultApp({projectId,path}),[projectId,'evil.exe']),/system app/i,'an executable is refused');
+ await assert.rejects(page.evaluate(([projectId,path])=>window.threadterm.openFileDefaultApp({projectId,path}),[projectId,'../outside/strings-100.xlsx']),/outside its project scope/i,'a path outside the project is refused');
+ await assert.rejects(page.evaluate(()=>window.threadterm.openFileDefaultApp({externalId:'not-a-registration'})),/external_file_unknown|unknown/i,'an unknown registration is refused');
+ await shot('en-light-system-app-action.png');
+ check('Open with system app opens only an allow-listed project or registered external file; executables and escapes are refused');
+
  // Number formats and dates come from the core; alignment follows the cell kind (R13, R16).
  assert.equal(await cellText(6,2),'2023-03-15','a date cell renders YYYY-MM-DD');
  assert.match(await cellText(6,3),/^2023-03-15 12:30:00$/,'a date-time adds HH:MM:SS when it is not midnight');
@@ -406,7 +451,49 @@ try{
  }
  check('date.xls, any_sheets.xlsb, any_sheets.ods and special_cells.ods open through the same viewer');
 
+ // AC2 / AC7: the 100 MiB + 1 byte file, the truncated file, the OLE2 workbook with a .xlsx
+ // extension and a workbook changed while open each give their one line, plus the action.
+ const openProjectRow=async name=>{
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('threadterm:workbench',{detail:{view:'files'}})));
+  const row=page.locator(`.wb-tree [data-path="${name}"]`).first();await row.waitFor({timeout:60_000});await row.click();
+ };
+ const errorRow=async(name,pattern,testId='sheet-error')=>{
+  const row=visible(`[data-testid="${testId}"]`);
+  await row.waitFor({timeout:120_000});
+  const text=await row.innerText();
+  assert.match(text,pattern,`${name}: ${text}`);
+  return {text,buttons:await row.locator('[data-testid="sheet-open-system-app"],[data-testid="sheet-changed-open-system-app"]').count()};
+ };
+ await openProjectRow('numbers-100-over.xlsx');
+ const tooLarge=await errorRow('numbers-100-over.xlsx',/Too large to preview|文件过大/);
+ assert.match(tooLarge.text,/100 MiB/,'the size line names the 100 MiB limit');
+ assert.equal(tooLarge.buttons,1,'the too-large row offers Open with system app');
+ await shot('en-light-too-large.png');
+ await closeActiveTab();
+ await openProjectRow('truncated.xlsx');
+ const corrupt=await errorRow('truncated.xlsx',/damaged|损坏/);
+ assert.equal(corrupt.buttons,1,'the damaged row offers Open with system app');
+ await shot('en-light-corrupt.png');
+ await closeActiveTab();
+ await openProjectRow('protected-wrong.xlsx');
+ const protectedSheet=await errorRow('protected-wrong.xlsx',/password-protected|密码保护/);
+ assert.equal(protectedSheet.buttons,1,'the password row offers Open with system app');
+ await shot('en-light-protected.png');
+ await closeActiveTab();
+ await openProjectSheet('changed.xlsx');
+ await writeFile(join(project,'changed.xlsx'),'changed on disk');
+ await (async()=>{
+  const input=visible('[data-testid="sheet-goto"]');await input.fill('A50000');await input.press('Enter');
+ })();
+ const changedRow=await errorRow('changed.xlsx',/changed|已更改/,'sheet-changed');
+ assert.equal(changedRow.buttons,1,'the changed row offers Open with system app');
+ await shot('en-light-changed.png');
+ await closeActiveTab();
+ await until(async()=>{const list=await readers();return list.length===0;},'the changed-file readers to exit',10_000).catch(()=>{});
+ check('100 MiB + 1 byte, truncated, wrong-extension OLE2 and changed-while-open each give their line and the system-app action');
+
  // sheets-10x10.xlsx: ten dense sheet tabs.
+ const sheetsBefore=await memorySnapshot();
  report.measurements.sheetsOpenMs=await openProjectSheet('sheets-10x10.xlsx');
  report.measurements.workersAfterSheetsOpen=sheetWorkers();
  report.measurements.surfacesAfterSheetsOpen=await sheetSurfaces();
@@ -435,8 +522,15 @@ try{
   assert.ok(gone,`the ten-sheet reader ends within 5 s of the tab closing (waited ${report.measurements.sheetsReaderExitMs} ms)`);
   assert.deepEqual(sheetWorkers()??['unavailable'],[],'still no helper');
  }
+ await delay(5_000);
+ report.measurements.sheetsMemory={before:sheetsBefore,after:await memorySnapshot()};
+ report.measurements.sheetsMemory.rendererDeltaMiB=Math.round((report.measurements.sheetsMemory.after.renderer-report.measurements.sheetsMemory.before.renderer)*10)/10;
+ report.measurements.sheetsMemory.runtimeDeltaMiB=Math.round((report.measurements.sheetsMemory.after.runtime-report.measurements.sheetsMemory.before.runtime)*10)/10;
+ assert.ok(report.measurements.sheetsMemory.rendererDeltaMiB<=BUDGETS.rendererDeltaMiB,`the app renderer is back within ${BUDGETS.rendererDeltaMiB} MB after sheets-10x10 (${report.measurements.sheetsMemory.rendererDeltaMiB} MiB)`);
+ assert.ok(report.measurements.sheetsMemory.runtimeDeltaMiB<=BUDGETS.runtimeDeltaMiB,`the runtime is back within ${BUDGETS.runtimeDeltaMiB} MB after sheets-10x10 (${report.measurements.sheetsMemory.runtimeDeltaMiB} MiB)`);
 
  // numbers-100.xlsx from the Explorer: far end, go-to, measurement, then close ends the helper.
+ const numbersBefore=await memorySnapshot();
  const mainBeforeNumbers=backend==='main'?mib((await mainMemory())?.privateBytes):undefined;
  report.measurements.numbersOpenMs=await openProjectSheet('numbers-100.xlsx');
  assert.equal(await attribute('data-total-rows'),'727044','the used range is 727,044 rows');
@@ -518,6 +612,12 @@ try{
  report.measurements.helperExitMs=Date.now()-closedAt;
  assert.ok(gone,`the helper ends within 5 s of the tab closing (waited ${report.measurements.helperExitMs} ms, pids ${JSON.stringify(sheetWorkers())})`);
  check(`closing the workbook tab ends the --sheet-worker helper in ${report.measurements.helperExitMs} ms`);
+ await delay(5_000);
+ report.measurements.numbersMemory={before:numbersBefore,after:await memorySnapshot()};
+ report.measurements.numbersMemory.rendererDeltaMiB=Math.round((report.measurements.numbersMemory.after.renderer-report.measurements.numbersMemory.before.renderer)*10)/10;
+ report.measurements.numbersMemory.runtimeDeltaMiB=Math.round((report.measurements.numbersMemory.after.runtime-report.measurements.numbersMemory.before.runtime)*10)/10;
+ assert.ok(report.measurements.numbersMemory.rendererDeltaMiB<=BUDGETS.rendererDeltaMiB,`the app renderer is back within ${BUDGETS.rendererDeltaMiB} MB after numbers-100 (${report.measurements.numbersMemory.rendererDeltaMiB} MiB)`);
+ assert.ok(report.measurements.numbersMemory.runtimeDeltaMiB<=BUDGETS.runtimeDeltaMiB,`the runtime is back within ${BUDGETS.runtimeDeltaMiB} MB after numbers-100 (${report.measurements.numbersMemory.runtimeDeltaMiB} MiB)`);
  if(backend==='main'){
   const readerClosedAt=Date.now();
   const readerGone=await until(async()=>{const list=await readers();return list.length===0;},'the 100 MiB reader to exit',6_000).then(()=>true).catch(()=>false);
@@ -536,6 +636,7 @@ try{
  }
 
  // strings-100.xlsx as a registered external file.
+ const stringsBefore=await memorySnapshot();
  await theme('zh-CN','dark');
  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('threadterm:workbench',{detail:{view:'files'}})));
  const openExternal=page.getByRole('button',{name:/Open file outside workspace|打开工作区外的文件/}).first();
@@ -595,6 +696,12 @@ try{
   assert.ok(gone,`the external workbook reader ends within 5 s (pids ${JSON.stringify(await readers())})`);
  }
  check('strings-100.xlsx opens as a registered external file through the same viewer and releases its helper');
+ await delay(5_000);
+ report.measurements.stringsMemory={before:stringsBefore,after:await memorySnapshot()};
+ report.measurements.stringsMemory.rendererDeltaMiB=Math.round((report.measurements.stringsMemory.after.renderer-report.measurements.stringsMemory.before.renderer)*10)/10;
+ report.measurements.stringsMemory.runtimeDeltaMiB=Math.round((report.measurements.stringsMemory.after.runtime-report.measurements.stringsMemory.before.runtime)*10)/10;
+ assert.ok(report.measurements.stringsMemory.rendererDeltaMiB<=BUDGETS.rendererDeltaMiB,`the app renderer is back within ${BUDGETS.rendererDeltaMiB} MB after strings-100 (${report.measurements.stringsMemory.rendererDeltaMiB} MiB)`);
+ assert.ok(report.measurements.stringsMemory.runtimeDeltaMiB<=BUDGETS.runtimeDeltaMiB,`the runtime is back within ${BUDGETS.runtimeDeltaMiB} MB after strings-100 (${report.measurements.stringsMemory.runtimeDeltaMiB} MiB)`);
 
  // Task 11-10 step 3 / AC5: switching Local file access with a workbook open reloads cleanly. This
  // runs last: the runtime keeps the handle the view abandons at the switch (the renderer's close
@@ -625,6 +732,29 @@ try{
   check('switching Local file access with a workbook open reopens the same sheet under the new backend, without a page error');
   await closeActiveTab();
   await until(async()=>(await readers()).length===0,'the reader of the switch test to exit',6_000);
+ }
+
+ // R5 / AC4: a hidden tab releases its helper or reader after five real minutes and reloads when shown.
+ if(hiddenRelease){
+  await theme('en','light');
+  await openProjectSheet('features.xlsx');
+  await openProjectSheet('date.xls');
+  const live=async()=>backend==='main'?(await readers()).length:(sheetWorkers()??[]).length;
+  await until(async()=>await live()===2,'two live parsers before the hidden wait',30_000);
+  const started=Date.now();
+  await delay(5*60*1000+15_000);
+  report.measurements.hiddenRelease={waitedMs:Date.now()-started,liveBeforeHide:2,liveAfterWait:await live()};
+  // The 300 s idle timer ends an untouched helper too, so the hidden tab's parser may be the only
+  // one left or both may be gone; never two.
+  assert.ok(report.measurements.hiddenRelease.liveAfterWait<=1,`the hidden tab released its ${backend==='main'?'reader':'helper'} after five minutes`);
+  await page.getByRole('tab',{name:/features\.xlsx/}).first().click();
+  await waitSheetLoaded('features.xlsx');
+  report.measurements.hiddenRelease.liveAfterResume=await live();
+  assert.ok(report.measurements.hiddenRelease.liveAfterResume>=1,'showing the tab again reloads and starts a parser');
+  await shot('en-light-hidden-release.png');
+  // The second workbook may still be present; the app exit below ends it.
+  await closeActiveTab().catch(()=>{});
+  check('a hidden tab released its helper or reader after five minutes and reloaded when shown');
  }
 
  assert.deepEqual(report.errors,[],report.errors.join('\n'));report.passed=true;

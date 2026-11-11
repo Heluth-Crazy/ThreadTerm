@@ -1,6 +1,7 @@
 import type { RequestParams, RequestResult } from '@threadterm/protocol';
 import { request } from './bridge';
 import { sameCanonicalScope } from './projectScope';
+import { isRemoteFiles } from './remoteFiles';
 import type { QuoteContextItem } from './chatContext';
 import type { EditorState } from '@codemirror/state';
 
@@ -46,8 +47,16 @@ export function externalFileError(error:unknown,zh:boolean):string {
  const code=externalFileErrorCode(error);
  return code&&errors[code]?errors[code][zh?1:0]:(zh?'无法打开文件，请重新连接后重试。':'Unable to open the file. Reconnect and retry.');
 }
+/** An older runtime on another computer has no document or sheet method (design.md §6). */
+function oldRemoteHost(error:unknown,zh:boolean):string|undefined {
+ const message=error instanceof Error?error.message:String(error);
+ return isRemoteFiles() && /unknown_method|Unsupported runtime method/.test(message)
+  ? (zh?'请在那台电脑上更新 ThreadTerm。':'Update ThreadTerm on that computer.') : undefined;
+}
+
 /** The Word line for any registered or workspace document: `file_too_large` means 100 MiB here. */
 export function externalDocumentError(error:unknown,zh:boolean):string {
+ const old=oldRemoteHost(error,zh);if(old)return old;
  const message=error instanceof Error?error.message:String(error);
  if(/\bfile_too_large\b/.test(message)) return zh?'文件太大，无法预览（超过 100 MiB）。':'Too large to preview (over 100 MiB).';
  return externalFileError(error,zh);
@@ -55,6 +64,7 @@ export function externalDocumentError(error:unknown,zh:boolean):string {
 
 /** The workbook line for a registered external file: `file_too_large` means 100 MiB here. */
 export function externalSheetError(error:unknown,zh:boolean):string {
+ const old=oldRemoteHost(error,zh);if(old)return old;
  const message=error instanceof Error?error.message:String(error);
  if(/\bfile_too_large\b/.test(message)) return zh?'文件过大，无法预览（超过 100 MiB）。':'Too large to preview (over 100 MiB).';
  return externalFileError(error,zh);

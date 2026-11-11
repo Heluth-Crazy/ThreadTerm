@@ -146,16 +146,14 @@ export function DocxPreview({ projectId, worktreePath, path, externalId, zh, act
   };
 
   const text = (en: string, cn: string) => zh ? cn : en;
-  // A ready document needs no status row: the pages are the content (R9, nothing shown when empty).
-  const status = viewerState === 'ready'
-    ? undefined
-    : viewerState === 'error'
-      ? text('Preview failed', '预览失败')
-      : text('Loading document…', '正在加载文档…');
+  // Only a loading document needs the status row: a ready one is its pages, and a failed one gets
+  // the reason and "Open with system app" in the file view's issue line (one action, not two).
+  const status = viewerState === 'loading' ? text('Loading document…', '正在加载文档…') : undefined;
   const pendingHost = pendingLink ? (() => { try { return new URL(pendingLink.url).host; } catch { return pendingLink.url; } })() : '';
   return <div className="sandboxed-html-preview">
     {status && <div className="sandboxed-html-preview-toolbar" role="toolbar" aria-label={text('Document preview controls', '文档预览控件')}>
       <span className="sandboxed-html-preview-status" role="status" title={status}><span>{status}</span></span>
+
     </div>}
     {pendingLink && <div className="sandboxed-html-preview-link" role="status"><span title={pendingLink.url}>{zh ? `打开 ${pendingHost}？` : `Open ${pendingHost}?`}</span><button type="button" className="btn btn-sm" title={pendingLink.url} onClick={openPendingLink}>{text('Open link', '打开链接')}</button><button type="button" className="btn btn-sm" onClick={() => setPendingLink(undefined)}>{text('Dismiss', '关闭')}</button></div>}
     {grant && <iframe key={grant.id} ref={iframe} name={frameName} className="tt-preview-frame" title={text('Word document preview', 'Word 文档预览')} sandbox="allow-scripts" referrerPolicy="no-referrer" allow="" src={grant.url} />}

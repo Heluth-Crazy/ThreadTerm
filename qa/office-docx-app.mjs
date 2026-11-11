@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {link,mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {copyFile,link,mkdir,mkdtemp,open as openFile,readFile,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {electron} from './lib/desktop1.mjs';
@@ -33,9 +33,11 @@ const fixtures=resolve(scratchBase,'office-preview/fixtures');
 const scratch=await mkdtemp(join(scratchBase,`tt-office-docx-app-${backend}-`));
 const project=join(scratch,'project'),outside=join(scratch,'outside'),appDir=join(scratch,'app');
 const out=join(root,backend==='main'?'qa/results/office-docx-main':'qa/results/office-docx');
-const BUDGETS={textReadyMs:5_000,imagesReadyMs:30_000,frameMiB:1_228.8,mainDeltaMiB:30};
+const BUDGETS={textReadyMs:5_000,imagesReadyMs:30_000,frameMiB:1_228.8,mainDeltaMiB:30,rendererDeltaMiB:30,runtimeDeltaMiB:10};
+const openAppRecord=join(scratch,'open-file-app.jsonl');
 const report={passed:false,backend,startedAt:new Date().toISOString(),runtime,scratch,checks:[],screenshots:[],measurements:{},budgets:BUDGETS,errors:[],limitations:[
- 'The 5-minute hidden-tab release is not exercised: the probe would have to wait five minutes; close revokes and ends the frame.',
+ 'The 5-minute hidden-tab release is exercised by the sheet probe (--hidden-release); here close revokes and unmounts the frame.',
+ 'A Word file changed after it has fully streamed is not detected: the grant checks every 1 MiB pull, so a change during the stream fails as a damaged document, not as file_changed.',
  'A document without lastRenderedPageBreak (not Word-saved) renders as one page; not measured here (spike B question 2).',
  'The runtime process has no helper for documents in either mode; with main selected this probe checks its children, not private open handles (no handle.exe on this PC).',
 ]};
@@ -76,12 +78,31 @@ const mainMemory=()=>app.evaluate(({app:electronApp})=>{
  return browser?.memory??null;
 });
 const mib=kilobytes=>Math.round(((kilobytes??0)/1024)*10)/10;
+const rendererPid=()=>app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(candidate=>!candidate.isDestroyed())?.webContents.getOSProcessId()??0);
+const rendererMiB=async()=>privateMemory(await rendererPid());
+function runtimePid(){
+ const {ok,text}=powershell(`$p=Get-CimInstance Win32_Process -Filter "ParentProcessId=${mainPid}" -ErrorAction SilentlyContinue | Where-Object {$_.Name -like '*threadterm-v3-runtime*'} | Select-Object -First 1
+if($p){[int]$p.ProcessId}else{0}`);
+ return ok&&/^\d+$/.test(text)&&Number(text)>0?Number(text):undefined;
+}
+function privateMemory(pid){
+ const {ok,text}=powershell(`$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue
+if($p){[math]::Round($p.PrivateMemorySize64/1MB,1)}else{'null'}`);
+ return ok&&text!=='null'&&text!==''&&Number.isFinite(Number(text))?Number(text):0;
+}
+const memorySnapshot=async()=>({renderer:await rendererMiB(),runtime:privateMemory(runtimePid()??0)});
+const openAppRecords=async()=>{try{return (await readFile(openAppRecord,'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch{return [];}};
+const resetOpenAppRecords=()=>writeFile(openAppRecord,'');
 const setBackend=mode=>page.evaluate(async value=>window.threadterm.localFiles?.setBackend(value),mode);
 
 async function prepare(){
  await Promise.all([mkdir(project,{recursive:true}),mkdir(outside,{recursive:true}),mkdir(out,{recursive:true})]);
  for(const name of ['text-300.docx','images-100.docx','protected.docx','truncated.docx'])await link(join(fixtures,name),join(project,name));
  for(const name of ['text-300.docx','images-100.docx'])await link(join(fixtures,name),join(outside,name));
+ await copyFile(join(fixtures,'text-300.docx'),join(project,'changed.docx'));
+ await writeFile(join(project,'evil.exe'),'not a document');
+ await writeFile(openAppRecord,'');
+ const over=await openFile(join(project,'text-100-over.docx'),'w');try{await over.truncate(100*1024*1024+1);}finally{await over.close();}
  ({cleanup:cleanupApp}=await buildQaApp({root,outDir:appDir}));
 }
 function environment(){
@@ -91,6 +112,7 @@ function environment(){
   HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),APPDATA:join(scratch,'appdata'),LOCALAPPDATA:join(scratch,'localappdata'),CODEX_HOME:join(scratch,'home','.codex'),
   THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\tt-office-docx-${randomUUID()}`,
   THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_RUNTIME_BIN:runtime,
+  THREADTERM_V3_OPEN_FILE_APP_QA:openAppRecord,
   THREADTERM_V3_OPEN_EXTERNAL_QA:JSON.stringify([join(outside,'text-300.docx'),join(outside,'images-100.docx')])});
  assert.deepEqual(Object.keys(env).filter(key=>key.toLowerCase()==='path'),['Path'],'isolated environment has one PATH');
  return env;
@@ -261,6 +283,21 @@ try{
  assert.ok(String(copied??'').replace(/\s+/g,' ').includes(selected.slice(0,40)),'copy puts the selected text on the clipboard');
  check(`text-300 opens from the Explorer in ${text.ms} ms, ${pages} pages, one grant/frame and its own OS process; link proposal, selection and copy work`);
 
+ // R20: the system-app action opens only allow-listed files; the QA seam records the path.
+ await resetOpenAppRecords();
+ await page.evaluate(([projectId,path])=>window.threadterm.openFileDefaultApp({projectId,path}),[projectId,'text-300.docx']);
+ await until(async()=>(await openAppRecords()).length===1,'the project document system-app record');
+ let appRecords=await openAppRecords();
+ assert.equal(appRecords[0].path.toLowerCase(),join(project,'text-300.docx').toLowerCase(),'the project document path is the one that would open');
+ const external=await request('filesystem.external.open',{path:join(outside,'text-300.docx'),source:'recent'});
+ assert.ok('file' in external,'the external document is registered');
+ await page.evaluate(id=>window.threadterm.openFileDefaultApp({externalId:id}),external.file.id);
+ appRecords=await until(async()=>{const values=await openAppRecords();return values.length===2?values:null;},'the external document system-app record');
+ assert.equal(appRecords[1].path.toLowerCase(),join(outside,'text-300.docx').toLowerCase(),'the registered external document path is the one that would open');
+ await assert.rejects(page.evaluate(([projectId,path])=>window.threadterm.openFileDefaultApp({projectId,path}),[projectId,'evil.exe']),/system app/i,'an executable is refused');
+ await assert.rejects(page.evaluate(([projectId,path])=>window.threadterm.openFileDefaultApp({projectId,path}),[projectId,'../outside/text-300.docx']),/outside its project scope/i,'a path outside the project is refused');
+ check('Open with system app opens only an allow-listed project or registered external document; executables and escapes are refused');
+
  await theme('zh-CN','dark');
  const darkFrameName=await until(async()=>await iframeName().catch(()=>null),'the themed text frame',30_000);
  await waitDocReady(darkFrameName,30_000);
@@ -280,6 +317,7 @@ try{
  check('closing the document tab ends the frame process and revokes the grant');
 
  // images-100: 30 s and 1.2 GiB in the frame, and main must not keep the file.
+ const imagesMemoryBefore=await memorySnapshot();
  const imagesBeforeMain=backend==='main'?mib((await mainMemory())?.privateBytes):undefined;
  let sampling=true;const samples=[];
  const sampler=(async()=>{while(sampling){samples.push(mib((await mainMemory())?.privateBytes));await delay(150);}})();
@@ -306,8 +344,16 @@ try{
  await closeActiveTab();
  report.measurements.imagesFrameExit=await waitFrameGone(imageProcess.frameOsProcessId,'the images frame process',15_000);
  assert.ok(report.measurements.imagesFrameExit.gone,'closing the images tab ends the frame process within 5 s');
+ const framesAfterFiveSeconds=await delay(5_000).then(()=>docSurfaces());
+ report.measurements.framesAfterFiveSeconds=framesAfterFiveSeconds.filter(item=>!item.hidden).length;
+ assert.equal(report.measurements.framesAfterFiveSeconds,0,'no document frame remains five seconds after closing images-100');
+ const imagesMemoryAfter=await memorySnapshot();
+ report.measurements.imagesMemory={before:imagesMemoryBefore,after:imagesMemoryAfter};
+ report.measurements.imagesMemory.rendererDeltaMiB=Math.round((imagesMemoryAfter.renderer-imagesMemoryBefore.renderer)*10)/10;
+ report.measurements.imagesMemory.runtimeDeltaMiB=Math.round((imagesMemoryAfter.runtime-imagesMemoryBefore.runtime)*10)/10;
+ assert.ok(report.measurements.imagesMemory.rendererDeltaMiB<=BUDGETS.rendererDeltaMiB,`the app renderer is back within ${BUDGETS.rendererDeltaMiB} MB after images-100 (${report.measurements.imagesMemory.rendererDeltaMiB} MiB)`);
+ assert.ok(report.measurements.imagesMemory.runtimeDeltaMiB<=BUDGETS.runtimeDeltaMiB,`the runtime is back within ${BUDGETS.runtimeDeltaMiB} MB after images-100 (${report.measurements.imagesMemory.runtimeDeltaMiB} MiB)`);
  if(backend==='main'){
-  await delay(5_000);
   const after=mib((await mainMemory())?.privateBytes);
   report.measurements.mainAfterImagesMiB=after;
   report.measurements.mainDeltaAfterImagesMiB=Math.round((after-imagesBeforeMain)*10)/10;
@@ -341,6 +387,15 @@ try{
  await waitFrameGone(externalImageRecord.processes.frameOsProcessId,'the external images frame',15_000);
  assert.deepEqual(network,[],'no network request leaves a document frame');
  check('text-300 and images-100 also open as registered external files, one grant/frame each, with no network request');
+
+ // AC2: 100 MiB + 1 byte is refused before any content is read.
+ await openProjectFile('text-100-over.docx');
+ const tooLarge=page.getByRole('alert');
+ await until(async()=>{const text=await tooLarge.innerText().catch(()=>'');return /Too large to preview|文件太大/.test(text)?text:null;},'the over-limit Word line',60_000);
+ report.measurements.tooLargeText=await tooLarge.innerText();
+ assert.match(report.measurements.tooLargeText,/100 MiB/,'the size line names the 100 MiB limit');
+ await shot('en-light-too-large.png');
+ await closeActiveTab();
 
  // The two error states reachable without a corrupt window: protected and truncated.
  await openProjectFile('protected.docx');

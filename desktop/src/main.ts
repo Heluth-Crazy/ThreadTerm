@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { availableParallelism, release } from 'node:os';
 import { ResourceUsage } from './resourceUsage.js';
 import { canonicalRelocationPath } from './relocationPaths.js';
-import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
+import { appendFileSync, readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent, type Settings } from '@threadterm/protocol';
 import { RuntimeClient, RuntimeRequestError, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
@@ -28,6 +29,9 @@ import { HostFilePickers, hostRevealTarget } from './hostFiles.js';
 import { localPageShotPath } from './pageComments.js';
 import { qaOpenExternalPathsOverride } from './externalFiles.js';
 import { createLocalFileBackend, registerLocalFileBackendIpc } from './local-files/index.js';
+import { registeredExternalFilePath } from './local-files/references.js';
+import { resolveHtmlPreviewRoot } from './htmlPreviewRoot.js';
+import { createOpenFileDefaultAppHandler, qaOpenFileAppRecordPath } from './openFileApp.js';
 
 import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow, loadDocumentViewerFiles } from './htmlPreview.js';
 import { registerHtmlPreviewIpc, type HtmlPreviewDocumentChunk } from './htmlPreviewIpc.js';
@@ -765,6 +769,29 @@ function registerIpc(): void {
     if (!statSync(directory).isDirectory()) throw new Error('Directory is unavailable');
     const error = await shell.openPath(directory);
     if (error) throw new Error(error);
+  });
+  const qaOpenFileAppRecord = qaOpenFileAppRecordPath(process.env.THREADTERM_V3_OPEN_FILE_APP_QA, app.isPackaged);
+  // The tested handler (`openFileApp.ts`): trusted renderer, local machine, strict input, the
+  // allow list and containment, then `shell.openPath` (or the QA recorder).
+  ipcMain.handle('threadterm:open-file-default-app', (event, input: unknown) => {
+    // Looked up only after the handler's trust and local-machine checks have passed.
+    const runtime = () => runtimeFor(event);
+    return createOpenFileDefaultAppHandler({
+      workspaceRoot: request => resolveHtmlPreviewRoot({
+        projects: async () => (await runtime().request('runtime.snapshot', {})).projects,
+        worktrees: projectId => runtime().request('worktree.list', { projectId }),
+      }, request),
+      // Registered external file: the same row and canonical path check as external readWindow.
+      externalPath: id => registeredExternalFilePath((command, params) => runtime().localFileRequest(command, params), id),
+      canonical: path => realpath(path),
+      isFile: async path => (await stat(path)).isFile(),
+      openPath: async path => {
+        // The probe records the target instead of starting Word, Excel or a PDF application.
+        if (qaOpenFileAppRecord) { appendFileSync(qaOpenFileAppRecord, `${JSON.stringify({ path })}
+`); return ''; }
+        return shell.openPath(path);
+      },
+    }, assertTrustedRenderer, assertLocalMachine)(event, input);
   });
   ipcMain.handle('threadterm:reveal-file', async (event, sessionId: unknown, path: unknown) => {
     assertTrustedRenderer(event);

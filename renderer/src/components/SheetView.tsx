@@ -13,10 +13,11 @@ import {
   visibleRows, type SheetCellAddress, type SheetRange, type SheetSelection,
 } from '../sheetGrid';
 import {
-  SHEET_COPY_MAX_CELLS, createSheetLoader, readSelection,
+  SHEET_COPY_MAX_CELLS, createSheetLoader, readSelection, sheetErrorCode,
   type SheetTransport, type SheetViewerState,
 } from '../sheetWindow';
 import { ContextSendAction } from './ContextSendAction';
+import { OpenWithSystemAppButton } from './OpenWithSystemAppButton';
 import { WbIcon } from '../workbench/icons';
 import './sheet-view.css';
 
@@ -24,6 +25,8 @@ import './sheet-view.css';
  * happens when the view is larger or the user scrolls (`design.md` §3.6, R12). */
 const FIRST_WINDOW: SheetRange = { start: 0, count: 60, columnStart: 0, columnCount: 24 };
 /** R5: a tab hidden this long releases its helper; showing it again reloads without a click. */
+/** Errors a Reload cannot fix (`design.md` §6): the view offers only "Open with system app". */
+const SHEET_FINAL_ERRORS = new Set(['file_too_large', 'unsupported_document', 'document_protected', 'sheet_too_complex', 'sheet_out_of_memory']);
 const HIDDEN_RELEASE_MS = 5 * 60 * 1000;
 
 /** Excel/ODS preview: dense sheet tabs (R10), a virtualized grid (R11), bounded windows (R12),
@@ -83,6 +86,8 @@ export function SheetView({ projectId, worktreePath, path, externalId, zh, activ
         && current.width === next.width && current.height === next.height ? current : next;
     });
   }, []);
+  // The grid unmounts while an error shows; observe the element that is mounted now.
+  const gridShown = state.error === undefined;
   useEffect(() => {
     const element = grid.current;
     if (!element) return;
@@ -92,7 +97,7 @@ export function SheetView({ projectId, worktreePath, path, externalId, zh, activ
     const up = () => { dragging.current = false; };
     globalThis.addEventListener('mouseup', up);
     return () => { observer.disconnect(); globalThis.removeEventListener('mouseup', up); };
-  }, [measure]);
+  }, [measure, gridShown]);
 
   // One resident window: when the viewport leaves it, ask for a window that covers it again.
   useEffect(() => {
@@ -267,16 +272,17 @@ export function SheetView({ projectId, worktreePath, path, externalId, zh, activ
         {!info.visible && <span className="sheet-tab-hidden">{t('sheetHiddenTag')}</span>}
       </button>)}
     </div>}
-    <div className="sheet-toolbar">
+    {(state.totalRows > 0 || state.loading || notice) && <div className="sheet-toolbar">
       {state.totalRows > 0 && <span className="sheet-meta" data-testid="sheet-used-range">{sheetSizeText(state.totalRows, state.totalColumns, zh)}</span>}
       {state.totalRows > 0 && state.workbook && <span className="sheet-meta" data-testid="sheet-file-size">{sheetFileSize(state.workbook.size)}</span>}
-      <label className="sheet-goto" title={t('sheetGoTo')}>
+      {/* Go-to and copy only once there is a sheet to go to or copy from (R9: nothing idle). */}
+      {state.totalRows > 0 && <><label className="sheet-goto" title={t('sheetGoTo')}>
         <input type="text" spellCheck={false} aria-label={t('sheetGoTo')} placeholder={t('sheetGoToPlaceholder')} data-testid="sheet-goto"
           value={goTo} onChange={event => setGoTo(event.target.value)}
           onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); goto(); } }} />
       </label>
       <button type="button" className="icon-btn icon-btn-sm" title={t('sheetCopy')} aria-label={t('sheetCopy')} data-testid="sheet-copy"
-        disabled={!cursor} onClick={() => void copy()}><WbIcon name="copy" /></button>
+        disabled={!cursor} onClick={() => void copy()}><WbIcon name="copy" /></button></>}
       {selection && comments?.attachContext && <ContextSendAction host={comments} zh={zh} iconOnly testId="sheet-send-to-agent"
         item={async (): Promise<ContextItem> => ({
           kind: 'quote', id: crypto.randomUUID(),
@@ -285,12 +291,15 @@ export function SheetView({ projectId, worktreePath, path, externalId, zh, activ
         })} />}
       <span className="grow" />
       {(state.loading || notice) && <span className="sheet-status" role="status" data-testid="sheet-status">{notice ?? progress}</span>}
-    </div>
+    </div>}
     {state.error !== undefined && <div className="tt-editor-state" role="alert" data-testid="sheet-error"><span>{errorText(state.error)}</span>
-      <button type="button" className="btn btn-sm" data-testid="sheet-reload-error" onClick={() => void loader.reload()}>{t('sheetReload')}</button></div>}
+      <OpenWithSystemAppButton target={{ projectId, worktreePath, path, externalId }} zh={zh} onIssue={setNotice} testId="sheet-open-system-app" />
+      {/* Reload only where it can help: a too-large, damaged or protected file stays so. */}
+      {!SHEET_FINAL_ERRORS.has(sheetErrorCode(state.error) ?? '') && <button type="button" className="btn btn-sm" data-testid="sheet-reload-error" onClick={() => void loader.reload()}>{t('sheetReload')}</button>}</div>}
     {state.changed && <div className="tt-editor-state" role="alert" data-testid="sheet-changed"><span>{t('sheetChanged')}</span>
+      <OpenWithSystemAppButton target={{ projectId, worktreePath, path, externalId }} zh={zh} onIssue={setNotice} testId="sheet-changed-open-system-app" />
       <button type="button" className="btn btn-sm" data-testid="sheet-reload-changed" onClick={() => void loader.reload()}>{t('sheetReload')}</button></div>}
-    <div className="sheet-grid" ref={grid} tabIndex={0} role="grid" aria-label={t('sheetGrid')} aria-rowcount={state.totalRows}
+    {gridShown && <div className="sheet-grid" ref={grid} tabIndex={0} role="grid" aria-label={t('sheetGrid')} aria-rowcount={state.totalRows}
       aria-colcount={state.totalColumns} data-testid="sheet-grid" onScroll={measure} onKeyDown={onKeyDown}>
       <div className="sheet-canvas" style={{ width: SHEET_ROW_HEADER_WIDTH + state.totalColumns * SHEET_COLUMN_WIDTH, height: SHEET_COLUMN_HEADER_HEIGHT + state.totalRows * SHEET_ROW_HEIGHT }}>
         <div className="sheet-col-head" style={{ height: SHEET_COLUMN_HEADER_HEIGHT }}>
@@ -300,7 +309,7 @@ export function SheetView({ projectId, worktreePath, path, externalId, zh, activ
         </div>
         {rows}
       </div>
-    </div>
+    </div>}
     <div className="sheet-detail" data-testid="sheet-detail" aria-label={t('sheetDetail')} title={selectedText || undefined}>
       {detail && selectedText ? <><span className="sheet-detail-address">{detail.address}</span><span className="sheet-detail-text">{selectedText}</span></> : null}
     </div>
