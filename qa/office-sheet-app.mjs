@@ -1,19 +1,25 @@
-// Real-app regression probe for the Excel sheet preview (task 11-10, step 2).
+// Real-app regression probe for the Excel sheet preview (task 11-10, steps 2 and 3).
 //
 //   $env:TEMP="$env:TEMP\tt-qa-temp"; $env:TMP=$env:TEMP
 //   $env:THREADTERM_V3_RUNTIME_BIN='<absolute path to the worktree runtime executable>'
-//   node qa/office-sheet-app.mjs
+//   node qa/office-sheet-app.mjs [--backend main]
 //
 // Opens a project workbook from the Explorer and another as a registered external file, checks
 // the sheet tabs (including hidden sheets), the used range that starts at C5, scrolling and go-to
 // at the far end of a 100 MiB sheet (R12: 300 ms in a loaded sheet), copy as TSV, and that closing
 // the tab ends the runtime's `--sheet-worker` helper within 5 s. Screenshots land in
 // qa/results/office-sheet/. Fixtures are hard-linked into the scratch project, never modified.
+//
+// `--backend main` selects Local file access = main first and repeats the same run against the
+// WebAssembly reader (task 11-10 step 3): no `--sheet-worker` may start (R22), the reader process
+// must be gone within 5 s of closing, the main process must come back within 30 MB and stay under
+// 200 MiB, the main-mode time budgets in validation.md must hold, and switching the setting with a
+// workbook open must reload cleanly. Reports: qa/results/office-sheet[-main]/report.json.
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {link,mkdir,mkdtemp,writeFile} from 'node:fs/promises';
+import {link,mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {electron} from './lib/desktop1.mjs';
@@ -25,14 +31,23 @@ const runtime=resolve(process.env.THREADTERM_V3_RUNTIME_BIN??(()=>{throw Error('
 const scratchBase=resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to the shared tt-qa-temp root');})());
 assert.match(scratchBase.replaceAll('\\','/').toLowerCase(),/\/tt-qa-temp$/,'TEMP is the approved shared QA root');
 assert.ok(existsSync(runtime),`missing runtime ${runtime}`);
+const backendIndex=process.argv.indexOf('--backend');
+const backend=backendIndex<0?'runtime':process.argv[backendIndex+1];
+assert.ok(['runtime','main'].includes(backend),'--backend takes runtime or main');
+// The WebAssembly reader needs the module the build script writes (`npm run build:sheet-wasm`).
+const sheetWasm=process.env.THREADTERM_SHEET_WASM??join(root,'desktop-dist/sheet-core.wasm');
+if(backend==='main')assert.ok(existsSync(sheetWasm),`missing ${sheetWasm}; run npm run build:sheet-wasm`);
 const fixtures=resolve(scratchBase,'office-preview/fixtures');
-const scratch=await mkdtemp(join(scratchBase,'tt-office-sheet-app-'));
+const scratch=await mkdtemp(join(scratchBase,`tt-office-sheet-app-${backend}-`));
 const project=join(scratch,'project'),outside=join(scratch,'outside'),appDir=join(scratch,'app');
-const out=join(root,'qa/results/office-sheet');
-const report={passed:false,startedAt:new Date().toISOString(),runtime,scratch,checks:[],screenshots:[],measurements:{},errors:[],limitations:[
+const out=join(root,backend==='main'?'qa/results/office-sheet-main':'qa/results/office-sheet');
+// Main-mode budgets (validation.md, spike C decision 7).
+const BUDGETS={numbersFirstWindowMs:10_000,loadedWindowMs:150,sheetsFirstWindowMs:3_000,stringsFirstWindowMs:25_000,mainDeltaMiB:30,mainPeakMiB:200};
+const report={passed:false,backend,startedAt:new Date().toISOString(),runtime,scratch,sheetWasm:backend==='main'?sheetWasm:undefined,checks:[],screenshots:[],measurements:{},budgets:backend==='main'?BUDGETS:undefined,errors:[],limitations:[
  'The 5-minute hidden-tab release (R5) is not exercised: the probe would have to wait five minutes; the close path is.',
- 'Only the Runtime read method runs here; Local file access = main is step 3.',
+ backend==='runtime'?'Only the Runtime read method runs here; run with --backend main for step 3.':'Only the main read method runs here; the runtime run is the sibling invocation.',
  'Merged cells and find-in-sheet are left out of step 2 (merged-cell parsing measured over the gate in step 1; find needs a core method).',
+ 'The reader reports no progress number in main mode: a WebAssembly load is synchronous and cannot call back mid-load (design.md §3.1).',
 ]};
 let app,page,releaseLock,cleanupApp,mainPid;
 const check=text=>{report.checks.push(text);console.log(`PASS ${text}`);};
@@ -40,7 +55,7 @@ const delay=ms=>new Promise(done=>setTimeout(done,ms));
 const request=(method,params={})=>page.evaluate(([name,value])=>window.threadterm.request(name,value),[method,params]);
 const visible=selector=>page.locator(`.ws-pane.selected .pane-tab-surface:not([hidden]) ${selector}`);
 const surfaces=()=>page.locator('.ws-pane.selected .pane-tab-surface:not([hidden])');
-const shot=async name=>{await page.screenshot({path:join(out,name)});report.screenshots.push(join('qa/results/office-sheet',name));};
+const shot=async name=>{await page.screenshot({path:join(out,name)});report.screenshots.push(join(out,name).replaceAll('\\','/'));};
 async function until(test,label,timeout=60_000){const deadline=Date.now()+timeout;for(;;){try{const value=await test();if(value)return value;}catch{}if(Date.now()>deadline)throw Error(`Timed out: ${label}`);await delay(100);}}
 
 // The generator's own formula (gen_fixtures.py `num_cell_text`), so a visible cell is compared with
@@ -77,10 +92,76 @@ ConvertTo-Json -InputObject @($workers.ToArray()) -Compress`);
  try{const parsed=JSON.parse(text);return Array.isArray(parsed)?parsed:(typeof parsed==='number'?[parsed]:[]);}catch{return undefined;}
 }
 
+/** The sheet readers of the app: a utility process Electron names after its service. The Windows
+ * command line of a utility process carries no script path, so `getAppMetrics` is the reliable
+ * handle; the reader's memory is read from the OS by pid (Electron under-reports it). */
+const readers=()=>app.evaluate(({app:electronApp})=>electronApp.getAppMetrics()
+ .filter(entry=>entry.name==='ThreadTerm sheet reader')
+ .map(entry=>entry.pid));
+/** A reader's working set and peak, read from the OS (the reader's own report arrives on main's stdout). */
+function readerMemory(pid){
+ const {ok,text}=powershell(`$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue
+if($p){ConvertTo-Json -Compress -InputObject @{workingSet=[math]::Round($p.WorkingSet64/1MB,1);peak=[math]::Round($p.PeakWorkingSet64/1MB,1)}}else{'null'}`);
+ if(!ok||!text||text==='null')return undefined;
+ try{return JSON.parse(text);}catch{return undefined;}
+}
+/** The main process's own memory, as Electron reports the Browser process (KiB). */
+const mainMemory=()=>app.evaluate(({app:electronApp})=>{
+ const browser=electronApp.getAppMetrics().find(entry=>entry.type==='Browser');
+ return browser?.memory??null;
+});
+const mib=kilobytes=>Math.round(((kilobytes??0)/1024)*10)/10;
+/** A 500-row window timed inside the app renderer, so the figure is the wire method (renderer IPC →
+ * main → reader → back) and not Playwright's own marshalling of the reply. */
+async function loadedWindowTiming(projectId,name,rowStart){
+ return await page.evaluate(async ([projectId,name,rowStart])=>{
+  const call=(method,params)=>window.threadterm.request(method,params);
+  const opened=await call('filesystem.sheet.open',{projectId,path:name});
+  try{
+   const started=performance.now();
+   let reply=await call('filesystem.sheet.rows',{handle:opened.handle,sheet:0,start:rowStart,count:500});
+   while(reply.state==='loading'&&performance.now()-started<180_000){
+    await new Promise(done=>setTimeout(done,100));
+    reply=await call('filesystem.sheet.rows',{handle:opened.handle,sheet:0,start:rowStart,count:500});
+   }
+   const loadMs=Math.round(performance.now()-started);
+   const samples=[];
+   for(let attempt=0;attempt<7;attempt+=1){
+    const before=performance.now();
+    const window=await call('filesystem.sheet.rows',{handle:opened.handle,sheet:0,start:rowStart,count:500,columnStart:0,columnCount:20});
+    samples.push(Math.round((performance.now()-before)*10)/10);
+    if(!Array.isArray(window.rows)||window.rows.length===0)throw Error('a loaded 500-row window returned no rows');
+   }
+   return {loadMs,samples,totalRows:reply.totalRows};
+  }finally{await call('filesystem.sheet.close',{handle:opened.handle}).catch(()=>{});}
+ },[projectId,name,rowStart]);
+}
+/** `open` plus the first ready window, timed inside the app renderer: the host-mode budget figure
+ * (validation.md: numbers-100 first window, sheets-10x10 first window), free of UI noise. */
+async function hostFirstWindow(projectId,name,columnCount=20){
+ return await page.evaluate(async ([projectId,name,columnCount])=>{
+  const call=(method,params)=>window.threadterm.request(method,params);
+  const started=performance.now();
+  const opened=await call('filesystem.sheet.open',{projectId,path:name});
+  try{
+   const openMs=Math.round(performance.now()-started);
+   let reply=await call('filesystem.sheet.rows',{handle:opened.handle,sheet:0,start:0,count:50,columnStart:0,columnCount});
+   while(reply.state==='loading'&&performance.now()-started<180_000){
+    await new Promise(done=>setTimeout(done,100));
+    reply=await call('filesystem.sheet.rows',{handle:opened.handle,sheet:0,start:0,count:50,columnStart:0,columnCount});
+   }
+   if(reply.state!=='ready')throw Error('the first window never became ready');
+   return {openMs,firstWindowMs:Math.round(performance.now()-started),totalRows:reply.totalRows};
+  }finally{await call('filesystem.sheet.close',{handle:opened.handle}).catch(()=>{});}
+ },[projectId,name,columnCount]);
+}
+
+const setBackend=mode=>page.evaluate(async value=>window.threadterm.localFiles?.setBackend(value),mode);
+
 async function prepare(){
  await Promise.all([mkdir(project,{recursive:true}),mkdir(outside,{recursive:true}),mkdir(out,{recursive:true})]);
  // Hard links: no 300 MiB of copies, and the fixtures folder keeps its bytes.
- for(const name of ['features.xlsx','sheets-10x10.xlsx','numbers-100.xlsx'])await link(join(fixtures,name),join(project,name));
+ for(const name of ['features.xlsx','sheets-10x10.xlsx','numbers-100.xlsx','date.xls','any_sheets.xlsb','any_sheets.ods','special_cells.ods'])await link(join(fixtures,name),join(project,name));
  await link(join(fixtures,'strings-100.xlsx'),join(outside,'strings-100.xlsx'));
  ({cleanup:cleanupApp}=await buildQaApp({root,outDir:appDir}));
 }
@@ -91,6 +172,7 @@ function environment(){
   HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),APPDATA:join(scratch,'appdata'),LOCALAPPDATA:join(scratch,'localappdata'),CODEX_HOME:join(scratch,'home','.codex'),
   THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\tt-office-sheet-${randomUUID()}`,
   THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_RUNTIME_BIN:runtime,
+  ...(backend==='main'?{THREADTERM_SHEET_WASM:sheetWasm}:{}),
   THREADTERM_V3_OPEN_EXTERNAL_QA:JSON.stringify([join(outside,'strings-100.xlsx')])});
  assert.deepEqual(Object.keys(env).filter(key=>key.toLowerCase()==='path'),['Path'],'isolated environment has one PATH');
  return env;
@@ -139,6 +221,30 @@ async function waitNoWorkers(label,timeout=6_000){
  const gone=await until(()=>{const workers=sheetWorkers();if(!workers)return false;last=workers;return workers.length===0;},label,timeout).then(()=>true).catch(()=>false);
  return {gone,ms:Date.now()-started,remaining:gone?0:(last?.length??-1),pids:last??[]};
 }
+/** Scroll (and keep nudging) until `row` is painted, or report the view text. Used after a Local
+ * file access switch, where the view must reopen once and then serve the new window. */
+const forceWindow=row=>page.evaluate(async row=>{
+ const view=()=>document.querySelector('.ws-pane.selected .pane-tab-surface:not([hidden]) .sheet-view');
+ const deadline=performance.now()+120_000;
+ let nudges=0;
+ for(;;){
+  const v=view();
+  if(!v)return {ok:false,reason:'no sheet view'};
+  const cell=v.querySelector(`.sheet-cell[data-row="${row}"]`);
+  if(cell&&cell.textContent)return {ok:true,text:cell.textContent};
+  const grid=v.querySelector('.sheet-grid');
+  if(grid){
+   const sample=grid.querySelector('.sheet-row');
+   const rowHeight=sample?.getBoundingClientRect().height||24;
+   const target=Math.min(Math.round(row*rowHeight),grid.scrollHeight);
+   if(Math.abs(grid.scrollTop-target)>1||nudges%8===0)grid.scrollTop=target;
+   nudges+=1;
+  }
+  if(performance.now()>deadline)return {ok:false,reason:(v.innerText??'').slice(0,300)};
+  await new Promise(done=>setTimeout(done,250));
+ }
+},row);
+
 /** Time from a scroll assignment to the first painted cell of `row` (R12). */
 async function scrollToBottomAndTime(row){
  return await page.evaluate(async row=>{
@@ -191,19 +297,31 @@ try{
  page.on('console',message=>{if(message.type()==='error')report.errors.push(`console: ${message.text()}`);});
  await page.waitForFunction(()=>Boolean(window.threadterm));await page.locator('.app-shell').waitFor({timeout:60_000});
  const added=await request('project.add',{path:project,name:'Office sheet QA',operationId:randomUUID()});
+ const projectId=added.id;
  const session=await request('session.create',{projectId:added.id,cwd:project,provider:'grok',mode:'chat',title:'Sheet preview QA',operationId:randomUUID()});
  await page.reload();await page.waitForFunction(()=>Boolean(window.threadterm));await page.locator('.app-shell').waitFor();
  await request('session.present',{sessionId:session.id,placement:'workspace',presentation:'focused',operationId:randomUUID()});
  await page.locator('.ws-pane.selected').waitFor({state:'visible',timeout:45_000});
- assert.equal(await page.evaluate(()=>window.threadterm.localFiles?.setBackend('runtime')),'runtime','Local file access is the runtime');
+ assert.equal(await setBackend(backend),backend,`Local file access is ${backend}`);
+ if(backend==='main'){
+  report.measurements.readersAfterSwitch=await readers();
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'main mode starts no runtime helper');
+  report.measurements.mainBeforeMiB=mib((await mainMemory())?.privateBytes);
+ }
 
  await theme('en','light');
  assert.deepEqual(sheetWorkers()??['unavailable'],[],'no sheet helper before any workbook opens');
+ assert.deepEqual(backend==='main'?await readers():[], [], 'no sheet reader before any workbook opens');
 
  // features.xlsx: two sheets, the second hidden and marked; the used range starts at C5.
  report.measurements.featuresOpenMs=await openProjectSheet('features.xlsx');
  report.measurements.workersAfterFeaturesOpen=sheetWorkers();
  report.measurements.surfacesAfterFeaturesOpen=await sheetSurfaces();
+ if(backend==='main'){
+  report.measurements.readersAfterFeaturesOpen=await readers();
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'main mode starts no --sheet-worker helper (R22)');
+  assert.equal((await readers()).length,1,'one WebAssembly reader for the open workbook');
+ }
  assert.equal(await attribute('data-total-rows'),'13','the used range ends on row 13');
  assert.equal(await attribute('data-total-columns'),'6','the used range ends on column F');
  assert.equal(await visible('[data-testid="sheet-tab"]').count(),2,'both sheets are in the tab row');
@@ -263,12 +381,41 @@ try{
  await closeActiveTab();
  let released=await waitNoWorkers('the features helper to exit');
  assert.ok(released.gone,'closing a small workbook ends its helper within 5 s');
+ if(backend==='main'){
+  const closedAt=Date.now();
+  const gone=await until(async()=>{const list=await readers();return list.length===0;},'the reader to exit after close',6_000).then(()=>true).catch(()=>false);
+  report.measurements.readerExitMs=Date.now()-closedAt;
+  assert.ok(gone,`the reader ends within 5 s of the tab closing (waited ${report.measurements.readerExitMs} ms, pids ${JSON.stringify(await readers())})`);
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'still no helper');
+ }
  check('switching to the hidden sheet works and closing the tab ends the helper');
+
+ // Every other Excel format D6 allows opens through the same viewer, under both read methods.
+ for(const name of ['date.xls','any_sheets.xlsb','any_sheets.ods','special_cells.ods']){
+  const started=Date.now();
+  await openProjectSheet(name);
+  const rows=Number(await attribute('data-total-rows'));
+  assert.ok(rows>0,`${name} reports its used range (${rows} rows)`);
+  assert.ok(await cellText(0,0)||await cellText(0,1),`${name} draws a first cell`);
+  report.measurements[`${name}OpenMs`]=Date.now()-started;
+  await closeActiveTab();
+ }
+ if(backend==='main'){
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'the legacy formats start no helper either');
+  await until(async()=>(await readers()).length===0,'the legacy-format readers to exit',10_000);
+ }
+ check('date.xls, any_sheets.xlsb, any_sheets.ods and special_cells.ods open through the same viewer');
 
  // sheets-10x10.xlsx: ten dense sheet tabs.
  report.measurements.sheetsOpenMs=await openProjectSheet('sheets-10x10.xlsx');
  report.measurements.workersAfterSheetsOpen=sheetWorkers();
  report.measurements.surfacesAfterSheetsOpen=await sheetSurfaces();
+ report.measurements.sheetsHostFirstWindow=await hostFirstWindow(projectId,'sheets-10x10.xlsx',14);
+ if(backend==='main'){
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'main mode starts no --sheet-worker helper');
+  assert.ok(report.measurements.sheetsHostFirstWindow.firstWindowMs<=BUDGETS.sheetsFirstWindowMs,
+   `sheets-10x10 first window (open + first window, in the app) within ${BUDGETS.sheetsFirstWindowMs} ms (took ${report.measurements.sheetsHostFirstWindow.firstWindowMs} ms)`);
+ }
  const tabs=await visible('[data-testid="sheet-tab"]').allInnerTexts();
  assert.equal(tabs.length,10,'ten tabs');
  for(let index=0;index<10;index++)assert.match(tabs[index],new RegExp(`Q${index+1}-2026`),`tab ${index+1} names its sheet`);
@@ -276,18 +423,49 @@ try{
  report.measurements.workersAfterTheme=sheetWorkers();
  await shot('zh-dark-sheets.png');
  check('sheets-10x10.xlsx shows ten dense sheet tabs, readable in Chinese/dark');
+
  await closeActiveTab();
  released=await waitNoWorkers('the ten-sheet helper to exit');
  report.measurements.sheetsClosedWorkers=released;
  assert.ok(released.gone,`closing the ten-sheet workbook ends its helper within 5 s (remaining ${released.remaining}: ${JSON.stringify(released.pids)})`);
+ if(backend==='main'){
+  const closedAt=Date.now();
+  const gone=await until(async()=>{const list=await readers();return list.length===0;},'the ten-sheet reader to exit',6_000).then(()=>true).catch(()=>false);
+  report.measurements.sheetsReaderExitMs=Date.now()-closedAt;
+  assert.ok(gone,`the ten-sheet reader ends within 5 s of the tab closing (waited ${report.measurements.sheetsReaderExitMs} ms)`);
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'still no helper');
+ }
 
  // numbers-100.xlsx from the Explorer: far end, go-to, measurement, then close ends the helper.
+ const mainBeforeNumbers=backend==='main'?mib((await mainMemory())?.privateBytes):undefined;
  report.measurements.numbersOpenMs=await openProjectSheet('numbers-100.xlsx');
  assert.equal(await attribute('data-total-rows'),'727044','the used range is 727,044 rows');
  assert.equal(await attribute('data-total-columns'),'20','the used range is 20 columns');
  assert.equal(await cellText(0,0),numCellText(0,0),'A1 matches the generator');
  assert.match(await visible('[data-testid="sheet-used-range"]').textContent(),/727,044 rows × 20 columns|727,044 行 × 20 列/,'the sheet size is shown');
- assert.equal(sheetWorkers()?.length,1,'one helper for the open workbook');
+ if(backend==='main'){
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'a 100 MiB workbook also starts no --sheet-worker helper (R22)');
+  const list=await readers();
+  report.measurements.readersAfterNumbersOpen=list;
+  assert.equal(list.length,1,'one WebAssembly reader for the 100 MiB workbook');
+  report.measurements.readerNumbersMemory=readerMemory(list[0]);
+  report.measurements.mainDuringFeedMiB=mib((await mainMemory())?.privateBytes);
+  assert.ok(report.measurements.mainDuringFeedMiB-mainBeforeNumbers<=BUDGETS.mainPeakMiB,
+   `the main process stays under ${BUDGETS.mainPeakMiB} MiB during the feed (was ${report.measurements.mainDuringFeedMiB} MiB)`);
+  report.measurements.numbersHostFirstWindow=await hostFirstWindow(projectId,'numbers-100.xlsx',20);
+  assert.ok(report.measurements.numbersHostFirstWindow.firstWindowMs<=BUDGETS.numbersFirstWindowMs,
+   `numbers-100 first window (open + first window, in the app) within ${BUDGETS.numbersFirstWindowMs} ms (took ${report.measurements.numbersHostFirstWindow.firstWindowMs} ms)`);
+ }else{
+  assert.equal(sheetWorkers()?.length,1,'one helper for the open workbook');
+ }
+ report.measurements.loadedWindow=await loadedWindowTiming(projectId,'numbers-100.xlsx',200_000);
+ report.measurements.loadedWindow.medianMs=report.measurements.loadedWindow.samples.slice().sort((left,right)=>left-right)[Math.floor(report.measurements.loadedWindow.samples.length/2)];
+ if(backend==='main'){
+  // The budget is per window (validation.md): every sample counts, not the average.
+  assert.ok(Math.max(...report.measurements.loadedWindow.samples)<=BUDGETS.loadedWindowMs,
+   `a loaded 500-row window within ${BUDGETS.loadedWindowMs} ms (samples ${JSON.stringify(report.measurements.loadedWindow.samples)} ms)`);
+  report.measurements.mainAfterWindowRequestMiB=mib((await mainMemory())?.privateBytes);
+ }
 
  const bottomRow=727043;
  report.measurements.scrollToFarEnd=await scrollToBottomAndTime(bottomRow);
@@ -340,6 +518,22 @@ try{
  report.measurements.helperExitMs=Date.now()-closedAt;
  assert.ok(gone,`the helper ends within 5 s of the tab closing (waited ${report.measurements.helperExitMs} ms, pids ${JSON.stringify(sheetWorkers())})`);
  check(`closing the workbook tab ends the --sheet-worker helper in ${report.measurements.helperExitMs} ms`);
+ if(backend==='main'){
+  const readerClosedAt=Date.now();
+  const readerGone=await until(async()=>{const list=await readers();return list.length===0;},'the 100 MiB reader to exit',6_000).then(()=>true).catch(()=>false);
+  report.measurements.numbersReaderExitMs=Date.now()-readerClosedAt;
+  assert.ok(readerGone,`the 100 MiB reader ends within 5 s of the tab closing (waited ${report.measurements.numbersReaderExitMs} ms, pids ${JSON.stringify(await readers())})`);
+  // AC3: the main process comes back within 30 MB of where it started, five seconds after closing.
+  await delay(5_000);
+  const after=mib((await mainMemory())?.privateBytes);
+  report.measurements.mainAfterCloseMiB=after;
+  report.measurements.mainDeltaAfterCloseMiB=Math.round((after-mainBeforeNumbers)*10)/10;
+  report.measurements.mainPeakMiB=mib((await mainMemory())?.peakWorkingSetSize);
+  assert.ok(report.measurements.mainDeltaAfterCloseMiB<=BUDGETS.mainDeltaMiB,
+   `the main process is back within ${BUDGETS.mainDeltaMiB} MB after closing (${report.measurements.mainDeltaAfterCloseMiB} MiB)`);
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'no helper ever started in main mode');
+  check(`main mode: no --sheet-worker helper, the ${report.measurements.numbersReaderExitMs} ms reader exit, main back within ${report.measurements.mainAfterCloseMiB-mainBeforeNumbers>0?'+':''}${report.measurements.mainDeltaAfterCloseMiB} MiB`);
+ }
 
  // strings-100.xlsx as a registered external file.
  await theme('zh-CN','dark');
@@ -349,24 +543,89 @@ try{
  await until(()=>page.getByRole('tab').filter({hasText:'strings-100.xlsx'}).count(),'the external sheet tab');
  const externalStarted=performance.now();
  await page.getByRole('tab',{name:/strings-100\.xlsx/}).first().click();
- // R12: a loading sheet reports progress and never blocks the rest of the app.
- report.measurements.progressDuringLoad=await until(async()=>{
-  const text=await sheet().locator('[data-testid="sheet-status"]').textContent().catch(()=>null);
-  return text&&/\d+%/.test(text)?text:null;
- },'a load percentage',120_000);
+ // R12: a loading sheet reports progress and never blocks the rest of the app. Main mode has no
+ // progress number (a synchronous WebAssembly load cannot report one), so the status text is taken.
+ if(backend==='main'){
+  report.measurements.progressDuringLoad=await until(async()=>{
+   const text=await sheet().locator('[data-testid="sheet-status"]').textContent().catch(()=>null);
+   return text&&!/Strings|文本/.test(text)?text:null;
+  },'a loading status',180_000).catch(()=>null);
+ }else{
+  report.measurements.progressDuringLoad=await until(async()=>{
+   const text=await sheet().locator('[data-testid="sheet-status"]').textContent().catch(()=>null);
+   return text&&/\d+%/.test(text)?text:null;
+  },'a load percentage',120_000);
+ }
+ // One tab, one parse: a remount used to open the workbook twice, so two readers (or helpers)
+ // parsed it side by side and the 25 s budget was missed. Sample the count while it loads.
+ const sampling={done:false};
+ const concurrent=(async()=>{
+  let most=0;
+  while(!sampling.done){
+   const list=await (backend==='main'?readers():Promise.resolve(sheetWorkers())).catch(()=>null);
+   most=Math.max(most,Array.isArray(list)?list.length:0);
+   await new Promise(done=>setTimeout(done,200));
+  }
+  return most;
+ })();
  await waitSheetLoaded('strings-100.xlsx');
+ sampling.done=true;
  report.measurements.externalOpenMs=Math.round(performance.now()-externalStarted);
+ report.measurements.externalMostParsers=await concurrent;
+ assert.equal(report.measurements.externalMostParsers,1,`one ${backend==='main'?'reader':'helper'} parses the external workbook, never two`);
  assert.equal(await attribute('data-total-rows'),'802851','the external sheet reports its used range');
  assert.ok((await sheet().getAttribute('data-file-path')??'').endsWith('strings-100.xlsx'),'the external tab shows its own path');
  assert.equal(await surfaces().locator('[data-testid="external-file-boundary"]').count(),1,'an external workbook keeps the read-only boundary');
- assert.equal(sheetWorkers()?.length,1,'one helper for the external workbook');
- await shot('zh-dark-strings.png');
+ if(backend==='main'){
+  assert.deepEqual(sheetWorkers()??['unavailable'],[],'the external workbook starts no helper');
+  assert.equal((await readers()).length,1,'one reader for the external workbook');
+  assert.ok(report.measurements.externalOpenMs<=BUDGETS.stringsFirstWindowMs,
+   `strings-100 first window within ${BUDGETS.stringsFirstWindowMs} ms (took ${report.measurements.externalOpenMs} ms)`);
+ }else{
+  assert.equal(sheetWorkers()?.length,1,'one helper for the external workbook');
+ }
+ await shot(backend==='main'?'zh-dark-strings-main.png':'zh-dark-strings.png');
  await theme('en','light');
- await shot('en-light-strings.png');
+ await shot(backend==='main'?'en-light-strings-main.png':'en-light-strings.png');
  await closeActiveTab();
  released=await waitNoWorkers('the external helper to exit');
  assert.ok(released.gone,'the external workbook helper ends within 5 s');
+ if(backend==='main'){
+  const gone=await until(async()=>{const list=await readers();return list.length===0;},'the external reader to exit',6_000).then(()=>true).catch(()=>false);
+  assert.ok(gone,`the external workbook reader ends within 5 s (pids ${JSON.stringify(await readers())})`);
+ }
  check('strings-100.xlsx opens as a registered external file through the same viewer and releases its helper');
+
+ // Task 11-10 step 3 / AC5: switching Local file access with a workbook open reloads cleanly. This
+ // runs last: the runtime keeps the handle the view abandons at the switch (the renderer's close
+ // goes to the new backend), so that helper ends on its own idle timer, not here. Each step asks for
+ // a different row, so each switch must really reopen the workbook under the new backend.
+ if(backend==='main'){
+  await theme('en','light');
+  await openProjectSheet('sheets-10x10.xlsx');
+  const far=await forceWindow(103155);
+  report.measurements.switchFarEnd={ok:far.ok,text:far.text??far.reason};
+  assert.ok(far.ok&&far.text===numCellText(103155,0),`the far end paints under main (${far.text??far.reason})`);
+  assert.equal(await setBackend('runtime'),'runtime','the setting switches to the runtime with a workbook open');
+  const afterSwitch=await forceWindow(90000);
+  report.measurements.switchToRuntime={ok:afterSwitch.ok,text:afterSwitch.text??afterSwitch.reason};
+  assert.ok(afterSwitch.ok&&afterSwitch.text===numCellText(90000,0),`the workbook reopens under the runtime and serves row 90,001 (${afterSwitch.text??afterSwitch.reason})`);
+  const switchedReaders=await readers();
+  report.measurements.readersAfterRuntimeSwitch=switchedReaders;
+  assert.deepEqual(switchedReaders,[],'the main-mode reader is gone after switching to the runtime');
+  await until(()=>(sheetWorkers()??[]).length===1,'the runtime helper for the reopened workbook',30_000);
+  report.measurements.workersAfterRuntimeSwitch=sheetWorkers();
+  assert.equal(await setBackend('main'),'main','the setting switches back to main with the workbook open');
+  const backToMain=await forceWindow(95000);
+  report.measurements.switchToMain={ok:backToMain.ok,text:backToMain.text??backToMain.reason};
+  assert.ok(backToMain.ok&&backToMain.text===numCellText(95000,0),`the workbook reopens under main again and serves row 95,001 (${backToMain.text??backToMain.reason})`);
+  await until(async()=>(await readers()).length===1,'one reader after switching back',30_000);
+  report.measurements.abandonedRuntimeHelpers=(sheetWorkers()??[]).length;
+  assert.deepEqual(report.errors,[],report.errors.join('\n'));
+  check('switching Local file access with a workbook open reopens the same sheet under the new backend, without a page error');
+  await closeActiveTab();
+  await until(async()=>(await readers()).length===0,'the reader of the switch test to exit',6_000);
+ }
 
  assert.deepEqual(report.errors,[],report.errors.join('\n'));report.passed=true;
 }catch(error){report.errors.push(error instanceof Error?(error.stack??error.message):String(error));if(page)await shot('failure.png').catch(()=>{});}
@@ -375,6 +634,8 @@ finally{
  if(app){await app.evaluate(({app:electronApp})=>electronApp.exit(0)).catch(()=>{});await app.close().catch(()=>{});}
  report.completedAt=new Date().toISOString();await mkdir(out,{recursive:true});await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));
  await cleanupApp?.().catch(()=>{});await releaseLock?.();
+ // The scratch project holds hard links to the fixtures plus a runtime data dir; keep it only for a failure.
+ if(report.passed)await rm(scratch,{recursive:true,force:true,maxRetries:5,retryDelay:500}).catch(()=>{});
  console.log(report.passed?'OFFICE SHEET APP QA PASSED':`OFFICE SHEET APP QA FAILED\n${report.errors.join('\n')}`);
  process.exitCode=report.passed?0:1;
 }

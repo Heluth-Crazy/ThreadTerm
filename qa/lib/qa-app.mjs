@@ -9,8 +9,12 @@ import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-// desktop/src/main.ts loads each of these from its own directory (join(__dirname, …)), so all three are built here.
-const mainBundles = ['main', 'preload', 'htmlPreviewSandboxPreload'];
+// desktop/src/main.ts loads each of these from its own directory (join(__dirname, …)), so all of them are built
+// here. The sheet reader is the utility process main mode forks; it is ThreadTerm.exe and opens no files.
+const mainBundles = [
+  ['main', 'main'], ['preload', 'preload'], ['htmlPreviewSandboxPreload', 'htmlPreviewSandboxPreload'],
+  ['local-files/sheet-reader', 'sheet-reader'],
+];
 
 /**
  * Builds the production app into `outDir` (default: a fresh directory under the system temp dir).
@@ -25,8 +29,8 @@ export async function buildQaApp({ root = repoRoot, outDir, viteOptions = {} } =
   const cleanup = () => rm(scratch ?? appDir, { recursive: true, force: true });
   try {
     await mkdir(appDir, { recursive: true });
-    for (const name of mainBundles) {
-      await esbuild({ entryPoints: [join(root, `desktop/src/${name}.ts`)], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, `${name}.cjs`), logLevel: 'error' });
+    for (const [entry, name] of mainBundles) {
+      await esbuild({ entryPoints: [join(root, `desktop/src/${entry}.ts`)], bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'], outfile: join(appDir, `${name}.cjs`), logLevel: 'error' });
     }
     await viteBuild({
       ...(process.env.THREADTERM_QA_RENDERER_ROOT ? { root: resolve(process.env.THREADTERM_QA_RENDERER_ROOT) } : {}),

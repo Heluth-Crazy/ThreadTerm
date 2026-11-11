@@ -115,6 +115,11 @@ function fileWindowToken(metadata:Awaited<ReturnType<typeof validateOpenFilePath
   return `${metadata.size}:${metadata.mtimeNs/NANOS_PER_SECOND}:${metadata.mtimeNs%NANOS_PER_SECOND}`;
 }
 
+/** The `read_window_path` change token (`runtime/src/workspace_services.rs`): size and
+ * nanosecond mtime, the same text the Runtime backend returns, so a token survives a
+ * backend switch. The sheet host fences on it too (`design.md` §2, §3.4). */
+export const fileChangeToken = fileWindowToken;
+
 function advancePastSplitUtf8Scalar(bytes:Buffer,start:number):number{
   if(start>=bytes.length||(bytes[start]&0xc0)!==0x80)return start;
   let leader=start;

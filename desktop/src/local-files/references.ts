@@ -3,6 +3,7 @@ import { open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, toNamespacedPath } from 'node:path';
 import type { ExternalFile, ExternalFileOpenResult, ExternalFileSource, FileDocument, FileReference, Method, RequestParams, RequestResult, ResolvedFileReference } from '@threadterm/protocol';
 import { LocalFileService } from './files.js';
+import type { LocalFileCoordination } from './coordination.js';
 import { canonicalPath, displayPath, isContained } from './paths.js';
 import type { FileRequestTarget } from './router.js';
 
@@ -26,6 +27,25 @@ const object = (value:unknown): UnknownRecord | undefined => value !== null && t
 const text = (value:unknown): value is string => typeof value === 'string';
 const nonEmptyText = (value:unknown): value is string => text(value) && value.length > 0;
 
+/** One `external_files` registration row as the private coordination channel returns it. */
+function registrationRow(value:unknown):ExternalRow {
+  const result = object(value);
+  if (!result) fail('desktop_files_invalid_external');
+  const item = result!;
+  if (!nonEmptyText(item.id) || !nonEmptyText(item.canonicalPath) || !nonEmptyText(item.name)
+    || !nonEmptyText(item.openedAt) || !externalSources.has(item.source as ExternalFileSource)) fail('desktop_files_invalid_external');
+  if (!absolutePath(item.canonicalPath as string)) fail('desktop_files_invalid_external');
+  return {id:item.id as string, canonicalPath:item.canonicalPath as string, name:item.name as string,
+    source:item.source as ExternalFileSource, openedAt:item.openedAt as string};
+}
+
+/** A **registered** external file's canonical path, by ID only: the main sheet host resolves
+ * exactly what `filesystem.external.readWindow` resolves (`design.md` §3.4). */
+export async function registeredExternalFilePath(coordination:LocalFileCoordination, id:string):Promise<string> {
+  if (!nonEmptyText(id)) fail('invalid_request');
+  return (await registeredFile(registrationRow(await coordination('desktop.files.external.get', {id})))).canonical;
+}
+
 /** A main-only private coordination channel. It never accepts a renderer-selected root. */
 export function createLocalFileReferenceTarget(options:{service:LocalFileService; coordination:Coordination}):FileRequestTarget {
   const context = async (sessionId:unknown):Promise<SessionContext> => {
@@ -47,16 +67,7 @@ export function createLocalFileReferenceTarget(options:{service:LocalFileService
       cwd:checkedCwd, provider:value.provider as string, mode:value.mode as string,
       relativeRequiresAbsolute:value.relativeRequiresAbsolute as boolean};
   };
-  const row = (value:unknown):ExternalRow => {
-    const result = object(value);
-    if (!result) fail('desktop_files_invalid_external');
-    const item = result!;
-    if (!nonEmptyText(item.id) || !nonEmptyText(item.canonicalPath) || !nonEmptyText(item.name)
-      || !nonEmptyText(item.openedAt) || !externalSources.has(item.source as ExternalFileSource)) fail('desktop_files_invalid_external');
-    if (!absolutePath(item.canonicalPath as string)) fail('desktop_files_invalid_external');
-    return {id:item.id as string, canonicalPath:item.canonicalPath as string, name:item.name as string,
-      source:item.source as ExternalFileSource, openedAt:item.openedAt as string};
-  };
+  const row = (value:unknown):ExternalRow => registrationRow(value);
 
   const request = async <M extends Method>(method:M, params:RequestParams<M>):Promise<RequestResult<M>> => {
     if (!fileReferenceMethods.has(method)) fail('desktop_files_forbidden');

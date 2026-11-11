@@ -465,7 +465,12 @@ function FileWorkspaceInstance({
         setBlame(undefined);
         setBlameOn(false);
         setView("file");
-        setOfficeFile({ path: externalPath.current ?? path, externalId: resolvedExternalId, key: ticket });
+        // Mounting runs `open` twice (the draft list and the `initialPath` effect). A new key
+        // remounts the sheet view, which opens the workbook again while the first open still
+        // parses it: two readers or helpers for one tab. Keep the view unless it is a reload.
+        const officePath = externalPath.current ?? path;
+        setOfficeFile(current => current && !ignoreDraft && current.path === officePath && current.externalId === resolvedExternalId
+          ? current : { path: officePath, externalId: resolvedExternalId, key: ticket });
         setOpenPaths(paths => paths.includes(path) ? paths : [...paths, path]);
         setIssue(undefined);
         onDocumentChange?.({ path, dirty: false });

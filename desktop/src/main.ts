@@ -590,7 +590,9 @@ function registerIpc(): void {
     const runtime = runtimeFor(event);
     if (method === 'data.backup') await event.sender.session.flushStorageData();
     const requestParams = method === 'data.backup' ? { ...params as RequestParams<'data.backup'>, desktopDataRoot: app.getPath('userData') } : params;
-    return localFiles.request(machineBindings.get(event.sender.id).machineId, runtime, method, requestParams as RequestParams<Method>);
+    return localFiles.request(machineBindings.get(event.sender.id).machineId, runtime, method, requestParams as RequestParams<Method>,
+      // A sheet handle belongs to the window that opened it (`design.md` §3.4).
+      { owner: String(event.sender.id) });
   });
   ipcMain.handle('threadterm:qa-drop-control', (event) => {
     assertTrustedRenderer(event);
@@ -1115,6 +1117,8 @@ function bindMachineRenderer(contents: Electron.WebContents, machineId: string, 
   });
   contents.once('destroyed', () => {
     cancelPendingPairing(contents.id);
+    // A closed window takes its sheet readers with it (`design.md` §3.5, R5).
+    localFileBackend?.releaseOwner(String(contents.id));
     machineBindings.remove(contents.id);
     machineRenderers.delete(contents.id);
   });

@@ -398,6 +398,12 @@ if (!fast) {
   // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
   // The explicit --test-threads argument above still enforces the caller's concurrency limit.
   run('rust tests', repo, cargo, rustArgs, 3600000, { ...rustEnv, RUST_TEST_THREADS: undefined });
+
+  // Excel preview in main mode (task 11-10 step 3): the sheet core built for wasm32-unknown-unknown, then
+  // native-vs-wasm parity over every fixture (design.md §8). The parity half needs the 100 MiB fixtures under
+  // `%TEMP%/office-preview/fixtures`, which are scratch-only, so it prints a skip note where they are absent.
+  run('sheet wasm build', repo, process.execPath, [join(repo, 'scripts/build-sheet-wasm.mjs')], 1800000);
+  run('sheet wasm/native parity', repo, process.execPath, [join(repo, 'qa/sheet-parity.mjs'), '--allow-missing-fixtures'], 3600000);
 }
 
 // --- summary ------------------------------------------------------------------------------------------------------
