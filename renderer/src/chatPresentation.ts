@@ -29,7 +29,7 @@ export function formatChatDuration(ms: number, zh: boolean): string {
 
 export function shouldRenderPart(part: ChatPart): boolean {
   if (part.type === "usage") return false;
-  // Plan parts are shown by the pinned ChatPlanPanel, never inline.
+  // Plan parts are shown by the Chat overview card, never inline.
   if (part.type === "plan") return false;
   if (part.type === "text") return Boolean(part.text);
   if (part.type === "thinking") return Boolean(part.text) || part.status === "streaming";

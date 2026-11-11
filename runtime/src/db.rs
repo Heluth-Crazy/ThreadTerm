@@ -1,6 +1,6 @@
 use crate::domain::{
     ChatItem, ChatTurnOrigin, Project, Session, SessionCodeReview, SessionDelegation,
-    SessionForkedFrom, SessionOrganization, SessionOrganize, Settings, Snapshot,
+    SessionForkedFrom, SessionOpenTool, SessionOrganization, SessionOrganize, Settings, Snapshot,
 };
 use crate::session_activity::SessionActivity;
 use anyhow::{anyhow, Context, Result};
@@ -159,6 +159,18 @@ impl Database {
             .any(|name| name == "authority");
         if !has_authority {
             connection.execute("ALTER TABLE delegations ADD COLUMN authority TEXT", [])?;
+        }
+        // Quiet detection (R8): a sweep writes an episode's start and its end, so
+        // the snapshot can show a quiet delegate without polling per event.
+        // `quiet_since` is the last activity time, `quiet_tool` the open call.
+        let quiet_columns = connection
+            .prepare("PRAGMA table_info(delegations)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for column in ["quiet_since", "quiet_tool"] {
+            if !quiet_columns.iter().any(|name| name == column) {
+                connection.execute(&format!("ALTER TABLE delegations ADD COLUMN {column} TEXT"), [])?;
+            }
         }
         // F07: a delegation start that needs the user's explicit widening.
         connection.execute_batch(
@@ -2231,6 +2243,12 @@ impl Database {
                 "UPDATE sessions SET status='idle',exit_code=NULL,updated_at=? WHERE read_only=1 AND status<>'idle'",
                 [&timestamp],
             )?;
+            // R8: a quiet episode belongs to the runtime that observed it; the
+            // in-memory activity is gone, so no delegate stays quiet after a restart.
+            tx.execute(
+                "UPDATE delegations SET quiet_since=NULL,quiet_tool=NULL WHERE quiet_since IS NOT NULL",
+                [],
+            )?;
             Ok(())
         })
     }
@@ -2967,9 +2985,9 @@ const DELEGATION_OUTCOME_CHARS: usize = 280;
 const DELEGATION_OUTCOME_ITEM_BOUND: i64 = 32;
 
 fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDelegation>> {
-    let Some((delegation_id, parent_session_id, workspace, branch, state, user_messages, authority, turn_id, result, error)) =
+    let Some((delegation_id, parent_session_id, workspace, branch, state, user_messages, authority, turn_id, result, error, quiet_since, quiet_tool)) =
         conn.query_row(
-            "SELECT id,parent_session_id,workspace,branch,state,user_messages,authority,turn_id,result,error FROM delegations WHERE child_session_id=?",
+            "SELECT id,parent_session_id,workspace,branch,state,user_messages,authority,turn_id,result,error,quiet_since,quiet_tool FROM delegations WHERE child_session_id=?",
             [id],
             |row| {
                 Ok((
@@ -2983,6 +3001,8 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             },
         )
@@ -2991,6 +3011,9 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
         return Ok(None);
     };
     let outcome = delegation_outcome(conn, id, &state, turn_id.as_deref(), result.as_deref(), error.as_deref())?;
+    // R8: the sweep writes these two columns only while a delegate is quiet, so
+    // the renderer shows quiet exactly when the runtime found it (never inferred).
+    let open_tool = quiet_tool.as_deref().and_then(|raw| serde_json::from_str::<SessionOpenTool>(raw).ok());
     Ok(Some(SessionDelegation {
         id: delegation_id,
         parent_session_id,
@@ -3000,6 +3023,8 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
         user_messages,
         authority,
         outcome,
+        last_activity_at: quiet_since,
+        open_tool,
     }))
 }
 

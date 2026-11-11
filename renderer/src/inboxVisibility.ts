@@ -5,11 +5,13 @@ export function isActionableInboxItem(item: { read: boolean; kind: string }): bo
 export function inboxEventGroup(kind: string): string {
   if (kind === "error") return "failed";
   if (kind === "completed" || kind === "reply") return "review";
-  if (kind === "attention") return "waiting";
+  // A quiet delegate needs a decision (check, wait or stop), so it sits with Input.
+  if (kind === "attention" || kind === "quiet") return "waiting";
   return kind;
 }
 
 export function inboxKindLabel(kind: string, zh: boolean): string {
+  if (kind === "quiet") return zh ? "无活动" : "No activity";
   const group = inboxEventGroup(kind);
   if (group === "approval") return zh ? "待确认" : "Approval";
   if (group === "waiting") return zh ? "待输入" : "Input";

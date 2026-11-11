@@ -47,11 +47,6 @@ export function latestPlan(items: readonly ChatItem[]): ChatPlanState | undefine
   return undefined;
 }
 
-/** Loaded plans stay closed; a later live update opens even if its turn has just ended. */
-export function shouldAutoOpenPlan(plan: ChatPlanState | undefined, previous: ChatPlanState | undefined, alreadyOpened: boolean, historyReady = true): boolean {
-  return Boolean(historyReady && !alreadyOpened && plan?.live && plan.part !== previous?.part);
-}
-
 export function planProgress(entries: readonly ChatPlanEntry[]): { done: number; total: number } {
   return { done: entries.filter(entry => entry.status === 'completed').length, total: entries.length };
 }

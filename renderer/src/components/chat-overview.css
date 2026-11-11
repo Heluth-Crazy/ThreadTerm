@@ -1,0 +1,67 @@
+/* Chat overview (ChatOverview.tsx): the docked card and the header button/popover. */
+.chat-overview-header { position:relative; display:inline-flex; align-items:center; }
+.chat-overview-button { display:inline-flex; align-items:center; gap:7px; height:30px; padding:0 10px 0 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--soft); color:var(--text); font:inherit; font-size:12px; cursor:pointer; }
+.chat-overview-button:hover { background:var(--raised); }
+.chat-overview-button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.chat-overview-button.open { border-color:var(--primary); }
+.chat-overview-stack { display:inline-flex; align-items:center; }
+.chat-overview-stack > * { width:16px; height:16px; margin-left:-4px; border-radius:4px; background:var(--surface); box-shadow:0 0 0 1.5px var(--surface); }
+.chat-overview-stack > *:first-child { margin-left:0; }
+.chat-overview-stack > .ico { color:var(--muted); }
+.chat-overview-button-label { white-space:nowrap; }
+.chat-overview-badge { min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--st-needs, #e2b340); color:var(--bg); font-size:10px; font-weight:700; display:grid; place-items:center; }
+.chat-overview-popover { position:absolute; top:calc(100% + 6px); right:0; z-index:40; width:300px; max-height:min(56vh, 520px); overflow:auto; border-radius:14px; }
+.chat-overview-dock { position:absolute; top:16px; right:18px; bottom:16px; z-index:5; width:280px; display:flex; align-items:flex-start; pointer-events:none; }
+.chat-overview-dock > * { pointer-events:auto; }
+.chat-overview-card { position:relative; width:280px; max-height:100%; overflow:auto; padding:6px 0; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow-soft, 0 12px 32px rgba(0, 0, 0, .35)); font-size:13px; }
+.chat-overview-popover .chat-overview-card { width:100%; max-height:none; }
+.chat-overview-dock .chat-overview-card { box-shadow:none; }
+.chat-overview-section { position:relative; padding:6px 14px; }
+.chat-overview-section + .chat-overview-section { border-top:1px solid var(--border); }
+.chat-overview-section-head { display:flex; align-items:center; gap:6px; min-height:18px; color:var(--muted); font-size:12px; }
+.chat-overview-count { margin-left:auto; color:var(--faint); font-size:11px; white-space:nowrap; }
+.chat-overview-card.is-docked .chat-overview-section:first-of-type .chat-overview-section-head { padding-right:22px; }
+/* Two classes: the prototype's .icon-btn sets position:relative and loads after component CSS. */
+.chat-overview-card .chat-overview-collapse { position:absolute; top:6px; right:8px; z-index:1; width:22px; height:22px; padding:0; display:grid; place-items:center; color:var(--faint); }
+.chat-overview-card .chat-overview-collapse:hover { color:var(--text); background:var(--soft); border-radius:6px; }
+.chat-overview-card .chat-overview-collapse .ico { width:14px; height:14px; }
+.chat-overview-row { display:flex; align-items:center; gap:8px; height:28px; margin:0 -8px; padding:0 8px; border-radius:7px; position:relative; }
+.chat-overview-row:hover, .chat-overview-row:focus-within { background:var(--soft); }
+.chat-overview-row.is-need { background:color-mix(in srgb, var(--st-needs, #e2b340) 9%, transparent); }
+.chat-overview-row-open { flex:1; min-width:0; height:28px; display:flex; align-items:center; gap:8px; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.chat-overview-row-open:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; border-radius:7px; }
+.chat-overview-row-open > .brand-ico { flex:none; width:16px; height:16px; }
+.chat-overview-row-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-overview-state { flex:none; max-width:52%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:12px; }
+/* R6: the quiet sentence must read in full ("No activity for 18 min"), so it
+   takes a little more room and sits one point smaller than "Running · 38 min". */
+.chat-overview-state.is-quiet { max-width:58%; font-size:11px; }
+.chat-overview-state.is-need, .chat-overview-state.is-quiet { color:var(--st-needs, #e2b340); }
+.chat-overview-state.is-fail, .chat-overview-state.is-error { color:var(--st-failed, #e5675f); }
+.chat-overview-state.is-run { color:var(--text); }
+.chat-overview-state.is-done { color:var(--faint); }
+.chat-overview-open-hint { display:none; flex:none; color:var(--muted); font-size:12px; }
+.chat-overview-row:hover .chat-overview-state:not(.is-error), .chat-overview-row:focus-within .chat-overview-state:not(.is-error) { display:none; }
+.chat-overview-row:hover .chat-overview-open-hint, .chat-overview-row:focus-within .chat-overview-open-hint { display:inline; }
+.chat-overview-stop { visibility:hidden; flex:none; height:20px; padding:0 6px; border:0; border-radius:5px; background:var(--raised); color:var(--st-failed, #e5675f); font:inherit; font-size:11px; cursor:pointer; }
+.chat-overview-row:hover .chat-overview-stop, .chat-overview-row:focus-within .chat-overview-stop { visibility:visible; }
+.chat-overview-stop:disabled { cursor:default; color:var(--muted); }
+.chat-overview-fold { display:flex; align-items:center; height:28px; margin:0 -8px; padding:0 8px; border-radius:7px; color:var(--muted); }
+.chat-overview-fold:hover, .chat-overview-fold:focus-within { background:var(--soft); }
+.chat-overview-fold-button { flex:1; min-width:0; height:28px; display:flex; align-items:center; gap:6px; padding:0; border:0; background:none; color:inherit; font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+.chat-overview-fold-button .ico { flex:none; width:12px; height:12px; }
+.chat-overview-fold-failed { flex:none; color:var(--st-failed, #e5675f); font-size:12px; }
+.chat-overview-changes { display:flex; align-items:center; gap:8px; width:calc(100% + 16px); height:28px; margin:0 -8px; padding:0 8px; border:0; border-radius:7px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.chat-overview-changes:hover, .chat-overview-changes:focus-visible { background:var(--soft); }
+.chat-overview-changes-label { color:var(--muted); font-size:12px; }
+.chat-overview-changes-count { margin-left:auto; color:var(--muted); font-size:12px; }
+.chat-overview-changes .ico { flex:none; width:12px; height:12px; color:var(--faint); }
+.chat-overview-plan { display:flex; align-items:center; gap:8px; width:calc(100% + 16px); height:26px; margin:0 -8px; padding:0 8px; border:0; border-radius:7px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.chat-overview-plan:hover, .chat-overview-plan:focus-visible { background:var(--soft); }
+.chat-overview-plan-bar { flex:none; width:46px; height:4px; border-radius:999px; background:var(--border); overflow:hidden; }
+.chat-overview-plan-bar > i { display:block; height:100%; background:var(--primary); transition:width .2s ease; }
+.chat-overview-plan-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:12px; }
+.chat-overview-plan .ico { flex:none; width:12px; height:12px; color:var(--faint); }
+.chat-overview-plan-list { margin-top:2px; }
+.chat-overview-plan-list .chat-plan-list { margin-top:6px; }
+@media (prefers-reduced-motion: reduce) { .chat-overview-plan-bar > i { transition:none; } }

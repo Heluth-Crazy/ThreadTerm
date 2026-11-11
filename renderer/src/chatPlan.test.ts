@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatItem, ChatPart, ChatPlanData } from '@threadterm/protocol';
-import { latestPlan, planDataOf, planEntryLabel, planProgress, shouldAutoOpenPlan } from './chatPlan';
+import { latestPlan, planDataOf, planEntryLabel, planProgress } from './chatPlan';
 
 const copy = (en: string) => en;
 const planPart = (entries: unknown, explanation?: string): ChatPart => ({
@@ -65,20 +65,3 @@ test('empty plan snapshots clear the previous plan without revealing it again', 
   assert.equal(latestPlan([previous, item('malformed', [planPart('bad')])])?.itemId, 'old');
 });
 
-test('auto-open distinguishes initial history from subsequent live plan updates', () => {
-  const saved = latestPlan([item('saved', [planPart([{ content: 'Saved', status: 'pending' }])])])!;
-  assert.equal(shouldAutoOpenPlan(saved, undefined, false, false), false, 'saved rows have no turnOrigin but hydration must stay closed');
-  assert.equal(shouldAutoOpenPlan(saved, saved, false), false, 'initially loaded plan stays closed on reopen');
-  const updated = latestPlan([item('saved', [planPart([{ content: 'New live plan', status: 'pending' }])])])!;
-  assert.equal(shouldAutoOpenPlan(updated, saved, false), true);
-  assert.equal(shouldAutoOpenPlan(updated, undefined, false), true, 'a plan first appearing after load opens once');
-  assert.equal(shouldAutoOpenPlan(updated, saved, true), false, 'respect the user after opening once');
-  assert.equal(shouldAutoOpenPlan({ ...updated, live: false }, saved, false), false);
-});
-
-test('a post-load plan update auto-opens even when its turn has already completed', () => {
-  const saved = latestPlan([item('saved', [planPart([{ content: 'Saved', status: 'pending' }])])])!;
-  const completed = latestPlan([item('new', [planPart([{ content: 'New', status: 'completed' }])], { turnStatus: 'completed' })])!;
-  assert.equal(shouldAutoOpenPlan(completed, saved, false, true), true);
-  assert.equal(shouldAutoOpenPlan(completed, undefined, false, false), false, 'the same completed plan stays closed during initial hydration');
-});

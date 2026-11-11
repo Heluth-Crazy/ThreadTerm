@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Session, SessionDelegationState } from '@threadterm/protocol';
-import { attachedMessagesLabel, authorityLabel, wideningRequestLabel, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, delegationStateSummary, delegationStripVisible, nestedDelegateIds, withDelegates } from './delegation';
+import { attachedMessagesLabel, authorityLabel, wideningRequestLabel, delegationActive, delegationQuiet, delegationQuietLabel, delegationTool, delegationToolLabel, delegationStateLabel, delegationStateSummary, delegationStripVisible, nestedDelegateIds, quietMinutesText, withDelegates } from './delegation';
 
 const session = (id: string, createdAt: string, parent?: string, branch?: string): Session => ({
   id, title: id, provider: 'codex', mode: 'chat', status: 'running', createdAt, updatedAt: createdAt,
@@ -139,4 +139,31 @@ test("a delegate's fitted authority and a widening request are labelled in both 
   assert.match(english.detail, /Deny starts nothing/);
   assert.notEqual(chinese.title, english.title);
   assert.notEqual(chinese.detail, english.detail);
+});
+
+test('quiet comes from the runtime fields only, never from a local threshold', () => {
+  const running = delegate('q', 'running');
+  assert.equal(delegationQuiet(running), undefined);
+  // An old createdAt/updatedAt is not silence: the runtime knows the tool rule.
+  assert.equal(delegationQuiet(running), undefined);
+  const quiet: Session = { ...running, delegation: { ...running.delegation!, lastActivityAt: '2026-11-11T11:42:00Z' } };
+  assert.deepEqual(delegationQuiet(quiet), { since: '2026-11-11T11:42:00Z', tool: undefined });
+  const tool: Session = { ...quiet, delegation: { ...quiet.delegation!, openTool: { name: 'bash', since: '2026-11-11T10:58:00Z' } } };
+  assert.deepEqual(delegationQuiet(tool)?.tool, { name: 'bash', since: '2026-11-11T10:58:00Z' });
+  // `awaiting_*`, `cancelling` and terminal states are never quiet.
+  for (const state of ['awaiting_parent', 'awaiting_user', 'cancelling', 'cancel_failed', 'completed', 'failed', 'cancelled', 'interrupted'] as const) {
+    const other: Session = { ...quiet, delegation: { ...quiet.delegation!, state } };
+    assert.equal(delegationQuiet(other), undefined, state);
+  }
+  const starting: Session = { ...quiet, delegation: { ...quiet.delegation!, state: 'starting' } };
+  assert.equal(delegationQuiet(starting)?.since, '2026-11-11T11:42:00Z');
+});
+
+test('the quiet label names the silence in minutes, in both languages', () => {
+  const at = '2026-11-11T11:42:00Z', now = Date.parse('2026-11-11T12:00:00Z');
+  const en = (english: string) => english, zh = (_english: string, chinese: string) => chinese;
+  assert.equal(delegationQuietLabel(at, en, now), 'No activity for 18 min');
+  assert.equal(delegationQuietLabel(at, zh, now), '\u65e0\u6d3b\u52a8 18 \u5206\u949f');
+  assert.equal(delegationQuietLabel('2026-11-11T11:59:30Z', en, now), 'No activity for under 1 min');
+  assert.equal(quietMinutesText(3_601, en), '60 min');
 });

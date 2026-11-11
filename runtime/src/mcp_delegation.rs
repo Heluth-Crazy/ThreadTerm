@@ -1190,7 +1190,7 @@ checking.",
         ),
         tool(
             "delegate_wait",
-            "Wait up to timeoutSeconds (default 30, max 45) for your delegates (or the given ids) to change state; returns early on any change or as soon as one needs you. Call it repeatedly until every delegate is completed, failed, cancelled or interrupted. A delegate in awaiting_parent needs your decision: answer its pendingRequests with delegate_respond. Stay in your turn while delegates run; if your turn ends, their requests go to the user.",
+            "Wait up to timeoutSeconds (default 30, max 45) for your delegates (or the given ids) to change state; returns early on any change or as soon as one needs you. Call it repeatedly until every delegate is completed, failed, cancelled or interrupted. A delegate in awaiting_parent needs your decision: answer its pendingRequests with delegate_respond. A delegate can also go quiet (no activity for 10 min, or 60 min while one tool call stays open): it is then named in `quiet` and the hint says how long and what it is running. Stay in your turn while delegates run; if your turn ends, their requests go to the user.",
             json!({"type":"object","additionalProperties":false,"properties":{
                 "ids":{"type":"array","items":{"type":"string"}},
                 "timeoutSeconds":{"type":"integer","minimum":1,"maximum":MAX_WAIT_SECONDS}
@@ -1389,8 +1389,12 @@ async fn request(
     send(&mut client, caller, method, params).await
 }
 
-/// Per delegate: state plus the ids of requests waiting for the parent.
-fn summarize(status: &Value) -> BTreeMap<String, (String, Vec<String>)> {
+/// Per delegate: state, the ids of requests waiting for the parent, and whether
+/// it is quiet. Quiet is a stable flag: the runtime's `quietSeconds` grows while
+/// an episode lasts, and comparing it would end every wait at once.
+type Summary = BTreeMap<String, (String, Vec<String>, bool)>;
+
+fn summarize(status: &Value) -> Summary {
     status
         .get("delegates")
         .and_then(Value::as_array)
@@ -1415,37 +1419,90 @@ fn summarize(status: &Value) -> BTreeMap<String, (String, Vec<String>)> {
                         .map(str::to_owned)
                 })
                 .collect();
-            Some((id, (state, requests)))
+            let quiet = delegate.get("quietSeconds").and_then(Value::as_u64).is_some();
+            Some((id, (state, requests, quiet)))
         })
         .collect()
 }
 
 /// Nothing to wait for: some delegate needs the parent, or all are finished.
-fn needs_no_wait(summary: &BTreeMap<String, (String, Vec<String>)>) -> bool {
+fn needs_no_wait(summary: &Summary) -> bool {
     summary
         .values()
-        .any(|(state, requests)| state == "awaiting_parent" && !requests.is_empty())
+        .any(|(state, requests, _)| state == "awaiting_parent" && !requests.is_empty())
         || summary
             .values()
-            .all(|(state, _)| TERMINAL_STATES.contains(&state.as_str()))
+            .all(|(state, _, _)| TERMINAL_STATES.contains(&state.as_str()))
+}
+
+/// Delegates that changed since the wait began: state, pending requests or quiet.
+fn changed_delegates(baseline: &Summary, current: &Summary) -> Vec<String> {
+    current
+        .iter()
+        .filter(|(id, value)| baseline.get(*id) != Some(*value))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// R4: name the delegate, how long it has been silent, and what it is running.
+fn quiet_hint(status: &Value, quiet: &[String]) -> String {
+    let delegates = status.get("delegates").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut sentences = Vec::new();
+    for id in quiet {
+        let Some(delegate) = delegates
+            .iter()
+            .find(|delegate| delegate.get("delegationId").and_then(Value::as_str) == Some(id.as_str()))
+        else {
+            continue;
+        };
+        let title = delegate.get("title").and_then(Value::as_str).filter(|title| !title.is_empty()).unwrap_or(id.as_str());
+        let minutes = delegate.get("quietSeconds").and_then(Value::as_u64).unwrap_or(0) / 60;
+        let last = delegate
+            .pointer("/openTool/name")
+            .and_then(Value::as_str)
+            .map(|name| {
+                let running = delegate
+                    .pointer("/openTool/since")
+                    .and_then(Value::as_str)
+                    .and_then(|since| chrono::DateTime::parse_from_rfc3339(since).ok())
+                    .map(|since| (chrono::Utc::now() - since.with_timezone(&chrono::Utc)).num_seconds().max(0) / 60)
+                    .map(|minutes| format!(" for {minutes} min"))
+                    .unwrap_or_default();
+                format!(" (last: running `{name}`{running})")
+            })
+            .unwrap_or_default();
+        sentences.push(format!("{title} has had no activity for {minutes} min{last}"));
+    }
+    if sentences.len() == 1 {
+        format!("{}. Check it with delegate_status, keep waiting, or stop it with delegate_cancel.", sentences[0])
+    } else {
+        format!("{}. Check them with delegate_status, keep waiting, or stop them with delegate_cancel.", sentences.join("; "))
+    }
 }
 
 fn wait_result(status: Value, changed: Vec<String>, timed_out: bool, waited: Duration) -> Value {
     let summary = summarize(&status);
     let all_finished = summary
         .values()
-        .all(|(state, _)| TERMINAL_STATES.contains(&state.as_str()));
+        .all(|(state, _, _)| TERMINAL_STATES.contains(&state.as_str()));
     let needs_you = summary
         .iter()
-        .filter(|(_, (state, requests))| state == "awaiting_parent" && !requests.is_empty())
+        .filter(|(_, (state, requests, _))| state == "awaiting_parent" && !requests.is_empty())
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    let quiet = summary
+        .iter()
+        .filter(|(_, (_, _, quiet))| *quiet)
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
     let hint = if !needs_you.is_empty() {
-        "Some delegates are waiting for your decision: answer their pendingRequests with delegate_respond, then call delegate_wait again."
+        "Some delegates are waiting for your decision: answer their pendingRequests with delegate_respond, then call delegate_wait again.".to_owned()
+    } else if !quiet.is_empty() {
+        quiet_hint(&status, &quiet)
     } else if all_finished {
-        "All delegates have finished: read each answer with delegate_result."
+        "All delegates have finished: read each answer with delegate_result.".to_owned()
     } else {
-        "Delegates are still working: call delegate_wait again."
+        "Delegates are still working: call delegate_wait again.".to_owned()
     };
     json!({
         "changed": changed,
@@ -1453,6 +1510,7 @@ fn wait_result(status: Value, changed: Vec<String>, timed_out: bool, waited: Dur
         "waitedSeconds": waited.as_secs(),
         "allFinished": all_finished,
         "needsYou": needs_you,
+        "quiet": quiet,
         "hint": hint,
         "delegates": status.get("delegates").cloned().unwrap_or_else(|| json!([])),
     })
@@ -1495,11 +1553,7 @@ async fn wait(
         )
         .await?;
         let current = summarize(&status);
-        let changed: Vec<String> = current
-            .iter()
-            .filter(|(id, value)| baseline.get(*id) != Some(*value))
-            .map(|(id, _)| id.clone())
-            .collect();
+        let changed = changed_delegates(&baseline, &current);
         if !changed.is_empty() {
             return Ok(wait_result(status, changed, false, started.elapsed()));
         }
@@ -2665,6 +2719,7 @@ mod tests {
             Duration::from_secs(3),
         );
         assert_eq!(result["needsYou"], json!(["b"]));
+        assert_eq!(result["quiet"], json!([]));
         assert_eq!(result["allFinished"], false);
         assert!(result["hint"]
             .as_str()
@@ -2672,5 +2727,56 @@ mod tests {
             .contains("delegate_respond"));
         let content = tool_content(Err(failure("delegation_nested", "delegation_nested")));
         assert_eq!(content["isError"], true);
+    }
+
+    /// R4: the hint names the delegate, how long it has been silent and what it runs.
+    fn quiet_delegate(quiet_seconds: u64, open_tool: Option<(&str, u64)>) -> Value {
+        let mut delegate = json!({
+            "delegationId":"a",
+            "sessionId":"c",
+            "title":"Spike B: docx-preview sandbox",
+            "state":"running",
+            "pendingRequests":[],
+            "quietSeconds": quiet_seconds,
+            "lastActivityAt": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Some((name, minutes)) = open_tool {
+            delegate["openTool"] = json!({
+                "name": name,
+                "since": (chrono::Utc::now() - chrono::Duration::minutes(minutes as i64)).to_rfc3339(),
+            });
+        }
+        json!({"delegates":[delegate]})
+    }
+
+    #[test]
+    fn a_quiet_delegate_is_named_with_what_it_is_running() {
+        let result = wait_result(quiet_delegate(720, Some(("bash", 62))), vec!["a".into()], false, Duration::from_secs(3));
+        assert_eq!(result["quiet"], json!(["a"]));
+        let hint = result["hint"].as_str().unwrap();
+        assert!(
+            hint.contains("Spike B: docx-preview sandbox has had no activity for 12 min (last: running `bash` for 62 min)."),
+            "{hint}"
+        );
+        assert!(hint.contains("Check it with delegate_status, keep waiting, or stop it with delegate_cancel."));
+        // Without an open call there is nothing to name after "last".
+        let idle = wait_result(quiet_delegate(660, None), Vec::new(), false, Duration::from_secs(3));
+        assert_eq!(idle["hint"], json!("Spike B: docx-preview sandbox has had no activity for 11 min. Check it with delegate_status, keep waiting, or stop it with delegate_cancel."));
+    }
+
+    #[test]
+    fn a_wait_ends_once_per_quiet_episode_and_again_after_activity() {
+        // AC2: the summary's quiet flag is stable while `quietSeconds` grows, so a
+        // second poll of the same episode is not a change.
+        let running = summarize(&json!({"delegates":[{"delegationId":"a","state":"running","pendingRequests":[]}]}));
+        let quiet = summarize(&json!({"delegates":[{"delegationId":"a","state":"running","pendingRequests":[],"quietSeconds":600}]}));
+        let still = summarize(&json!({"delegates":[{"delegationId":"a","state":"running","pendingRequests":[],"quietSeconds":900}]}));
+        let active = summarize(&json!({"delegates":[{"delegationId":"a","state":"running","pendingRequests":[]}]}));
+        let again = summarize(&json!({"delegates":[{"delegationId":"a","state":"running","pendingRequests":[],"quietSeconds":610}]}));
+        assert_eq!(changed_delegates(&running, &quiet), vec!["a"]);
+        assert!(changed_delegates(&quiet, &still).is_empty(), "the same episode must not end another wait");
+        assert!(!needs_no_wait(&quiet), "quiet is not a reason to stop waiting");
+        assert_eq!(changed_delegates(&still, &active), vec!["a"]);
+        assert_eq!(changed_delegates(&active, &again), vec!["a"]);
     }
 }

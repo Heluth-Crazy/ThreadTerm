@@ -37,7 +37,7 @@ try {
   app = await electron.launch({ args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox', join(scratch, 'main.cjs')], env }); page = await app.firstWindow(); page.setDefaultTimeout(10_000);
   await page.waitForFunction(()=>window.qaRender);await renderLane5Fixture(page,'.lane5-nav-fixture','en','ready');
   const nav = page.locator('.chat-message-navigation'); await nav.waitFor();
-  assert.match(await nav.innerText(), /Messages 205/, 'the trigger reports all user messages');
+  assert.match(await nav.getByRole('button').first().getAttribute('aria-label'), /Messages 205/, 'the trigger reports all user messages');
   await nav.getByRole('button').first().click(); const menu = page.locator('.chat-message-popover'); await menu.waitFor();
   assert.ok(await menu.locator('[role="button"],button').count() < 80, 'more than 200 messages are virtualized');
   await page.keyboard.press('Escape'); await menu.waitFor({state:'detached'}); assert.equal(await menu.count(), 0, 'Escape closes the popover');
@@ -49,7 +49,7 @@ try {
     await app.evaluate(({BrowserWindow},value)=>BrowserWindow.getAllWindows()[0].setContentSize(value,900),width);await waitForLane5Fixture(page,'.lane5-nav-fixture',revision,width); await nav.waitFor(); await nav.getByRole('button').first().click();await menu.waitFor();assert.ok(await menu.locator('button').count()>0,'matrix captures the open message list'); await check(`${theme}/${locale}/${width}`); await shot(`navigation-${theme}-${locale}-${width}.png`); await page.keyboard.press('Escape'); await menu.waitFor({state:'detached'});
   }
   for(const state of ['empty','two']){await renderLane5Fixture(page,'.lane5-nav-fixture','en',state);assert.equal(await nav.count(),0,state==='two'?'two-user state has no navigation chip':'empty state has no navigation chip');}
-  await renderLane5Fixture(page,'.lane5-nav-fixture','en','three');await nav.waitFor();assert.match(await nav.innerText(),/Messages 3/,'exactly three user messages enable navigation');report.checks.push('zero/two omit the chip and exactly three enable it after committed renders');
+  await renderLane5Fixture(page,'.lane5-nav-fixture','en','three');await nav.waitFor();assert.match(await nav.getByRole('button').first().getAttribute('aria-label'),/Messages 3/,'exactly three user messages enable navigation');report.checks.push('zero/two omit the chip and exactly three enable it after committed renders');
   report.passed = true;
 } catch (error) { report.errors.push(error?.stack ?? String(error)); if (page) await shot('failure.png').catch(()=>{}); process.exitCode=1; }
 finally { if (app) await app.close().catch(()=>{}); await writeFile(join(out,'report.json'),JSON.stringify(report,null,2)); await rm(scratch,{recursive:true,force:true,maxRetries:5}).catch(()=>{}); }

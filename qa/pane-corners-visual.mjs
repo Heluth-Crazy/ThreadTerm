@@ -71,11 +71,11 @@ async function resizePane(target){
 // Panes, the inspector and side bars re-lay out over a few frames after a toggle; sample only a settled layout.
 async function layoutSettled(label){let previous='',stable=0;for(let frame=0;frame<120&&stable<3;frame++){const current=await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>done(JSON.stringify([...document.querySelectorAll('section.workspace-pane,aside,.wb-panel')].map(node=>{const rect=node.getBoundingClientRect();return [Math.round(rect.x),Math.round(rect.y),Math.round(rect.width),Math.round(rect.height)]}))))));stable=current===previous?stable+1:0;previous=current}assert.ok(stable>=3,`${label}: layout settles before corner sampling`)}
 async function domCorners(label,required='.pane-card'){await layoutSettled(label);
- const selectors='.pane-card,.app-shell,.sidebar,.delegation-strip,.delegate-card,.settings-panel,.inspector,.wb-panel,.history-rail,.dialog.sheet';
+ const selectors='.pane-card,.app-shell,.sidebar,.chat-overview-card,.settings-panel,.inspector,.wb-panel,.history-rail,.dialog.sheet';
  const records=await page.evaluate(({selectors,required})=>[...document.querySelectorAll(selectors)].map((node,index)=>{
   const rect=node.getBoundingClientRect(),style=getComputedStyle(node),hit=document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2);
   const workspaceSurface=node.matches('.pane-card,.inspector,.wb-panel');
-  const rounded=workspaceSurface||node.matches('.settings-panel,.delegate-card,.dialog.sheet')||node.matches('.history-rail:not(.history-rail-native)');
+  const rounded=workspaceSurface||node.matches('.settings-panel,.chat-overview-card,.dialog.sheet')||node.matches('.history-rail:not(.history-rail-native)');
   return{index,selector:node.className,required:node.matches(required),visible:style.visibility!=='hidden'&&style.display!=='none'&&rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0&&rect.right<=innerWidth+.5&&rect.bottom<=innerHeight+.5&&Boolean(hit&&node.contains(hit)),rounded,workspaceSurface,outerRight:rect.right>=innerWidth-.5,
    rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height,right:rect.right,bottom:rect.bottom},radii:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overflow:[style.overflowX,style.overflowY],borders:{top:parseFloat(style.borderTopWidth)||0,right:parseFloat(style.borderRightWidth)||0,bottom:parseFloat(style.borderBottomWidth)||0,left:parseFloat(style.borderLeftWidth)||0},hasTabStrip:Boolean(node.previousElementSibling?.matches('.workspace-tabbar.ws-strip')),borderColors:[style.borderTopColor,style.borderBottomColor],boxShadow:style.boxShadow};
  }),{selectors,required});
@@ -96,7 +96,7 @@ async function domCorners(label,required='.pane-card'){await layoutSettled(label
    assert.equal(record.boxShadow,'none',`${label}: ${record.selector} has no outer shadow`);
    assert.ok(record.radii.every(radius=>radius>0),`${label}: ${record.selector} keeps four rounded floating-panel corners`);
   }else assert.ok(record.radii.every(radius=>radius>0),`${label}: ${record.selector} retains four rounded corners`);
-  assert.ok(record.selector.includes('delegate-card')||record.overflow.every(value=>['hidden','clip'].includes(value)),`${label}: ${record.selector} clips its content`);
+  assert.ok(record.selector.includes('chat-overview-card')||record.overflow.every(value=>['hidden','clip'].includes(value)),`${label}: ${record.selector} clips its content`);
   // Isolate clipping from a card's decorative shadow without changing its geometry or radius.
   const saved=await page.evaluate(({selectors,index})=>{const node=document.querySelectorAll(selectors)[index],saved={};for(const key of ['visibility','box-shadow'])saved[key]=[node.style.getPropertyValue(key),node.style.getPropertyPriority(key)];node.style.setProperty('box-shadow','none','important');return saved},{selectors,index:record.index});
   let original,underlay;

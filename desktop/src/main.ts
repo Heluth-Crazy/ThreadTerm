@@ -351,7 +351,7 @@ async function notifyTerminalCompletion(event: RuntimeEvent, source: WatchNotice
   await notifyNative(terminalNotificationKind(notice), locale => terminalNotificationCopy(notice, locale), machineNoticeOptions(source, completion.sessionId));
 }
 function stateChangeKind(value: unknown): string | undefined { return value && typeof value === 'object' && !Array.isArray(value) && typeof (value as Record<string, unknown>).kind === 'string' ? (value as Record<string, unknown>).kind as string : undefined; }
-function isInboxNotification(value: unknown): value is InboxNotice { const kind = stateChangeKind(value); return kind === 'approval' || kind === 'reply' || kind === 'error' || kind === 'waiting'; }
+function isInboxNotification(value: unknown): value is InboxNotice { const kind = stateChangeKind(value); return kind === 'approval' || kind === 'reply' || kind === 'error' || kind === 'waiting' || kind === 'quiet'; }
 function inboxNoticeFromEvent(value: InboxNotice): InboxNotice {
   return { kind: value.kind, sessionId: value.sessionId, title: value.title, provider: value.provider, providerName: value.providerName };
 }

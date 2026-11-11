@@ -1,5 +1,6 @@
 export type InboxNotice = {
-  kind: "approval" | "reply" | "error" | "waiting";
+  /** `quiet`: a delegate with no activity for a while (delegate quiet detection, R5). */
+  kind: "approval" | "reply" | "error" | "waiting" | "quiet";
   sessionId?: string;
   title?: string;
   provider?: string;
@@ -26,10 +27,12 @@ export function inboxNotificationCopy(value: InboxNotice, locale: NotificationLo
   const who = [provider, session].filter(Boolean).join(" · ");
   if (locale === "zh-CN") {
     const title = session || (value.kind === "reply" ? "ThreadTerm 有新回复" : "ThreadTerm 需要你处理");
+    if (value.kind === "quiet") return { title, body: who ? `${who}：已有一段时间没有活动。` : "一个委派的代理已有一段时间没有活动。" };
     const reason = value.kind === "approval" || value.kind === "waiting" ? "正在等待你的批准。" : value.kind === "reply" ? "有新的结构化回复。" : "提供方请求失败。";
     return { title, body: who ? `${who}：${reason}` : value.kind === "reply" ? "提供方的回复已就绪。" : value.kind === "error" ? "提供方请求失败。" : "提供方正在等待你的批准。" };
   }
   const title = session || (value.kind === "reply" ? "ThreadTerm reply ready" : "ThreadTerm needs attention");
+  if (value.kind === "quiet") return { title, body: who ? `${who} has had no activity for a while.` : "A delegated agent has had no activity for a while." };
   const reason = value.kind === "approval" || value.kind === "waiting"
     ? "is waiting for your approval."
     : value.kind === "reply"

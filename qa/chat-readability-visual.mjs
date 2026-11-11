@@ -20,7 +20,7 @@ import React from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { ToolActivity } from './renderer/src/components/ToolActivity';
-import { DelegationPanel } from './renderer/src/components/DelegationPanel';
+import { ChatOverview } from './renderer/src/components/ChatOverview';
 import './renderer/src/styles.css';
 
 const tool = (id, toolName, status, data) => ({ id: 'item-' + id, itemId: 'item-' + id, part: { type: 'tool', toolId: id, toolName, status, data } });
@@ -83,7 +83,7 @@ function Gallery({ open, extra }) {
   return <div className="qa-gallery">
     {Object.entries(delegateSets).map(([name, base]) => { const delegates = extra && name === 'finished' ? [...base, delegate('g6', 'claude', 'Claude: a new delegate', 'completed', { outcome: drawerOutcome })] : base; return <section key={name} data-qa={'delegation-' + name}>
       <h2>delegation: {name}</h2>
-      <div className="qa-chat-frame"><DelegationPanel session={parent} delegates={delegates} onOpenSession={() => {}} copy={en} zh={false} /></div>
+      <div className="qa-chat-frame"><ChatOverview session={parent} delegates={delegates} items={[]} copy={en} zh={false} docked onOpenSession={() => {}} /></div>
     </section>; })}
     {Object.entries(fixtures).map(([name, fixture]) => <section key={name} data-qa={'tools-' + name}>
       <h2>tools: {name}</h2>
@@ -101,7 +101,7 @@ window.qaRender();
 `;
 
 await build({ stdin: { contents: entry, resolveDir: root, loader: 'tsx' }, bundle: true, outfile: join(scratch, 'qa.js'), jsx: 'automatic', loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' }, logLevel: 'error' });
-await writeFile(join(scratch, 'index.html'), '<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body{margin:0;background:var(--bg,#fff);color:var(--text)} #root{padding:16px} .qa-gallery{display:grid;gap:18px;max-width:880px} .qa-gallery h2{margin:0 0 6px;font:600 11px/1.4 ui-monospace,monospace;color:var(--faint);text-transform:uppercase} .qa-log{display:block;height:auto;overflow:visible;padding:0} .qa-chat-frame{display:flex;flex-direction:column;border:1px dashed var(--border)}</style><div id="root"></div><script src="qa.js"></script>');
+await writeFile(join(scratch, 'index.html'), '<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>html,body{margin:0;background:var(--bg,#fff);color:var(--text)} #root{padding:16px} .qa-gallery{display:grid;gap:18px;max-width:880px} .qa-gallery h2{margin:0 0 6px;font:600 11px/1.4 ui-monospace,monospace;color:var(--faint);text-transform:uppercase} .qa-log{display:block;height:auto;overflow:visible;padding:0} .qa-chat-frame{position:relative;min-height:360px;display:flex;flex-direction:column;border:1px dashed var(--border)}</style><div id="root"></div><script src="qa.js"></script>');
 await writeFile(join(scratch, 'main.cjs'), `const{app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile'))});app.whenReady().then(()=>new BrowserWindow({width:1280,height:900,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}}).loadFile(${JSON.stringify(join(scratch, 'index.html'))}));`);
 
 const report = { passed: false, label, screenshots: [], overflow: [], errors: [] };
@@ -129,23 +129,19 @@ try {
       if (wide) report.overflow.push(file);
     }
   }
-  // Strip interactions (last: Hide is remembered for the rest of the page).
+  // Finished folding in the overview card (last: the remembered choice stays for the page).
   await page.evaluate(next => window.qaRender(next), { theme: 'light', open: false });
   const finished = page.locator('[data-qa="delegation-finished"]'), mixed = page.locator('[data-qa="delegation-mixed"]');
-  const toggle = finished.locator('.delegation-toggle');
-  assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'finished delegates start collapsed');
-  await toggle.click(); assert.equal(await finished.locator('.delegate-card').count(), 2, 'expand shows the cards');
-  await toggle.click(); assert.equal(await finished.locator('.delegate-card').count(), 0, 'collapse hides the cards');
-  assert.equal(await mixed.locator('.delegation-toggle').getAttribute('aria-expanded'), 'true', 'active delegates start expanded');
-  assert.equal(await mixed.locator('.delegation-hide').count(), 0, 'no Hide while a delegate runs');
-  await finished.locator('.delegation-hide').click();
-  assert.equal(await finished.locator('.delegation-strip').count(), 0, 'Hide removes the finished strip');
-  await page.evaluate(next => window.qaRender(next), { theme: 'light', open: false });
-  assert.equal(await finished.locator('.delegation-strip').count(), 0, 'Hide survives a re-render');
+  const fold = finished.locator('.chat-overview-fold-button');
+  assert.equal(await fold.getAttribute('aria-expanded'), 'false', 'finished delegates start folded');
+  await fold.click(); assert.equal(await finished.locator('.chat-overview-row').count(), 2, 'expanding shows the finished rows');
+  await fold.click(); assert.equal(await finished.locator('.chat-overview-row').count(), 0, 'folding hides the finished rows');
+  assert.equal(await mixed.locator('.chat-overview-row').count(), 1, 'active rows stay above the fold');
+  assert.equal(await mixed.locator('.chat-overview-fold-button').getAttribute('aria-expanded'), 'false', 'finished delegates stay folded in a mixed card');
   await page.evaluate(next => window.qaRender(next), { theme: 'light', open: false, extra: true });
-  assert.equal(await finished.locator('.delegation-strip').count(), 1, 'a new delegate brings the strip back');
+  assert.match(await finished.innerText(), /3 finished/, 'a new finished delegate updates the fold count');
   await finished.screenshot({ path: join(out, 'delegation-finished-new-delegate.png') });
-  report.checks = ['strip collapse/expand', 'no Hide while active', 'Hide + re-render', 'new delegate resurfaces'];
+  report.checks = ['finished fold expands/collapses', 'active rows stay above the fold', 'new finished delegate updates the fold'];
   assert.deepEqual(report.errors, [], 'no page errors');
   report.passed = true;
 } catch (error) {

@@ -24,6 +24,14 @@ test("notifications follow the app language: Chinese only when chosen, English b
   assert.deepEqual(error, { title: "ThreadTerm 需要你处理", body: "提供方请求失败。" });
 });
 
+test("a quiet delegate is never worded as waiting for approval", () => {
+  const english = inboxNotificationCopy({ kind: "quiet", title: "Spike B", provider: "pi" });
+  assert.deepEqual(english, { title: "Spike B", body: "Pi · Spike B has had no activity for a while." });
+  const chinese = inboxNotificationCopy({ kind: "quiet", title: "Spike B", provider: "pi" }, "zh-CN");
+  assert.deepEqual(chinese, { title: "Spike B", body: "Pi · Spike B：已有一段时间没有活动。" });
+  assert.doesNotMatch(inboxNotificationCopy({ kind: "quiet" }).body, /approval/);
+});
+
 test("English inbox copy is unchanged for existing callers", () => {
   assert.deepEqual(inboxNotificationCopy({ kind: "error", title: "Build", provider: "opencode" }), { title: "Build", body: "OpenCode · Build had a provider request fail." });
   assert.deepEqual(inboxNotificationCopy({ kind: "reply" }), { title: "ThreadTerm reply ready", body: "A provider reply is ready." });

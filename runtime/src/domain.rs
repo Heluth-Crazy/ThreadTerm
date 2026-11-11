@@ -101,6 +101,22 @@ pub struct SessionDelegation {
     /// terminal states, and only when there is text to show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// Quiet detection (R8): the delegate's last activity, present only while
+    /// the runtime reports it quiet. The renderer never infers quiet itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
+    /// The tool call an open quiet episode waits on, present only while one is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_tool: Option<SessionOpenTool>,
+}
+
+/// The still-open tool call of a quiet delegate (R8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOpenTool {
+    pub name: String,
+    /// RFC 3339, when the call started.
+    pub since: String,
 }
 
 /// Present on a Chat session participating in a group chat.

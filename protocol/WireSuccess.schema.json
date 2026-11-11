@@ -2392,6 +2392,25 @@
         },
         "outcome": {
           "type": "string"
+        },
+        "lastActivityAt": {
+          "type": "string"
+        },
+        "openTool": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "since": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "since"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
