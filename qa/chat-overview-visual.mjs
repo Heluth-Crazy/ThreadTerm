@@ -32,7 +32,7 @@ const session = (id, provider, title, state, minutes, extra = {}) => ({
 const parent = { id: 'parent', provider: 'codex', title: 'Office preview spike', mode: 'chat', status: 'running', createdAt: iso(120), updatedAt: iso(1), projectId: 'p' };
 const delegates = [
   session('need', 'codex', 'Review sheet core edge cases', 'awaiting_user', 50, { outcome: 'Needs a decision on the cell merge.' }),
-  session('quiet', 'pi', 'Spike B: docx-preview sandbox', 'running', 40, { quietSeconds: 1080 }),
+  session('quiet', 'pi', 'Spike B: docx-preview sandbox', 'running', 40, { lastActivityAt: iso(18) }),
   session('run', 'pi', 'Spike A+C: calamine in WebAssembly', 'running', 38),
   session('done1', 'claude', 'Update validation.md', 'completed', 70, { outcome: 'Merged to the spike branch.' }),
   session('done2', 'kimi', 'Check external-files spec', 'completed', 80),
@@ -137,6 +137,10 @@ try {
   const activeRows = dock.locator('.chat-overview-row');
   assert.equal(await activeRows.count(), 3, 'needs you, quiet and running above the fold');
   assert.match(await dock.innerText(), /No activity for 18 min/);
+  // R6: the sentence reads in full, not as "No activity for 1…".
+  const quietLabel = dock.locator('.chat-overview-row.is-quiet .delegate-quiet');
+  assert.equal(await quietLabel.count(), 1, 'the quiet row labels its silence');
+  assert.equal(await quietLabel.evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, 'the quiet label is not truncated');
   assert.match(await activeRows.filter({ hasText: 'Spike A+C' }).innerText(), /Running · 38 min/);
   assert.match(await dock.innerText(), /3 finished/);
   assert.match(await dock.innerText(), /1 failed/);
@@ -158,7 +162,7 @@ try {
 
   await render({ locale: 'zh-CN', theme: 'dark', docked: true });
   await dock.waitFor();
-  assert.match(await dock.innerText(), /18 分钟无活动/);
+  assert.match(await dock.innerText(), /无活动 18 分钟/);
   assert.match(await dock.innerText(), /3 个已结束/);
   assert.match(await dock.innerText(), /2\/5 · 当前：Build the overview card/);
   await shot('chat-overview-zh-dark-docked');

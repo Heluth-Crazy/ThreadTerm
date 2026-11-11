@@ -1,4 +1,5 @@
 import type { ChatItem, ChatPlanEntry, Session } from '@threadterm/protocol';
+import { delegationQuiet, delegationQuietLabel, quietMinutesText } from './delegation';
 import { latestPlan, planProgress } from './chatPlan';
 
 export type Copy = (en: string, zh: string) => string;
@@ -8,8 +9,6 @@ export const OVERVIEW_CARD_WIDTH = 280;
 export const OVERVIEW_COLUMN_WIDTH = 920;
 /** Room for the card, its right margin and the gap to the message column. */
 const OVERVIEW_GUTTER_MARGIN = 42;
-/** A running delegate without provider activity for this long counts as quiet. */
-export const OVERVIEW_QUIET_SECONDS = 600;
 export const OVERVIEW_FINISHED_OPEN_KEY = 'threadterm.chatOverview.finishedOpen.v1';
 export const OVERVIEW_COLLAPSED_KEY = 'threadterm.chatOverview.collapsed.v1';
 export const OVERVIEW_MAX_PARENTS = 200;
@@ -34,30 +33,14 @@ export type OverviewDelegateGroups = {
   failedFinished: number;
 };
 
-type DelegationActivity = { quietSeconds?: unknown; lastActivityAt?: unknown };
-
-function finiteSeconds(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
-}
-
 /**
- * The later quiet-detection task may attach `quietSeconds` or `lastActivityAt` to
- * `delegation`. Neither is in the protocol yet, so they are read structurally and
- * absent fields simply mean "not quiet".
+ * Seconds of silence the runtime reported, or `undefined` when it did not: the
+ * renderer shows quiet only when the runtime says so (R8).
  */
 export function delegateQuietSeconds(delegate: Session, now = Date.now()): number | undefined {
-  const delegation = delegate.delegation as (Session['delegation'] & DelegationActivity) | undefined;
-  if (!delegation) return undefined;
-  const explicit = finiteSeconds(delegation.quietSeconds);
-  if (explicit !== undefined) return explicit > 0 ? explicit : undefined;
-  if (typeof delegation.lastActivityAt === 'string') {
-    const at = Date.parse(delegation.lastActivityAt);
-    if (Number.isFinite(at)) {
-      const seconds = Math.max(0, Math.floor((now - at) / 1000));
-      if (seconds >= OVERVIEW_QUIET_SECONDS) return seconds;
-    }
-  }
-  return undefined;
+  const quiet = delegationQuiet(delegate);
+  if (!quiet) return undefined;
+  return Math.max(0, Math.floor((now - Date.parse(quiet.since)) / 1000));
 }
 
 const finishedStates = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
@@ -73,10 +56,13 @@ export function overviewDelegateGroups(delegates: readonly Session[], now = Date
     const state = delegate.delegation?.state;
     if (!state) continue;
     if (state === 'awaiting_user') groups.needs.push(delegate);
-    else if (state === 'running') (delegateQuietSeconds(delegate, now) !== undefined ? groups.quiet : groups.running).push(delegate);
+    else if (state === 'running' || state === 'starting') {
+      if (delegateQuietSeconds(delegate, now) !== undefined) groups.quiet.push(delegate);
+      else if (state === 'running') groups.running.push(delegate);
+      else groups.starting.push(delegate);
+    }
     else if (state === 'cancel_failed') groups.failedStop.push(delegate);
     else if (state === 'awaiting_parent' || state === 'cancelling') groups.running.push(delegate);
-    else if (state === 'starting') groups.starting.push(delegate);
     else if (finishedStates.has(state)) groups.finished.push(delegate);
   }
   groups.active = [...groups.needs, ...groups.quiet, ...groups.failedStop, ...groups.running, ...groups.starting];
@@ -88,9 +74,7 @@ export function overviewDelegateGroups(delegates: readonly Session[], now = Date
 export type OverviewTone = 'need' | 'quiet' | 'fail' | 'run' | 'done';
 
 function durationText(seconds: number, copy: Copy): string {
-  if (seconds < 60) return copy('under 1 min', '不到 1 分钟');
-  const minutes = Math.floor(seconds / 60);
-  return copy(`${minutes} min`, `${minutes} 分钟`);
+  return quietMinutesText(seconds, copy);
 }
 
 function elapsedSeconds(delegate: Session, now: number): number | undefined {
@@ -99,12 +83,16 @@ function elapsedSeconds(delegate: Session, now: number): number | undefined {
 }
 
 /** One row's state words; quiet replaces "Running · elapsed" when the runtime reports it. */
-export function overviewStateText(delegate: Session, copy: Copy, now = Date.now()): { text: string; tone: OverviewTone } {
+export function overviewStateText(delegate: Session, copy: Copy, now = Date.now()): { text: string; tone: OverviewTone; quietSince?: string } {
   const state = delegate.delegation?.state;
   if (state === 'awaiting_user') return { text: copy('Needs you', '待你处理'), tone: 'need' };
+  if (state === 'running' || state === 'starting') {
+    // R6: the row shows the runtime's quiet episode, and the minutes tick in
+    // `QuietMinutes` from `quietSince` (the card never re-renders the transcript).
+    const quiet = delegationQuiet(delegate);
+    if (quiet) return { text: delegationQuietLabel(quiet.since, copy, now), tone: 'quiet', quietSince: quiet.since };
+  }
   if (state === 'running') {
-    const quiet = delegateQuietSeconds(delegate, now);
-    if (quiet !== undefined) return { text: copy(`No activity for ${durationText(quiet, copy)}`, `已 ${durationText(quiet, copy)}无活动`), tone: 'quiet' };
     const elapsed = elapsedSeconds(delegate, now);
     return { text: elapsed === undefined ? copy('Running', '执行中') : copy(`Running · ${durationText(elapsed, copy)}`, `执行中 · ${durationText(elapsed, copy)}`), tone: 'run' };
   }

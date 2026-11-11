@@ -15,3 +15,10 @@ test("reply maps to review instead of the generic needs-attention fallback", () 
   assert.equal(inboxKindLabel("reply", true), "待复核");
   assert.equal(inboxKindLabel("approval", true), "待确认");
 });
+
+test("a quiet delegate is actionable, filed under Input and labelled as no activity", () => {
+  assert.equal(isActionableInboxItem({ read: false, kind: "quiet" }), true);
+  assert.equal(inboxEventGroup("quiet"), "waiting");
+  assert.equal(inboxKindLabel("quiet", false), "No activity");
+  assert.equal(inboxKindLabel("quiet", true), "无活动");
+});

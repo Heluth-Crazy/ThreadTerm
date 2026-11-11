@@ -16,15 +16,16 @@ use crate::{
     providers::{ChatToolServer, ProviderRuntime, Providers, ToolServerResolver},
 };
 use anyhow::{anyhow, Result};
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use rand::RngCore;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
 /// Agents whose MCP injection, tool calls and approval handling were verified
@@ -80,6 +81,14 @@ const ACTIVE_STATES: &str = "('starting','running','awaiting_parent','awaiting_u
 const STOP_REQUESTED_STATES: [&str; 2] = ["cancelling", "cancel_failed"];
 /// The delegate's runtime died mid-turn (startup reconciliation).
 pub(crate) const INTERRUPTED_REASON: &str = "The runtime stopped before the delegated turn finished";
+/// R2: with no tool call open, a live delegate is quiet after this long without
+/// a projected event of its bound turn.
+pub(crate) const QUIET_IDLE_SECS: i64 = 600;
+/// R2: an open tool call may legitimately stay silent for much longer (a real
+/// `npm run check`, a download, a pager), so its bar is higher.
+pub(crate) const QUIET_TOOL_SECS: i64 = 3600;
+/// R8: how often the sweep looks for delegates that became or stopped being quiet.
+pub(crate) const QUIET_SWEEP: Duration = Duration::from_secs(30);
 /// Error messages that are also the RPC error code the MCP host reports.
 pub const ERROR_CODES: [&str; 19] = [
     "delegation_unauthorized",
@@ -280,6 +289,260 @@ pub(crate) fn active_children(tx: &Transaction<'_>, parent_session_id: &str) -> 
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+// ---- quiet activity (R1, R2, R8) --------------------------------------------
+
+/// A tool call of the delegated turn that started and has not finished.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenTool {
+    pub name: String,
+    /// Unix seconds the call started.
+    pub since: i64,
+}
+
+/// R1: what this runtime knows about one live delegate: the time of the last
+/// projected event of its bound turn and whether a tool call of that turn is
+/// still open. In memory only — never a column, never a write per event.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DelegateActivity {
+    /// Unix seconds of the last projected event of the link's bound turn.
+    pub last_activity: i64,
+    /// Open calls by native id; the earliest one explains a quiet tool run.
+    open_tools: BTreeMap<String, OpenTool>,
+}
+
+impl DelegateActivity {
+    /// The call that has been open longest, if any.
+    pub(crate) fn open_tool(&self) -> Option<&OpenTool> {
+        self.open_tools
+            .values()
+            .min_by(|left, right| left.since.cmp(&right.since).then_with(|| left.name.cmp(&right.name)))
+    }
+
+    /// R2: seconds without an event, and only while the state machine does not
+    /// already explain the silence. `awaiting_parent`, `awaiting_user`,
+    /// `cancelling` and every terminal state are never quiet.
+    pub(crate) fn quiet_seconds(&self, state: &str, now: i64) -> Option<i64> {
+        if !matches!(state, "starting" | "running") || self.last_activity <= 0 {
+            return None;
+        }
+        let threshold = if self.open_tools.is_empty() { QUIET_IDLE_SECS } else { QUIET_TOOL_SECS };
+        let silent = now - self.last_activity;
+        (silent >= threshold).then_some(silent)
+    }
+}
+
+fn activity_store() -> &'static Mutex<HashMap<String, DelegateActivity>> {
+    static STORE: OnceLock<Mutex<HashMap<String, DelegateActivity>>> = OnceLock::new();
+    STORE.get_or_init(Default::default)
+}
+
+/// The one clock the tracker and the sweep read. Rules take `now` as a
+/// parameter, so tests drive it instead of sleeping.
+pub(crate) fn now_seconds() -> i64 {
+    Utc::now().timestamp()
+}
+
+pub(crate) fn rfc3339(seconds: i64) -> String {
+    Utc.timestamp_opt(seconds, 0).single().unwrap_or_else(Utc::now).to_rfc3339()
+}
+
+pub(crate) fn activity_of(delegation_id: &str) -> Option<DelegateActivity> {
+    activity_store().lock().ok()?.get(delegation_id).cloned()
+}
+
+fn forget_activity(delegation_id: &str) {
+    if let Ok(mut store) = activity_store().lock() {
+        store.remove(delegation_id);
+    }
+}
+
+/// R1: a link starts its clock with the row, so a delegate that never produces
+/// an event at all can still be seen to go quiet.
+pub(crate) fn note_start(delegation_id: &str, now: i64) {
+    if let Ok(mut store) = activity_store().lock() {
+        store.entry(delegation_id.to_owned()).or_insert(DelegateActivity { last_activity: now, open_tools: BTreeMap::new() });
+    }
+}
+
+/// R1: one projected event of a live delegate. Memory only: no row is written,
+/// so a streamed delta still costs nothing beyond the projection write it
+/// already had (AC5).
+pub(crate) fn note_event(link: &ChildLink, turn: Option<&str>, data: &Value, now: i64) {
+    // The link answers only for the turn it started (F08): an unrelated later
+    // turn must not refresh it, or a settled delegate would look busy forever.
+    if !same_turn(link, turn) {
+        return;
+    }
+    let Ok(mut store) = activity_store().lock() else { return };
+    let activity = store.entry(link.id.clone()).or_default();
+    activity.last_activity = now;
+    for (id, name, finished) in tool_parts(data) {
+        if finished {
+            activity.open_tools.remove(&id);
+        } else {
+            activity.open_tools.entry(id).or_insert(OpenTool { name, since: now });
+        }
+    }
+}
+
+/// The tool parts one projected event carries, as (native id, name, finished).
+fn tool_parts(data: &Value) -> Vec<(String, String, bool)> {
+    let mut found = Vec::new();
+    let parts = data.get("parts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    for part in data.get("part").into_iter().chain(parts) {
+        if part.get("type").and_then(Value::as_str) != Some("tool") {
+            continue;
+        }
+        let id = part
+            .get("toolId")
+            .or_else(|| part.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| part.get("toolName").and_then(Value::as_str))
+            .unwrap_or("tool")
+            .to_owned();
+        let name = part
+            .get("toolName")
+            .and_then(Value::as_str)
+            .or_else(|| part.pointer("/data/tool").and_then(Value::as_str))
+            .or_else(|| part.pointer("/data/name").and_then(Value::as_str))
+            .or_else(|| part.pointer("/data/title").and_then(Value::as_str))
+            .unwrap_or("tool")
+            .to_owned();
+        found.push((id, name, tool_finished(part)));
+    }
+    // `chat.item` without a part projects the raw native item as a tool card.
+    if let Some(raw) = data.get("item") {
+        let kind = raw.get("type").and_then(Value::as_str).unwrap_or("tool");
+        if !matches!(kind, "userMessage" | "agentMessage" | "assistant" | "message" | "plan" | "agentThought" | "reasoning" | "thinking") {
+            let id = raw.get("id").and_then(Value::as_str).unwrap_or(kind).to_owned();
+            let name = raw.get("name").and_then(Value::as_str).unwrap_or(kind).to_owned();
+            found.push((id, name, tool_finished(raw)));
+        }
+    }
+    found
+}
+
+/// The same status vocabulary the renderer reads (`toolView.toolStatus`):
+/// anything but a start marker means the call is over.
+fn tool_finished(part: &Value) -> bool {
+    let status = part
+        .get("status")
+        .or_else(|| part.pointer("/data/status"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let normalized = status.to_ascii_lowercase().replace(&[' ', '-', '_'][..], "");
+    !matches!(normalized.as_str(), "" | "running" | "pending" | "inprogress" | "streaming" | "executing")
+}
+
+/// R3: the activity fields of one delegate. `quietSeconds` only while quiet,
+/// `openTool` only while a call is open; absent fields mean "nothing to say".
+fn activity_fields(activity: Option<&DelegateActivity>, state: &str, now: i64) -> Map<String, Value> {
+    let mut fields = Map::new();
+    let Some(activity) = activity else { return fields };
+    fields.insert("lastActivityAt".into(), json!(rfc3339(activity.last_activity)));
+    if let Some(quiet) = activity.quiet_seconds(state, now) {
+        fields.insert("quietSeconds".into(), json!(quiet));
+    }
+    if let Some(tool) = activity.open_tool() {
+        fields.insert("openTool".into(), json!({"name": tool.name, "since": rfc3339(tool.since)}));
+    }
+    fields
+}
+
+/// One link the quiet sweep looks at: every live link, plus any link that still
+/// carries an episode that has to be cleared.
+struct QuietRow {
+    id: String,
+    parent: String,
+    child: String,
+    state: String,
+    quiet_since: Option<String>,
+}
+
+/// R8: writes only transitions — one row (plus one `state.changed`) when an
+/// episode starts and one when it ends, never one per event. `now` is a
+/// parameter so tests drive the clock.
+pub(crate) fn sweep_quiet(db: &Database, now: i64) -> Result<usize> {
+    let rows = db.transaction(|tx| {
+        let mut statement = tx.prepare(&format!(
+            "SELECT id,parent_session_id,child_session_id,state,quiet_since FROM delegations WHERE state IN {ACTIVE_STATES} OR quiet_since IS NOT NULL"
+        ))?;
+        let rows = statement.query_map([], |row| {
+            Ok(QuietRow {
+                id: row.get(0)?,
+                parent: row.get(1)?,
+                child: row.get(2)?,
+                state: row.get(3)?,
+                quiet_since: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    })?;
+    let at = rfc3339(now);
+    let mut transitions = 0;
+    for row in rows {
+        let activity = activity_of(&row.id);
+        let quiet = activity.as_ref().and_then(|activity| activity.quiet_seconds(&row.state, now));
+        match (quiet, row.quiet_since) {
+            (Some(seconds), None) => {
+                let since = activity.as_ref().map(|activity| rfc3339(activity.last_activity)).unwrap_or_else(|| rfc3339(now - seconds));
+                let tool = activity
+                    .as_ref()
+                    .and_then(DelegateActivity::open_tool)
+                    .map(|tool| json!({"name": tool.name, "since": rfc3339(tool.since)}));
+                let notice = format!("{}:quiet:{}", row.id, since);
+                let (id, parent, child) = (row.id.clone(), row.parent.clone(), row.child.clone());
+                db.transaction(|tx| {
+                    tx.execute("UPDATE delegations SET quiet_since=?,quiet_tool=? WHERE id=?", params![since, tool.as_ref().map(Value::to_string), id])?;
+                    tx.execute(
+                        "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
+                        params![serde_json::to_string(&json!({"kind":"delegation","sessionId":child}))?, at],
+                    )?;
+                    // R5: one notice per episode, and only when no parent agent
+                    // is inside a turn to handle it itself.
+                    if !parent_turn_active(tx, &parent)? {
+                        let data = json!({"delegationId": id, "quietSeconds": seconds, "openTool": tool});
+                        // Its own kind: `waiting` reads "is waiting for your approval" everywhere.
+                        crate::chat_projection::insert_attention(tx, &notice, &child, None, "quiet", &data, &at)?;
+                    }
+                    Ok(())
+                })?;
+                transitions += 1;
+            }
+            (None, Some(_)) => {
+                let (id, child) = (row.id.clone(), row.child.clone());
+                db.transaction(|tx| {
+                    tx.execute("UPDATE delegations SET quiet_since=NULL,quiet_tool=NULL WHERE id=?", [&id])?;
+                    tx.execute(
+                        "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
+                        params![serde_json::to_string(&json!({"kind":"delegation","sessionId":child}))?, at],
+                    )?;
+                    Ok(())
+                })?;
+                if !live(&row.state) {
+                    forget_activity(&row.id);
+                }
+                transitions += 1;
+            }
+            _ => {}
+        }
+    }
+    Ok(transitions)
+}
+
+/// R8: the sweep runs on its own thread, on the same clock as the rule.
+pub fn spawn_quiet_sweeper(db: Arc<Database>) {
+    std::thread::Builder::new()
+        .name("delegation-quiet".into())
+        .spawn(move || loop {
+            std::thread::sleep(QUIET_SWEEP);
+            if let Err(error) = sweep_quiet(&db, now_seconds()) {
+                eprintln!("delegation quiet sweep failed: {error}");
+            }
+        })
+        .ok();
+}
+
 /// A turn is running while the session is live and its activity says so; a
 /// terminal session and an idle one have nothing left to stop.
 fn turn_active(tx: &Transaction<'_>, session_id: &str) -> Result<bool> {
@@ -318,6 +581,11 @@ pub(crate) fn set_state(
         params![state, result, error, Utc::now().to_rfc3339(), delegation_id, state, result, error],
     )?;
     if changed > 0 {
+        // R1: a settled link keeps no activity; a quiet episode it left open is
+        // closed by the sweep, which still sees the row.
+        if !live(state) {
+            forget_activity(delegation_id);
+        }
         let child: String =
             tx.query_row("SELECT child_session_id FROM delegations WHERE id=?", [delegation_id], |row| row.get(0))?;
         tx.execute(
@@ -332,6 +600,9 @@ pub(crate) fn set_state(
 /// events inside the projection transaction. Only the delegated turn counts:
 /// terminal states are final, so later turns the user sends change nothing.
 pub(crate) fn project_child_event(tx: &Transaction<'_>, link: &ChildLink, turn: Option<&str>, kind: &str, data: &Value) -> Result<()> {
+    // R1: every projected event of the bound turn is activity; memory only, so
+    // no new row is written per event (AC5).
+    note_event(link, turn, data, now_seconds());
     // The link answers for the turn it started (F08): an unrelated later turn
     // of the same child session cannot settle it.
     if !same_turn(link, turn) {
@@ -462,7 +733,10 @@ pub(crate) fn insert(db: &Database, row: &NewDelegation<'_>) -> Result<()> {
             params![serde_json::to_string(&json!({"kind":"delegation","sessionId":row.child_session_id}))?, now],
         )?;
         Ok(())
-    })
+    })?;
+    // R1: the quiet clock starts with the row, even if no event ever arrives.
+    note_start(row.id, now_seconds());
+    Ok(())
 }
 
 pub(crate) fn active_count(db: &Database, parent_session_id: &str) -> Result<i64> {
@@ -1209,13 +1483,15 @@ pub(crate) fn dispatch(
 }
 
 fn status(db: &Database, providers: &Providers, parent: &Session, ids: &[String]) -> Result<Value> {
+    let now = now_seconds();
     let delegates = rows(db, &parent.id)?
         .into_iter()
         .filter(|row| ids.is_empty() || ids.contains(&row.id) || ids.contains(&row.child))
         .map(|row| {
             let title = db.session_by_id(&row.child)?.map(|session| session.title).unwrap_or_default();
             let pending = if row.state == "awaiting_parent" { pending_requests(db, &row.child)? } else { Vec::new() };
-            Ok(json!({
+            let activity = activity_fields(activity_of(&row.id).as_ref(), &row.state, now);
+            let mut delegate = json!({
                 "delegationId": row.id,
                 "sessionId": row.child,
                 "agent": row.agent,
@@ -1229,7 +1505,13 @@ fn status(db: &Database, providers: &Providers, parent: &Session, ids: &[String]
                 "error": row.error,
                 "createdAt": row.created_at,
                 "updatedAt": row.updated_at,
-            }))
+            });
+            // R3: `lastActivityAt` always, `quietSeconds` only while quiet,
+            // `openTool` only while a call is open.
+            for (key, value) in activity {
+                delegate[key] = value;
+            }
+            Ok(delegate)
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(json!({"delegates": delegates, "availableAgents": available_agents(providers), "maxActive": MAX_ACTIVE_DELEGATES}))
@@ -1509,5 +1791,193 @@ mod tests {
         // Every line stays inside the quote, blank lines included.
         assert!(text.contains("> short\n> \n> second paragraph\n"));
         assert!(words.iter().map(|word| word.chars().count()).sum::<usize>() <= MAX_USER_WORDS_CHARS);
+    }
+
+    // ---- quiet detection (R1, R2, R8) --------------------------------------
+
+    fn link(id: &str, state: &str, turn: Option<&str>) -> ChildLink {
+        ChildLink {
+            id: id.into(),
+            parent_session_id: "parent".into(),
+            state: state.into(),
+            turn_id: turn.map(str::to_owned),
+        }
+    }
+
+    fn activity(last_activity: i64, tools: &[(&str, &str, i64)]) -> DelegateActivity {
+        let mut activity = DelegateActivity { last_activity, open_tools: BTreeMap::new() };
+        for (id, name, since) in tools {
+            activity.open_tools.insert((*id).to_owned(), OpenTool { name: (*name).to_owned(), since: *since });
+        }
+        activity
+    }
+
+    #[test]
+    fn quiet_starts_at_600_seconds_or_3600_with_an_open_tool() {
+        let idle = activity(1_000, &[]);
+        assert_eq!(idle.quiet_seconds("running", 1_599), None, "599 s is not quiet yet");
+        assert_eq!(idle.quiet_seconds("running", 1_600), Some(600));
+        assert_eq!(idle.quiet_seconds("starting", 1_600), Some(600));
+        // A tool that is still open may legitimately stay silent for an hour.
+        let tool = activity(1_000, &[("t1", "bash", 1_000)]);
+        assert_eq!(tool.quiet_seconds("running", 1_600), None);
+        assert_eq!(tool.quiet_seconds("running", 4_599), None);
+        assert_eq!(tool.quiet_seconds("running", 4_600), Some(3_600));
+        // The oldest open call is the one the hint names.
+        assert_eq!(tool.open_tool().map(|tool| tool.name.as_str()), Some("bash"));
+        let two = activity(1_000, &[("b", "rg", 1_100), ("a", "bash", 1_050)]);
+        assert_eq!(two.open_tool().map(|tool| tool.name.as_str()), Some("bash"));
+        // No event yet (a link that never reported) is never quiet.
+        assert_eq!(DelegateActivity::default().quiet_seconds("starting", 100_000), None);
+    }
+
+    #[test]
+    fn states_that_already_explain_silence_are_never_quiet() {
+        let activity = activity(1_000, &[("t1", "bash", 1_000)]);
+        for state in ["awaiting_parent", "awaiting_user", "cancelling", "cancel_failed", "completed", "failed", "cancelled", "interrupted"] {
+            assert_eq!(activity.quiet_seconds(state, 100_000), None, "{state} must never be quiet");
+        }
+    }
+
+    #[test]
+    fn an_event_clears_quiet_and_tracks_open_tools() {
+        let link = link("quiet-events", "running", Some("turn"));
+        forget_activity(&link.id);
+        note_event(&link, Some("turn"), &json!({"text":"start"}), 1_000);
+        let running = activity_of(&link.id).unwrap();
+        assert_eq!(running.quiet_seconds("running", 1_600), Some(600));
+        // A tool call starts: the 60-minute rule applies from now on.
+        note_event(&link, Some("turn"), &json!({"part":{"type":"tool","toolId":"t1","toolName":"bash","status":"running"}}), 1_601);
+        let reading = activity_of(&link.id).unwrap();
+        assert_eq!(reading.quiet_seconds("running", 1_602), None, "a new event clears quiet at once");
+        assert_eq!(reading.open_tool().map(|tool| (tool.name.as_str(), tool.since)), Some(("bash", 1_601)));
+        assert_eq!(reading.quiet_seconds("running", 1_601 + 3_599), None);
+        // The call finishing is activity too, and closes the call.
+        note_event(&link, Some("turn"), &json!({"part":{"type":"tool","toolId":"t1","status":"complete"}}), 2_000);
+        let finished = activity_of(&link.id).unwrap();
+        assert_eq!(finished.open_tool(), None);
+        assert_eq!(finished.last_activity, 2_000);
+        assert_eq!(finished.quiet_seconds("running", 2_600), Some(600));
+        forget_activity(&link.id);
+    }
+
+    #[test]
+    fn a_later_turn_of_the_same_child_does_not_refresh_a_bound_link() {
+        let bound = link("quiet-turn", "running", Some("bound"));
+        forget_activity(&bound.id);
+        note_event(&bound, Some("bound"), &json!({"text":"work"}), 1_000);
+        // The user sends the delegate a new instruction: that turn is not the link's.
+        note_event(&bound, Some("later"), &json!({"text":"another turn"}), 9_999);
+        note_event(&bound, None, &json!({"text":"unbound event"}), 9_999);
+        assert_eq!(activity_of(&bound.id).unwrap().last_activity, 1_000, "same_turn gates the quiet clock");
+        // A link that is still `starting` has no bound turn and accepts the first one.
+        let starting = link("quiet-starting", "starting", None);
+        note_event(&starting, Some("first"), &json!({"text":"go"}), 500);
+        assert_eq!(activity_of(&starting.id).unwrap().last_activity, 500);
+        forget_activity(&bound.id);
+        forget_activity(&starting.id);
+    }
+
+    #[test]
+    fn status_fields_carry_quiet_and_an_open_tool_only_while_they_apply() {
+        // Not quiet yet: last activity only.
+        let busy = activity_fields(Some(&activity(1_000, &[])), "running", 1_100);
+        assert!(busy.contains_key("lastActivityAt"));
+        assert!(!busy.contains_key("quietSeconds"));
+        assert!(!busy.contains_key("openTool"));
+        // Quiet with a tool open: both, and the tool's own start.
+        let quiet = activity_fields(Some(&activity(1_000, &[("t1", "bash", 1_100)])), "running", 4_700);
+        assert_eq!(quiet["quietSeconds"], json!(3_700));
+        assert_eq!(quiet["openTool"]["name"], json!("bash"));
+        assert_eq!(quiet["openTool"]["since"], json!(rfc3339(1_100)));
+        // An unexplained state says nothing about quiet.
+        let waiting = activity_fields(Some(&activity(1_000, &[])), "awaiting_user", 100_000);
+        assert!(!waiting.contains_key("quietSeconds"));
+        assert!(activity_fields(None, "running", 100_000).is_empty());
+    }
+
+    // ---- the sweep and the Inbox notice (R5, R8) ---------------------------
+
+    fn quiet_fixture(parent_watching: bool) -> (Database, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.keep().join("quiet.sqlite")).unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('p','Parent','codex','chat','running','now','now')", [])?;
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('c','Spike B','pi','chat','running','now','now')", [])?;
+            tx.execute("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,created_at,updated_at) VALUES ('d','p','c','pi','shared','C:/fixture',NULL,'work',0,'op','turn','running','now','now')", [])?;
+            if parent_watching {
+                // The parent is inside its own turn: it can answer, so it gets no notice.
+                tx.execute("INSERT INTO session_activity(session_id,state,revision,turn_id) VALUES ('p','running',1,'parent-turn')", [])?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        (db, "d".into())
+    }
+
+    fn quiet_count(db: &Database) -> i64 {
+        db.transaction(|tx| {
+            tx.query_row("SELECT COUNT(*) FROM inbox WHERE kind='quiet'", [], |row| row.get(0)).map_err(Into::into)
+        })
+        .unwrap()
+    }
+
+    fn episode(db: &Database) -> (Option<String>, Option<String>) {
+        db.transaction(|tx| {
+            tx.query_row("SELECT quiet_since,quiet_tool FROM delegations WHERE id='d'", [], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(Into::into)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn the_sweep_writes_one_episode_and_one_notice_when_no_agent_watches() {
+        let (db, id) = quiet_fixture(false);
+        let link = link(&id, "running", Some("turn"));
+        forget_activity(&id);
+        note_event(&link, Some("turn"), &json!({"text":"work"}), 1_000);
+        // 599 s of silence: nothing happens, and nothing is written.
+        assert_eq!(sweep_quiet(&db, 1_599).unwrap(), 0);
+        assert_eq!(episode(&db), (None, None));
+        assert_eq!(quiet_count(&db), 0);
+        // 600 s: one transition row and exactly one `waiting` notice.
+        assert_eq!(sweep_quiet(&db, 1_600).unwrap(), 1);
+        let (since, tool) = episode(&db);
+        assert_eq!(since.as_deref(), Some(rfc3339(1_000).as_str()));
+        assert_eq!(tool, None);
+        assert_eq!(quiet_count(&db), 1);
+        // The same episode never notifies (or writes) again, however long it lasts.
+        assert_eq!(sweep_quiet(&db, 1_601).unwrap(), 0);
+        assert_eq!(sweep_quiet(&db, 4_000).unwrap(), 0);
+        assert_eq!(quiet_count(&db), 1);
+        // An event ends the episode: the columns are cleared.
+        note_event(&link, Some("turn"), &json!({"text":"still here"}), 4_001);
+        assert_eq!(sweep_quiet(&db, 4_002).unwrap(), 1);
+        assert_eq!(episode(&db), (None, None));
+        assert_eq!(quiet_count(&db), 1);
+        // A second episode gets its own notice.
+        assert_eq!(sweep_quiet(&db, 4_001 + 600).unwrap(), 1);
+        assert_eq!(quiet_count(&db), 2);
+        // A settled link keeps no quiet episode.
+        db.transaction(|tx| set_state(tx, "d", "completed", None, None)).unwrap();
+        assert_eq!(sweep_quiet(&db, 9_999).unwrap(), 1);
+        assert_eq!(episode(&db), (None, None));
+        forget_activity(&id);
+    }
+
+    #[test]
+    fn a_watching_parent_agent_gets_the_episode_but_no_inbox_notice() {
+        let (db, id) = quiet_fixture(true);
+        let link = link(&id, "running", Some("turn"));
+        forget_activity(&id);
+        note_event(&link, Some("turn"), &json!({"part":{"type":"tool","toolId":"t1","toolName":"bash","status":"running"}}), 1_000);
+        // The 60-minute tool rule applies; the parent can still answer, so no notice.
+        assert_eq!(sweep_quiet(&db, 4_599).unwrap(), 0);
+        assert_eq!(sweep_quiet(&db, 4_600).unwrap(), 1);
+        assert_eq!(quiet_count(&db), 0, "a live parent turn handles it, so the user is not told");
+        let (since, tool) = episode(&db);
+        assert_eq!(since.as_deref(), Some(rfc3339(1_000).as_str()));
+        assert!(tool.unwrap_or_default().contains("bash"));
+        forget_activity(&id);
     }
 }

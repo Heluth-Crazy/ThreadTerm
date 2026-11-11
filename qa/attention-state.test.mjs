@@ -35,3 +35,10 @@ test("attention names the session and is not toasted on that session's view", ()
   assert.match(notice.detail, /结构化回复/);
   assert.equal(notice.action, "打开会话");
 });
+
+test("a quiet delegate's toast says it has had no activity, not that it waits for approval", () => {
+  const english = attentionNotice({ id: "d:quiet:1", sessionId: "s", kind: "quiet", title: "Spike B" }, "en");
+  assert.equal(english.detail, "has had no activity for a while.");
+  const chinese = attentionNotice({ id: "d:quiet:1", sessionId: "s", kind: "quiet", title: "Spike B" }, "zh-CN");
+  assert.equal(chinese.detail, "已有一段时间没有活动。");
+});

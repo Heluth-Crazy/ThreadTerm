@@ -32,7 +32,7 @@ test('docking needs the 280 px card, its margin and the gap beside the 920 px co
 test('rows follow needs you, quiet, failed-to-stop, running, starting and fold the rest', () => {
   const delegates = [
     delegate('done', 'completed'), delegate('start', 'starting'), delegate('cancel', 'cancelling'),
-    delegate('stopfail', 'cancel_failed', { quietSeconds: 900 }), delegate('quiet', 'running', { quietSeconds: 1080 }),
+    delegate('stopfail', 'cancel_failed', { lastActivityAt: '2026-11-11T11:45:00Z' }), delegate('quiet', 'running', { lastActivityAt: '2026-11-11T11:42:00Z' }),
     delegate('run', 'running'), delegate('wait', 'awaiting_parent'), delegate('need', 'awaiting_user'),
     delegate('failed', 'failed'), delegate('cancelled', 'cancelled'),
   ];
@@ -47,11 +47,18 @@ test('rows follow needs you, quiet, failed-to-stop, running, starting and fold t
 
 test('a running delegate is quiet only when the runtime says so', () => {
   assert.equal(delegateQuietSeconds(delegate('run', 'running'), now), undefined);
-  assert.equal(delegateQuietSeconds(delegate('q', 'running', { quietSeconds: 1080 }), now), 1080);
-  assert.equal(delegateQuietSeconds(delegate('q', 'running', { quietSeconds: 0 }), now), undefined);
+  // No `lastActivityAt` means no quiet episode, however long the session has been up.
+  assert.equal(delegateQuietSeconds(delegate('old', 'running', { updatedAt: '2026-11-11T09:00:00Z' }), now), undefined);
   assert.equal(delegateQuietSeconds(delegate('a', 'running', { lastActivityAt: '2026-11-11T11:42:00Z' }), now), 1080);
-  assert.equal(delegateQuietSeconds(delegate('a', 'running', { lastActivityAt: '2026-11-11T11:58:00Z' }), now), undefined, 'under ten minutes is still running');
-  assert.equal(overviewStateText(delegate('q', 'running', { quietSeconds: 1080 }), copy, now).text, 'No activity for 18 min');
+  assert.equal(delegateQuietSeconds(delegate('a', 'starting', { lastActivityAt: '2026-11-11T11:42:00Z' }), now), 1080);
+  // The runtime reports quiet for live states only, and the renderer keeps that rule.
+  for (const state of ['awaiting_user', 'awaiting_parent', 'cancelling', 'cancel_failed', 'completed', 'failed'] as const) {
+    assert.equal(delegateQuietSeconds(delegate('q', state, { lastActivityAt: '2026-11-11T11:42:00Z' }), now), undefined, state);
+  }
+  const quiet = overviewStateText(delegate('q', 'running', { lastActivityAt: '2026-11-11T11:42:00Z' }), copy, now);
+  assert.equal(quiet.text, 'No activity for 18 min');
+  assert.equal(quiet.tone, 'quiet');
+  assert.equal(quiet.quietSince, '2026-11-11T11:42:00Z', 'the row ticks its own minutes from this');
   assert.equal(overviewStateText(delegate('run', 'running'), copy, now).text, 'Running · 38 min');
   assert.equal(overviewStateText(delegate('need', 'awaiting_user'), copy, now).text, 'Needs you');
 });

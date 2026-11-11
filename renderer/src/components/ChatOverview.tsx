@@ -9,6 +9,7 @@ import {
 } from '../chatOverview';
 import { planEntryLabel, planPriorityLabel } from '../chatPlan';
 import { AgentIcon, Icon } from './PrototypeIcon';
+import { QuietMinutes } from './QuietMinutes';
 import { SurfaceActions } from './SessionSurfaceContext';
 import './chat-plan.css';
 import './chat-overview.css';
@@ -205,7 +206,9 @@ function OverviewDelegateRow({ delegate, copy, zh, now, onOpen }: {
     <button type="button" className="chat-overview-row-open" title={title} aria-label={copy(`Open ${delegate.title}, ${status.text}`, `打开 ${delegate.title}，${status.text}`)} onClick={() => onOpen?.(delegate.id)}>
       <AgentIcon provider={delegate.provider} size={16} />
       <span className="chat-overview-row-title">{delegate.title}</span>
-      <span className={`chat-overview-state is-${status.tone}${issue ? ' is-error' : ''}`} role={issue ? 'alert' : undefined} title={issue ?? status.text}>{issue ? copy('Stop failed', '停止失败') : status.text}</span>
+      <span className={`chat-overview-state is-${status.tone}${issue ? ' is-error' : ''}`} role={issue ? 'alert' : undefined} title={issue ?? status.text}>
+        {issue ? copy('Stop failed', '停止失败') : status.quietSince ? <QuietMinutes since={status.quietSince} copy={copy} /> : status.text}
+      </span>
       <span className="chat-overview-open-hint">{copy('Open', '打开')}</span>
     </button>
     {delegationActive(state) && <button type="button" className="chat-overview-stop" disabled={stopping} onClick={stop}>{stopping ? copy('Stopping…', '停止中…') : copy('Stop', '停止')}</button>}

@@ -44,7 +44,9 @@ export function attentionNotice(
   const zh = locale === "zh-CN";
   const heading = session?.title?.trim() || attention.title?.trim() || (zh ? "未命名会话" : "Untitled session");
   const provider = providerLabel(session?.provider || attention.provider, capabilities);
-  const reason = attention.kind === "reply"
+  const reason = attention.kind === "quiet"
+    ? (zh ? "已有一段时间没有活动。" : "has had no activity for a while.")
+    : attention.kind === "reply"
     ? (zh ? "有新的结构化回复，需要你查看。" : "has a new structured reply.")
     : attention.kind === "approval" || attention.kind === "waiting"
       ? (zh ? "正在等待你的批准。" : "is waiting for your approval.")

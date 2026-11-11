@@ -42,7 +42,9 @@ fn emit_attention_notice(
     Ok(())
 }
 
-fn insert_attention(
+/// One Inbox notice of `kind`. It is emitted once per `id`; the quiet sweep
+/// reuses it for R5, so an episode cannot notify the user twice.
+pub(crate) fn insert_attention(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
     session_id: &str,
@@ -1857,6 +1859,43 @@ mod tests {
         let db = Database::open(&path).unwrap();
         db.transaction(|tx| { tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('s','test','codex','chat','idle','now','now')",[])?; Ok(()) }).unwrap();
         db
+    }
+    fn delegated_db() -> Database {
+        let db = db();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('parent','Parent','codex','chat','running','now','now')", [])?;
+            tx.execute("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,created_at,updated_at) VALUES ('d','parent','s','claude','shared','C:/fixture',NULL,'work',0,'op','turn','running','now','now')", [])?;
+            Ok(())
+        })
+        .unwrap();
+        db
+    }
+    #[test]
+    fn a_delegates_streamed_events_write_no_quiet_episode() {
+        // AC5: the quiet tracker is memory only. A burst of deltas and tool updates
+        // leaves the delegation row and the Inbox untouched.
+        let db = delegated_db();
+        for _ in 0..20 {
+            record(&db, "s", Some("turn"), "chat.delta", &json!({"part":{"type":"text","text":"x"}})).unwrap();
+            record(&db, "s", Some("turn"), "chat.item", &json!({"merge":true,"part":{"type":"tool","toolId":"t1","toolName":"bash","status":"running"}})).unwrap();
+        }
+        let (since, tool, updated_at) = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT quiet_since,quiet_tool,updated_at FROM delegations WHERE id='d'",
+                    [],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!((since, tool), (None, None), "no quiet column is written per event");
+        assert_eq!(updated_at, "now", "the delegation row is never touched by an event");
+        let notices: i64 = db
+            .transaction(|tx| {
+                Ok(tx.query_row("SELECT COUNT(*) FROM inbox", [], |row| row.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(notices, 0, "the Inbox is written by the sweep, not by events");
     }
     #[test]
     fn native_title_updates_only_sessions_without_explicit_title_provenance() {

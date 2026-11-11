@@ -70,6 +70,8 @@ async fn run() -> Result<()> {
     service.start_retry_scheduler();
     service.start_terminal_agent_watcher();
     service.start_idle_sweeper();
+    // R8: a delegate that goes quiet is written once, and the user is told once.
+    threadterm_v3_runtime::delegation::spawn_quiet_sweeper(Arc::clone(&service.db));
     let result = transport::serve(Arc::clone(&service), credential).await;
     service.shutdown();
     result

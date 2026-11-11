@@ -54,6 +54,9 @@
 .project-catalog .delegate-fold-row[aria-expanded="true"] .chev { transform:rotate(0); }
 .project-catalog .delegate-chip { flex:none; display:inline-flex; align-items:center; gap:3px; margin-left:4px; padding:0 4px; border-radius:var(--radius); background:var(--soft); color:var(--muted); font-size:10px; line-height:16px; white-space:nowrap; }
 .project-catalog .delegate-chip .ico { width:11px; height:11px; }
+/* R6: a quiet delegate's minutes, in the warning colour the overview card uses. */
+.project-catalog .delegate-chip.is-quiet { background:transparent; padding:0; color:var(--st-needs); }
+.project-catalog .delegate-chip .delegate-quiet { flex:none; white-space:nowrap; }
 /* The leaf keeps its full width (flex-shrink 0: a shrinkable leaf lost ~0.1px to rounding at 125% and showed an
    ellipsis while it fit); it truncates only when it alone is wider than the row, leaving 2ch for the prefix. */
 .project-catalog .branch-split .branch-leaf { flex:0 0 auto; max-width:calc(100% - 2ch); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

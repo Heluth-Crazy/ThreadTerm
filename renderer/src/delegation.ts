@@ -33,6 +33,38 @@ export function delegationActive(state: SessionDelegationState): boolean {
     || state === 'cancelling' || state === 'cancel_failed';
 }
 
+/** The quiet episode the runtime reported for a delegate. */
+export type DelegationQuiet = { since: string; tool?: { name: string; since: string } };
+
+/**
+ * R8: quiet is what the runtime says. `delegation.lastActivityAt` is present only
+ * while a quiet episode is open, so the renderer never infers quiet from a
+ * timestamp itself: it does not know the 60-minute open-tool rule.
+ */
+export function delegationQuiet(delegate: Pick<Session, 'delegation'>): DelegationQuiet | undefined {
+  const delegation = delegate.delegation;
+  if (!delegation) return undefined;
+  const state = delegation.state;
+  if (state !== 'starting' && state !== 'running') return undefined;
+  const since = delegation.lastActivityAt;
+  if (!since || !Number.isFinite(Date.parse(since))) return undefined;
+  return { since, tool: delegation.openTool };
+}
+
+/** Minutes of silence; under a minute never reads as "0 min". */
+export function quietMinutesText(seconds: number, copy: (en: string, zh: string) => string): string {
+  if (seconds < 60) return copy('under 1 min', '不到 1 分钟');
+  const minutes = Math.floor(seconds / 60);
+  return copy(`${minutes} min`, `${minutes} 分钟`);
+}
+
+/** R6: "No activity for 12 min" / "无活动 12 分钟", from the runtime's `lastActivityAt`. */
+export function delegationQuietLabel(since: string, copy: (en: string, zh: string) => string, now = Date.now()): string {
+  const at = Date.parse(since);
+  const seconds = Number.isFinite(at) ? Math.max(0, Math.floor((now - at) / 1000)) : 0;
+  return copy(`No activity for ${quietMinutesText(seconds, copy)}`, `无活动 ${quietMinutesText(seconds, copy)}`);
+}
+
 export function delegationStateLabel(state: SessionDelegationState, zh: boolean): string {
   return zh
     ? ({ starting: '启动中', running: '执行中', awaiting_parent: '等待委派方', awaiting_user: '待你处理', cancelling: '停止中', cancel_failed: '停止失败', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' })[state]

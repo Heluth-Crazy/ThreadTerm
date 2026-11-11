@@ -33,6 +33,9 @@
 .chat-overview-row-open > .brand-ico { flex:none; width:16px; height:16px; }
 .chat-overview-row-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-overview-state { flex:none; max-width:52%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:12px; }
+/* R6: the quiet sentence must read in full ("No activity for 18 min"), so it
+   takes a little more room and sits one point smaller than "Running · 38 min". */
+.chat-overview-state.is-quiet { max-width:58%; font-size:11px; }
 .chat-overview-state.is-need, .chat-overview-state.is-quiet { color:var(--st-needs, #e2b340); }
 .chat-overview-state.is-fail, .chat-overview-state.is-error { color:var(--st-failed, #e5675f); }
 .chat-overview-state.is-run { color:var(--text); }
