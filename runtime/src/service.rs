@@ -1185,7 +1185,7 @@ impl RuntimeService {
         let Some(native_id) = session.native_id.as_deref() else { return complete_empty() };
         if session.provider != "codex" || session.mode != "chat" || session.read_only
             || !(session.status == "idle" || session.released)
-            || self.release_refusal(&session)?.is_some()
+            || self.history_refresh_refusal(&session)?.is_some()
         {
             return complete_empty();
         }
@@ -1208,7 +1208,7 @@ impl RuntimeService {
         let revision = |session: &Session| session.activity.as_ref().map(|activity| activity.revision);
         if current.native_id != session.native_id || current.status != session.status
             || current.released != session.released || current.read_only
-            || revision(&current) != revision(&session) || self.release_refusal(&current)?.is_some()
+            || revision(&current) != revision(&session) || self.history_refresh_refusal(&current)?.is_some()
         {
             return complete_empty();
         }
@@ -3357,6 +3357,28 @@ impl RuntimeService {
         }
         Ok(None)
     }
+
+    /// A refresh has no native side effect, so a paused queued follow-up does
+    /// not prevent importing completed turns. Active dispatch and all existing
+    /// activity/request fences still keep the native context stable.
+    fn history_refresh_refusal(&self, session: &Session) -> Result<Option<(&'static str, String)>> {
+        let session_id = session.id.as_str();
+        if session.activity.as_ref().is_some_and(|activity| {
+            matches!(activity.state.as_str(), "running" | "awaiting_approval" | "awaiting_parent")
+        }) || matches!(session.status.as_str(), "starting" | "running" | "waiting") {
+            return Ok(Some(("session_release_blocked", "the session is working or waiting for your answer".into())));
+        }
+        if crate::chat_projection::has_pending_request(&self.db, session_id)? {
+            return Ok(Some(("session_release_blocked", "answer or dismiss the pending request first".into())));
+        }
+        let queue = crate::chat_queue::read(&self.db, session_id)?;
+        let items = queue["items"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let sending = items.iter().any(|item| item["state"] == "sending");
+        if sending || (queue["paused"] != true && !items.is_empty()) {
+            return Ok(Some(("session_release_blocked", "send or remove the queued messages first".into())));
+        }
+        Ok(None)
+    }
     /// The kill and the single status write. The caller holds the session's
     /// admission lock and has already run `release_refusal`.
     fn release_session_locked(&self, session: &Session) -> Result<Session> {
@@ -4896,7 +4918,11 @@ mod plugin_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ChatSession, ProviderAdapter, ProviderCapability, ProviderError, TerminalCommand};
+    use crate::providers::{
+        ChatSession, NativeChatMessage, NativeChatMessageRole, ProviderAdapter, ProviderCapability,
+        ProviderError, TerminalCommand,
+    };
+    use std::sync::atomic::AtomicUsize;
 
     fn shell_launch(executable: Option<&str>, args: &[&str]) -> SessionCreate {
         SessionCreate {
@@ -5202,6 +5228,103 @@ mod tests {
             },
             db,
         )
+    }
+
+    struct HistoryRefreshAdapter {
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl ProviderAdapter for HistoryRefreshAdapter {
+        fn id(&self) -> &'static str { "codex" }
+        fn capability(&self) -> ProviderCapability {
+            ProviderCapability {
+                source: "test", plugin_id: None, icon: None, sign_in: None, remote_sign_in: None,
+                homepage: None, id: "codex".into(), name: "History refresh fixture".into(),
+                installed: true, version: None, terminal: false, chat: true, history: true,
+                resume: true, terminal_resume_capture: "none", reason: None, auth: "authenticated".into(),
+            }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "history refresh fixture is chat-only"))
+        }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
+        fn completed_chat_messages(&self, native_id: &str) -> Result<Vec<NativeChatMessage>, ProviderError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![
+                NativeChatMessage { thread_id: native_id.into(), turn_id: "external-turn".into(), item_id: "external-user".into(), client_id: None, role: NativeChatMessageRole::User, phase: None, text: "external prompt".into() },
+                NativeChatMessage { thread_id: native_id.into(), turn_id: "external-turn".into(), item_id: "external-answer".into(), client_id: None, role: NativeChatMessageRole::Assistant, phase: Some("final_answer".into()), text: "external reply".into() },
+            ])
+        }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Err(ProviderError::new("fixture_unexpected_open", "history refresh must not open a worker"))
+        }
+    }
+
+    #[test]
+    fn paused_queue_does_not_block_idle_codex_history_refresh() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        crate::chat_queue::initialize(&db).unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut service = test_service(root.path(), Arc::clone(&db));
+        service.providers = Arc::new(Providers::for_test(vec![Arc::new(HistoryRefreshAdapter { reads: Arc::clone(&reads) })]));
+        let session = db.create_session(crate::db::CreateSession {
+            project_id: None, title: Some("refresh"), provider: "codex", mode: "chat",
+            native_id: Some("native-thread"), operation_id: "refresh-create",
+        }).unwrap();
+        db.set_session_status(&session.id, "idle", None).unwrap();
+        db.transaction(|tx| crate::chat_queue::add_owned(tx, &session.id, "paused-item", "queued after return")).unwrap();
+        crate::chat_queue::pause(&db, &session.id, "user").unwrap();
+        let epoch = service.leases.claim(&db, &session.id, "desktop").unwrap();
+
+        let result = service.refresh_codex_history("desktop", &ChatRepair {
+            session_id: session.id.clone(), lease_epoch: epoch, operation_id: "paused-refresh".into(),
+        }).unwrap();
+
+        assert_eq!(result["added"], 2);
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "paused queue must not skip the native transcript read");
+        assert_eq!(db.chat_items(&session.id).unwrap().iter().map(|item| item.role.as_str()).collect::<Vec<_>>(), ["user", "assistant"]);
+        assert_eq!(crate::chat_queue::read(&db, &session.id).unwrap()["items"].as_array().unwrap().len(), 1, "refresh preserves queued rows");
+        assert!(service.release_refusal(&db.session_by_id(&session.id).unwrap().unwrap()).unwrap().is_some(), "release remains blocked by a paused queue");
+
+        let repeat = service.refresh_codex_history("desktop", &ChatRepair {
+            session_id: session.id.clone(), lease_epoch: epoch, operation_id: "paused-refresh-repeat".into(),
+        }).unwrap();
+        assert_eq!(repeat["added"], 0, "the next return must deduplicate imported turns");
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+
+        db.transaction(|tx| {
+            tx.execute("UPDATE chat_queue_items SET state='sending' WHERE session_id=?", [&session.id])?;
+            Ok(())
+        }).unwrap();
+        let sending = service.refresh_codex_history("desktop", &ChatRepair {
+            session_id: session.id.clone(), lease_epoch: epoch, operation_id: "paused-sending-refresh".into(),
+        }).unwrap();
+        assert_eq!(sending["added"], 0);
+        assert_eq!(reads.load(Ordering::SeqCst), 2, "a sending queue row must still block the native read");
+
+        db.transaction(|tx| {
+            tx.execute("UPDATE chat_queue_items SET state='queued' WHERE session_id=?", [&session.id])?;
+            tx.execute("UPDATE chat_queue_state SET paused=0 WHERE session_id=?", [&session.id])?;
+            Ok(())
+        }).unwrap();
+        let unpaused = service.refresh_codex_history("desktop", &ChatRepair {
+            session_id: session.id.clone(), lease_epoch: epoch, operation_id: "unpaused-queue-refresh".into(),
+        }).unwrap();
+        assert_eq!(unpaused["added"], 0);
+        assert_eq!(reads.load(Ordering::SeqCst), 2, "an unpaused queue must still block the native read");
+
+        db.transaction(|tx| {
+            tx.execute("UPDATE chat_queue_state SET paused=1 WHERE session_id=?", [&session.id])?;
+            Ok(())
+        }).unwrap();
+        db.set_session_status(&session.id, "running", None).unwrap();
+        let in_flight = service.refresh_codex_history("desktop", &ChatRepair {
+            session_id: session.id.clone(), lease_epoch: epoch, operation_id: "in-flight-refresh".into(),
+        }).unwrap();
+        assert_eq!(in_flight["added"], 0);
+        assert_eq!(reads.load(Ordering::SeqCst), 2, "a direct send in flight must still block the native read");
     }
 
     #[test]

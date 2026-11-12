@@ -16,6 +16,7 @@ struct LocalItem {
     role: String,
     anchor_thread: Option<String>,
     anchor_turn: Option<String>,
+    local_command: bool,
 }
 
 pub(crate) struct HistoryInsertion {
@@ -49,7 +50,9 @@ pub(crate) fn plan(
     }
     let mut statement = tx.prepare(
         "SELECT id,turn_id,timeline_seq,json_extract(data,'$.role'),
-                json_extract(data,'$.forkAnchor.nativeId'),json_extract(data,'$.forkAnchor.turnId')
+                json_extract(data,'$.forkAnchor.nativeId'),json_extract(data,'$.forkAnchor.turnId'),
+                CASE WHEN json_extract(data,'$.parts[0].data.steered')=1 THEN NULL
+                     ELSE json_extract(data,'$.parts[0].text') END
          FROM chat_items WHERE session_id=?1 ORDER BY timeline_seq,id",
     )?;
     let local = statement
@@ -61,6 +64,30 @@ pub(crate) fn plan(
                 role: row.get(3)?,
                 anchor_thread: row.get(4)?,
                 anchor_turn: row.get(5)?,
+                local_command: row.get::<_, Option<String>>(6)?.is_some_and(|text| {
+                    // These commands are handled by Codex dispatch_slash without
+                    // starting a native turn. Native commands and skills must
+                    // retain the conservative unbound-user fence, including
+                    // slash text forwarded verbatim through native steering.
+                    matches!(
+                        text.split_whitespace().next(),
+                        Some(
+                            "/diff"
+                                | "/init"
+                                | "/mcp"
+                                | "/skills"
+                                | "/memory"
+                                | "/undo"
+                                | "/help"
+                                | "/model"
+                                | "/plan"
+                                | "/approvals"
+                                | "/sandbox"
+                                | "/status"
+                                | "/usage"
+                        )
+                    )
+                }),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -114,7 +141,7 @@ pub(crate) fn plan(
                     .or_insert((row.sequence, row.sequence));
                 span.1 = row.sequence;
             }
-            None if row.role == "user" => unbound_users.push(row.sequence),
+            None if row.role == "user" && !row.local_command => unbound_users.push(row.sequence),
             None => {}
         }
     }
@@ -276,4 +303,174 @@ pub(crate) fn commit(
         params![operation_id, METHOD, result.to_string(), now],
     )?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{CreateSession, Database};
+
+    fn fixture() -> (tempfile::TempDir, Database, String) {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(&root.path().join("refresh.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: Some("native"),
+                operation_id: "create",
+            })
+            .unwrap()
+            .id;
+        db.transaction(|tx| {
+            tx.execute("UPDATE sessions SET status='idle' WHERE id=?", [&session])?;
+            Ok(())
+        })
+        .unwrap();
+        (root, db, session)
+    }
+
+    fn messages(turn: &str) -> Vec<NativeChatMessage> {
+        [
+            NativeChatMessageRole::User,
+            NativeChatMessageRole::Assistant,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, role)| NativeChatMessage {
+            thread_id: "native".into(),
+            turn_id: turn.into(),
+            item_id: format!("{turn}-{index}"),
+            client_id: None,
+            role,
+            phase: None,
+            text: format!("{turn}-{index}"),
+        })
+        .collect()
+    }
+
+    fn refresh(
+        db: &Database,
+        session: &str,
+        operation: &str,
+        messages: &[NativeChatMessage],
+    ) -> Value {
+        db.transaction(|tx| {
+            let additions = plan(tx, session, "native", messages)?;
+            commit(tx, session, operation, additions)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn local_slash_commands_allow_later_refresh_without_changing_existing_rows() {
+        for command in [
+            "help",
+            "status",
+            "usage",
+            "model",
+            "plan",
+            "approvals",
+            "sandbox",
+            "diff",
+            "init",
+            "mcp",
+            "skills",
+            "memory",
+            "undo",
+        ] {
+            let (_root, db, session) = fixture();
+            let mut native = messages("original");
+            assert_eq!(refresh(&db, &session, "seed", &native), json!({"added":2}));
+            db.record_provider_event(
+                &session,
+                Some("local-command"),
+                "message.user",
+                &json!({"text":format!("  /{command}  ")}),
+            )
+            .unwrap();
+            db.record_provider_event(
+                &session,
+                Some("local-command"),
+                "chat.item",
+                &json!({"command":command,"parts":[{"type":"text","text":"local reply"}]}),
+            )
+            .unwrap();
+            db.record_provider_event(
+                &session,
+                Some("local-command"),
+                "chat.turn.completed",
+                &json!({"command":command}),
+            )
+            .unwrap();
+            let before = db.chat_items(&session).unwrap();
+            assert!(before
+                .iter()
+                .filter(|item| item.turn_id.as_deref() == Some("local-command"))
+                .all(|item| item
+                    .fork_anchor
+                    .as_ref()
+                    .and_then(|anchor| anchor.turn_id.as_ref())
+                    .is_none()));
+            native.extend(messages("external-one"));
+            native.extend(messages("external-two"));
+            assert_eq!(
+                refresh(&db, &session, "return", &native),
+                json!({"added":4}),
+                "{command}"
+            );
+            let after = db.chat_items(&session).unwrap();
+            assert_eq!(&after[..before.len()], before.as_slice(), "{command}");
+            assert_eq!(
+                after[before.len()..]
+                    .iter()
+                    .map(|item| item.parts[0]["text"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                [
+                    "external-one-0",
+                    "external-one-1",
+                    "external-two-0",
+                    "external-two-1"
+                ]
+            );
+            assert_eq!(
+                refresh(&db, &session, "return-again", &native),
+                json!({"added":0})
+            );
+            assert_eq!(db.chat_items(&session).unwrap(), after);
+        }
+    }
+
+    #[test]
+    fn unbound_native_prompts_still_block_tail_refresh() {
+        for (text, steered) in [
+            ("ordinary prompt", false),
+            ("/review", false),
+            ("/compact", false),
+            ("/custom-skill", false),
+            ("/Help", false),
+            ("/help", true),
+            ("/status", true),
+        ] {
+            let (_root, db, session) = fixture();
+            db.record_provider_event(
+                &session,
+                Some("unbound"),
+                "message.user",
+                &json!({"text":text,"steered":steered}),
+            )
+            .unwrap();
+            db.record_provider_event(&session, Some("unbound"), "chat.turn.completed", &json!({}))
+                .unwrap();
+            let before = db.chat_items(&session).unwrap();
+            assert_eq!(
+                refresh(&db, &session, "return", &messages("external")),
+                json!({"added":0}),
+                "{text}"
+            );
+            assert_eq!(db.chat_items(&session).unwrap(), before);
+        }
+    }
 }
