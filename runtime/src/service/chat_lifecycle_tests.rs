@@ -632,6 +632,36 @@ fn completion_before_canonical_turn_binding_settles_activity() {
 }
 
 #[test]
+fn grok_terminal_create_and_import_validate_native_history_before_claiming_it() {
+    let fixture = Fixture::new(false, None);
+    for method in ["session.create", "history.import"] {
+        let params = json!({
+            "cwd": fixture.root.path(), "provider": "grok", "mode": "terminal",
+            "nativeId": "missing-history", "operationId": method,
+        });
+        let error = fixture
+            .service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "grok-terminal-preflight".into(),
+                    method: method.into(),
+                    params,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "session_has_no_native_history", "{method}");
+        assert!(fixture
+            .db
+            .native_owner("grok", "missing-history")
+            .unwrap()
+            .is_none());
+        assert!(fixture.db.operation(method).unwrap().is_none());
+    }
+}
+
+#[test]
 fn terminal_resume_preflight_failure_preserves_identity_status_output_and_operation() {
     let fixture = Fixture::new(false, None);
     let session = fixture

@@ -2842,6 +2842,10 @@ impl RuntimeService {
             if let Some(owner) = self.db.native_owner(&p.provider, native_id)? {
                 return Err(anyhow::anyhow!("native_session_exists:{}", owner.id));
             }
+            if p.provider == "grok" && p.mode == "terminal" {
+                self.providers
+                    .preflight_terminal_resume(&p.provider, cwd, native_id)?;
+            }
             // Codex must reject a child or ephemeral history before durable
             // session creation. Its terminal adapter performs the exact
             // thread/read validation without launching a PTY.
@@ -3723,6 +3727,12 @@ impl RuntimeService {
         if !cwd.is_absolute() || !cwd.is_dir() {
             return Err(anyhow::anyhow!("cwd_missing_choose_relocation"));
         }
+        if p.provider == "grok" && p.mode == "terminal" {
+            // An imported card claims the native ID and its project before
+            // the user resumes it. Check the folder before making that claim.
+            self.providers
+                .preflight_terminal_resume(&p.provider, &p.cwd, &p.native_id)?;
+        }
         if let Some(project_id) = p.project_id.as_deref() {
             crate::workspace_services::workspace_root_for_cwd(&self.db, project_id, &p.cwd)?;
         }
@@ -3807,6 +3817,13 @@ impl RuntimeService {
         if !std::path::Path::new(cwd).is_absolute() || !std::path::Path::new(cwd).is_dir() {
             return Err(anyhow::anyhow!("cwd_missing_choose_relocation"));
         }
+        let grok_terminal = existing.provider == "grok" && existing.mode == "terminal";
+        if let Some(native_id) = existing.native_id.as_deref().filter(|_| grok_terminal) {
+            // Report the recorded directory even if the requested cwd is
+            // outside the card's workspace. The workspace check still applies.
+            self.providers
+                .preflight_terminal_resume(&existing.provider, cwd, native_id)?;
+        }
         let workspace_root = if let Some(project_id) = existing.project_id.as_deref() {
             crate::workspace_services::workspace_root_for_cwd(&self.db, project_id, cwd)?
         } else {
@@ -3860,7 +3877,7 @@ impl RuntimeService {
             .native_id
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("session_has_no_native_history"))?;
-        if existing.mode == "terminal" {
+        if existing.mode == "terminal" && !grok_terminal {
             // Read-only validation must fail before reserving a launch or
             // appending a run marker. Missing history is not a new conversation.
             self.providers
