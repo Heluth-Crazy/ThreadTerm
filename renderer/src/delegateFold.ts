@@ -12,7 +12,8 @@ export type DelegateCatalogSession = Pick<Session, 'id' | 'createdAt' | 'readOnl
 
 export type DelegateCatalogRow<T extends DelegateCatalogSession = Session> =
   | { kind: 'session'; session: T; nested: boolean }
-  | { kind: 'fold'; parentId: string; count: number; expanded: boolean };
+  /** `sessionIds`: the finished delegates the fold holds, so the group can be archived or deleted at once. */
+  | { kind: 'fold'; parentId: string; count: number; expanded: boolean; sessionIds: string[] };
 
 /** Fold only children actually rendered under a parent in this list. */
 export function foldedDelegateRows<T extends DelegateCatalogSession>(
@@ -33,7 +34,7 @@ export function foldedDelegateRows<T extends DelegateCatalogSession>(
     }
     if (finished.length) {
       const open = expanded.has(parent.id);
-      rows.push({ kind: 'fold', parentId: parent.id, count: finished.length, expanded: open });
+      rows.push({ kind: 'fold', parentId: parent.id, count: finished.length, expanded: open, sessionIds: finished.map(session => session.id) });
       if (open) rows.push(...finished.map(session => ({ kind: 'session' as const, session, nested: true })));
     }
   }

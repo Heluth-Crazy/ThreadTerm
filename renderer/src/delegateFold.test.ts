@@ -15,6 +15,8 @@ test('only terminal delegates fold, after all unfinished delegates; expansion pr
   assert.deepEqual(ids(foldedDelegateRows(all, all, undefined, [])), ['parent', ...active, 'fold:parent:4']);
   assert.deepEqual(ids(foldedDelegateRows(all, all, undefined, ['parent'])), ['parent', ...active, 'fold:parent:4', ...finished]);
   assert.equal(all.length, 11, 'folding does not mutate the catalog');
+  const fold = foldedDelegateRows(all, all, undefined, []).find(row => row.kind === 'fold');
+  assert.deepEqual(fold?.kind === 'fold' && fold.sessionIds, finished, 'the fold names its sessions for group archive/delete');
 });
 
 test('selected finished delegates and pending approval/input always remain above the fold', () => {
