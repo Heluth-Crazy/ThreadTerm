@@ -2465,6 +2465,17 @@ fn is_codex_local_command(name: &str) -> bool {
     )
 }
 
+/// True for slash commands that `dispatch_slash` answers inside ThreadTerm without
+/// starting a native turn: the local commands plus the setting and status
+/// commands. `/compact`, `/review` and skills start a native turn and are false.
+/// History refresh uses this so such a row never fences native turns (#52).
+pub(crate) fn codex_slash_starts_no_native_turn(text: &str) -> bool {
+    parse_slash(text).is_some_and(|(name, _)| {
+        is_codex_local_command(name)
+            || matches!(name, "model" | "plan" | "approvals" | "sandbox" | "status" | "usage")
+    })
+}
+
 fn codex_setting_text_zh(name: &str, text: &str) -> String {
     let label = match name {
         "model" => "模型",
@@ -7440,6 +7451,13 @@ process.on('exit', () => clearTimeout(timeout));
             .any(|command| command["name"] == "demo-skill"));
         assert_eq!(parse_slash("/compact"), Some(("compact", "")));
         assert_eq!(parse_slash("/status"), Some(("status", "")));
+        // History refresh (#52): only commands answered without a native turn skip its fence.
+        for text in ["/help", "  /status now", "/usage", "/model gpt-5.5-luna", "/plan off", "/approvals", "/sandbox", "/diff", "/undo"] {
+            assert!(codex_slash_starts_no_native_turn(text), "{text}");
+        }
+        for text in ["/compact", "/review now", "/demo-skill", "plain prompt", "//help", "/"] {
+            assert!(!codex_slash_starts_no_native_turn(text), "{text}");
+        }
         assert_eq!(
             parse_slash("/model gpt-5.5-luna"),
             Some(("model", "gpt-5.5-luna"))

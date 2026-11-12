@@ -64,30 +64,13 @@ pub(crate) fn plan(
                 role: row.get(3)?,
                 anchor_thread: row.get(4)?,
                 anchor_turn: row.get(5)?,
-                local_command: row.get::<_, Option<String>>(6)?.is_some_and(|text| {
-                    // These commands are handled by Codex dispatch_slash without
-                    // starting a native turn. Native commands and skills must
-                    // retain the conservative unbound-user fence, including
-                    // slash text forwarded verbatim through native steering.
-                    matches!(
-                        text.split_whitespace().next(),
-                        Some(
-                            "/diff"
-                                | "/init"
-                                | "/mcp"
-                                | "/skills"
-                                | "/memory"
-                                | "/undo"
-                                | "/help"
-                                | "/model"
-                                | "/plan"
-                                | "/approvals"
-                                | "/sandbox"
-                                | "/status"
-                                | "/usage"
-                        )
-                    )
-                }),
+                // Commands Codex dispatch_slash answers without a native turn. Native
+                // commands and skills keep the conservative unbound-user fence,
+                // including slash text forwarded verbatim through native steering
+                // (the query reads no text for steered rows).
+                local_command: row
+                    .get::<_, Option<String>>(6)?
+                    .is_some_and(|text| crate::providers::codex_slash_starts_no_native_turn(&text)),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;

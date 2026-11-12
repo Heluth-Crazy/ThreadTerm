@@ -23,6 +23,7 @@ mod retirement_tests;
 
 use serde::{Deserialize, Serialize};
 pub(crate) use crate::domain::NativeForkAnchor;
+pub(crate) use codex::codex_slash_starts_no_native_turn;
 use serde_json::{json, Value};
 use crate::provider_events::{self, ProjectionReceiver, Sender as ProviderEventSender};
 use std::{
