@@ -15,8 +15,8 @@ pub(crate) const HISTORY_FRAME_HEADROOM_BYTES: usize = 64 * 1024;
 pub(crate) const SNAPSHOT_PAGE_BYTES: usize = 2 * 1024 * 1024;
 /// A client may ask for less, but never for more than one page.
 const SNAPSHOT_PAGE_MIN_BYTES: usize = 64 * 1024;
-/// Cursor = ordering key `created_at` + separator + item id. Both are immutable
-/// for an item, so a cursor stays valid while newer items arrive.
+/// The wire cursor keeps the immutable legacy `(created_at,id)` payload. Each
+/// request resolves that row to its durable timeline position before paging.
 const CURSOR_SEPARATOR: char = '\u{1f}';
 const EXPIRED_EN: &str = "This request expired when history was repaired.";
 const EXPIRED_ZH_CN: &str = "此请求已在历史修复时过期。";
@@ -296,34 +296,42 @@ pub(crate) fn snapshot(
     reader_available: bool,
 ) -> Result<ChatRepairSnapshot> {
     let before = page.before.as_deref().map(parse_cursor).transpose()?;
+    let boundary = before
+        .as_ref()
+        .map(|(created_at, id)| {
+            tx.query_row(
+                "SELECT timeline_seq FROM chat_items WHERE session_id=? AND created_at=? AND id=?",
+                params![session_id, created_at, id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow!("invalid_cursor"))
+        })
+        .transpose()?;
     let budget = page.max_bytes.map_or(SNAPSHOT_PAGE_BYTES, |bytes| {
         bytes.clamp(SNAPSHOT_PAGE_MIN_BYTES, SNAPSHOT_PAGE_BYTES)
     });
-    let mut statement = tx.prepare(
+    let bound = boundary.zip(before.as_ref().map(|(_, id)| id.as_str()));
+    let mut statement = tx.prepare(if bound.is_some() {
+        "SELECT created_at,id,data FROM chat_items
+         WHERE session_id=?1 AND (timeline_seq,id)<(?2,?3)
+         ORDER BY timeline_seq DESC,id DESC"
+    } else {
         "SELECT created_at,id,data FROM chat_items WHERE session_id=?1
-           AND (?2 IS NULL OR created_at<?2 OR (created_at=?2 AND id<?3))
-         ORDER BY created_at DESC,id DESC",
-    )?;
-    let rows = statement.query_map(
-        params![
-            session_id,
-            before.as_ref().map(|(created_at, _)| created_at.as_str()),
-            before.as_ref().map(|(_, id)| id.as_str()),
-        ],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        },
-    )?;
+         ORDER BY timeline_seq DESC,id DESC"
+    })?;
+    let mut rows = if let Some((sequence, id)) = bound {
+        statement.query(params![session_id, sequence, id])?
+    } else {
+        statement.query([session_id])?
+    };
     // Newest first while filling the budget, then restored to transcript order.
     let mut page_items: Vec<(String, String, ChatItem)> = Vec::new();
     let mut used = 2usize;
     let mut has_earlier = false;
-    for row in rows {
-        let (created_at, id, data) = row?;
+    while let Some(row) = rows.next()? {
+        let (created_at, id, data): (String, String, String) =
+            (row.get(0)?, row.get(1)?, row.get(2)?);
         let mut item: ChatItem = serde_json::from_str(&data)?;
         let mut size = serde_json::to_vec(&item)?.len() + 1;
         if size > budget {
@@ -339,6 +347,7 @@ pub(crate) fn snapshot(
         used += size;
         page_items.push((created_at, id, item));
     }
+    drop(rows);
     drop(statement);
     let next_before = if has_earlier {
         page_items
@@ -681,7 +690,7 @@ fn session_state(tx: &Transaction<'_>, session_id: &str) -> Result<Option<Sessio
 
 fn raw_transcript(tx: &Transaction<'_>, session_id: &str) -> Result<Vec<RawChatRow>> {
     let mut statement = tx.prepare(
-        "SELECT id,session_id,turn_id,kind,data,created_at FROM chat_items WHERE session_id=? ORDER BY created_at,id",
+        "SELECT id,session_id,turn_id,kind,data,created_at FROM chat_items WHERE session_id=? ORDER BY timeline_seq,id",
     )?;
     let rows = statement.query_map([session_id], |row| {
         Ok(RawChatRow {
@@ -698,7 +707,7 @@ fn raw_transcript(tx: &Transaction<'_>, session_id: &str) -> Result<Vec<RawChatR
 
 fn history_metadata_missing(tx: &Transaction<'_>, session_id: &str) -> Result<bool> {
     let mut statement = tx.prepare(
-        "SELECT id,turn_id,data FROM chat_items WHERE session_id=? ORDER BY created_at,id",
+        "SELECT id,turn_id,data FROM chat_items WHERE session_id=? ORDER BY timeline_seq,id",
     )?;
     let rows = statement.query_map([session_id], |row| {
         Ok((
@@ -1528,7 +1537,7 @@ mod tests {
             .db
             .transaction(|tx| {
                 tx.execute(
-                    "UPDATE chat_items SET created_at=? WHERE session_id=? AND id=(SELECT id FROM chat_items WHERE session_id=? ORDER BY created_at DESC,id DESC LIMIT 1)",
+                    "UPDATE chat_items SET created_at=? WHERE session_id=? AND id=(SELECT id FROM chat_items WHERE session_id=? ORDER BY timeline_seq DESC,id DESC LIMIT 1)",
                     params![forced_tail, fixture.session, fixture.session],
                 )?;
                 Ok(())
@@ -2004,6 +2013,99 @@ mod tests {
             .transaction(|tx| snapshot(tx, &fixture.session, &ChatSnapshotPage { before: Some("not-a-cursor".into()), max_bytes: None }, &fixture.worker, true))
             .unwrap_err();
         assert!(error.to_string().contains("invalid_cursor"));
+    }
+
+    #[test]
+    fn snapshot_cursor_uses_timeline_order_for_an_interleaved_history_row() {
+        let fixture = Fixture::new();
+        for index in 0..6 {
+            fixture.insert_item(&ordered_item(
+                &format!("item-{index}"),
+                &format!("2026-01-01T00:00:0{index}+00:00"),
+                &"x".repeat(40 * 1024),
+            ));
+        }
+        let first = page(&fixture, None, 64 * 1024);
+        assert_eq!(first.items[0].id, "item-5");
+        let cursor = first.next_before.clone().unwrap();
+
+        let interleaved = ordered_item(
+            "history-between",
+            "2099-01-01T00:00:00+00:00",
+            &"h".repeat(40 * 1024),
+        );
+        fixture.insert_item(&interleaved);
+        fixture.db.transaction(|tx| {
+            let after: i64 = tx.query_row(
+                "SELECT timeline_seq FROM chat_items WHERE id='item-3'",
+                [],
+                |row| row.get(0),
+            )?;
+            let before: i64 = tx.query_row(
+                "SELECT timeline_seq FROM chat_items WHERE id='item-4'",
+                [],
+                |row| row.get(0),
+            )?;
+            let sequence = after + (before - after) / 2;
+            tx.execute(
+                "UPDATE chat_items SET timeline_seq=? WHERE id=?",
+                params![sequence, interleaved.id],
+            )?;
+            Ok(())
+        }).unwrap();
+
+        let mut ids = first.items.into_iter().map(|item| item.id).collect::<Vec<_>>();
+        let mut before = Some(cursor);
+        while let Some(cursor) = before {
+            let next = page(&fixture, Some(cursor), 64 * 1024);
+            ids.extend(next.items.iter().map(|item| item.id.clone()));
+            before = next.next_before;
+            if !next.has_earlier {
+                break;
+            }
+        }
+        assert_eq!(
+            ids,
+            vec![
+                "item-5",
+                "item-4",
+                "history-between",
+                "item-3",
+                "item-2",
+                "item-1",
+                "item-0",
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_timeline_page_uses_the_ordering_index() {
+        let fixture = Fixture::new();
+        let plan = fixture
+            .db
+            .transaction(|tx| {
+                let mut statement = tx.prepare(
+                    "EXPLAIN QUERY PLAN
+                     SELECT created_at,id,data FROM chat_items
+                     WHERE session_id=?1 AND (timeline_seq,id)<(?2,?3)
+                     ORDER BY timeline_seq DESC,id DESC",
+                )?;
+                let rows = statement.query_map(
+                    params![fixture.session, crate::db::CHAT_TIMELINE_STRIDE, "cursor"],
+                    |row| row.get::<_, String>(3),
+                )?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("USING INDEX chat_items_timeline")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
     }
 
     #[test]

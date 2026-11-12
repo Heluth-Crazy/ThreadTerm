@@ -24,6 +24,7 @@ mod retirement_tests;
 
 use serde::{Deserialize, Serialize};
 pub(crate) use crate::domain::NativeForkAnchor;
+pub(crate) use codex::codex_slash_starts_no_native_turn;
 use serde_json::{json, Value};
 use crate::provider_events::{self, ProjectionReceiver, Sender as ProviderEventSender};
 use std::{
@@ -405,6 +406,23 @@ pub(crate) struct NativeSessionRef {
     pub(crate) cwd: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeChatMessageRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeChatMessage {
+    pub(crate) thread_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) item_id: String,
+    pub(crate) client_id: Option<String>,
+    pub(crate) role: NativeChatMessageRole,
+    pub(crate) phase: Option<String>,
+    pub(crate) text: String,
+}
+
 pub trait ProviderRuntime: Send + Sync {
     fn capabilities(&self) -> Vec<Value>;
     fn terminal_command(
@@ -527,6 +545,18 @@ pub(crate) trait ProviderAdapter: Send + Sync {
         cwd: Option<&str>,
     ) -> Result<Value, ProviderError>;
     fn history_read(&self, native_id: &str) -> Result<Value, ProviderError>;
+    /// Completed user and assistant messages for append-only cross-client
+    /// refresh. This deliberately stays separate from the public history
+    /// projection, which also preserves tools, reasoning, and turn boundaries.
+    fn completed_chat_messages(
+        &self,
+        _native_id: &str,
+    ) -> Result<Vec<NativeChatMessage>, ProviderError> {
+        Err(ProviderError::new(
+            "unsupported",
+            "This agent does not expose completed native chat messages",
+        ))
+    }
     fn subagent_transcript(
         &self,
         _session: &NativeSessionRef,
@@ -1076,6 +1106,7 @@ struct ChatSlot {
     error: Option<Value>,
     failed_options: Option<Value>,
     worker: Option<SharedChat>,
+    history_reopen_pending: bool,
     connecting: bool,
     worker_token: Option<String>,
     /// Candidate token exposed only to tool-grant construction while a
@@ -1099,6 +1130,7 @@ impl ChatSlot {
             error: None,
             failed_options: None,
             worker: None,
+            history_reopen_pending: false,
             connecting: false,
             worker_token: None,
             pending_worker_token: None,
@@ -1117,6 +1149,15 @@ impl ChatSlot {
         self.generation = self.generation.saturating_add(1);
         self.revision = self.revision.saturating_add(1);
         retired
+    }
+
+    fn repair_state(&self) -> crate::chat_repair::RepairWorkerState {
+        crate::chat_repair::RepairWorkerState {
+            generation: self.generation,
+            worker_token: self.worker_token.clone(),
+            registered: self.worker.is_some(),
+            connecting: self.connecting,
+        }
     }
 
     fn wire(
@@ -1906,14 +1947,54 @@ impl Providers {
             .map_err(|_| anyhow::anyhow!("provider_internal"))?;
         let state = chats
             .get(session_id)
-            .map(|slot| crate::chat_repair::RepairWorkerState {
-                generation: slot.generation,
-                worker_token: slot.worker_token.clone(),
-                registered: slot.worker.is_some(),
-                connecting: slot.connecting,
-            })
+            .map(ChatSlot::repair_state)
             .unwrap_or_default();
         read(state)
+    }
+
+    pub(crate) fn commit_chat_history_refresh(
+        &self,
+        session_id: &str,
+        expected: &crate::chat_repair::RepairWorkerState,
+        commit: impl FnOnce(bool) -> anyhow::Result<(Value, bool)>,
+    ) -> anyhow::Result<Value> {
+        let mut chats = self.chats.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        let slot = chats.get_mut(session_id);
+        let current = slot.as_deref().map(ChatSlot::repair_state).unwrap_or_default();
+        let (result, changed) = commit(&current == expected)?;
+        if changed && current.registered {
+            if let Some(slot) = slot {
+                slot.history_reopen_pending = true;
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn chat_history_reopen_pending(&self, session_id: &str) -> anyhow::Result<bool> {
+        let chats = self.chats.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        Ok(chats.get(session_id).is_some_and(|slot| slot.history_reopen_pending))
+    }
+
+    pub(crate) fn clear_chat_history_reopen(&self, session_id: &str) -> anyhow::Result<()> {
+        let mut chats = self.chats.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        if let Some(slot) = chats.get_mut(session_id) {
+            slot.history_reopen_pending = false;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn completed_chat_messages(
+        &self,
+        provider: &str,
+        native_id: &str,
+    ) -> Result<Vec<NativeChatMessage>, ProviderError> {
+        if native_id.trim().is_empty() {
+            return Err(ProviderError::new(
+                "invalid_native_id",
+                "native session id is required",
+            ));
+        }
+        self.adapter(provider)?.completed_chat_messages(native_id)
     }
 
     pub(crate) fn registered_chat_sessions(&self) -> Vec<String> {

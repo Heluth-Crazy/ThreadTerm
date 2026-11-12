@@ -855,7 +855,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         const next = event.data as ChatUiState & { sessionId?: string };
         setUi(chatUiFromEvent(next));
       }
-      if (event.event === 'state.changed' && data.sessionId === session.id && (event.data as { kind?: unknown }).kind === 'chat.repair') {
+      if (event.event === 'state.changed' && data.sessionId === session.id && ['chat.repair', 'chat.history.refresh'].includes(String((event.data as { kind?: unknown }).kind))) {
         const changed = event.data as { revision?: unknown };
         const revision = nextRepairRevision(repairRevision, changed.revision ?? event.seq);
         if (revision === undefined) return;
@@ -868,7 +868,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           finishResync(generation, snapshot);
         }).catch(caught => {
           finishResync(generation);
-          if (isCurrentHistory(generation)) setHistoryIssue(asUserError(caught, copy('Could not synchronize repaired history.', '无法同步已修复的历史。')));
+          if (isCurrentHistory(generation)) setHistoryIssue(asUserError(caught, copy('Could not synchronize saved history.', '无法同步已保存的历史。')));
         });
         return;
       }
@@ -1027,6 +1027,47 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     };
   }, [canTakeControl, canControl, session.id, session.mode, session.readOnly]);
   const connected = connection.phase === "ready" && link.transport === "up";
+  const watchNativeHistory = session.provider === 'codex' && !session.readOnly && surface?.focused !== false;
+  const historyReturnPending = useRef(false);
+  const refreshHistoryOnReturn = useRef(() => {});
+  const activeHistoryRefresh = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const refresh = () => {
+      if (!historyReturnPending.current || !watchNativeHistory || !session.nativeId
+          || (session.status !== 'idle' && !session.released) || !controllable) return;
+      const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
+      if (epoch === undefined || !lifecycle.current?.control?.valid) return;
+      if (activeHistoryRefresh.current === session.id) return;
+      historyReturnPending.current = false;
+      activeHistoryRefresh.current = session.id;
+      void request('chat.refreshHistory', { sessionId: session.id, leaseEpoch: epoch, operationId: operationId() })
+        .catch(() => undefined)
+        .finally(() => {
+          if (activeHistoryRefresh.current !== session.id) return;
+          activeHistoryRefresh.current = undefined;
+          refreshHistoryOnReturn.current();
+        });
+    };
+    refreshHistoryOnReturn.current = refresh;
+    refresh();
+    return () => { refreshHistoryOnReturn.current = () => {}; };
+  }, [controllable, session.id, session.nativeId, session.released, session.status, watchNativeHistory]);
+  useEffect(() => {
+    if (!watchNativeHistory) return;
+    const markReturn = () => {
+      if (document.visibilityState !== 'visible') return;
+      historyReturnPending.current = true;
+      refreshHistoryOnReturn.current();
+    };
+    markReturn();
+    window.addEventListener('focus', markReturn);
+    document.addEventListener('visibilitychange', markReturn);
+    return () => {
+      historyReturnPending.current = false;
+      window.removeEventListener('focus', markReturn);
+      document.removeEventListener('visibilitychange', markReturn);
+    };
+  }, [session.id, watchNativeHistory]);
   const discoveryCurrent = discoveryMatches(repairDiscovery, session.id, historyGeneration.current);
   const discoveryClear = discoveryCurrent && repairDiscovery?.phase === 'clear';
   const connectionHeld = discoveryCurrent && repairDiscovery?.phase === 'held';

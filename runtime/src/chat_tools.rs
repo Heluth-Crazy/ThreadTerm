@@ -562,9 +562,9 @@ impl ChatTools {
                 let items: Vec<crate::domain::ChatItem> = self.db.transaction(|tx| {
                     let mut statement = tx.prepare(
                         "SELECT data FROM (
-                            SELECT data,created_at,id FROM chat_items
-                            WHERE session_id=? ORDER BY created_at DESC,id DESC LIMIT ?
-                         ) ORDER BY created_at,id",
+                            SELECT data,timeline_seq,id FROM chat_items
+                            WHERE session_id=? ORDER BY timeline_seq DESC,id DESC LIMIT ?
+                         ) ORDER BY timeline_seq,id",
                     )?;
                     let items = statement
                         .query_map(params![session.id, MAX_TRANSCRIPT_ITEMS as i64], |row| {

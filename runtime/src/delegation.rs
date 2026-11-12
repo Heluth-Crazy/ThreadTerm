@@ -670,7 +670,7 @@ fn final_answer(tx: &Transaction<'_>, child_session_id: &str, turn: Option<&str>
 pub(crate) fn final_answer_for_turn(tx: &Transaction<'_>, child_session_id: &str, turn_id: Option<&str>) -> Result<String> {
     let mut statement = tx.prepare(
         "SELECT data FROM chat_items WHERE session_id=? AND (? IS NULL OR turn_id=?) \
-         AND json_extract(data,'$.role')='assistant' ORDER BY created_at,rowid",
+         AND json_extract(data,'$.role')='assistant' ORDER BY timeline_seq,id",
     )?;
     let rows = statement.query_map(params![child_session_id,turn_id,turn_id], |row| row.get::<_, String>(0))?;
     let mut texts: Vec<String> = Vec::new();
@@ -1102,7 +1102,7 @@ pub(crate) fn user_words_from_chat(
     let rows: Vec<String> = db.transaction(|tx| {
         let mut statement = tx.prepare(
             "SELECT data FROM chat_items WHERE session_id=? AND json_extract(data,'$.role')='user' \
-             ORDER BY created_at DESC, id DESC LIMIT ?",
+             ORDER BY timeline_seq DESC, id DESC LIMIT ?",
         )?;
         let rows = statement.query_map(params![session_id, count], |row| row.get::<_, String>(0))?;
         let mut rows_out = Vec::new();

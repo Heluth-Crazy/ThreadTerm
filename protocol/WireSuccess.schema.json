@@ -3149,6 +3149,18 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"chat.refreshHistory\">": {
+      "type": "object",
+      "properties": {
+        "added": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "added"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"chat.draft.read\">": {
       "type": "object",
       "properties": {
@@ -12822,6 +12834,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.repair%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.refreshHistory"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.refreshHistory%22%3E"
         }
       },
       "required": [

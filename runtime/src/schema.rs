@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const MAIN_VERSION: u32 = 6;
+pub(crate) const MAIN_VERSION: u32 = 7;
 pub(crate) const LEDGER_VERSION: u32 = 1;
 const HISTORY_LIMIT: usize = 16;
 
@@ -252,6 +252,57 @@ const MAIN_MIGRATIONS: &[Migration] = &[Migration {
                     tx.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
                 }
             }
+            Ok(())
+        },
+    }, Migration {
+        // Native-history refresh can add a completed turn between existing
+        // local rows. Keep created_at as immutable payload/cursor evidence and
+        // add a separate, indexed presentation coordinate with generous gaps.
+        version: 7,
+        // Older binaries keep every row safe. Their INSERTs run the trigger and
+        // their UPSERTs retain timeline_seq, although they temporarily render
+        // interleaved rows in the legacy created_at order.
+        min_reader: 6,
+        destructive: false,
+        needs_backup: |_| Ok(false),
+        apply: |tx| {
+            let columns = tx
+                .prepare("PRAGMA table_info(chat_items)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if !columns.iter().any(|column| column == "timeline_seq") {
+                tx.execute_batch("ALTER TABLE chat_items ADD COLUMN timeline_seq INTEGER;")?;
+            }
+            tx.execute(
+                "WITH ordered AS (
+                     SELECT id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY session_id ORDER BY created_at,id
+                            ) * ?1 AS seq
+                       FROM chat_items
+                 )
+                 UPDATE chat_items
+                    SET timeline_seq=ordered.seq
+                   FROM ordered
+                  WHERE ordered.id=chat_items.id AND chat_items.timeline_seq IS NULL",
+                [crate::db::CHAT_TIMELINE_STRIDE],
+            )?;
+            tx.execute_batch(&format!(
+                "CREATE INDEX IF NOT EXISTS chat_items_timeline
+                     ON chat_items(session_id,timeline_seq,id);
+                 CREATE TRIGGER IF NOT EXISTS chat_items_timeline_insert
+                 AFTER INSERT ON chat_items
+                 WHEN NEW.timeline_seq IS NULL
+                 BEGIN
+                     UPDATE chat_items
+                        SET timeline_seq=COALESCE((
+                            SELECT MAX(timeline_seq) FROM chat_items
+                             WHERE session_id=NEW.session_id
+                        ),0)+{stride}
+                      WHERE id=NEW.id AND timeline_seq IS NULL;
+                 END;",
+                stride = crate::db::CHAT_TIMELINE_STRIDE,
+            ))?;
             Ok(())
         },
     },

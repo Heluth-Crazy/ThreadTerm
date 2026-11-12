@@ -26,6 +26,7 @@ pub mod code_review;
 #[cfg(test)] mod code_review_tests;
 mod chat_queue;
 pub(crate) mod chat_fork;
+mod chat_history_refresh;
 #[cfg(test)]
 mod chat_queue_tests;
 pub(crate) mod chat_tools;

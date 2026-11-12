@@ -263,11 +263,11 @@ fn normalize_path(root: &Path, path: &str) -> Option<String> {
     Some(path)
 }
 
-/// The reviewer's newest assistant message with content, in `chat_items` order. Only assistant rows are decoded, newest
+/// The reviewer's newest assistant message with content, in timeline order. Only assistant rows are decoded, newest
 /// first, so a list never decodes the reviewer's first message (it carries the whole captured diff).
 fn last_answer(db: &Database, reviewer: &str) -> Result<Option<crate::domain::ChatItem>> {
     db.transaction(|tx| {
-        let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=? AND json_extract(data,'$.role')='assistant' ORDER BY created_at DESC,id DESC")?;
+        let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=? AND json_extract(data,'$.role')='assistant' ORDER BY timeline_seq DESC,id DESC")?;
         let mut rows = statement.query([reviewer])?;
         while let Some(row) = rows.next()? {
             let item: crate::domain::ChatItem = serde_json::from_str(&row.get::<_, String>(0)?)?;
