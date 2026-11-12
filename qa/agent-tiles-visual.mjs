@@ -17,7 +17,7 @@ const scratch = await mkdtemp(join(tmpdir(), 'tt-agent-tiles-'));
 const entry = String.raw`
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AgentTile, SessionIcon, AgentIcon, AgentIconsProvider } from './renderer/src/components/PrototypeIcon';
+import { AgentTile, SessionIcon, AgentIconsProvider } from './renderer/src/components/PrototypeIcon';
 import { SettingsTerminalIcons } from './renderer/src/components/SettingsTerminalIcons';
 import './renderer/src/styles.css';
 
@@ -102,8 +102,8 @@ function Gallery({ theme }) {
           <div style={{ maxWidth: 560 }}><SettingsTerminalIcons settings={iconSettings} zh={false} update={async () => {}} /></div>
         </section>
         <section style={{ gridColumn: '1 / -1', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-          <h3 style={{ margin: '0 0 10px', fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted)' }}>Inline mentions stay flat</h3>
-          <p data-testid="inline-flat">Delegated by <a href="#"><AgentIcon provider="claude" size={16} /> Fix delegate outcome</a> · handed to <a href="#"><AgentIcon provider="codex" size={16} /> Codex</a></p>
+          <h3 style={{ margin: '0 0 10px', fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted)' }}>Inline mentions use tiles too</h3>
+          <p data-testid="inline-flat">Delegated by <a href="#"><AgentTile provider="claude" size={16} /> Fix delegate outcome</a> · handed to <a href="#"><AgentTile provider="codex" size={16} /> Codex</a></p>
         </section>
       </div>
     </div>
@@ -168,11 +168,11 @@ try {
     });
     report.screenshots.push(join(out, `${theme}-sizes.png`));
 
-    // Flat inline marks must not be tiles.
+    // Owner rule (2026-11-12): every provider icon is the session-list tile, inline mentions included.
     const inlineTiles = await page.locator('[data-testid="inline-flat"] .agent-tile').count();
-    assert.equal(inlineTiles, 0, `${theme}: inline mentions must stay flat`);
+    assert.ok(inlineTiles >= 2, `${theme}: inline mentions use tiles`);
     const flat = await page.locator('[data-testid="inline-flat"] .brand-ico').count();
-    assert.ok(flat >= 2, `${theme}: expected flat brand marks inline`);
+    assert.equal(flat, 0, `${theme}: no flat brand marks inline`);
     // Settings → Terminal icons: two saved rules plus the new-rule line; the user's image is an <img>.
     assert.equal(await page.locator('[data-testid="terminal-icon-row"]').count(), 2, `${theme}: terminal icon rules missing`);
     assert.equal(await page.locator('[data-testid="terminal-icon-row"] [data-agent-tile="image"] img').count(), 1, `${theme}: custom icon not drawn as an image`);

@@ -78,6 +78,8 @@ function useCustomIcon(provider:string){
   const images=useContext(CustomIconsContext); const src=provider.startsWith('image:')?images.get(provider.slice(6)):undefined;
   return src?.startsWith('data:image/')?src:undefined;
 }
+/** The bare brand mark. Not for product UI: every provider icon there is the session-list tile (AgentTile),
+ * an owner rule since 2026-11-12. Kept for the prototype icon generator and its tests. */
 export function AgentIcon({provider,size}:{provider:string;size?:number}){
   const capabilities=useAgentCapabilities(); const icon=capabilities.find(capability=>capability.id===provider)?.icon; const custom=useCustomIcon(provider);
   if(custom)return <img className="brand-ico" src={custom} alt="" data-agent-icon="image" style={size === undefined ? undefined : {width:size,height:size}}/>;
@@ -114,6 +116,17 @@ const tileFill: Record<string, string> = {
   "pi": "linear-gradient(180deg,#34343A,#111114)"
 };
 const BRAND_TILES = new Set(['claude', 'codex', 'gemini', 'kimi', 'grok', 'opencode', 'pi']);
+
+/** The AgentTile markup as an HTML string, for DOM built before React (the boot splash). Built-in agents only: static
+ * brand constants, never user or plugin input. `size` is the tile's edge in px. */
+export function agentTileMarkup(provider: string, size: number): string {
+  const name = provider.toLowerCase().replace(' code', '');
+  if (!BRAND_TILES.has(name)) return '';
+  const mark = name === 'gemini' ? brands.gemini : tileMarks[name];
+  if (!mark) return '';
+  const classes = ['agent-tile', `agent-tile-${name}`, name === 'codex' ? 'agent-tile-codex-mark' : '', name === 'opencode' ? 'agent-tile-opencode-mark' : '', name === 'gemini' ? 'agent-tile-gemini-mark' : ''].filter(Boolean).join(' ');
+  return `<span class="${classes}" style="--s:${size}px;--tile-bg:${tileFill[name]}" data-agent-tile="${name}" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${mark}</svg></span>`;
+}
 
 /** Rex-style tactile session tile. Brand fills are fixed; edge/sheen/shadow come from theme vars. */
 export function AgentTile({ provider, size = 16, animate = false }: { provider: string; size?: number; animate?: boolean }) {

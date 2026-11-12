@@ -13,7 +13,7 @@ import { elapsedMs as subagentElapsedMs, subagentToolCount } from '../subagentAc
 import { ChatMarkdown } from './ChatMarkdownExtras';
 import { renderCodexMarkdown } from './ChatView';
 import { ToolCard } from './ToolCards';
-import { AgentIcon } from './PrototypeIcon';
+import { AgentTile } from './PrototypeIcon';
 
 type Copy = (en: string, zh: string) => string;
 type DetailState<T> = { value?: T; loading?: boolean; error?: string };
@@ -115,8 +115,8 @@ export function TaskMapDetails({ node, lane, sessions, items, zh, visible, targe
   const promptText = parts.filter(value => value.part.type === 'text').map(value => value.part.text).filter(Boolean).join('\n');
   const replyText = parts.filter(value => value.part.type === 'text').map(value => value.part.text).filter((value): value is string => Boolean(value)).join('\n\n');
   const inspectorLane = node.kind === 'subagent' && node.subagent
-    ? <><AgentIcon provider={node.subagent.provider} size={14} /> {providerLabel(node.subagent.provider)}</>
-    : <>{lane?.provider && <AgentIcon provider={lane.provider} size={14} />} {lane?.title}</>;
+    ? <><AgentTile provider={node.subagent.provider} size={14} /> {providerLabel(node.subagent.provider)}</>
+    : <>{lane?.provider && <AgentTile provider={lane.provider} size={14} />} {lane?.title}</>;
 
   return <aside className="task-map-details" aria-label={copy('Step details', '步骤详情')}>
     <div className="task-map-details-meta">
@@ -151,7 +151,7 @@ function DelegateDetails({ node, sessions, items, copy, zh }: { node: TaskMapNod
   const prompt = (items.get(child.id) ?? []).find(item => item.role === 'user')?.parts.map(part => part.text ?? '').join('\n');
   const outcome = child.delegation?.outcome;
   return <>
-    <Field label={copy('Delegate', '委派代理')}><p><AgentIcon provider={child.provider} size={16} /> {providerLabel(child.provider)} · {delegationStateLabel(child.delegation?.state ?? 'running', zh)}</p><p>{copy('Workspace', '工作区')}: {child.delegation?.workspace === 'worktree' ? copy('Worktree', '工作树') : copy('Shared', '共享')}{child.delegation?.branch && ` · ${child.delegation.branch}`}</p></Field>
+    <Field label={copy('Delegate', '委派代理')}><p><AgentTile provider={child.provider} size={16} /> {providerLabel(child.provider)} · {delegationStateLabel(child.delegation?.state ?? 'running', zh)}</p><p>{copy('Workspace', '工作区')}: {child.delegation?.workspace === 'worktree' ? copy('Worktree', '工作树') : copy('Shared', '共享')}{child.delegation?.branch && ` · ${child.delegation.branch}`}</p></Field>
     {prompt && <Field label={copy('Task', '任务')}><pre className={`task-map-inspector-pre task-map-inspector-clamped${all ? ' is-expanded' : ''}`}>{prompt}</pre><button type="button" className="btn btn-sm" onClick={() => setAll(value => !value)}>{all ? copy('Show less', '收起') : copy('Show all', '显示全部')}</button></Field>}
     {outcome && <Field label={copy('Outcome', '结果')}><p>{outcome}</p></Field>}
   </>;

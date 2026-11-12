@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderId, Session, Snapshot, Worktree } from "@threadterm/protocol";
 import { request } from "../bridge";
 import { sessionTime } from "../sessionTime";
-import { AgentIcon, Icon, SessionIcon } from "./PrototypeIcon";
+import { AgentTile, Icon, SessionIcon } from "./PrototypeIcon";
 import { isActionableInboxItem } from "../inboxVisibility";
 import { displayPath } from "../projectScope";
 import { workbenchAgents, type WorkbenchAgent } from "./workbenchAgents";
@@ -89,11 +89,11 @@ function AgentPicker({ value, onChange, agents, label, data, projectId, zh, onCr
     items[next]?.focus();
   }}>
     <button type="button" ref={trigger} className="composer-chip composer-agent-chip" data-menu-trigger="agent" aria-haspopup="menu" aria-expanded={open} aria-label={label} onClick={() => setOpen(current => !current)}>
-      <AgentIcon provider={selected?.id ?? "custom"} size={16} /><span className="composer-agent-name">{selected?.name ?? label}</span><Icon name="chevD" />
+      <AgentTile provider={selected?.id ?? "custom"} size={16} /><span className="composer-agent-name">{selected?.name ?? label}</span><Icon name="chevD" />
     </button>
     {open && createPortal(<div className="workbench-page"><div ref={menuRef} className="composer-agent-menu" role="menu" aria-label={label}>
       {agents.map(agent => <div key={agent.id} role="none" className="composer-agent-option"><button type="button" role="menuitemradio" aria-checked={agent.id === value} className={`composer-agent-item${agent.id === value ? " active" : ""}`} disabled={!agent.available} title={agent.hint} onClick={() => { onChange(agent.id); trigger.current?.focus(); setOpen(false); }}>
-        <AgentIcon provider={agent.id} size={16} /><span className="composer-agent-item-name">{agent.name}</span>{agent.hint ? <small>{agent.hint}</small> : null}{agent.id === value ? <Icon name="check" className="composer-agent-check" /> : <span className="composer-agent-check" />}
+        <AgentTile provider={agent.id} size={16} /><span className="composer-agent-item-name">{agent.name}</span>{agent.hint ? <small>{agent.hint}</small> : null}{agent.id === value ? <Icon name="check" className="composer-agent-check" /> : <span className="composer-agent-check" />}
       </button>{!agent.available && <ProviderReadinessAction readiness={providerReadiness(data.providers.find(item => item.id === agent.id), "preferred", zh)} capability={data.providers.find(item => item.id === agent.id)} data={data} projectId={projectId} zh={zh} onCreated={onCreated} onOpenSettings={onOpenSettings} menu />}</div>)}
     </div></div>, document.body)}
   </div>;

@@ -1,7 +1,7 @@
 import type { Group, GroupMember, Session } from '@threadterm/protocol';
 import { groupMemberStatus, liveGroupDeliveries, deliveryElapsed } from '../groupComposer';
 import { formatChatDuration } from '../chatPresentation';
-import { AgentIcon, Icon } from './PrototypeIcon';
+import { AgentTile, Icon } from './PrototypeIcon';
 import { GroupStatus, type GroupCopy } from './GroupStatus';
 import { groupIssueText, groupIssueTitle, groupReadOnlyNote } from '../groupMessages';
 
@@ -36,7 +36,7 @@ export function GroupMemberStrip({ group, sessions, now, zh, copy, disabled, onO
             <button className="btn btn-sm btn-ghost gc-member-main" title={`@${member.handle}${activity ? ` · ${activity}` : ''}`}
               aria-label={copy(`Open @${member.handle}'s chat`, `打开 @${member.handle} 的对话`)}
               onClick={() => onOpen(member.sessionId)}>
-              <AgentIcon provider={member.provider} size={16} /><strong>@{member.handle}</strong>
+              <AgentTile provider={member.provider} size={16} /><strong>@{member.handle}</strong>
             </button>
             <GroupStatus state={state} copy={copy} />
             {state === 'working' && elapsed !== undefined && <time>{formatChatDuration(elapsed, zh)}</time>}

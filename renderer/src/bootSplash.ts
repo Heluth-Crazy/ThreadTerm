@@ -1,7 +1,7 @@
 /* Drives the launch screen that index.html paints before the app bundle runs (markup there, styles in
    bootSplash.css, choreography in bootSplashTimeline.ts). Only the main window has it: index.html's pre-paint
    script removes it from floating and session windows, which makes everything here a no-op. */
-import { agentIconMarkup } from "./components/PrototypeIcon";
+import { agentTileMarkup } from "./components/PrototypeIcon";
 import {
   SPLASH_AGENTS,
   SPLASH_EXIT,
@@ -66,7 +66,8 @@ function startBootSplash(root: HTMLElement): { settle: (outcome: SplashOutcome) 
     const node = document.createElement("div");
     node.className = "bs-agent";
     // Static brand constants and fixed names only; never user text.
-    node.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${agentIconMarkup(agent.id) ?? ""}</svg><span>${agent.name}</span>`;
+    // The session-list tile, as everywhere a provider is shown.
+    node.innerHTML = `${agentTileMarkup(agent.id, 64)}<span>${agent.name}</span>`;
     part(".bs-agents").append(node);
     return { node, label: node.lastElementChild as HTMLElement };
   });

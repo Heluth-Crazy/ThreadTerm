@@ -35,6 +35,13 @@
 #boot-splash .bs-agents { position:absolute; left:50%; top:43%; z-index:2; }
 #boot-splash .bs-agent { position:absolute; left:-32px; top:-32px; width:64px; height:64px; display:grid; place-items:center; border-radius:19px; background:color-mix(in srgb, var(--splash-surface) 86%, transparent); border:1px solid var(--splash-border); box-shadow:0 10px 35px var(--splash-shadow), inset 0 1px 0 rgba(255,255,255,.12); opacity:0; visibility:hidden; will-change:transform, opacity, filter; }
 #boot-splash .bs-agent svg { width:32px; height:32px; color:var(--splash-text); }
+/* The agents are session-list tiles (AgentTile). The splash carries the tile look itself: it paints before the
+   app stylesheet is guaranteed to have loaded. */
+#boot-splash .bs-agent:has(> .agent-tile) { background:none; border:0; box-shadow:none; }
+#boot-splash .bs-agent .agent-tile { position:relative; display:grid; place-items:center; width:64px; height:64px; border-radius:17px; background:var(--tile-bg); box-shadow:inset 0 0 0 1px color-mix(in srgb, black 14%, transparent), inset 0 1px 0 color-mix(in srgb, white 30%, transparent), 0 6px 18px color-mix(in srgb, black 18%, transparent); }
+#boot-splash .bs-agent .agent-tile svg { width:72%; height:72%; }
+#boot-splash .bs-agent .agent-tile-codex-mark svg { width:84%; height:84%; }
+#boot-splash .bs-agent .agent-tile-opencode-mark svg { width:56%; height:56%; }
 #boot-splash .bs-agent span { position:absolute; top:76px; white-space:nowrap; font-size:11px; letter-spacing:.015em; color:var(--splash-muted); }
 #boot-splash .bs-identity { position:absolute; top:calc(43% + 96px); left:0; right:0; text-align:center; }
 #boot-splash .bs-wordmark { margin:0; font-size:30px; line-height:1.2; letter-spacing:-1.15px; font-weight:560; color:var(--splash-text); opacity:0; transform:translateY(8px); }

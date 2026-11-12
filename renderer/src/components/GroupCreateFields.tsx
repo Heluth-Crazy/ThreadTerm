@@ -1,7 +1,7 @@
 import type { GroupPrerequisiteProvider, ProviderId } from "@threadterm/protocol";
 import { agentName } from "../agents";
 import { groupHandleIssue, previewGroupHandles, type GroupDraftMember } from "../groupCreate";
-import { AgentIcon, Icon } from "./PrototypeIcon";
+import { AgentTile, Icon } from "./PrototypeIcon";
 import { Select } from "./ui/Select";
 
 type Props = {
@@ -76,7 +76,7 @@ export function GroupCreateFields({
                   const option = checkFor(provider);
                   return (
                     <option key={provider} value={provider} disabled={checkingPrerequisites || !option?.usable} title={option ? fixCopy(option) : undefined}>
-                      <span className="group-provider-option"><AgentIcon provider={provider} size={16} /><span>{agentName(provider, capabilities)}{option?.usable ? "" : ` · ${tx("Unavailable", "不可用")}`}</span></span>
+                      <span className="group-provider-option"><AgentTile provider={provider} size={16} /><span>{agentName(provider, capabilities)}{option?.usable ? "" : ` · ${tx("Unavailable", "不可用")}`}</span></span>
                     </option>
                   );
                 })}

@@ -52,7 +52,7 @@ try {
   assert.match(names.join('|'),/Grok/);
   assert.match(names.join('|'),/Shell/);
   assert.match(names.join('|'),/Preset|预设/);
-  const icons=await page.locator('.composer-agent-menu [data-agent-icon]').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('data-agent-icon')));
+  const icons=await page.locator('.composer-agent-menu [data-agent-tile]').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('data-agent-tile')));
   report.observations.icons=icons;
   assert.ok(icons.includes('codex') && icons.includes('claude') && icons.includes('kimi'),'brand icons missing from the menu');
   await page.screenshot({path:join(out,'agent-menu.png')});

@@ -17,7 +17,7 @@ import {
   loadCodeReviewPrefs,
   saveCodeReviewPrefs,
 } from "../codeReview";
-import { AgentIcon } from "./PrototypeIcon";
+import { AgentTile } from "./PrototypeIcon";
 import { SurfaceDialog } from "./SurfaceDialog";
 import "./code-review-dialog.css";
 
@@ -190,7 +190,7 @@ export function CodeReviewDialog({ session, leaseEpoch, initialFocus = "", copy,
               setModel("");
             }}
           >
-            <AgentIcon provider={row.id} size={16} />
+            <AgentTile provider={row.id} size={16} />
             <span className="code-review-provider-name">{row.name}</span>
             {!row.available && row.reason && <span className="code-review-provider-reason">{codeReviewReason(row.reason, copy)}</span>}
           </button>)}

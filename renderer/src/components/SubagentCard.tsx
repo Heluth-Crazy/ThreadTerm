@@ -13,7 +13,7 @@ import { elapsedMs, mergeTranscript, stripInlineMarkdown, subagentStatus, subage
 import { groupToolActivity } from '../toolActivity';
 import { formatChatDuration } from '../chatPresentation';
 import { AgentLoadingMark } from './AgentLoadingMark';
-import { AgentIcon, Icon } from './PrototypeIcon';
+import { AgentTile, Icon } from './PrototypeIcon';
 import { ToolActivity } from './ToolActivity';
 import { useVisibleTicker } from '../visibleTicker';
 import './subagent-card.css';
@@ -161,7 +161,7 @@ export function SubagentCard({ sessionId, info, copy, zh, renderItem, openFile, 
   return <article className={`v3-chat-message assistant chat-subagent-card is-${status}${review ? ' is-code-review' : ''}`} data-subagent-key={info.key} data-review-id={review?.reviewId}>
     <details open={open} onToggle={event => { if (event.target !== event.currentTarget) return; pin.current = true; setOpen(event.currentTarget.open); }}>
       <summary>
-        <span className="chat-subagent-heading"><AgentIcon provider={info.provider} size={16} />
+        <span className="chat-subagent-heading"><AgentTile provider={info.provider} size={16} />
           <span className="chat-subagent-description" title={review ? `${label}${review.model ? ` · ${review.model}` : ''}` : title}>{label}</span>
           <span className="chat-subagent-status" role="status">{status === 'running' && <AgentLoadingMark provider={info.provider} />}{statusLabel}</span>
           <Icon name="chevR" className="chat-subagent-chevron" />

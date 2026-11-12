@@ -136,7 +136,7 @@ try {
   const echoChoice = dialog.locator('.create-type', { hasText: 'Echo' });
   await until(async () => (await echoChoice.count()) === 1, 'Echo in the New terminal dialog');
   assert.equal(await echoChoice.isDisabled(), false, 'Echo is selectable (installed)');
-  assert.equal(await echoChoice.locator('img.brand-ico[data-agent-icon="echo"]').count(), 1, 'the plugin icon renders as <img>');
+  assert.equal(await echoChoice.locator('[data-agent-tile="echo"] img').count(), 1, 'the plugin icon renders as <img> inside its tile');
   assert.match(await echoChoice.locator('img').getAttribute('src'), /^data:image\/svg\+xml;base64,/);
   await shot('04-new-terminal-picker.png');
   await page.keyboard.press('Escape');

@@ -6,7 +6,7 @@ import {
 } from '../usageSources';
 import type { UsageCopy } from '../usageCopy';
 import type { UsageLedgerSource } from '@threadterm/protocol';
-import { AgentIcon } from './PrototypeIcon';
+import { AgentTile } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { WbIcon } from '../workbench/icons';
 
@@ -98,7 +98,7 @@ function SourceRow({ source, locale, copy, providerName }: {
   const notRead = source.historyReadLabelKey === 'historyNotReadThreadtermOnly';
   return <li className={`usage-source-row is-${state}`}>
     <span className="usage-source-head">
-      <AgentIcon provider={source.provider} size={14} />
+      <AgentTile provider={source.provider} size={14} />
       <b>{providerName(source.provider)}</b>
       <span className={`chip usage-source-state ${state === 'found' ? 'st-running' : state === 'failed' ? 'st-failed' : state === 'partial' || state === 'cancelled' ? 'st-stalled' : 'st-ended'}`}>{stateText}</span>
       <span className="usage-source-meta">

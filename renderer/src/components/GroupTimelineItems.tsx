@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import type { Group, GroupDelivery, GroupMessage, Session } from '@threadterm/protocol';
 import { byteLabel, deliveryElapsed, groupSuggestions, replyReferenceHandle } from '../groupComposer';
 import { formatChatDuration } from '../chatPresentation';
-import { AgentIcon, Icon } from './PrototypeIcon';
+import { AgentTile, Icon } from './PrototypeIcon';
 import { GroupMarkdown } from './GroupMarkdown';
 import { ReplyOutputs } from './GroupReplyOutputs';
 import { groupActivity } from './GroupMemberStrip';
@@ -150,7 +150,7 @@ export function ReplyCard(props: TimelineProps) {
     <article className={`gc-message is-member${newest ? ' is-newest' : ''}`}
       data-testid={`group-message-${message.id}`} data-message-id={message.id} data-author="member">
       <header>
-        {provider && <AgentIcon provider={provider} size={16} />}
+        {provider && <AgentTile provider={provider} size={16} />}
         <strong title={`@${message.handle}`}>@{message.handle}</strong>
         <GroupStatus state="replied" copy={copy} />
         {newest ? <div className="gc-header-tail">
@@ -205,7 +205,7 @@ export function DeliveryRow({ group, messageId, delivery, sessions, now, zh, cop
   const elapsed = delivery.state === 'working' ? deliveryElapsed(delivery, now) : undefined;
   return (
     <article className="gc-live" data-testid={`group-live-${messageId}-${delivery.handle}`} data-delivery-state={delivery.state}>
-      {member && <AgentIcon provider={member.provider} size={16} />}
+      {member && <AgentTile provider={member.provider} size={16} />}
       <strong title={`@${delivery.handle}`}>@{delivery.handle}</strong>
       <GroupStatus state={delivery.state} copy={copy} />
       <span className="gc-live-activity" title={delivery.error ? groupIssueTitle({ code: delivery.error }) : activity}>{activity}</span>

@@ -1,7 +1,7 @@
 import type { ChatConnectionError, ChatConnectionPhase, ChatSessionOption, ProviderId } from "@threadterm/protocol";
 import { connectionStatusText, providerLabel } from "../chatConnection";
 import { permissionRestoreDetail } from "../permissionRecovery";
-import { AgentIcon, useAgentCapabilities } from "./PrototypeIcon";
+import { AgentTile, useAgentCapabilities } from "./PrototypeIcon";
 import { AgentLoadingMark } from "./AgentLoadingMark";
 
 export function ChatConnectOverlay({
@@ -34,7 +34,7 @@ export function ChatConnectOverlay({
   if (variant === "banner") {
     return (
       <div className={`chat-reconnect-banner${failed ? " is-failed" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} role="status" aria-live="polite">
-        <AgentIcon provider={provider} size={18} />
+        <AgentTile provider={provider} size={18} />
         <span className={permissionRecovery ? "chat-permission-copy" : undefined}>
           <span>{permissionRecovery ? copy("Saved permissions could not be restored. Choose permissions below, then retry.", "无法恢复已保存的权限。请在下方选择权限，然后重试连接。") : status}</span>
           {detail && <span className="chat-permission-detail">{detail}</span>}

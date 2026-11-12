@@ -155,7 +155,7 @@ try {
   await page.locator('.term-loading-overlay').waitFor();
   await page.waitForTimeout(650);
   assert.equal(await page.locator('.term-loading-overlay').count(),1,'a running PTY without a rendered frame keeps the Codex mark visible');
-  assert.equal(await page.locator('[data-agent-icon="codex"]').count() > 0,true);
+  assert.equal(await page.locator('[data-agent-tile="codex"]').count() > 0,true);
   await page.screenshot({ path: join(scratch, 'codex-native-frame-wait.png'), animations: 'disabled' });
   await page.waitForFunction(()=>typeof window.listener === 'function');
   await page.evaluate(()=>window.listener({sessionId:'startup',cursor:0,data:new TextEncoder().encode('Trust this folder?')}));

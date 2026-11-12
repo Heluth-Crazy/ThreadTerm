@@ -6,7 +6,7 @@ import {
 import { activeTimeText, compactTokens, costText, dayHasUsage, fullNumber, numberLocale, type UsageLocale } from '../usageFormat';
 import { labelWidth } from '../usageTextMetrics';
 import type { UsageCopy } from '../usageCopy';
-import { AgentIcon } from './PrototypeIcon';
+import { AgentTile } from './PrototypeIcon';
 import type { TipBounds } from '../usagePresentation';
 import { UsageTooltip } from './UsageTooltip';
 
@@ -213,7 +213,7 @@ function HeatTooltip({ day, point, locale, copy, providerName, x, y, bounds }: {
       <span>{cost === null || cost === undefined ? `${copy.heatmap.costLine(copy.unknown)}` : copy.heatmap.costLine(costText(cost, locale))}</span>
       <span>{copy.heatmap.activeLine(activeTimeText(point.activeTimeMs, locale))}</span>
       <span>{copy.heatmap.requestsLine(point.requests)}</span>
-      {sources.length > 0 && <span className="usage-tip-sources">{sources.map(value => <i key={value.key}><AgentIcon provider={value.key} />{providerName(value.key)}</i>)}</span>}
+      {sources.length > 0 && <span className="usage-tip-sources">{sources.map(value => <i key={value.key}><AgentTile provider={value.key} size={12} />{providerName(value.key)}</i>)}</span>}
     </> : <span>{copy.heatmap.emptyDay}</span>}
   </UsageTooltip>;
 }

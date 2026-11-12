@@ -111,10 +111,10 @@ try {
     await page.screenshot({ path: join(out, name) });
   }
   await page.locator('.chat-connect-mask').waitFor();
-  assert.ok(await page.locator('[data-agent-icon="kimi"]').count());
+  assert.ok(await page.locator('[data-agent-tile="kimi"]').count());
   await page.screenshot({ path: join(out, 'kimi-connecting-light-1280.png') });
   await shot('codex-connecting-light-1280.png', () => window.qaRender({ provider: 'codex', phase: 'connecting' }));
-  assert.ok(await page.locator('[data-agent-icon="codex"]').count());
+  assert.ok(await page.locator('[data-agent-tile="codex"]').count());
   assert.equal(await page.locator('.chat-connect-logo .codex-tile').first().evaluate(el => getComputedStyle(el).display), 'none');
   assert.equal(await page.locator('.chat-connect-ripples').count(), 0);
   const wave = page.locator('.chat-connect-wave');
@@ -123,7 +123,7 @@ try {
     await page.screenshot({ path: join(out, `codex-corner-wave-${time}.png`) });
   }
   await shot('grok-connecting-light-1280.png', () => window.qaRender({ provider: 'grok', phase: 'connecting' }));
-  assert.ok(await page.locator('[data-agent-icon="grok"]').count());
+  assert.ok(await page.locator('[data-agent-tile="grok"]').count());
   await shot('kimi-failed-light-1280.png', () => window.qaRender({ provider: 'kimi', phase: 'failed', connectHang: false }));
   await page.locator('.chat-connect-mask.is-failed').waitFor();
   await shot('kimi-connecting-dark-1280.png', () => window.qaRender({ provider: 'kimi', phase: 'connecting', theme: 'dark' }));

@@ -7,7 +7,7 @@ import {
 } from '../usageFormat';
 import { clampOffset, modelLabel, pageCount, sessionHeading, sessionQuery, USAGE_SESSION_SORTS, type UsageSessionSort } from '../usageSessions';
 import type { UsageCopy } from '../usageCopy';
-import { AgentIcon } from './PrototypeIcon';
+import { AgentTile } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Select } from './ui/Select';
 import { WbIcon } from '../workbench/icons';
@@ -188,7 +188,7 @@ function SessionRow({ session, heading, locale, copy, providerName, importing, o
   return <li className="usage-session-row">
     <button type="button" className="usage-session-main" title={`${provider} · ${name} · ${meta}`} onClick={onOpen} aria-label={`${provider} · ${name} · ${meta}`}>
       <span className="usage-session-line">
-        <AgentIcon provider={session.provider} size={14} />
+        <AgentTile provider={session.provider} size={14} />
         <span className="usage-session-provider">{provider}</span>
         <b className="usage-session-name">{name}</b>
         <span className="chip flat">{inThreadTerm ? copy.sessions.inThreadTerm : copy.sessions.outside}</span>
@@ -281,7 +281,7 @@ function Detail({ detail, session, locale, copy, providerName }: {
               const model = modelLabel(child.models);
               const day = localDayOf(child.lastOccurredAt);
               return <li key={`${child.provider}\u0000${child.nativeSessionId}`}>
-                <AgentIcon provider={child.provider} size={13} />
+                <AgentTile provider={child.provider} size={13} />
                 <span className="usage-drawer-subagent-name">{sessionHeading(child) ?? child.nativeSessionId}</span>
                 <span className="usage-drawer-quiet">{providerName(child.provider)}{model ? ` · ${model.model}` : ''}{day ? ` · ${dayText(day, locale)}` : ''}</span>
                 <b className="tnum">{compactTokens(child.tokens.total, locale)}</b>
