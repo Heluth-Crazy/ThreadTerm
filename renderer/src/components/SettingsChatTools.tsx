@@ -58,7 +58,7 @@ export function SettingsChatTools({ settings, zh, update }: Props) {
     catch (cause) { setError(cause instanceof Error ? cause.message : zh ? "无法保存工具设置。" : "Could not save tool settings."); }
     finally { saving.current = false; setBusy(undefined); }
   };
-  return <section className="settings-chat-tools" aria-label={zh ? "会话内工具" : "In-conversation tools"} aria-busy={Boolean(busy)}>
+  return <section className="settings-card settings-section settings-chat-tools" aria-label={zh ? "会话内工具" : "In-conversation tools"} aria-busy={Boolean(busy)}>
     <h3>{zh ? "会话内工具" : "In-conversation tools"}</h3>
     <p>{zh ? "设置适用于之后连接的会话。" : "Applies to chats connected afterwards."}</p>
     {tools.map(tool => {

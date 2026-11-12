@@ -43,8 +43,7 @@ export function SettingsQuickMessages({ settings, zh, update }: { settings: Sett
   const move = (index: number, delta: -1 | 1) => save(moveQuickMessage(messages, index, delta));
   const startNew = () => { if (messages.length >= MAX_QUICK_MESSAGES) { setIssue(text(`最多保存 ${MAX_QUICK_MESSAGES} 条快捷消息。`, `Up to ${MAX_QUICK_MESSAGES} quick messages can be saved.`)); return; } setIssue(undefined); setDraft({ id: createQuickMessageId(messages), title: "", text: "", isNew: true }); };
 
-  return <>
-    <div className="setting-divider" />
+  return <section className="settings-card settings-section settings-quick-messages" aria-label={text("快捷消息", "Quick messages")}>
     <h4>{text("快捷消息", "Quick messages")}</h4>
     <p className="hint">{text("在编写器的 + 菜单或右键菜单中，于光标处插入这些常用内容。", "The composer's + menu and right-click menu insert these snippets at the caret.")}</p>
     {messages.length ? <ul className="quick-messages-list" data-testid="quick-messages-list">
@@ -61,9 +60,9 @@ export function SettingsQuickMessages({ settings, zh, update }: { settings: Sett
         </li>)}
     </ul> : !draft && <p className="hint" data-testid="quick-messages-empty">{text("还没有快捷消息。", "No quick messages yet.")}</p>}
     {draft?.isNew && <div className="quick-message-draft"><DraftEditor draft={draft} setDraft={setDraft} busy={busy} onSave={commitDraft} onCancel={() => { setDraft(undefined); setIssue(undefined); }} text={text} /></div>}
-    <button type="button" className="btn btn-sm" disabled={busy || draft !== undefined || messages.length >= MAX_QUICK_MESSAGES} data-testid="quick-message-add" onClick={startNew}>{text("添加快捷消息", "Add quick message")}</button>
+    <button type="button" className="btn" disabled={busy || draft !== undefined || messages.length >= MAX_QUICK_MESSAGES} data-testid="quick-message-add" onClick={startNew}>{text("添加快捷消息", "Add quick message")}</button>
     {issue && <p className="surface-error" role="alert">{issue}</p>}
-  </>;
+  </section>;
 }
 
 function DraftEditor({ draft, setDraft, busy, onSave, onCancel, text }: { draft: Draft; setDraft: (value: Draft) => void; busy: boolean; onSave: () => void; onCancel: () => void; text: (cn: string, en: string) => string }) {

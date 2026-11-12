@@ -4,10 +4,7 @@
 .settings-tools-heading .tt-select-trigger { min-height:28px; padding:3px 8px; }
 .settings-tools .tool-row b { font-weight:400; }
 .settings-tools .ico { width: 15px; height: 15px; }
-.settings-tools .tool-row > span { flex: 0 1 auto; }
-.settings-tool-lifecycle { display:block; }
-.settings-tool-lifecycle > h4 { margin: 0; font-size: 14px; }
-.settings-tool-lifecycle > p { margin-top:16px; }
+.settings-tools .tool-row > span { flex: 1 1 auto; }
 .settings-tools-path { display: flex; gap: 8px; min-width: 0; }
 .settings-tools-path input { min-width: 0; flex: 1; }
 .settings-tool-runs { display: grid; gap: 8px; list-style: none; padding: 0; margin: 6px 0 0; }
@@ -16,13 +13,10 @@
 .settings-tool-runs small { overflow-wrap: anywhere; color: var(--muted); }
 .settings-tool-runs li > div { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .settings-tool-empty { justify-content: flex-start !important; color: var(--muted); }
-.settings-tool-accounts { border-top: 1px solid var(--border); padding-top: 14px; }
-.settings-tool-accounts > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.settings-tool-accounts > summary { cursor: pointer; font-size: 14px; font-weight: 600; }
 .settings-tool-accounts[open] > .provider-settings { margin-top: 12px; }
 .settings-tool-notice { color: var(--muted); }
 .settings-tools-force-cwd { display: block; margin-top: 10px; overflow-wrap: anywhere; }
-.local-file-access-settings { display: grid; gap: 8px; }
-.local-file-access-settings h4, .local-file-access-settings p { margin: 0; }
 .local-file-access-settings fieldset { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
 .settings-drawer .settings-tools .local-file-access-settings fieldset label.local-file-access-option { display: flex; align-items: flex-start; gap: 8px; min-height: 44px; margin: 0; cursor: pointer; }
 .local-file-access-settings fieldset input { width: auto; flex: none; margin: 3px 0 0; accent-color: var(--primary); }

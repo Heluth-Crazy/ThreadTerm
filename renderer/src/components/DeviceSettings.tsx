@@ -82,7 +82,7 @@ export function DeviceSettings({ language, active = true }: Props) {
     setNotice(text("远程身份已更换，所有设备都需要重新配对。", "Remote identity replaced. Every device must pair again."));
     await refresh();
   });
-  return <section className="device-settings" aria-label={text("桌面移动连接", "Desktop mobile access")}>
+  return <section className="settings-card settings-section device-settings" aria-label={text("桌面移动连接", "Desktop mobile access")}>
     <h3>{text("桌面移动连接", "Desktop mobile access")}</h3>
     <SettingsSwitch checked={status?.enabled ?? false} disabled={busy || !status} onChange={setEnabled}>{text("启用移动访问", "Enable mobile access")}</SettingsSwitch>
     <TailscaleOnlySetting zh={zh} active={active} />

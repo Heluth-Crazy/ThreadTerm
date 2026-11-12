@@ -83,8 +83,7 @@ export function SettingsTerminalIcons({ settings, zh, update }: { settings: Sett
     <option value={UPLOAD}>{text("上传图标…", "Upload icon…")}</option>
   </>;
 
-  return <>
-    <div className="setting-divider" />
+  return <section className="settings-card settings-section settings-terminal-icons" aria-label={text("终端图标", "Terminal icons")}>
     <h4>{text("终端图标", "Terminal icons")}</h4>
     <p className="hint">{text("终端运行这些程序时显示对应图标。Claude、Codex、Gemini、Kimi、OpenCode、Grok 和 Pi 无需规则。", "A terminal running one of these programs shows its icon. Claude, Codex, Gemini, Kimi, OpenCode, Grok and Pi need no rule.")}</p>
     <ul className="terminal-icons-list" data-testid="terminal-icons-list">
@@ -113,5 +112,5 @@ export function SettingsTerminalIcons({ settings, zh, update }: { settings: Sett
     </ul>
     <input ref={picker} type="file" accept={TERMINAL_ICON_ACCEPT} hidden onChange={event => void onFile(event)} />
     {issue && <p className="surface-error" role="alert">{issue}</p>}
-  </>;
+  </section>;
 }

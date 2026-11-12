@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Select } from "./ui/Select";
 import type { Project, Session, SessionProcess, SessionProcessList, Settings } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { formatMemory, releaseReasonLabel, runningSummary, stopIdleLabel } from "../sessionRelease";
@@ -56,7 +57,7 @@ export function RunningAgentsView({
   const idleMemory = idleRows.reduce((sum, row) => sum + (row.memoryBytes ?? 0), 0);
   const hasMemory = processes?.memoryBytes !== undefined;
   const values = IDLE_OPTIONS.includes(idleMinutes) ? IDLE_OPTIONS : [...IDLE_OPTIONS, idleMinutes].sort((a, b) => a - b);
-  return <div className="running-agents">
+  return <div className="settings-card running-agents">
     <div className="running-agents-head">
       <div>
         <h4>{text("Running agents", "运行中的智能体")}</h4>
@@ -68,11 +69,11 @@ export function RunningAgentsView({
         </p>
       </div>
       <label className="running-agents-setting">{text("Release idle sessions after", "空闲会话释放时间")}
-        <select value={idleMinutes} disabled={busy} onChange={event => onIdleMinutes(Number(event.target.value))}>
+        <Select value={idleMinutes} disabled={busy} aria-label={text("Release idle sessions after", "空闲会话释放时间")} onChange={event => onIdleMinutes(Number(event.target.value))}>
           {values.map(value => <option key={value} value={value}>
             {value === 0 ? text("Off", "关闭") : value < 60 ? text(`${value} min`, `${value} 分钟`) : text(`${value / 60} h`, `${value / 60} 小时`)}
           </option>)}
-        </select>
+        </Select>
       </label>
     </div>
     {rows.length > 0 && <ul className="running-agents-rows">

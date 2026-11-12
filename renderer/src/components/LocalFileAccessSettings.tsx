@@ -67,8 +67,7 @@ export function LocalFileAccessSettings({ zh }: { zh: boolean }) {
   };
   const title = copy(zh, "Local file access", "本地文件访问");
 
-  return <section className="local-file-access-settings" aria-labelledby="local-file-access-title">
-    <div className="setting-divider" />
+  return <section className="settings-card settings-section local-file-access-settings" aria-labelledby="local-file-access-title">
     <h4 id="local-file-access-title">{title}</h4>
     <p className="hint">{copy(zh, "Choose which desktop process accesses files on this PC. Remote files always follow their host computer.", "选择本机由哪个桌面进程访问文件。远程文件始终跟随其主机。")}</p>
     <fieldset disabled={pending || backend === undefined} aria-describedby="local-file-access-description">

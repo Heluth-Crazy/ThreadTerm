@@ -17,6 +17,8 @@
 .background-controls-heading span { color:var(--muted); font-size:12px; }
 .background-actions { display:flex; flex-wrap:wrap; gap:6px; }
 .settings-backgrounds .btn, .settings-backgrounds .icon-btn { height:32px; min-height:32px; border-radius:6px; font-size:12px; }
+/* Choose / Remove are ordinary card actions; only the pickers use the 32 px segmented size. */
+.settings-backgrounds .background-actions .btn { height:28px; min-height:28px; font-size:13px; }
 .background-slider-row { display:grid; grid-template-columns:64px minmax(0, 1fr) 48px; gap:8px; align-items:center; min-height:32px; }
 .settings-drawer .settings-card.settings-backgrounds .background-slider-row label[for] { display:block; margin:0; font-size:12px; }
 .settings-drawer .settings-card.settings-backgrounds .background-slider-row input[type=range] { min-width:0; width:100%; height:32px; margin:0; padding:0; border:0; border-radius:6px; background:transparent; accent-color:var(--primary); box-shadow:none; }

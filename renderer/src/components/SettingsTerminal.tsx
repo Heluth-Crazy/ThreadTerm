@@ -18,8 +18,7 @@ export function SettingsTerminal({ settings, zh, update }: { settings: Settings;
     catch (error) { setIssue(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
   };
-  return <>
-    <h3>{zh ? "终端" : "Terminal"}</h3>
+  return <section className="settings-card settings-section settings-terminal" aria-label={zh ? "终端" : "Terminal"}>
     <label className="shortcut-row default-shell-setting"><span>{zh ? "默认 Shell" : "Default shell"}</span><Select aria-label={zh ? "默认 Shell" : "Default shell"} value={selected} disabled={busy} onChange={event => void save(event.target.value)}>
       <option value="cmd">{zh ? "命令提示符" : "Command Prompt"}</option>
       <option value="powershell">Windows PowerShell</option>
@@ -28,5 +27,5 @@ export function SettingsTerminal({ settings, zh, update }: { settings: Settings;
     <p className="hint">{zh ? "用于新建 Shell 终端。已有终端保留原来的 Shell。" : "Used for new Shell terminals. Existing terminals keep their shell."}</p>
     {selected === "pwsh" && pwshAvailable === false && <p className="hint" role="status">{zh ? "未找到 PowerShell 7，将使用 Windows PowerShell。" : "PowerShell 7 was not found. Using Windows PowerShell."}</p>}
     {issue && <p className="surface-error" role="alert">{issue}</p>}
-  </>;
+  </section>;
 }

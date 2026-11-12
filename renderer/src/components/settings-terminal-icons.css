@@ -7,4 +7,4 @@
 /* Beats `.tt-select.settings-select` (40px) whatever order the stylesheets load in. */
 .terminal-icons-row > .tt-select.settings-select { width:100%; min-width:0; height:28px; min-height:28px; font-size:12px; }
 .terminal-icons-row > .tt-select.settings-select .tt-select-trigger { width:100%; height:28px; min-height:28px; padding:0 8px; font-size:12px; }
-.terminal-icons-row > .btn { justify-self:stretch; }
+.terminal-icons-row > .btn, .terminal-icons-row > .btn.btn-sm { justify-self:stretch; height:28px; }

@@ -154,18 +154,18 @@ test("Running agents renders one dense row per live tree, its setting and a quie
   assert.match(html, /Idle 12 min/);
   assert.match(html, /In view/);
   assert.match(html, /Stop idle \(1 · 560\.8 MB\)/);
-  assert.match(html, /value="30"/);
-  assert.match(html, /Off/);
+  // The shared Select shows the chosen option on its trigger; the label comes from the option list.
+  assert.match(html, /data-value="30"[^>]*><span class="tt-select-value">30 min</);
   assert.match(html, /data-agent-tile="codex"/, "rows use the sidebar agent icon");
   assert.ok(html.indexOf("Stop idle") < html.indexOf("running-agents-rows"), "Stop idle sits on the header line");
   const empty = view({ sessions: [], idleReleaseMinutes: 30 });
   assert.match(empty, /No agent processes are running\./);
   assert.doesNotMatch(empty, /Stop idle/);
   const imported = view({ sessions: [], idleReleaseMinutes: 45 }, 45);
-  assert.match(imported, /value="45"[^>]*>45 min/, "an imported idle value stays selectable");
+  assert.match(imported, /data-value="45"[^>]*><span class="tt-select-value">45 min</, "an imported idle value stays selectable");
   const off = view({ sessions: [{ sessionId: "a", processCount: 2, memoryBytes: 10_000_000, idleSeconds: 120, visible: false, idle: true }], memoryBytes: 10_000_000, idleReleaseMinutes: 0 }, 0);
   assert.match(off, /Stop idle \(1/, "Stop idle is available with auto-release Off");
-  assert.match(off, /value="0"[^>]*>Off/);
+  assert.match(off, /data-value="0"[^>]*><span class="tt-select-value">Off</);
 });
 
 test("a blocked row shows the refusal reason and disables only its own Stop", async () => {

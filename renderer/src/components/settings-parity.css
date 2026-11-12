@@ -11,12 +11,9 @@
 .settings-theme-import .dlg-body > .btn { align-self: flex-start; }
 .settings-theme-import label { display: grid; gap: 8px; }
 .settings-theme-json { display: block; width: 100%; resize: vertical; }
-.settings-drawer .device-settings { display: grid; gap: 16px; }
-.settings-drawer .device-settings > h3 { margin: 0; font-size: 16px; }
 .settings-drawer .device-settings .device-qr { border-radius: 6px; }
 .settings-drawer .device-connection-details code { display: block; overflow-wrap: anywhere; font-size: 11px; }
 .device-name-input { display: grid; gap: 8px; }
-.settings-drawer .device-settings.settings-card { padding: 0; border: 0; background: transparent; }
 .settings-drawer .device-settings > .settings-card-row { align-items: center; }
 .settings-drawer .device-status { padding: 12px; border-radius: 8px; background: var(--raised); }
 .settings-drawer .device-pairing-controls { padding-top: 18px; border-top: 1px solid var(--border); }
@@ -71,3 +68,52 @@
 .settings-drawer .settings-plugins code, .plugin-trust code { display:block; white-space:pre-wrap; overflow-wrap:anywhere; }
 /* Trust copy and commands use the shared sheet body insets. */
 .dialog.sheet.plugin-trust .dlg-body { gap:8px; }
+
+/* One grammar for every tab (2026-11-11). A tab is a stack of cards; a card is a title, an optional description
+   and rows; a row is its label on the left and its control on the right; buttons keep their natural width. */
+.settings-drawer .settings-group.active > * { min-width: 0; }
+.settings-drawer .settings-group.active > .btn { justify-self: start; }
+.settings-drawer .settings-section { display: grid; gap: 12px; align-content: start; }
+.settings-drawer .settings-section > * { margin: 0; }
+.settings-drawer .settings-section > :is(h3, h4),
+.settings-drawer .settings-section > .settings-tools-heading h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--text); }
+.settings-drawer .settings-section > :is(h3, h4) + p,
+.settings-drawer .settings-section > .settings-tools-heading + p { margin-top: -8px; color: var(--muted); font-size: 13px; }
+/* A second heading inside one card starts a sub-section. */
+.settings-drawer .settings-section > h4:not(:first-child) { padding-top: 12px; border-top: 1px solid var(--border); }
+.settings-drawer .settings-section > .btn,
+.settings-drawer .settings-section > .inline-actions { justify-self: start; }
+.settings-drawer .settings-section > .setting-divider { margin: 0; }
+.settings-drawer .settings-section > .hint { margin-top: -6px; }
+/* Switch rows: the label on the left, the switch on the right (rows that show On/Off keep their own layout). */
+.settings-drawer .settings-section > .setting-switch,
+.settings-drawer .settings-section > div:not(.settings-chat-tool-row) > .setting-switch { flex-direction: row-reverse; justify-content: space-between; gap: 16px; margin: 0; min-height: 24px; }
+.settings-drawer .settings-section > div:not(.settings-chat-tool-row):has(> .setting-switch) { display: grid; gap: 6px; }
+/* Short fields sit on the row like a switch. */
+.settings-drawer .settings-section > label.settings-inline-field:not(.setting-switch):not(.shortcut-row) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 220px); align-items: center; gap: 16px; margin: 0; }
+.settings-drawer .settings-inline-field > input, .settings-drawer .settings-inline-field > .tt-select { width: 100%; min-width: 0; box-sizing: border-box; }
+.settings-drawer .settings-range { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.settings-drawer .settings-range input { flex: 1; min-width: 0; }
+.settings-drawer .settings-range output { min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; }
+.settings-drawer .settings-section > .shortcut-row { margin: 0; padding: 0 0 12px; }
+.settings-drawer .settings-section > .shortcut-row:not(:has(~ .shortcut-row)) { padding-bottom: 0; }
+/* Rows with an action: text takes the room, the action sits at the right edge. */
+.settings-drawer .settings-section > .tool-row { padding: 12px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.settings-drawer .device-list li > span { flex: 1 1 auto; }
+.settings-drawer .settings-tool-accounts > summary { list-style: none; display: flex; align-items: center; gap: 6px; }
+.settings-drawer .settings-tool-accounts > summary::-webkit-details-marker { display: none; }
+.settings-drawer .settings-tool-accounts > summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .12s; }
+.settings-drawer .settings-tool-accounts[open] > summary::before { transform: rotate(45deg); }
+.settings-drawer .settings-data-root { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+/* Labelled fields inside a card: the card's gap spaces them, not the base label margin. */
+.settings-drawer .settings-section > label:not(.setting-switch):not(.shortcut-row):not(.theme-pack) { margin: 0; }
+.settings-drawer .settings-group .running-agents label.running-agents-setting:not(.setting-switch) { display: flex; align-items: center; gap: 8px; margin: 0; }
+.settings-drawer .running-agents .running-agents-head { align-items: center; }
+/* Single-line fields share one size: 32 px, 6 px radius, the page background (the dense Terminal icons rows excepted). */
+.settings-drawer :not(.terminal-icons-row) > input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]) { box-sizing: border-box; height: 32px; padding: 0 10px; border-radius: 6px; }
+.settings-drawer :not(.terminal-icons-row) > .tt-select,
+.settings-drawer :not(.terminal-icons-row) > .tt-select.settings-select { height: 32px; min-height: 32px; border-radius: 6px; background: var(--bg); }
+.settings-drawer :not(.terminal-icons-row) > .tt-select .tt-select-trigger,
+.settings-drawer :not(.terminal-icons-row) > .tt-select.settings-select .tt-select-trigger { min-height: 30px; padding: 0 10px; border-radius: 6px; }
+/* A button beside a field takes the field's height. */
+.settings-drawer :is(.settings-path-row, .settings-tools-path) > .btn { height: 32px; }

@@ -39,7 +39,7 @@ export function MachineSettings({ settings, zh, update }: { settings: Settings; 
     locked.current = true; setBusy(true); setIssue(undefined); setNotice(undefined);
     void action().catch(error => { if (alive.current) setIssue(pairingErrorText(error, zh)); }).finally(() => { locked.current = false; if (alive.current) setBusy(false); });
   };
-  return <section className="machine-settings" aria-label={label('Computers', '电脑')}>
+  return <section className="settings-card settings-section machine-settings" aria-label={label('Computers', '电脑')}>
     <h3>{label('Computers', '电脑')} <small>{label('Preview', '预览')}</small></h3>
     <SettingsSwitch checked={enabled} disabled={busy} onChange={value => run(() => update({ remoteMachines: { enabled: value } }))}>{label('Enable Computers preview', '启用电脑连接预览')}</SettingsSwitch>
     {!enabled && <p className="hint">{label('Use this PC from another ThreadTerm computer, or use another computer from here.', '让另一台装有 ThreadTerm 的电脑使用本机，或从这里使用另一台电脑。')}</p>}
