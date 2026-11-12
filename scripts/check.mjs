@@ -18,6 +18,9 @@ import { delimiter, dirname, join, relative, resolve } from 'node:path';
 
 const repo = resolve(import.meta.dirname, '..');
 const flags = new Set(process.argv.slice(2));
+// Keep libtest concurrency configurable without exporting RUST_TEST_THREADS to protocol helpers.
+const rustTestThreads = ([...flags].find(flag => flag.startsWith('--rust-test-threads=')) ?? '').slice('--rust-test-threads='.length);
+if (rustTestThreads && !/^(?:[1-9]|[1-5][0-9]|6[0-4])$/.test(rustTestThreads)) throw new Error('--rust-test-threads must be an integer from 1 to 64');
 const release = flags.has('--release');
 const workingTree = flags.has('--working-tree') || release;
 const fast = flags.has('--fast') && !release;
@@ -264,10 +267,20 @@ function protocolFreshness() {
     if (statSync(source).isFile()) copyFileSync(source, join(copy, entry));
   }
   const result = spawnSync(process.execPath, ['generate.mjs'], { cwd: copy, timeout: 300000, encoding: 'utf8' });
+  // A gitignored output (generated-validators.js) is never committed, so there is nothing to compare. `npm run build`
+  // regenerates it; install the fresh copy instead, so the steps below import validators that match the schemas.
+  const git = onPath('git');
+  const ignored = new Set(git ? GENERATED.filter(name => spawnSync(git, ['check-ignore', '-q', `protocol/${name}`], { cwd: repo, timeout: 60000 }).status === 0) : []);
+  const fresh = name => normalized(readFileSync(join(copy, name), 'utf8'));
+  const current = name => existsSync(join(root, 'protocol', name)) ? normalized(readFileSync(join(root, 'protocol', name), 'utf8')) : undefined;
   const stale = result.status === 0
-    ? GENERATED.filter(name => !existsSync(join(copy, name))
-      || normalized(readFileSync(join(copy, name), 'utf8')) !== normalized(readFileSync(join(root, 'protocol', name), 'utf8')))
+    ? GENERATED.filter(name => !ignored.has(name) && (!existsSync(join(copy, name)) || fresh(name) !== current(name)))
     : [];
+  if (result.status === 0) {
+    for (const name of ignored) {
+      if (existsSync(join(copy, name)) && fresh(name) !== current(name)) copyFileSync(join(copy, name), join(root, 'protocol', name));
+    }
+  }
   const ok = result.status === 0 && stale.length === 0;
   const took = seconds(from);
   console.log(`${ok ? 'PASS' : 'FAIL'} ${label} (${took})`);
@@ -393,7 +406,7 @@ if (!fast) {
   for (const note of notes) console.log(`     ${note}`);
   // `--workspace`: the sheet core (runtime/sheet-core) is a workspace member with its own
   // tests, and a bare `cargo test` at this manifest would test only the runtime package.
-  const rustArgs = ['test', '--locked', '--workspace', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${testThreads}`];
+  const rustArgs = ['test', '--locked', '--workspace', '--manifest-path', join(repo, 'runtime', 'Cargo.toml'), '--target-dir', join(targetRoot, 'rust'), '-j', process.env.CARGO_BUILD_JOBS || '2', '--', `--test-threads=${rustTestThreads || testThreads}`];
   for (const skip of skips) rustArgs.push('--skip', skip);
   // Helpers reuse the test executable as a protocol peer; inherited libtest output breaks that protocol.
   // The explicit --test-threads argument above still enforces the caller's concurrency limit.
