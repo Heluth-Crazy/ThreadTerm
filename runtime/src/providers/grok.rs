@@ -246,6 +246,19 @@ impl ProviderAdapter for GrokAdapter {
         super::TerminalCapture::PreAssigned
     }
 
+    fn preflight_terminal_resume(&self, cwd: &str, native_id: &str) -> Result<(), ProviderError> {
+        validate_native_id(native_id)?;
+        let (process, initialized) = self.temporary(None)?;
+        ensure_capability(&initialized, "list", "session/list")?;
+        let recorded = find_session_cwd(&process, native_id)?.ok_or_else(|| {
+            ProviderError::new(
+                "session_has_no_native_history",
+                "Grok did not report a recorded directory for this session.",
+            )
+        })?;
+        validate_terminal_resume_directory(cwd, &recorded)
+    }
+
     fn history_list(
         &self,
         cursor: Option<&str>,
@@ -1916,6 +1929,27 @@ fn list_params(cwd: Option<&str>, cursor: Option<&str>) -> Value {
     Value::Object(params)
 }
 
+fn validate_terminal_resume_directory(cwd: &str, recorded: &str) -> Result<(), ProviderError> {
+    let recorded_path = std::path::Path::new(recorded);
+    let original = recorded_path
+        .canonicalize()
+        .ok()
+        .filter(|path| recorded_path.is_absolute() && path.is_dir())
+        .ok_or_else(|| {
+            ProviderError::new(
+                "grok_resume_directory_unavailable",
+                format!("This Grok session was recorded in {recorded}. Restore that directory to resume it."),
+            )
+        })?;
+    if std::path::Path::new(cwd).canonicalize().ok().as_ref() != Some(&original) {
+        return Err(ProviderError::new(
+            "grok_resume_directory_mismatch",
+            format!("This Grok session belongs to {recorded}. Choose that directory and try again."),
+        ));
+    }
+    Ok(())
+}
+
 fn find_session_cwd(
     process: &JsonLineProcess,
     native_id: &str,
@@ -1925,6 +1959,7 @@ fn find_session_cwd(
         let result = process.request("session/list", list_params(None, cursor.as_deref()))?;
         if let Some(row) = result
             .get("sessions")
+            .or_else(|| result.get("data"))
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
@@ -1942,6 +1977,7 @@ fn find_session_cwd(
         }
         cursor = result
             .get("nextCursor")
+            .or_else(|| result.get("cursor"))
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
         if cursor.is_none() {
@@ -5363,6 +5399,37 @@ mod tests {
             "questions":[{"question":"Continue?","options":[{"label":"Yes"}]}]}}));
         assert!(replay.drain().is_empty());
         assert!(!replay.permissions.lock().unwrap().contains_key(&encode_approval_id(&json!(77))));
+    }
+
+    #[test]
+    fn grok_terminal_resume_requires_the_recorded_directory_on_both_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let other = root.path().join("project-b");
+        std::fs::create_dir(&other).unwrap();
+        let frames = super::super::conformance::fixture("grok-terminal-resume-directory.jsonl");
+        assert_eq!(frames.len(), 2);
+        for frame in frames {
+            let row = &frame["result"]["sessions"][0];
+            let history = grok_history_item(row).unwrap();
+            assert_eq!(history["nativeId"], row["sessionId"]);
+            // The fixture replaces the machine-specific absolute prefix.
+            let original = root
+                .path()
+                .join(frame["version"].as_str().unwrap())
+                .join(history["cwd"].as_str().unwrap());
+            std::fs::create_dir_all(&original).unwrap();
+            let recorded = original.to_str().unwrap();
+            let canonical = original.canonicalize().unwrap();
+            validate_terminal_resume_directory(canonical.to_str().unwrap(), recorded).unwrap();
+            let mismatch = validate_terminal_resume_directory(other.to_str().unwrap(), recorded)
+                .unwrap_err();
+            assert_eq!(mismatch.code, "grok_resume_directory_mismatch");
+            assert!(mismatch.message.contains(recorded));
+            std::fs::remove_dir(&original).unwrap();
+            let unavailable = validate_terminal_resume_directory(other.to_str().unwrap(), recorded)
+                .unwrap_err();
+            assert_eq!(unavailable.code, "grok_resume_directory_unavailable");
+        }
     }
 
     #[test]
