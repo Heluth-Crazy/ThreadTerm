@@ -1988,6 +1988,9 @@
         "nativeId": {
           "type": "string"
         },
+        "forkFromNativeId": {
+          "type": "string"
+        },
         "deferLaunch": {
           "type": "boolean"
         },

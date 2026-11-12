@@ -960,7 +960,7 @@ export interface RequestMap {
  'project.remove': [{id:string;operationId:string},null];
  'project.catalog.list': [{},ProjectCatalogItem[]];
  'project.update': [{id:string;name?:string;pinned?:boolean;sortOrder?:number;expectedRevision:number;operationId:string},ProjectCatalogItem];
- 'session.create': [{projectId?:string;cwd:string;title?:string;provider:ProviderId;mode:SessionMode;executable?:string;args?:string[];nativeId?:string;deferLaunch?:boolean;operationId:string},Session];
+ 'session.create': [{projectId?:string;cwd:string;title?:string;provider:ProviderId;mode:SessionMode;executable?:string;args?:string[];nativeId?:string;forkFromNativeId?:string;deferLaunch?:boolean;operationId:string},Session];
  'history.import': [{projectId?:string;provider:ProviderId;nativeId:string;cwd:string;mode:SessionMode;title?:string;operationId:string},Session];
  'session.config.read': [{sessionId:string},SessionConfig];
  'session.config.save': [{sessionId:string;provider:ProviderId;mode:SessionMode;cwd:string;projectId?:string;title?:string;executable?:string;args?:string[];expectedRevision:number;operationId:string},SessionConfig];
@@ -1531,6 +1531,9 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(typeof params.provider!=='string'||!/^[a-z][a-z0-9-]{1,31}$/.test(params.provider)) throw new Error('Invalid provider');
   if(!['terminal','chat'].includes(String(params.mode))) throw new Error('Invalid mode');
   if(params.args!==undefined&&(!Array.isArray(params.args)||params.args.some(x=>typeof x!=='string'))) throw new Error('Invalid args');
+ }
+ if(m==='session.create'&&params.forkFromNativeId!==undefined) {
+  if(typeof params.forkFromNativeId!=='string'||!params.forkFromNativeId||params.provider!=='pi'||params.mode!=='terminal'||params.nativeId!==undefined||params.deferLaunch===true||params.executable!==undefined||(Array.isArray(params.args)&&params.args.length)) throw new Error('Invalid Pi terminal fork');
  }
  if(m==='settings.update'&&(!isRecord(params.patch)||!Number.isSafeInteger(params.expectedRevision))) throw new Error('Invalid settings revision or patch');
  if(m==='chat.approve'&&(typeof params.choiceId!=='string'||!params.choiceId)) throw new Error('Invalid approval choice');

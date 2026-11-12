@@ -1685,6 +1685,12 @@ impl Providers {
         self.adapter(provider)?.prepare_terminal(cwd)
     }
 
+    pub(crate) fn prepare_pi_terminal_fork(&self, cwd: &str, source_id: &str) -> Result<String, ProviderError> {
+        let _decision = crate::environment::provider_decision();
+        self.adapter("pi")?;
+        pi::prepare_terminal_fork(cwd, source_id)
+    }
+
     pub(crate) fn preflight_terminal_resume(
         &self,
         provider: &str,
