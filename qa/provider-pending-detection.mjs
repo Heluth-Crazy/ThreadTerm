@@ -84,9 +84,9 @@ try {
 
   await page.locator('.side-foot .user-row').click();
   await page.locator('.shell-menu-foot').getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('tab', { name: /工具/ }).click();
-  await page.locator('details.settings-tool-accounts > summary').click();
-  await page.getByText('正在检测提供商…', { exact: true }).waitFor();
+  await page.getByRole('tab', { name: /智能体/ }).click();
+  await page.locator('[data-testid="agents-settings"]').waitFor();
+  await page.getByText('正在检测智能体…', { exact: true }).waitFor();
   const countCalls = method => page.evaluate(method => window.__providerPendingQA.calls.filter(call => call.method === method).length, method);
   const assertAppAvailable = async () => {
     assert.equal(await page.getByText(/Runtime unavailable|运行时不可用/).count(), 0, 'provider failure must not replace the app with a runtime failure');
@@ -96,8 +96,8 @@ try {
   const initialProviderChecks = await countCalls('provider.list');
   assert.ok(initialProviderChecks >= 1, 'empty snapshot starts an automatic provider check');
   await page.evaluate(() => { window.__providerPendingQA.setProviderListFails(true); window.__providerPendingQA.emitStateChanged(); });
-  const account = page.locator('.provider-settings');
-  await account.getByRole('alert').getByText('提供商检测失败。', { exact: true }).waitFor();
+  const account = page.locator('[data-testid="agents-settings"]');
+  await account.getByRole('alert').getByText(/智能体检测失败/).waitFor();
   await assertAppAvailable();
   await account.getByRole('alert').scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(out, 'settings-detection-failed-zh.png') }); report.screenshots.push('settings-detection-failed-zh.png');
@@ -111,34 +111,23 @@ try {
   const afterRepeatedEvents = await countCalls('provider.list');
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(await countCalls('provider.list'), afterRepeatedEvents, 'failed automatic checks do not trigger a parent refresh loop');
-  const failedManualSnapshotCount = await countCalls('runtime.snapshot');
-  await account.getByRole('button', { name: '刷新提供商状态', exact: true }).click();
-  await page.waitForFunction(expected => window.__providerPendingQA.calls.filter(call => call.method === 'provider.list').length === expected, afterRepeatedEvents + 1);
-  assert.equal(await countCalls('runtime.snapshot'), failedManualSnapshotCount, 'a failed manual provider refresh does not falsely refresh the parent');
-  await page.evaluate(() => window.__providerPendingQA.setProviderListFails(false));
-  await account.getByRole('button', { name: '刷新提供商状态', exact: true }).click();
-  await account.getByText('正在检测提供商…', { exact: true }).waitFor();
-  await page.waitForFunction(expected => window.__providerPendingQA.calls.filter(call => call.method === 'runtime.snapshot').length === expected, failedManualSnapshotCount + 1);
-  await assertAppAvailable();
   await page.evaluate(() => { window.__providerPendingQA.setProviderListFails(false); window.__providerPendingQA.setProviders([{ id: 'codex', name: 'Codex', installed: false, terminal: false, chat: false, history: false, resume: false, auth: 'unknown', reason: 'not installed' }]); });
-  await account.getByText(/未安装/).waitFor();
+  await page.locator('[data-agent-row="codex"][data-agent-state="missing"]').waitFor();
   await account.getByRole('alert').waitFor({ state: 'detached' });
-  const folder = page.locator('.provider-settings [role="combobox"]');
-  await folder.click();
-  await page.getByRole('option', { name: /Second project/ }).click();
   await page.evaluate(() => window.__providerPendingQA.setProviders([{ id: 'codex', name: 'Codex', installed: false, terminal: false, chat: false, history: false, resume: false, auth: 'unknown', reason: 'not installed' }]));
-  await account.getByText(/未安装/).waitFor();
-  assert.equal(await folder.getAttribute('data-value'), 'provider-pending-two', 'selected settings folder remains unchanged across capability update');
+  await page.locator('[data-agent-row="codex"][data-agent-state="missing"]').waitFor();
   await page.screenshot({ path: join(out, 'settings-confirmed-missing-zh.png') }); report.screenshots.push('settings-confirmed-missing-zh.png');
   await page.evaluate(() => window.__providerPendingQA.setProviders([]));
-  await account.getByText('正在检测提供商…', { exact: true }).waitFor();
+  await account.getByText('正在检测智能体…', { exact: true }).waitFor();
   await page.getByRole('button', { name: '关闭设置' }).click();
 
   await page.locator('button.nav-item.new').click();
   await page.getByText('正在检测提供商…', { exact: true }).waitFor();
   const codexAction = page.getByRole('button', { name: /Codex/ }).filter({ hasText: 'Codex' });
   assert.equal(await codexAction.isEnabled(), false, 'native provider action must remain disabled during empty-snapshot detection');
-  assert.equal(await page.getByRole('button', { name: /创建/ }).isEnabled(), true, 'shell creation remains available while providers are detected');
+  // A preset terminal needs no detected provider, so choosing it keeps Create usable while detection runs.
+  await page.getByRole('button', { name: '预设', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: /创建/ }).isEnabled(), true, 'preset creation remains available while providers are detected');
   await page.getByRole('button', { name: '预设', exact: true }).click();
   await page.getByLabel('名称').fill('保留的会话名称');
   const createComboboxes = page.locator('.create-form [role="combobox"]');

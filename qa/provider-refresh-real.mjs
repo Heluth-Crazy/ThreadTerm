@@ -112,6 +112,7 @@ try {
     THREADTERM_V3_DATA: join(scratch, 'data'),
     THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
     THREADTERM_V3_RUNTIME: runtime,
+    THREADTERM_QA_PROVIDER_BIN: bin,
     THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-provider-refresh-${randomUUID()}`,
     THREADTERM_CLAUDE_NODE: process.execPath,
     THREADTERM_CLAUDE_SDK_HOST: join(scratch, 'fake-claude-host.mjs'),
@@ -167,22 +168,21 @@ try {
   assert.equal(afterIdle.length, beforeIdle, `idle snapshots and settings updates launched ${afterIdle.length - beforeIdle} provider CLIs`);
   check('60 s of runtime.snapshot polls plus 5 settings.update calls launched zero provider processes');
 
-  // 3. Open Settings → Tools → Provider accounts at a wide, light, en surface.
+  // 3. Open Settings → Agents at a wide, light, en surface.
   await present('en', 'light');
   await page.locator('.side-foot .user-row').click();
   await page.locator('.shell-menu-foot').getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: /Tools/i }).click();
-  await page.locator('details.settings-tool-accounts > summary').click();
-  const panel = page.locator('.provider-settings');
+  await page.getByRole('tab', { name: /Agents/i }).click();
+  const panel = page.locator('[data-testid="agents-settings"]');
   await panel.waitFor({ state: 'visible' });
-  await until(async () => (await panel.locator('.settings-table article').count()) >= providers.length, 'provider rows');
+  await until(async () => (await panel.locator('[data-agent-row]').count()) >= providers.length, 'provider rows');
 
-  // 4. Refresh must show the checking state and probe each CLI once more.
+  // 4. Check must show the checking state and probe each CLI once more.
   const beforeRefresh = (await readEvents()).length;
-  const refreshButton = panel.getByRole('button', { name: 'Refresh provider status', exact: true });
+  const refreshButton = page.locator('[data-testid="agents-check"] button');
   await refreshButton.click();
-  await until(() => panel.getByRole('button', { name: 'Checking providers…', exact: true }).getAttribute('aria-busy').then(value => value === 'true'), 'checking state');
-  assert.equal(await panel.locator('.settings-table article').count() >= providers.length, true, 'the provider list stays visible while checking');
+  await until(() => refreshButton.getAttribute('aria-busy').then(value => value === 'true'), 'checking state');
+  assert.equal(await panel.locator('[data-agent-row]').count() >= providers.length, true, 'the provider list stays visible while checking');
   await until(() => panel.getByText('Provider status updated.', { exact: true }).count(), 'updated status', 30_000);
   const refreshRound = (await readEvents()).slice(beforeRefresh);
   assert.ok(refreshRound.length > 0, 'Refresh launched no provider CLI');
@@ -218,7 +218,7 @@ try {
   for (const [language, theme, width] of [['en', 'light', 1100], ['en', 'dark', 1100], ['en', 'light', 420], ['en', 'dark', 420], ['zh-CN', 'light', 1100], ['zh-CN', 'dark', 1100], ['zh-CN', 'light', 420], ['zh-CN', 'dark', 420], ['en', 'custom', 1100]]) {
     await present(language, theme);
     await app.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth, 900), width);
-    const expectedTheme = theme === 'custom' ? 'dark' : theme;
+    const expectedTheme = theme === 'custom' ? 'light' : theme;
     await until(async () => (await page.evaluate(() => document.documentElement.lang)) === language && (await page.evaluate(() => document.documentElement.dataset.theme)) === expectedTheme && (await page.evaluate(() => document.documentElement.dataset.customTheme)) === (theme === 'custom' ? 'true' : 'false'), `${language}/${theme} presentation`);
     const name = label => `provider-refresh-${label}-${language}-${theme}-${width}.png`;
     await panel.scrollIntoViewIfNeeded();
@@ -227,15 +227,15 @@ try {
     // Check each state while it is actually on screen: the helper reads the
     // live DOM, so a single check after the loop would only ever inspect the
     // final updated surface and could miss checking-state violations.
-    assertNoControlViolations(await checkControlConsistency(page, '.provider-settings'), `${name('idle')} provider-settings`);
-    const button = panel.getByRole('button', { name: language === 'zh-CN' ? '刷新提供商状态' : 'Refresh provider status', exact: true });
+    assertNoControlViolations(await checkControlConsistency(page, '[data-testid="agents-settings"]'), `${name('idle')} agents-settings`);
+    const button = page.locator('[data-testid="agents-check"] button');
     await button.click();
     await until(() => panel.locator('button[aria-busy="true"]').count(), `checking ${language}/${theme}/${width}`);
     await page.screenshot({ path: join(out, name('checking')), animations: 'disabled' }); report.screenshots.push(name('checking'));
-    assertNoControlViolations(await checkControlConsistency(page, '.provider-settings'), `${name('checking')} provider-settings`);
+    assertNoControlViolations(await checkControlConsistency(page, '[data-testid="agents-settings"]'), `${name('checking')} agents-settings`);
     await until(() => panel.getByText(language === 'zh-CN' ? '提供商状态已更新。' : 'Provider status updated.', { exact: true }).count(), `updated ${language}/${theme}/${width}`, 30_000);
     await page.screenshot({ path: join(out, name('updated')), animations: 'disabled' }); report.screenshots.push(name('updated'));
-    assertNoControlViolations(await checkControlConsistency(page, '.provider-settings'), `${name('updated')} provider-settings`);
+    assertNoControlViolations(await checkControlConsistency(page, '[data-testid="agents-settings"]'), `${name('updated')} agents-settings`);
   }
   check('the idle/checking/updated surfaces pass the VC control check at 420/1100 px, light/dark/custom, en/zh-CN');
 

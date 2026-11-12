@@ -40,7 +40,8 @@ function census() {
   const origin = scroll.getBoundingClientRect().left + parseFloat(getComputedStyle(scroll).paddingLeft);
   const rel = element => round(element.getBoundingClientRect().left - origin);
   const style = element => { const s = getComputedStyle(element); return { fs: s.fontSize, fw: s.fontWeight, lh: s.lineHeight, color: s.color, bg: s.backgroundColor, radius: s.borderRadius, border: `${s.borderTopWidth} ${s.borderTopStyle}`, pad: s.padding }; };
-  const blocks = [...group.children].filter(visible).map(element => ({ tag: element.tagName.toLowerCase(), cls: String(element.className), left: rel(element), ...box(element), ...style(element) }));
+  const blocks = [...group.children].flatMap(element => getComputedStyle(element).display === 'contents' ? [...element.children] : [element]).filter(visible).map(element => ({ tag: element.tagName.toLowerCase(), cls: String(element.className), left: rel(element), ...box(element), ...style(element) }));
+  const agentRows = [...group.querySelectorAll('[data-agent-row]')].filter(visible).map(element => ({ id: element.getAttribute('data-agent-row'), state: element.getAttribute('data-agent-state'), left: rel(element), ...box(element) }));
   const headings = [...group.querySelectorAll('h2,h3,h4,h5,legend,summary,.settings-card-title,.settings-group-title,[class*="title"]')].filter(visible)
     .filter(element => !element.closest('button')).map(element => ({ text: text(element), tag: element.tagName.toLowerCase(), cls: String(element.className), left: rel(element), ...style(element) }));
   const buttons = [...group.querySelectorAll('button,[role="button"],a.btn')].filter(visible).map(element => ({ text: text(element), cls: String(element.className), left: rel(element), ...box(element), ...style(element) }));
@@ -59,7 +60,7 @@ function census() {
     .map(element => ({ cls: String(element.className), text: text(element), scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }));
   const outside = [...group.querySelectorAll('*')].filter(visible).filter(element => element.getBoundingClientRect().right > scroll.getBoundingClientRect().right - parseFloat(getComputedStyle(scroll).paddingRight) + 1)
     .map(element => ({ cls: String(element.className), text: text(element), right: round(element.getBoundingClientRect().right) }));
-  return { blocks, headings, buttons, fields, switches, textSizes, overflow: overflow.slice(0, 20), outside: outside.slice(0, 20) };
+  return { blocks, agentRows, headings, buttons, fields, switches, textSizes, overflow: overflow.slice(0, 20), outside: outside.slice(0, 20) };
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-settings-review-'));
@@ -98,6 +99,8 @@ try {
     for (const [index, name] of tabs.entries()) {
       await page.locator('.settings-layout nav [role="tab"]').nth(index).click();
       await page.waitForTimeout(700);
+      // The Agents tab is a lazy chunk; the census and the screenshot must see the loaded page.
+      if (/Agents|智能体/.test(name)) await page.locator('[data-testid="agents-settings"]').waitFor();
       await page.evaluate(() => document.fonts.ready);
       const key = `${String(index).padStart(2, '0')}-${name.trim()}`;
       if (theme === themes[0] && lang === langs[0]) report.census[key] = await page.evaluate(census);
@@ -108,6 +111,37 @@ try {
       await page.locator('.settings-panel').screenshot({ path: join(out, file), animations: 'disabled' });
       await style.evaluate(node => node.remove());
       report.shots.push(file);
+      // Open the ⋯ menu once on the Agents tab: it must escape the drawer, not be clipped by it.
+      if (theme === themes[0] && lang === langs[0] && /Agents|智能体/.test(name)) {
+        const trigger = page.locator('[data-testid="agents-settings"] [data-agent-row="codex"] button[aria-haspopup]').first();
+        await trigger.click();
+        const menu = page.locator('[role="menu"]:visible').last();
+        await menu.waitFor();
+        const boxes = await page.evaluate(() => {
+          const menu = [...document.querySelectorAll('[role="menu"]')].find(item => item.getBoundingClientRect().width > 0);
+          const scroll = document.querySelector('.settings-scroll').getBoundingClientRect();
+          const viewport = { w: innerWidth, h: innerHeight };
+          return { menu: { x: menu.x, y: menu.y, w: menu.width, h: menu.height, right: menu.right, bottom: menu.bottom }, scroll: { x: scroll.x, y: scroll.y, w: scroll.width, h: scroll.height, right: scroll.right, bottom: scroll.bottom }, viewport };
+        });
+        report.agentsMenu = boxes;
+        const menuFile = `agents-menu-${theme}-${lang}.png`;
+        await page.screenshot({ path: join(out, menuFile), animations: 'disabled' });
+        report.shots.push(menuFile);
+        // Close the popover with the trigger itself: Escape here would also close the Settings dialog.
+        await trigger.click();
+        await page.locator('[role="menu"]:visible').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      }
+      // Expanded details once on the Agents tab: path/notes/commands must stay inside the card.
+      if (((theme === themes[0] && lang === langs[0]) || (theme === 'dark' && lang === 'zh')) && /Agents|智能体/.test(name)) {
+        await page.locator('[data-agent-row="codex"]').getByText('Codex', { exact: true }).click();
+        await page.locator('[data-agent-row="codex"] dl.agents-detail').waitFor();
+        const detailStyle = await page.addStyleTag({ content: FULL_HEIGHT });
+        const detailFile = `agents-details-${theme}-${lang}.png`;
+        await page.screenshot({ path: join(out, detailFile), animations: 'disabled' });
+        await detailStyle.evaluate(node => node.remove());
+        report.shots.push(detailFile);
+        await page.locator('[data-agent-row="codex"]').getByText('Codex', { exact: true }).click();
+      }
     }
     await page.keyboard.press('Escape');
   }

@@ -7,7 +7,19 @@ export function installVisualFixture({ seed, theme }) {
   const date = '2026-09-10T14:21:00.000Z';
   const sessionDate = time => { const value = new Date(); if(time.startsWith('昨天'))value.setDate(value.getDate()-1);const parts=time.match(/(\d{2}):(\d{2})/);value.setHours(Number(parts?.[1]??14),Number(parts?.[2]??21),0,0);return value.toISOString(); };
   localStorage.setItem('threadterm.v3.recent-session-ids',JSON.stringify(seed.store.recentSessionIds));
-  const providers = ['codex','claude','kimi','gemini','opencode','shell','grok','custom'].map(id=>({id,name:id==='claude'?'Claude Code':id[0].toUpperCase()+id.slice(1),installed:true,terminal:true,chat:id!=='shell',history:id!=='shell',resume:id!=='shell',auth:'unknown'}));
+  // Settings › Agents needs real row states in the review captures: signed in, signed out, not installed, unknown.
+  const agent = (id,name,extra) => ({id,name,installed:true,terminal:true,chat:true,history:true,resume:true,...extra});
+  const providers = [
+    agent('codex','Codex',{version:'0.167.1',auth:'authenticated',homepage:'https://github.com/openai/codex'}),
+    agent('claude','Claude Code',{version:'2.1.280',auth:'authenticated',homepage:'https://claude.com/claude-code'}),
+    agent('kimi','Kimi',{version:'2.5.2',auth:'unknown',homepage:'https://kimi.com'}),
+    agent('gemini','Gemini',{installed:false,terminal:false,chat:false,history:false,resume:false,auth:'unknown',homepage:'https://github.com/google-gemini/gemini-cli'}),
+    agent('opencode','OpenCode',{version:'1.18.35',auth:'authenticated',homepage:'https://opencode.ai'}),
+    agent('grok','Grok',{version:'1.0.67',auth:'unauthenticated',signIn:{executable:'grok',args:['login'],display:'grok login'},homepage:'https://x.ai/cli'}),
+    agent('pi','Pi',{version:'1.1.0',auth:'unknown',homepage:'https://github.com/earendil-works/pi'}),
+    {id:'shell',name:'Shell',installed:true,terminal:true,chat:false,history:false,resume:false,auth:'unknown'},
+    {id:'custom',name:'Custom',installed:true,terminal:true,chat:true,history:false,resume:false,auth:'unknown'},
+  ];
   const projects=Object.entries(seed.projects).map(([id,p])=>({id,name:p.name,path:p.path,createdAt:date}));
   const trees=Object.values(seed.trees).map(t=>({id:t.id,projectId:t.project,path:t.path,branch:t.branch,head:'fixture',isMain:t.id.endsWith('-main'),locked:false,missing:!!t.missing}));
   const sessions=seed.sessions.map((s,i)=>({id:s.id,projectId:s.project,worktreePath:seed.trees[s.tree].path,title:s.name,provider:s.agent.toLowerCase().replace(' code',''),mode:'terminal',status:({needs:'waiting',running:'running',failed:'error',ended:'exited',stalled:'interrupted'})[s.state],createdAt:sessionDate(s.time),updatedAt:sessionDate(s.time),nativeId:s.agent==='Shell'?undefined:'fixture-'+s.id,followed:seed.store.followed.includes(s.id),bookmarked:seed.store.bookmarks.includes(s.id),sortOrder:i,organizationRevision:0}));

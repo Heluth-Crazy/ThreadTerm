@@ -55,10 +55,8 @@ async function records(scratch, kind) {
 async function openAccounts(page) {
   await page.getByRole('button', { name: 'Local user', exact: true }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Tools', exact: true }).click();
-  const accounts = page.locator('details.settings-tool-accounts');
-  if (!await accounts.evaluate(node => node.open)) await accounts.locator('summary').click();
-  await page.locator('#provider-settings-title').waitFor();
+  await page.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await page.locator('[data-testid="agents-settings"]').waitFor();
 }
 
 export async function runRemoteSignInProbe({ app, remotePage, localPage, rpc, until, pass, hostPeer, session, scratch, out, machine, note, fixtures }) {
@@ -84,20 +82,21 @@ export async function runRemoteSignInProbe({ app, remotePage, localPage, rpc, un
     const gemini = remoteProviders.find(row => row.id === 'gemini' && row.source === 'plugin');
     const geminiText = 'Google sign-in can’t run in ThreadTerm’s browser. Use an API key, or sign in on that computer.';
     if (gemini) {
-      const row = remotePage.locator('.provider-settings .tool-row').filter({ has: remotePage.getByText('Gemini', { exact: true }) });
+      const row = remotePage.locator('[data-agent-row="gemini"]');
       await row.getByText(geminiText, { exact: true }).waitFor();
       await row.screenshot({ path: join(out, 'remote-gemini-accounts.png') });
-      pass('bundled Gemini remote accounts row shows its single Google guidance line');
+      pass('bundled Gemini remote agents row shows its single Google guidance line');
     } else note('Gemini is not listed in this QA setup; remote-only English/Chinese guidance is covered by renderer tests');
     const remoteBefore = new Set((await rpc(remotePage, 'runtime.snapshot')).sessions.map(row => row.id));
-    const codexRow = remotePage.locator('.provider-settings .tool-row').filter({ has: remotePage.getByText('Codex', { exact: true }) });
-    await codexRow.getByRole('button', { name: 'Open sign-in terminal', exact: true }).click();
+    const codexRow = remotePage.locator('[data-agent-row="codex"]');
+    await codexRow.locator('button[aria-haspopup]').click();
+    await remotePage.getByRole('menuitem', { name: /^Sign in/ }).click();
     receipt.remote = await until(async () => (await records(scratch, 'host')).find(row => row.event === 'login'), 'host fake Codex login');
     assert.deepEqual(receipt.remote.args, ['login', '--device-auth']);
     hostTerminal = (await rpc(remotePage, 'runtime.snapshot')).sessions.find(row => !remoteBefore.has(row.id) && row.provider === 'custom');
     assert.ok(hostTerminal, 'settings creates a custom host terminal');
     if (await remotePage.getByRole('button', { name: 'Close settings', exact: true }).count()) await remotePage.getByRole('button', { name: 'Close settings', exact: true }).click();
-    pass('remote Settings → Tools → Provider accounts starts host fake codex login --device-auth');
+    pass('remote Settings → Agents starts host fake codex login --device-auth');
 
     if (fixtures.url) {
       await until(async () => (await records(scratch, 'host')).some(row => row.event === 'listening'), 'fake CLI callback listener');
@@ -137,14 +136,15 @@ export async function runRemoteSignInProbe({ app, remotePage, localPage, rpc, un
     await openAccounts(localPage);
     assert.equal(await localPage.getByText(geminiText, { exact: true }).count(), 0);
     const localBefore = new Set((await rpc(localPage, 'runtime.snapshot')).sessions.map(row => row.id));
-    const localCodex = localPage.locator('.provider-settings .tool-row').filter({ has: localPage.getByText('Codex', { exact: true }) });
-    await localCodex.getByRole('button', { name: 'Open sign-in terminal', exact: true }).click();
+    const localCodex = localPage.locator('[data-agent-row="codex"]');
+    await localCodex.locator('button[aria-haspopup]').click();
+    await localPage.getByRole('menuitem', { name: /^Sign in/ }).click();
     receipt.local = await until(async () => (await records(scratch, 'client')).find(row => row.event === 'login'), 'local fake Codex login');
     assert.deepEqual(receipt.local.args, ['login']);
     localTerminal = (await rpc(localPage, 'runtime.snapshot')).sessions.find(row => !localBefore.has(row.id) && row.provider === 'custom');
     assert.ok(localTerminal);
     if (await localPage.getByRole('button', { name: 'Close settings', exact: true }).count()) await localPage.getByRole('button', { name: 'Close settings', exact: true }).click();
-    pass('This PC accounts button still runs fake codex login without device-auth and shows no remote Gemini guidance');
+    pass('This PC agents row still runs fake codex login without device-auth and shows no remote Gemini guidance');
     receipt.clientRequests = fixtures.clientRequests;
     return receipt;
   } finally {

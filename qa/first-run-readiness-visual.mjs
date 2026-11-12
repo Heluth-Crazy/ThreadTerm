@@ -139,8 +139,8 @@ try {
   check('disabled menu rows expose keyboard-reachable Install, Sign in and settings remediation; Install uses the confirmed external-link path without a browser');
 
   await openMenu(); await menu.getByRole('menuitem', { name: /Open provider settings/ }).first().click();
-  const accounts = page.locator('details.settings-tool-accounts'); assert.equal(await accounts.evaluate(node => node.open), true, 'provider accounts is expanded by the direct settings action'); await page.locator('#provider-settings-title').waitFor();
-  check('Open provider settings routes to Settings → Tools → Provider accounts');
+  await page.locator('[data-testid="agents-settings"]').waitFor();
+  check('Open provider settings routes to Settings → Agents');
   await page.getByRole('button', { name: /Close settings|关闭设置/ }).click();
   await openMenu(); await signInHelp.click();
   await until(async () => (await requestTrace()).some(row => row.method === 'session.create' && row.params?.title?.includes('sign-in')), 'fake sign-in terminal create');

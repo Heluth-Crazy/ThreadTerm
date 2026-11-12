@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.7.14",
+    "@astryxdesign/theme-neutral": "0.7.14",
     "@codemirror/autocomplete": "6.20.3",
     "@codemirror/commands": "6.8.1",
     "@codemirror/lang-cpp": "6.0.3",
@@ -32,6 +34,7 @@
     "@codemirror/state": "6.5.2",
     "@codemirror/view": "6.38.1",
     "@lezer/highlight": "1.2.4",
+    "@stylexjs/stylex": "0.19.2",
     "@threadterm/protocol": "file:../protocol",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-web-links": "0.12.0",

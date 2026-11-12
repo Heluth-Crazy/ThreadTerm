@@ -21,11 +21,6 @@
 .settings-drawer .device-list b { font-weight:400; }
 .settings-drawer .device-list { display: grid; gap: 8px; }
 .settings-drawer .paired-device { display:flex; align-items:center; gap:12px; padding:12px; border:1px solid var(--border); border-radius:8px; }
-.settings-drawer .provider-settings { padding: 0; border: 0; background: transparent; }
-.settings-drawer .provider-settings > label { margin: 12px 0; }
-.settings-drawer .provider-settings .settings-table { display: grid; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.settings-drawer .provider-settings .tool-row { border: 0; border-radius: 0; border-bottom: 1px solid var(--border); }
-.settings-drawer .provider-settings .tool-row:last-child { border-bottom: 0; }
 .settings-drawer .device-status, .settings-drawer .device-pairing-controls, .settings-drawer .device-pairing-offer { padding-top: 12px; }
 .settings-drawer .device-pairing-offer img { display: block; width: 196px; height: 196px; margin: 10px 0; border-radius: 6px; }
 .settings-drawer .device-offer-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -100,10 +95,6 @@
 /* Rows with an action: text takes the room, the action sits at the right edge. */
 .settings-drawer .settings-section > .tool-row { padding: 12px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
 .settings-drawer .device-list li > span { flex: 1 1 auto; }
-.settings-drawer .settings-tool-accounts > summary { list-style: none; display: flex; align-items: center; gap: 6px; }
-.settings-drawer .settings-tool-accounts > summary::-webkit-details-marker { display: none; }
-.settings-drawer .settings-tool-accounts > summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .12s; }
-.settings-drawer .settings-tool-accounts[open] > summary::before { transform: rotate(45deg); }
 .settings-drawer .settings-data-root { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 /* Labelled fields inside a card: the card's gap spaces them, not the base label margin. */
 .settings-drawer .settings-section > label:not(.setting-switch):not(.shortcut-row):not(.theme-pack) { margin: 0; }

@@ -25,17 +25,20 @@ try {
   const page = await app.firstWindow({ timeout: 30_000 }); page.setDefaultTimeout(5_000); page.on('pageerror', error => { (report.pageErrors ??= []).push(String(error)); });
   await page.addInitScript(() => {
     const staleCodex = { id: 'codex', name: 'Codex', installed: false, terminal: true, chat: false, history: false, resume: false, auth: 'unknown', reason: 'not installed' };
-    const freshCodex = { ...staleCodex, installed: true, chat: true, history: true, resume: true, auth: 'signed_in', version: 'fixture', reason: undefined };
+    const freshCodex = { ...staleCodex, installed: true, chat: true, history: true, resume: true, auth: 'authenticated', version: 'fixture', reason: undefined };
     const project = { id: 'provider-status-project', name: 'Provider status QA', path: 'C:/qa/provider-status', createdAt: '2026-10-08T00:00:00.000Z' };
     const settings = { revision: 1, language: 'en', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false }, terminalCompatibility: { aiCompletionHints: false }, customThemes: {} };
     let available = false; let providerCache = [staleCodex]; const snapshot = () => ({ epoch: 'provider-status-fixture', revision: 1, projects: [project], sessions: [], inbox: [], providers: providerCache, settings, workspaces: [] });
     const calls = []; window.__providerStatusQA = { calls, setAvailable: () => { available = true; } };
+    let refreshGeneration = 0;
     const emit = () => listeners.forEach(listener => listener({ v: 1, event: 'state.changed', epoch: 'provider-status-fixture', seq: calls.length, data: { kind: 'provider' } }));
+    const emitProviders = generation => listeners.forEach(listener => listener({ v: 1, event: 'state.changed', epoch: 'provider-status-fixture', seq: ++generation, data: { kind: 'providers', generation, outcome: 'ok' } }));
     const listeners = new Set();
     window.threadterm = { platform: 'win32', request: async (method, params = {}) => {
       calls.push({ method, params });
       if (method === 'runtime.snapshot') { calls.at(-1).installed = providerCache[0].installed; return structuredClone(snapshot()); }
       if (method === 'provider.list') { const next = available ? freshCodex : staleCodex; providerCache = [next]; return [structuredClone(next)]; }
+      if (method === 'provider.refresh') { providerCache = [available ? freshCodex : staleCodex]; const generation = ++refreshGeneration; queueMicrotask(() => emitProviders(generation)); return { refreshId: generation }; }
       if (method === 'settings.update') { Object.assign(settings, params.patch); settings.revision++; emit(); return structuredClone(settings); }
       if (method === 'worktree.list') return [{ id: 'main', projectId: project.id, path: project.path, branch: 'main', isMain: true, locked: false, missing: false }];
       if (method === 'project.catalog.list') return [{ ...project, pinned: false, sortOrder: 0, git: { available: true, branch: 'main' } }];
@@ -54,19 +57,20 @@ try {
   // Start with an unavailable provider, then change backend truth without a state.changed event.
   await page.locator('.side-foot .user-row').click();
   await page.locator('.shell-menu-foot').getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: /Tools/i }).click();
-  await page.locator('details.settings-tool-accounts > summary').click();
-  await page.waitForFunction(() => window.__providerStatusQA.calls.some(call => call.method === 'provider.list'));
-  await page.getByText('Codex', { exact: true }).waitFor();
-  const account = page.locator('.settings-table article').filter({ has: page.getByText('Codex', { exact: true }) });
-  await account.getByText(/Not installed/).waitFor();
+  await page.getByRole('tab', { name: /Agents/i }).click();
+  await page.locator('[data-testid="agents-settings"]').waitFor();
+  const account = page.locator('[data-agent-row="codex"]');
+  await account.waitFor();
+  await account.getByText('Not installed', { exact: true }).waitFor();
+  assert.equal(await account.getAttribute('data-agent-state'), 'missing', 'stale Codex starts missing');
   await page.evaluate(() => window.__providerStatusQA.setAvailable());
-  const providerCallsBeforeRefresh = await page.evaluate(() => window.__providerStatusQA.calls.filter(call => call.method === 'provider.list').length);
+  const refreshesBefore = await page.evaluate(() => window.__providerStatusQA.calls.filter(call => call.method === 'provider.refresh').length);
   const snapshotsBeforeRefresh = await page.evaluate(() => window.__providerStatusQA.calls.filter(call => call.method === 'runtime.snapshot').length);
-  await page.getByRole('button', { name: 'Refresh provider status', exact: true }).click();
-  await page.waitForFunction(before => window.__providerStatusQA.calls.filter(call => call.method === 'provider.list').length === before + 1, providerCallsBeforeRefresh);
-  assert.equal(await page.evaluate(() => window.__providerStatusQA.calls.filter(call => call.method === 'provider.list').length), providerCallsBeforeRefresh + 1, 'provider refresh loop');
-  await account.getByText(/Installed.*fixture/).waitFor();
+  await page.locator('[data-testid="agents-check"] button').click();
+  await page.waitForFunction(before => window.__providerStatusQA.calls.filter(call => call.method === 'provider.refresh').length === before + 1, refreshesBefore);
+  assert.equal(await page.evaluate(() => window.__providerStatusQA.calls.filter(call => call.method === 'provider.refresh').length), refreshesBefore + 1, 'one Check sends one refresh');
+  await page.locator('[data-agent-row="codex"][data-agent-state="signed-in"]').waitFor();
+  await account.getByText('fixture', { exact: true }).waitFor();
   await account.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(out, 'settings-installed.png') }); report.screenshots.push('settings-installed.png');
   await page.getByRole('button', { name: 'Close settings', exact: true }).click();
@@ -81,7 +85,7 @@ try {
   assert.equal(await chat.isEnabled(), true, 'fresh Codex chat capability did not reach Create'); await chat.click();
   for (const [language, theme, width] of [['en', 'light', 1280], ['en', 'dark', 420], ['zh-CN', 'light', 1280], ['zh-CN', 'dark', 420]]) {
     await page.evaluate(({ language, theme }) => window.threadterm.request('settings.update', { patch: { language, theme }, expectedRevision: 1, operationId: crypto.randomUUID() }), { language, theme });
-    await page.waitForFunction(({ theme, language }) => document.documentElement.dataset.theme === theme && document.querySelector('.create-dlg h2')?.textContent.includes(language === 'en' ? 'New terminal' : '新建终端'), { theme, language });
+    await page.waitForFunction(({ theme, language }) => document.documentElement.dataset.theme === theme && /(New (terminal|chat)|新建(终端|聊天))/.test(document.querySelector('.create-dlg h2')?.textContent ?? ''), { theme, language });
     await app.evaluate(({ BrowserWindow }, width) => { const win = BrowserWindow.getAllWindows()[0]; win.setContentSize(width, 900); return win.getContentSize(); }, width); await page.setViewportSize({ width, height: 900 }); const name = `create-${language}-${theme}-${width}.png`; await page.screenshot({ path: join(out, name) }); report.screenshots.push(name);
   }
   report.calls = await page.evaluate(() => window.__providerStatusQA.calls);

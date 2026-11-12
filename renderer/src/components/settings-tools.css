@@ -13,8 +13,6 @@
 .settings-tool-runs small { overflow-wrap: anywhere; color: var(--muted); }
 .settings-tool-runs li > div { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .settings-tool-empty { justify-content: flex-start !important; color: var(--muted); }
-.settings-tool-accounts > summary { cursor: pointer; font-size: 14px; font-weight: 600; }
-.settings-tool-accounts[open] > .provider-settings { margin-top: 12px; }
 .settings-tool-notice { color: var(--muted); }
 .settings-tools-force-cwd { display: block; margin-top: 10px; overflow-wrap: anywhere; }
 .local-file-access-settings fieldset { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }

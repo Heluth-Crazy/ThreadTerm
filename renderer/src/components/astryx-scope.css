@@ -1,0 +1,25 @@
+/* Astryx components inside ThreadTerm (2026-11-12, Settings › Agents first).
+   Astryx ships its styles in cascade layers; ThreadTerm's CSS is unlayered, so its broad drawer rules
+   (`.settings-drawer label…`, `input…`, `.settings-group p`) would win over Astryx inside the drawer. Within
+   .astryx-scope those elements roll back to the layered styles below (Astryx's), and nothing else changes.
+   Only the elements ThreadTerm's drawer rules really target are reset: buttons are left alone, because Astryx's
+   Item root is a <button> whose StyleX layout is unlayered and an `all` reset would strip it to the UA default.
+   The id-less :not() only raises specificity above the drawer rules. */
+.settings-drawer .astryx-scope :is(label, input, select, textarea):not(#astryx-scope-guard) { all: revert-layer; }
+
+/* Theme bridge: ThreadTerm's tokens drive Astryx's, so every ThreadTerm theme and custom colour carries over. */
+.astryx-scope {
+  --color-background-body: var(--bg);
+  --color-background-card: var(--surface);
+  --color-background-surface: var(--surface);
+  --color-background-popover: var(--surface);
+  --color-background-muted: var(--raised);
+  --color-text-primary: var(--text);
+  --color-text-secondary: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--primary);
+  --color-text-accent: var(--primary);
+  --font-size-base: 0.8125rem;
+  color: var(--text);
+  font-family: inherit;
+}

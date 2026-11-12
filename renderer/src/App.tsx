@@ -135,7 +135,7 @@ function MachineApp() {
   const [error, setError] = useState<unknown>();
   const [runtimeState, setRuntimeState] = useState<RuntimeStatusState>("connecting");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<"tools" | "computers" | "data">();
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"agents" | "tools" | "computers" | "data">();
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorRevision, setCreatorRevision] = useState(0);
   const [creatorDefaults, setCreatorDefaults] = useState<{projectId?:string;path?:string;provider?:ProviderId;title?:string;draft?:string;mode?:"chat"|"terminal"}>();
@@ -642,7 +642,7 @@ function MachineApp() {
             onClose={() => {setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);}}
             onCreated={(created) => {setCreatorOpen(false);setCreatorDefaults(undefined);setGroupCreate(false);setGroupContext(undefined);openCreatedSession(created);void refresh();}}
             onGroupCreated={()=>void refresh()}
-            onOpenSettings={()=>{setCreatorOpen(false);setSettingsInitialTab("tools");setSettingsOpen(true);}}
+            onOpenSettings={()=>{setCreatorOpen(false);setSettingsInitialTab("agents");setSettingsOpen(true);}}
           />
         )}
         {projectCreatorOpen && (
