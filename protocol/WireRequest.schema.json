@@ -1888,6 +1888,11 @@
     },
     "RequestParams<\"runtime.snapshot\">": {
       "type": "object",
+      "properties": {
+        "includeNativeSubagents": {
+          "type": "boolean"
+        }
+      },
       "additionalProperties": false
     },
     "RequestParams<\"project.add\">": {

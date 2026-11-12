@@ -21,7 +21,7 @@ export function subagentInfo(part: ChatPart): SubagentInfo | undefined {
     transcript: data.transcript === 'live' || data.transcript === 'native' || data.transcript === 'session' ? data.transcript : 'none' };
 }
 
-export function subagentTitle(info: SubagentInfo, copy: Copy): string {
+export function subagentTitle(info: Pick<SubagentInfo, 'provider' | 'description' | 'agentType' | 'name'>, copy: Copy): string {
   const description = text(info.description);
   if (description) return [text(info.agentType), description].filter(Boolean).join(' · ');
   const name = text(info.name);

@@ -25,7 +25,6 @@ import {
   onWindowState,
   operationId,
   request,
-  snapshot,
   subscribeEvents,
   windowAction,
   windowState,
@@ -52,6 +51,7 @@ import { applyThemeTokens, customTheme, resolveTheme, themeUsesSystemAppearance,
 import { userErrorText } from "./runtimeError";
 import { rememberBootAppearance, settleBootSplash } from "./bootSplash";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { NativeSubagentsContext } from './nativeSubagents';
 import { AppSettingsProvider } from "./appSettings";
 import { I18nProvider, localeFromSettings, translate, useTranslation, type Locale } from "./i18n";
 import { confirmCloseEditors } from "./dirtyEditors";
@@ -170,7 +170,10 @@ function MachineApp() {
     const generation = ++refreshGeneration.current;
     try {
       if (generation === refreshGeneration.current) setError(undefined);
-      const [next, visibility] = await Promise.all([snapshot(), request("catalog.visibility.list", {})]);
+      const [next, visibility] = await Promise.all([
+        request("runtime.snapshot", { includeNativeSubagents: true }),
+        request("catalog.visibility.list", {}),
+      ]);
       if (generation !== refreshGeneration.current) return;
       if (!inboxInitialized.current) {
         next.inbox.forEach((item) => seenAttention.current.add(item.id));
@@ -196,7 +199,10 @@ function MachineApp() {
         if (state === "reconnected") void refresh();
         return;
       }
-      if (event.event === "state.changed") void refresh();
+      if (event.event === "state.changed"
+        || (event.event === "chat.item" && (event.data as { nativeSubagentsChanged?: unknown } | undefined)?.nativeSubagentsChanged === true)) {
+        void refresh();
+      }
     });
   }, [refresh]);
   const visibleRuntimeProblem = useVisibleRuntimeProblem(runtimeState);
@@ -411,6 +417,7 @@ function MachineApp() {
   return (
     <I18nProvider locale={locale}>
       <AgentIconsProvider providers={data?.providers ?? []} images={data?.settings.terminalIcons?.images}>
+      <NativeSubagentsContext.Provider value={data?.nativeSubagents}>
       <AppSettingsProvider settings={data?.settings}>
       {remoteMachine && <HostFiles />}
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}${remoteMachine ? ' remote-machine' : ''}`} style={{ '--machine-color': currentMachine?.color } as CSSProperties}>
@@ -676,6 +683,7 @@ function MachineApp() {
         )}
       </div>
       </AppSettingsProvider>
+      </NativeSubagentsContext.Provider>
       </AgentIconsProvider>
     </I18nProvider>
   );

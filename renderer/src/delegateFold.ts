@@ -1,5 +1,5 @@
-import type { Session, SessionDelegation } from '@threadterm/protocol';
-import { nestedDelegateIds, withDelegates } from './delegation';
+import type { NativeSubagentSummaries, NativeSubagentSummary, Session, SessionDelegation } from '@threadterm/protocol';
+import { delegationActive, nestedDelegateIds, withDelegates } from './delegation';
 import { sessionActivity } from './sessionActivity';
 
 export const EXPANDED_DELEGATES_KEY = 'threadterm.expandedFinishedDelegates';
@@ -11,32 +11,51 @@ export type DelegateCatalogSession = Pick<Session, 'id' | 'createdAt' | 'readOnl
 };
 
 export type DelegateCatalogRow<T extends DelegateCatalogSession = Session> =
-  | { kind: 'session'; session: T; nested: boolean }
+  | { kind: 'session'; session: T; nested: boolean; nativeRunning?: NativeSubagentSummary[]; activeCount?: number }
   /** `sessionIds`: the finished delegates the fold holds, so the group can be archived or deleted at once. */
-  | { kind: 'fold'; parentId: string; count: number; expanded: boolean; sessionIds: string[] };
+  | { kind: 'fold'; parentId: string; count: number; expanded: boolean; sessionIds: string[]; nativeFinished?: NativeSubagentSummary[] };
 
 /** Fold only children actually rendered under a parent in this list. */
 export function foldedDelegateRows<T extends DelegateCatalogSession>(
   list: readonly T[], all: readonly T[], selectedId: string | undefined, expandedParents: readonly string[],
-  needsAttention?: (session: T) => boolean,
+  needsAttention?: (session: T) => boolean, nativeSubagents?: NativeSubagentSummaries,
 ): DelegateCatalogRow<T>[] {
   const ordered = withDelegates(list, all), expanded = new Set(expandedParents), nested = nestedDelegateIds(all);
   const rows: DelegateCatalogRow<T>[] = [];
+  const appendSession = (session: T, isNested: boolean) => {
+    const native = nativeSubagents?.[session.id] ?? [];
+    const nativeRunning = native.filter(agent => agent.status === 'running');
+    const row: Extract<DelegateCatalogRow<T>, { kind: 'session' }> = { kind: 'session', session, nested: isNested };
+    if (nativeRunning.length) {
+      row.nativeRunning = nativeRunning;
+      row.activeCount = nativeRunning.length;
+    }
+    rows.push(row);
+    return { row, nativeFinished: native.filter(agent => agent.status !== 'running') };
+  };
+  const appendFold = (parentId: string, finished: T[], nativeFinished: NativeSubagentSummary[]) => {
+    if (!finished.length && !nativeFinished.length) return;
+    const open = expanded.has(parentId);
+    rows.push({ kind: 'fold', parentId, count: finished.length + nativeFinished.length, expanded: open,
+      sessionIds: finished.map(session => session.id), ...(nativeFinished.length ? { nativeFinished } : {}) });
+    return open;
+  };
+  const appendNestedSession = (session: T) => {
+    const { nativeFinished } = appendSession(session, true);
+    appendFold(session.id, [], nativeFinished);
+  };
   for (let index = 0; index < ordered.length; index++) {
     const parent = ordered[index];
-    rows.push({ kind: 'session', session: parent, nested: nested.has(parent.id) });
+    const { row, nativeFinished } = appendSession(parent, nested.has(parent.id));
     const finished: T[] = [];
     while (index + 1 < ordered.length && ordered[index + 1].delegation?.parentSessionId === parent.id) {
       const child = ordered[++index], activity = sessionActivity(child);
+      if (row.activeCount !== undefined && child.delegation && delegationActive(child.delegation.state)) row.activeCount += 1;
       if (child.id !== selectedId && !needsAttention?.(child) && activity !== 'awaiting_approval' && activity !== 'awaiting_input'
         && finishedStates.has(child.delegation!.state)) finished.push(child);
-      else rows.push({ kind: 'session', session: child, nested: true });
+      else appendNestedSession(child);
     }
-    if (finished.length) {
-      const open = expanded.has(parent.id);
-      rows.push({ kind: 'fold', parentId: parent.id, count: finished.length, expanded: open, sessionIds: finished.map(session => session.id) });
-      if (open) rows.push(...finished.map(session => ({ kind: 'session' as const, session, nested: true })));
-    }
+    if (appendFold(parent.id, finished, nativeFinished)) finished.forEach(appendNestedSession);
   }
   return rows;
 }

@@ -38,6 +38,9 @@
 .chat-overview-state.is-quiet { max-width:58%; font-size:11px; }
 .chat-overview-state.is-need, .chat-overview-state.is-quiet { color:var(--st-needs, #e2b340); }
 .chat-overview-state.is-fail, .chat-overview-state.is-error { color:var(--st-failed, #e5675f); }
+.chat-overview-native-state { flex:none; color:var(--faint); font-size:11px; }
+.chat-overview-native-state.is-run { color:var(--text); }
+.chat-overview-native-state.is-fail { color:var(--st-failed); }
 .chat-overview-state.is-run { color:var(--text); }
 .chat-overview-state.is-done { color:var(--faint); }
 .chat-overview-open-hint { display:none; flex:none; color:var(--muted); font-size:12px; }

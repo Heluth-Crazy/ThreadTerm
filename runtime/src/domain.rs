@@ -1,6 +1,7 @@
 use crate::session_activity::SessionActivity;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -260,6 +261,8 @@ pub struct Snapshot {
     pub workspaces: Vec<Value>,
     pub inbox: Vec<Value>,
     pub providers: Vec<Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_subagents: BTreeMap<String, Vec<Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -72,7 +72,18 @@ try {
     assert.equal((await peer.request('chat.connect', { sessionId, leaseEpoch, operationId: randomUUID() })).phase, 'ready');
     const rows = () => peer.request('chat.read', { sessionId });
     const parts = async () => (await rows()).flatMap(item => item.parts);
-    const state = async () => (await peer.request('runtime.snapshot')).sessions.find(row => row.id === sessionId);
+    const snapshot = () => peer.request('runtime.snapshot');
+    const state = async () => (await snapshot()).sessions.find(row => row.id === sessionId);
+    const verifyChildSummary = async status => {
+      const legacy = await snapshot();
+      assert.ok(!('nativeSubagents' in legacy), 'existing clients keep the unchanged snapshot shape');
+      const current = await peer.request('runtime.snapshot', { includeNativeSubagents: true });
+      const summaries = current.nativeSubagents?.[sessionId];
+      assert.deepEqual(summaries?.map(({ key, provider, status }) => ({ key, provider, status })),
+        [{ key: 'qa-subagent-child', provider: 'codex', status }]);
+      assert.ok(!current.sessions.some(session => session.nativeId === 'qa-subagent-child'));
+      assert.ok(summaries.every(summary => !('prompt' in summary) && !('lastActivity' in summary)));
+    };
     const requests = async () => (await readFile(log, 'utf8')).trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse);
     const persisted = (await requests()).filter(row => row.method === 'thread/inject_items' && row.params.threadId === parentId);
     assert.deepEqual(persisted.map(row => row.params), [{
@@ -87,6 +98,8 @@ try {
       const transcript = await waitFor(() => peer.request('chat.subagent.read', { sessionId, key: 'qa-subagent-child' }), value => value.items.some(item => item.parts.some(part => part.type === 'tool')), 'open child command');
       assert.equal(transcript.items.filter(item => item.parts.some(part => part.type === 'tool')).length, 1);
       assert.equal((await state()).status, 'running');
+      await verifyChildSummary('running');
+      report.checks.push('slow: the owning Chat snapshot lists the running child without a new Session');
       await peer.request('chat.cancel', { sessionId, turnId: sent.turnId, leaseEpoch, operationId: randomUUID() });
       const records = await waitFor(requests, values => values.slice(before).some(row => row.method === 'interrupt.recorded'), 'recorded interrupt');
       assert.deepEqual(records.slice(before).find(row => row.method === 'interrupt.recorded').params, { threadId: parentId, turnId: 'qa-parent-turn-1' });
@@ -113,6 +126,7 @@ try {
       const cards = parentParts.filter(part => part.type === 'subagent');
       assert.equal(cards.length, 1);
       assert.equal(cards[0].data.status, 'completed');
+      await verifyChildSummary('completed');
       assert.equal(cards[0].data.toolCount, 1);
       const transcript = await peer.request('chat.subagent.read', { sessionId, key: cards[0].data.key });
       assert.equal(transcript.source, 'live');

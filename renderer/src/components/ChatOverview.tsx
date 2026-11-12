@@ -1,12 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ChatItem, ChatPlanEntry, Session } from '@threadterm/protocol';
+import type { ChatItem, ChatPlanEntry, NativeSubagentSummary, Session } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
-import { attachedMessagesLabel, authorityLabel, delegationActive } from '../delegation';
+import { attachedMessagesLabel, authorityLabel, delegationActive, delegationStateLabel } from '../delegation';
 import {
   OVERVIEW_COLLAPSED_KEY, OVERVIEW_FINISHED_OPEN_KEY, overviewChangesFileCount, overviewChangesLabel,
   overviewDelegateGroups, overviewFinishedLabel, overviewHasSections, overviewPlan, overviewPlanText,
   overviewStateText, readOverviewCollapsed, readOverviewFinishedOpen, toggleOverviewFinishedOpen, type Copy,
 } from '../chatOverview';
+import { useNativeSubagents } from '../nativeSubagents';
+import { subagentTitle } from '../subagentActivity';
 import { planEntryLabel, planPriorityLabel } from '../chatPlan';
 import { AgentTile, Icon } from './PrototypeIcon';
 import { QuietMinutes } from './QuietMinutes';
@@ -56,10 +58,13 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   const popoverId = useId(), finishedId = useId(), planId = useId();
   const now = Date.now();
   const groups = useMemo(() => overviewDelegateGroups(delegates, now), [delegates, now]);
+  const native = useNativeSubagents(session.id);
+  const nativeRunning = native.filter(agent => agent.status === 'running');
+  const nativeFinished = native.filter(agent => agent.status !== 'running');
   const plan = useMemo(() => overviewPlan(items), [items]);
   const changes = useMemo(() => overviewChangesFileCount(items), [items]);
   const planActive = Boolean(plan?.turnId && liveTurnId && plan.turnId === liveTurnId);
-  const hasSections = overviewHasSections({ delegates, plan, changes });
+  const hasSections = native.length > 0 || overviewHasSections({ delegates, plan, changes });
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [finishedOpen, setFinishedOpen] = useState<string[]>(readFinishedOpen);
   const [open, setOpen] = useState(false);
@@ -67,7 +72,7 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null);
   const showDocked = docked && !collapsed && hasSections;
   const showButton = !showDocked && hasSections;
-  const activeCount = groups.active.length;
+  const activeCount = groups.active.length + nativeRunning.length;
   const buttonLabel = activeCount
     ? copy(`${activeCount} running`, `${activeCount} 个进行中`)
     : copy('Delegated agents', '委派的代理');
@@ -114,16 +119,19 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
     setFinishedOpen(ids);
     persist(OVERVIEW_FINISHED_OPEN_KEY, JSON.stringify(ids));
   };
-  const finished = overviewFinishedLabel(groups.finished.length, groups.failedFinished, copy);
+  const finishedCount = groups.finished.length + nativeFinished.length;
+  const failedCount = groups.failedFinished + nativeFinished.filter(agent => agent.status === 'failed').length;
+  const finished = overviewFinishedLabel(finishedCount, failedCount, copy);
   const showFinished = finishedOpen.includes(session.id);
   const openChanges = onOpenChanges ?? openAgentChanges;
 
   const card = <div className={`chat-overview-card${showDocked ? ' is-docked' : ''}`} aria-label={copy('Chat overview', '聊天概览')}>
     {showDocked && <button type="button" className="icon-btn chat-overview-collapse" aria-label={copy('Collapse overview', '收起概览')} title={copy('Collapse overview', '收起概览')} onClick={collapse}><Icon name="back" /></button>}
-    {delegates.length > 0 && <section className="chat-overview-section" aria-label={copy('Delegated agents', '委派的代理')}>
-      <div className="chat-overview-section-head"><span>{copy('Delegated agents', '委派的代理')}</span><span className="chat-overview-count">{groups.active.length ? copy(`${groups.active.length} active`, `${groups.active.length} 个进行中`) : finished.label}</span></div>
+    {(delegates.length > 0 || native.length > 0) && <section className="chat-overview-section" aria-label={copy('Delegated agents', '委派的代理')}>
+      <div className="chat-overview-section-head"><span>{copy('Delegated agents', '委派的代理')}</span><span className="chat-overview-count">{activeCount ? copy(`${activeCount} active`, `${activeCount} 个进行中`) : finished.label}</span></div>
       {groups.active.map(delegate => <OverviewDelegateRow key={delegate.id} delegate={delegate} copy={copy} zh={zh} now={now} onOpen={onOpenSession} />)}
-      {groups.finished.length > 0 && <>
+      {nativeRunning.map(agent => <OverviewNativeSubagent key={agent.key} agent={agent} copy={copy} zh={zh} />)}
+      {finishedCount > 0 && <>
         <div className="chat-overview-fold">
           <button type="button" className="chat-overview-fold-button" aria-expanded={showFinished} aria-controls={finishedId} onClick={toggleFinished}>
             <Icon name={showFinished ? 'chevD' : 'chevR'} />
@@ -131,7 +139,10 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
           </button>
           {finished.failed && <span className="chat-overview-fold-failed">{finished.failed}</span>}
         </div>
-        {showFinished && <div id={finishedId}>{groups.finished.map(delegate => <OverviewDelegateRow key={delegate.id} delegate={delegate} copy={copy} zh={zh} now={now} onOpen={onOpenSession} />)}</div>}
+        {showFinished && <div id={finishedId}>
+          {groups.finished.map(delegate => <OverviewDelegateRow key={delegate.id} delegate={delegate} copy={copy} zh={zh} now={now} onOpen={onOpenSession} />)}
+          {nativeFinished.map(agent => <OverviewNativeSubagent key={agent.key} agent={agent} copy={copy} zh={zh} />)}
+        </div>}
       </>}
     </section>}
     {changes !== undefined && <section className="chat-overview-section" aria-label={copy('Changes', '变更')}>
@@ -166,8 +177,10 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
       {navigation}
       {showButton && <button ref={trigger} type="button" className={`chat-overview-button${open ? ' open' : ''}`} aria-expanded={open} aria-controls={popoverId} aria-label={accessibleLabel} title={accessibleLabel} onClick={expand}>
         <span className="chat-overview-stack" aria-hidden="true">
-          {groups.active.length
-            ? groups.active.slice(0, 4).map(delegate => <AgentTile key={delegate.id} provider={delegate.provider} size={16} />)
+          {activeCount
+            ? [...groups.active.map(delegate => ({ key: delegate.id, provider: delegate.provider })),
+                ...nativeRunning.map(agent => ({ key: `native:${agent.key}`, provider: agent.provider }))]
+              .slice(0, 4).map(agent => <AgentTile key={agent.key} provider={agent.provider} size={16} />)
             : <Icon name="agents" />}
         </span>
         <span className="chat-overview-button-label">{buttonLabel}</span>
@@ -177,6 +190,16 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
     </div></SurfaceActions>}
     {showDocked && <div className="chat-overview-dock">{card}</div>}
   </>;
+}
+
+function OverviewNativeSubagent({ agent, copy, zh }: { agent: NativeSubagentSummary; copy: Copy; zh: boolean }) {
+  const title = subagentTitle(agent, copy);
+  const tone = agent.status === 'running' ? 'run' : agent.status === 'failed' ? 'fail' : 'done';
+  return <div className={`chat-overview-row is-${tone}`} data-subagent-key={agent.key}>
+    <AgentTile provider={agent.provider} size={16} />
+    <span className="chat-overview-row-title" title={title}>{title}</span>
+    <span className={`chat-overview-native-state is-${tone}`}>{delegationStateLabel(agent.status, zh)}</span>
+  </div>;
 }
 
 function OverviewDelegateRow({ delegate, copy, zh, now, onOpen }: {

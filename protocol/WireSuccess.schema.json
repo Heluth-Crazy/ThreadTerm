@@ -4450,6 +4450,9 @@
           "items": {
             "$ref": "#/definitions/ProviderCapability"
           }
+        },
+        "nativeSubagents": {
+          "$ref": "#/definitions/NativeSubagentSummaries"
         }
       },
       "required": [
@@ -5117,6 +5120,51 @@
       ],
       "additionalProperties": false,
       "description": "A command line the runtime hands the renderer to run in a terminal session. The renderer never builds or edits one: `executable`/`args` are run exactly as given, `display` is the line shown to the user before it runs, and `cwd` is the folder it runs in — that computer's home folder, because a remote computer's home is only known to its own runtime."
+    },
+    "NativeSubagentSummaries": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/NativeSubagentSummary"
+        }
+      }
+    },
+    "NativeSubagentSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "agentType": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "provider",
+        "status"
+      ],
+      "description": "Display-only child identities, keyed by their owning ThreadTerm Chat."
     },
     "RequestResult<\"project.add\">": {
       "$ref": "#/definitions/Project"
