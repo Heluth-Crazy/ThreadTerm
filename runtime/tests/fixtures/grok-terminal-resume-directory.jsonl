@@ -1,0 +1,2 @@
+{"version":"1.0.67","result":{"sessions":[{"sessionId":"01a1c69f-e564-7c90-8c16-434773207af3","cwd":"project-a","updatedAt":"2026-11-10T18:04:29.668223500+00:00","_meta":{"x.ai/session":{"kind":"build","facets":{"cwd":"project-a","kind":"build"}}}}]}}
+{"version":"1.0.75","result":{"sessions":[{"sessionId":"01a1c6a0-51ec-72b2-ada9-ba32cf732dff","cwd":"project-a","updatedAt":"2026-11-10T18:04:37.609341900+00:00","_meta":{"x.ai/session":{"kind":"build","facets":{"cwd":"project-a","kind":"build"}}}}]}}
