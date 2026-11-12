@@ -1993,7 +1993,12 @@ impl RuntimeService {
                 }
                 "session.create" => {
                     let p: SessionCreate = parse(&request.params)?;
-                    self.create_session(&p, None)
+                    if let Some(source) = request.params.get("forkFromNativeId") {
+                        let source = source.as_str().ok_or_else(|| anyhow::anyhow!("invalid Pi terminal fork source"))?;
+                        self.create_pi_terminal_fork(p, source)
+                    } else {
+                        self.create_session(&p, None)
+                    }
                 }
                 "history.import" => self.import_native_history(&request.params),
                 "session.rerun" => self.rerun(&request.params),
@@ -2800,6 +2805,32 @@ impl RuntimeService {
             .complete_operation(&p.operation_id, "delegation.start", &result)?;
         Ok(result)
     }
+    fn create_pi_terminal_fork(&self, mut p: SessionCreate, source: &str) -> Result<Value> {
+        if p.provider != "pi" || p.mode != "terminal" || p.native_id.is_some()
+            || p.defer_launch || p.executable.is_some() || !p.args.is_empty()
+        {
+            return Err(anyhow::anyhow!("invalid Pi terminal fork"));
+        }
+        if self.db.operation(&p.operation_id)?.is_some() {
+            return self.create_session(&p, None);
+        }
+        let cwd = p.cwd.as_deref().ok_or_else(|| anyhow::anyhow!("cwd_required"))?;
+        let destination = std::path::Path::new(cwd);
+        if !destination.is_absolute() || !destination.is_dir() {
+            return Err(anyhow::anyhow!("cwd must be an existing absolute directory"));
+        }
+        if let Some(project_id) = p.project_id.as_deref() {
+            crate::workspace_services::workspace_root_for_cwd(&self.db, project_id, cwd)?;
+        }
+        validate_provider(&self.providers, &p.provider)?;
+        crate::providers::common::validate_native_id(source)?;
+        if !self.db.claim_external_operation(&p.operation_id)? {
+            return Err(anyhow::anyhow!("operation_outcome_unknown"));
+        }
+        p.native_id = Some(self.providers.prepare_pi_terminal_fork(cwd, source)?);
+        self.create_session(&p, None)
+    }
+
     fn create_session(&self, p: &SessionCreate, source_session_id: Option<&str>) -> Result<Value> {
         validate_provider(&self.providers, &p.provider)?;
         validate_mode(&p.mode)?;
@@ -2842,7 +2873,7 @@ impl RuntimeService {
             if let Some(owner) = self.db.native_owner(&p.provider, native_id)? {
                 return Err(anyhow::anyhow!("native_session_exists:{}", owner.id));
             }
-            if p.provider == "grok" && p.mode == "terminal" {
+            if matches!(p.provider.as_str(), "grok" | "pi") && p.mode == "terminal" {
                 self.providers
                     .preflight_terminal_resume(&p.provider, cwd, native_id)?;
             }

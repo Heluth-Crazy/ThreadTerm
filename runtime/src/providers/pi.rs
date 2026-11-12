@@ -97,7 +97,9 @@ impl ProviderAdapter for PiAdapter {
                 "terminal resume and assignment cannot both be requested",
             ));
         }
-        let owned = pi_terminal_args(resume_id, assign_id, pi_session_saved)?;
+        let owned = pi_terminal_args(resume_id, assign_id, |id| {
+            Ok(pi_saved_terminal(id)?.map(|(path, _)| path))
+        })?;
         let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
         let spec = CommandSpec::provider("pi", &refs)?;
         Ok(TerminalCommand {
@@ -116,6 +118,18 @@ impl ProviderAdapter for PiAdapter {
         // Pi accepts a native CLI flag for the id, so no provider API call and
         // no verification round trip are needed before launch.
         Ok(Some(Uuid::new_v4().to_string()))
+    }
+
+    fn preflight_terminal_resume(&self, cwd: &str, native_id: &str) -> Result<(), ProviderError> {
+        if let Some((_, recorded)) = pi_saved_terminal(native_id)? {
+            if !pi_terminal_cwd_matches(cwd, &recorded) {
+                return Err(ProviderError::new(
+                    "pi_terminal_fork_required",
+                    format!("This Pi session belongs to {recorded}. Open it there or use Fork into terminal from Local history."),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn history_list(
@@ -2668,20 +2682,85 @@ fn pi_resume_flag(saved: bool) -> &'static str {
 fn pi_terminal_args(
     resume_id: Option<&str>,
     assign_id: Option<&str>,
-    session_saved: impl FnOnce(&str) -> bool,
+    saved_session: impl FnOnce(&str) -> Result<Option<PathBuf>, ProviderError>,
 ) -> Result<Vec<String>, ProviderError> {
     if let Some(id) = resume_id {
         validate_native_id(id)?;
-        // Pi writes the session JSONL only after its first user or assistant
-        // message. Retain a preassigned but unpersisted terminal identity by
-        // asking Pi to create it under this same id.
-        return Ok(vec![pi_resume_flag(session_saved(id)).to_owned(), id.to_owned()]);
+        if let Some(path) = saved_session(id)? {
+            // A global ID lookup can prompt Pi to fork. The exact file bypasses
+            // that lookup while preflight guards Pi's missing-directory prompt.
+            return Ok(vec!["--session".into(), path.to_string_lossy().into_owned()]);
+        }
+        return Ok(vec!["--session-id".into(), id.into()]);
     }
     if let Some(id) = assign_id {
         validate_native_id(id)?;
         return Ok(vec!["--session-id".to_owned(), id.to_owned()]);
     }
     Ok(Vec::new())
+}
+
+fn pi_saved_terminal(native_id: &str) -> Result<Option<(PathBuf, String)>, ProviderError> {
+    validate_native_id(native_id)?;
+    let directory = std::path::absolute(pi_sessions_dir()?).map_err(|error| {
+        ProviderError::new("history_unavailable", format!("Invalid Pi history directory: {error}"))
+    })?;
+    pi_saved_terminal_in(&directory, native_id)
+}
+
+fn pi_saved_terminal_in(directory: &Path, native_id: &str) -> Result<Option<(PathBuf, String)>, ProviderError> {
+    let mut files = Vec::new();
+    walk_jsonl(directory, &mut files, MAX_SESSION_FILES);
+    let suffix = format!("_{native_id}.jsonl");
+    let mut matched = None;
+    for path in files {
+        let identity = pi_session_identity(&path);
+        let named_match = path.file_name().and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(&suffix));
+        if let Some((_, cwd)) = identity.filter(|(id, _)| id == native_id) {
+            if matched.replace((path, cwd)).is_none() {
+                continue;
+            }
+        } else if !named_match {
+            continue;
+        }
+        return Err(ProviderError::new(
+            "history_unavailable",
+            "Pi terminal history is ambiguous or unreadable.",
+        ));
+    }
+    Ok(matched)
+}
+
+fn pi_terminal_cwd_matches(cwd: &str, recorded: &str) -> bool {
+    let recorded = Path::new(recorded);
+    recorded.is_absolute()
+        && recorded.canonicalize().ok().zip(Path::new(cwd).canonicalize().ok())
+            .is_some_and(|(recorded, launch)| recorded == launch)
+}
+
+pub(super) fn prepare_terminal_fork(cwd: &str, source_id: &str) -> Result<String, ProviderError> {
+    let (source, _) = pi_saved_terminal(source_id)?.ok_or_else(|| {
+        ProviderError::new("history_unavailable", "No Pi session matches that id")
+    })?;
+    let fork_id = Uuid::new_v4().to_string();
+    let spec = CommandSpec::provider("pi", &[
+        "--fork", &source.to_string_lossy(), "--session-id", &fork_id,
+        "--mode", "rpc", "--offline", "--no-mcp", "--no-extensions",
+    ])?;
+    let process = JsonLineProcess::spawn(
+        "pi-terminal-fork", &spec, Some(cwd), &[], EnvelopeStyle::Pi, Arc::new(|_| {}),
+    )?;
+    let state = process.request("get_state", json!({}))?;
+    if state.get("sessionId").and_then(Value::as_str) != Some(fork_id.as_str())
+        || !pi_saved_terminal(&fork_id)?.is_some_and(|(_, recorded)| pi_terminal_cwd_matches(cwd, &recorded))
+    {
+        return Err(ProviderError::new(
+            "provider_protocol",
+            "Pi did not save the requested fork in the selected directory.",
+        ));
+    }
+    Ok(fork_id)
 }
 
 fn pi_session_identity(path: &Path) -> Option<(String, String)> {
@@ -3678,17 +3757,49 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
 
     #[test]
+    fn pi_terminal_fork_history_keeps_the_source_and_tracks_the_verified_id() {
+        let captures = super::super::conformance::fixture("pi-explicit-terminal-fork.jsonl");
+        assert_eq!(captures.len(), 2);
+        for capture in captures {
+            let root = tempdir().unwrap();
+            let cwd = root.path().join("target");
+            let missing = root.path().join("missing-source");
+            fs::create_dir(&cwd).unwrap();
+            let mut source = capture["source"].clone();
+            source["cwd"] = json!(missing);
+            let mut fork = capture["fork"].clone();
+            fork["cwd"] = json!(cwd);
+            let source_id = source["id"].as_str().unwrap();
+            let fork_id = capture["getState"]["data"]["sessionId"].as_str().unwrap();
+            assert_ne!(source_id, fork_id);
+            let parent = capture["fork"]["parentSession"].as_str().unwrap();
+            assert!(parent.ends_with(&format!("_{source_id}.jsonl")));
+            let source_file = root.path().join(parent);
+            fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+            let fork_file = root.path().join("fork.jsonl");
+            fs::write(&source_file, format!("{source}\n")).unwrap();
+            fs::write(&fork_file, format!("{fork}\n")).unwrap();
+            let (found_source, source_cwd) = pi_saved_terminal_in(root.path(), source_id).unwrap().unwrap();
+            let (found_fork, fork_cwd) = pi_saved_terminal_in(root.path(), fork_id).unwrap().unwrap();
+            assert_eq!(found_source, source_file);
+            assert_eq!(found_fork, fork_file);
+            assert!(!pi_terminal_cwd_matches(cwd.to_str().unwrap(), &source_cwd));
+            assert!(pi_terminal_cwd_matches(cwd.to_str().unwrap(), &fork_cwd));
+        }
+    }
+
+    #[test]
     fn terminal_mapping_preserves_pi_resume_and_preassigned_identity_contracts() {
         let (sender, _receiver) = tap_channel(8);
         let adapter = PiAdapter::new(sender);
         assert_eq!(pi_resume_flag(true), "--session");
         assert_eq!(pi_resume_flag(false), "--session-id");
         assert_eq!(
-            pi_terminal_args(Some("session-9"), None, |_| true).unwrap(),
-            vec!["--session", "session-9"]
+            pi_terminal_args(Some("session-9"), None, |_| Ok(Some(PathBuf::from("saved-session.jsonl")))).unwrap(),
+            vec!["--session", "saved-session.jsonl"]
         );
         assert_eq!(
-            pi_terminal_args(Some("session-9"), None, |_| false).unwrap(),
+            pi_terminal_args(Some("session-9"), None, |_| Ok(None)).unwrap(),
             vec!["--session-id", "session-9"]
         );
         let fresh = adapter.terminal_command(None, Some("assigned-9")).unwrap();

@@ -16,7 +16,7 @@ upstream release is never a reason to refactor, redesign or add features.
 | Kimi (ACP) | `runtime/src/providers/acp.rs`, `runtime/src/providers/kimi_plan_usage.rs` | 2.0.2 | 2.0.2 | — |
 | Gemini (ACP plugin) | `runtime/src/providers/acp.rs`, `runtime/plugins/gemini/` | not set | not verified | — |
 | Grok | `runtime/src/providers/grok.rs` | 1.0.67 | 1.0.75 | — |
-| Pi | `runtime/src/providers/pi.rs` | 1.1.0 | 1.1.0 | — |
+| Pi | `runtime/src/providers/pi.rs` | 1.1.0 | 1.5.2 | — |
 
 The floors are the versions installed on the maintainer's machine on 2026-11-04. The targets were verified that day
 against isolated installs (Chat smoke and live probes).

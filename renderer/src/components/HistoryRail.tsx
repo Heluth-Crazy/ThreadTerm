@@ -89,6 +89,21 @@ export function HistoryRail({ onClose, onPresented }: Props) {
     catch (error) { setIssue(error instanceof Error ? error.message : copy("The session could not be resumed. Choose a valid directory to relocate it.", "无法恢复会话，请选择有效目录重新定位。")); }
     finally { setLoading(false); setResumeCandidate(undefined); }
   };
+  const forkPiTerminal = async () => {
+    if (selected?.provider !== "pi") return;
+    setLoading(true); setIssue(undefined);
+    try {
+      const path = await chooseDirectory();
+      if (!path) return;
+      const fork = await request("session.create", {
+        cwd: path, provider: "pi", mode: "terminal", forkFromNativeId: selected.nativeId,
+        title: selected.title, operationId: operationId(),
+      });
+      await present(fork);
+    } catch (error) {
+      setIssue(error instanceof Error ? error.message : copy("The Pi terminal could not be forked.", "无法分叉 Pi 终端。"));
+    } finally { setLoading(false); }
+  };
   const importCard = async () => {
     if (!selected) return;
     setLoading(true); setIssue(undefined); setCreatedSessionId(undefined); setCreatedSession(undefined);
@@ -139,6 +154,7 @@ export function HistoryRail({ onClose, onPresented }: Props) {
           {cwd && <small className="history-import-path" title={displayPath(cwd)}>{displayPath(cwd)}</small>}
           <button className="btn btn-primary" onClick={() => void importCard()} disabled={loading}>{copy("Import card", "导入卡片")}</button>
         </section>}
+        {selected.provider === "pi" && selected.resumable && <div className="history-action-row control-row-lg"><button className="btn" onClick={() => void forkPiTerminal()} disabled={loading}>{copy("Fork into terminal…", "分叉到终端…")}</button></div>}
         {createdSessionId && <div className="history-created"><span>{copy("Read-only history card saved.", "只读历史卡片已保存。")}</span>{createdSession && <button className="btn btn-sm" onClick={() => void present(createdSession)}>{copy("Open read-only card", "打开只读卡片")}</button>}</div>}
       </div>
     </section>}
