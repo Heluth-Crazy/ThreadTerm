@@ -1,6 +1,6 @@
-import { useLayoutEffect, useRef, useState } from 'react';
-import type { FileReference } from '@threadterm/protocol';
-import { activeToolEntries, describeTool, toolActivityPreview, toolActivityWaitingLabel, toolFailureSummary, toolSummary, toolSummaryLabel, toolSummaryText, type ToolActivityEntry, type ToolKind } from '../toolActivity';
+import { Fragment, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import type { ChatItem, FileReference } from '@threadterm/protocol';
+import { activeToolEntries, describeTool, drawerIsThinking, toolActivityPreview, toolActivityWaitingLabel, toolFailureSummary, toolSummary, toolSummaryLabel, toolSummaryText, type ToolActivityEntry, type ToolKind, type ToolThought } from '../toolActivity';
 import { FileReferenceChips } from './FileReferenceText';
 import { ToolCard } from './ToolCards';
 import { Icon } from './PrototypeIcon';
@@ -8,8 +8,11 @@ import './tool-activity.css';
 
 const icons: Record<ToolKind, string> = { command: 'terminal', browser: 'globe', file: 'file', search: 'search', delegation: 'agents', mcp: 'plug', tool: 'wrench' };
 
-export function ToolActivity({ entries, active, awaitingApproval = false, awaitingQuestion = false, provider, copy, openFile, onInspect, openDiff, canOpenDiff, sessionCwd }: {
+export function ToolActivity({ entries, thoughts = [], renderThought, active, awaitingApproval = false, awaitingQuestion = false, provider, copy, openFile, onInspect, openDiff, canOpenDiff, sessionCwd }: {
   entries: ToolActivityEntry[];
+  /** Live thinking that belongs to this drawer; shown in order when it is open (see groupToolActivity). */
+  thoughts?: ToolThought[];
+  renderThought?: (item: ChatItem) => ReactNode;
   active: boolean;
   awaitingApproval?: boolean;
   awaitingQuestion?: boolean;
@@ -46,20 +49,25 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
     ? `${description.name}${description.detail ? ` · ${description.detail}` : ''}`
     : description.detail || description.name;
   const waiting = toolActivityWaitingLabel(awaitingQuestion, awaitingApproval, copy);
+  const thinking = active && !current && drawerIsThinking(entries, thoughts);
   const summaryCounts = toolSummary(entries);
   const summaryText = toolSummaryText(summaryCounts, copy);
   const headline = waiting ? waiting + (current ? `: ${action}` : '')
     : current ? `${description.action}: ${action}`
+      : thinking ? copy('Thinking…', '思考中…')
       : entries.length === 1 ? `${description.name}${description.detail ? ` · ${description.detail}` : ''}`
         : toolSummaryLabel(summaryCounts, copy) || copy(`${entries.length} tools`, `${entries.length} 项工具`);
-  const failures = toolFailureSummary(entries, copy);
+  // Two lines at most: while a call runs, its own output; otherwise the failures.
+  const failures = current ? undefined : toolFailureSummary(entries, copy);
+  const thoughtsBefore = (index: number) => renderThought && open ? thoughts.filter(thought => thought.before === index)
+    .map(thought => <div key={thought.id} role="listitem" className="chat-tool-thought">{renderThought(thought.item)}</div>) : null;
   const summaryAccessibleLabel = !current && !waiting && entries.length > 1 ? summaryText || headline : [headline, summaryText].filter(Boolean).join(' · ');
   return <article className={`v3-chat-message assistant is-native is-${provider} chat-tool-activity-card`}>
     <details className="chat-tool-activity" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary ref={summaryRef} title={summaryAccessibleLabel} aria-label={summaryAccessibleLabel} onClick={() => { onInspect?.(); if (open) revealAfterCollapse.current = true; }} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { onInspect?.(); if (open) revealAfterCollapse.current = true; } }}>
         <span className="chat-tool-head">
-          {current ? <span className="chat-tool-spinner" aria-hidden="true" /> : <Icon name={icons[description.kind]} />}
-          <span className={`chat-tool-current-action${current ? ' is-running' : ''}`} role="status" aria-live="polite" aria-atomic="true" title={summaryAccessibleLabel}>{headline}</span>
+          {current || thinking ? <span className="chat-tool-spinner" aria-hidden="true" /> : <Icon name={icons[description.kind]} />}
+          <span className={`chat-tool-current-action${current || thinking ? ' is-running' : ''}`} role="status" aria-live="polite" aria-atomic="true" title={summaryAccessibleLabel}>{headline}</span>
           {running.length > 1 && <span className="chat-tool-active-count">{running.length} {copy('running', '项执行中')}</span>}
           {open && <span className="chat-tool-collapse-label">{copy('Collapse', '收起')}</span>}
           <Icon name="chevR" className="chat-tool-chevron" />
@@ -67,8 +75,7 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
         {preview && <span className="chat-tool-output-preview" role="status" aria-live="polite" aria-atomic="true" data-preview-tool-id={preview.entryId} title={previewTitle}><span className="chat-tool-output-label">{copy('Latest output', '最新输出')}</span><span>{preview.text}</span></span>}
         {failures && <span className="chat-tool-failures" title={failures.title}><span className="chat-tool-failed-count">{failures.label}</span><span>{':\u00a0'}</span><span className="chat-tool-failure-reason">{failures.reason}</span></span>}
       </summary>
-      <div className="chat-tool-entries" role="list">{entries.map((entry, index) => <ToolCard
-        key={entry.id}
+      <div className="chat-tool-entries" role="list">{entries.map((entry, index) => <Fragment key={entry.id}>{thoughtsBefore(index)}<ToolCard
         entry={entry}
         index={index}
         open={open}
@@ -79,7 +86,7 @@ export function ToolActivity({ entries, active, awaitingApproval = false, awaiti
         openFile={openFile}
         openDiff={openDiff}
         canOpenDiff={canOpenDiff}
-      />)}</div>
+      /></Fragment>)}{thoughtsBefore(entries.length)}</div>
       <button type="button" className="btn btn-sm chat-tool-collapse" data-chat-collapse onClick={() => { onInspect?.(); revealAfterCollapse.current = true; setOpen(false); }}><Icon name="chevD" />{copy('Collapse tools', '收起工具详情')}</button>
     </details>
   </article>;

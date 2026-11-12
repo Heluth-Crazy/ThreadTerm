@@ -13,12 +13,21 @@ function runTurn(sessionId, reply) {
   emit(sessionId, { sessionUpdate: 'tool_call', toolCallId: 'live-read', title: 'Read live fixture', kind: 'read', status: 'running', rawInput: { file_path: 'live-fixture.ts' } });
   emit(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'live-read', title: 'Read live fixture', status: 'completed', rawOutput: { content: [{ type: 'text', text: 'fixture read complete' }] } });
   emit(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'First live update.' } });
+  // Codex-style reasoning before each call: thinking must not split the second drawer.
   later(2500, () => {
+    emit(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Searching the fixture next.' } });
     emit(sessionId, { sessionUpdate: 'tool_call', toolCallId: 'live-search', title: 'Search live fixture', kind: 'search', status: 'running', rawInput: { pattern: 'live activity' } });
     later(2500, () => {
       emit(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'live-search', title: 'Search live fixture', status: 'completed', rawOutput: { content: [{ type: 'text', text: 'fixture search complete' }] } });
-      emit(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Second live update.' } });
-      later(2500, () => reply({ stopReason: 'end_turn' }));
+      emit(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'One more check before replying.' } });
+      later(1500, () => {
+        emit(sessionId, { sessionUpdate: 'tool_call', toolCallId: 'live-list', title: 'List live fixture', kind: 'read', status: 'running', rawInput: { path: '.' } });
+        later(2500, () => {
+          emit(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'live-list', title: 'List live fixture', status: 'completed', rawOutput: { content: [{ type: 'text', text: 'fixture list complete' }] } });
+          emit(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Second live update.' } });
+          later(6000, () => reply({ stopReason: 'end_turn' }));
+        });
+      });
     });
   });
 }

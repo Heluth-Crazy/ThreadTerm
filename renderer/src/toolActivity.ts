@@ -9,9 +9,12 @@ export { toolStatus } from './toolView';
 export type { ToolStatus } from './toolView';
 
 export interface ToolActivityEntry { id: string; itemId: string; part: ChatPart }
+/** Live thinking kept inside a drawer. It shows before `tools[before]`, or after the last tool when `before` equals
+ * the tool count. `item` holds only the thinking parts. */
+export interface ToolThought { id: string; item: ChatItem; before: number }
 export type ToolPresentation =
   | { type: 'item'; id: string; item: ChatItem }
-  | { type: 'tools'; id: string; tools: ToolActivityEntry[] };
+  | { type: 'tools'; id: string; tools: ToolActivityEntry[]; thoughts?: ToolThought[] };
 export type ToolKind = 'command' | 'browser' | 'file' | 'search' | 'delegation' | 'mcp' | 'tool';
 type Copy = (en: string, zh: string) => string;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -96,16 +99,26 @@ export function completedTurnPresentation(activityItems: readonly ChatItem[], re
   return { activity, subagents: subagentItemsOf(activityItems), response: orderCompletedTurnItems(withoutToolParts(responseItems)) };
 }
 
-/** Live turns split at visible content; settled and nested lists keep their single drawer. */
+/**
+ * Live turns split at visible content other than thinking, so tools called after a reply sit below it (#8). A live
+ * run of thinking joins the drawer it sits in, or the next drawer, and stands alone only when no tool follows it
+ * (yet). Settled and nested lists keep their single drawer.
+ */
 export function groupToolActivity(items: readonly ChatItem[], live = false): ToolPresentation[] {
   const result: ToolPresentation[] = [];
   let group: Extract<ToolPresentation, { type: 'tools' }> | undefined;
   let scope: string | undefined;
   let segment = 0;
+  // Live thinking seen since the last drawer closed, waiting for the next tool of the same segment.
+  let waiting: Omit<ToolThought, 'before'>[] = [];
+  const release = () => {
+    for (const thought of waiting) result.push({ type: 'item', id: thought.id, item: thought.item });
+    waiting = [];
+  };
   for (const item of items) {
     const boundary = item.role === 'user' || item.role === 'system' || item.parts.some(part => part.type === 'status');
     const currentScope = item.turnId || item.id;
-    if (boundary || currentScope !== scope) { group = undefined; scope = currentScope; segment += 1; }
+    if (boundary || currentScope !== scope) { release(); group = undefined; scope = currentScope; segment += 1; }
     if (item.role === 'user' || item.role === 'system') {
       result.push({ type: 'item', id: item.id, item });
       scope = undefined;
@@ -114,9 +127,24 @@ export function groupToolActivity(items: readonly ChatItem[], live = false): Too
     let parts: ChatPart[] = [];
     let start = 0;
     const flush = () => {
-      if (parts.length && (!live || parts.some(shouldRenderPart))) {
-        result.push({ type: 'item', id: `${item.id}:parts:${start}`, item: { ...item, parts } });
-        if (live && parts.some(shouldRenderPart)) { group = undefined; segment += 1; }
+      if (!live) {
+        if (parts.length) result.push({ type: 'item', id: `${item.id}:parts:${start}`, item: { ...item, parts } });
+        parts = [];
+        return;
+      }
+      // Thinking after the last other visible part (ACP agents append it to the reply's message) belongs to the
+      // activity that follows; everything up to that part is a boundary.
+      const last = parts.findLastIndex(part => shouldRenderPart(part) && part.type !== 'thinking');
+      const tail = parts.slice(last + 1).filter(shouldRenderPart);
+      if (last >= 0) {
+        release();
+        result.push({ type: 'item', id: `${item.id}:parts:${start}`, item: { ...item, parts: parts.slice(0, last + 1) } });
+        group = undefined; segment += 1;
+      }
+      if (tail.length) {
+        const thought = { id: `${item.id}:thought:${start}:${last + 1}`, item: { ...item, parts: tail } };
+        if (group) (group.thoughts ??= []).push({ ...thought, before: group.tools.length });
+        else waiting.push(thought);
       }
       parts = [];
     };
@@ -131,6 +159,7 @@ export function groupToolActivity(items: readonly ChatItem[], live = false): Too
       flush();
       if (!group) {
         group = { type: 'tools', id: `${currentScope}:tools:${segment}`, tools: [] };
+        if (waiting.length) { group.thoughts = waiting.map(thought => ({ ...thought, before: 0 })); waiting = []; }
         result.push(group);
       }
       const entry = toolEntry(item, part, index);
@@ -141,13 +170,20 @@ export function groupToolActivity(items: readonly ChatItem[], live = false): Too
     if (!live && !item.parts.length) result.push({ type: 'item', id: item.id, item });
     if (boundary) scope = undefined;
   }
+  release();
   return result;
+}
+
+/** A drawer whose newest activity is thinking that is still streaming. */
+export function drawerIsThinking(tools: readonly ToolActivityEntry[], thoughts: readonly ToolThought[] = []): boolean {
+  return thoughts.some(thought => thought.before === tools.length
+    && thought.item.parts.some(part => part.type === 'thinking' && part.status === 'streaming'));
 }
 
 export function shouldShowWorkingIndicator(active: boolean, entries: readonly ToolPresentation[], pendingInteraction: boolean, firstResponseWait: boolean): boolean {
   if (!active || pendingInteraction || firstResponseWait) return false;
   const last = entries.at(-1);
-  return last?.type !== 'tools' || activeToolEntries(last.tools, true).length === 0;
+  return last?.type !== 'tools' || (activeToolEntries(last.tools, true).length === 0 && !drawerIsThinking(last.tools, last.thoughts));
 }
 
 function inputs(data: Record<string, unknown>): Record<string, unknown>[] {
@@ -214,19 +250,13 @@ export function toolOutputPreview(part: ChatPart): string | undefined {
 }
 
 /**
- * Prefer the newest running call's own result. When it has none, the entry ID
- * identifies the most recent completed-result fallback in the same drawer.
+ * The newest running call's own latest output line, or nothing. Another call's output is never borrowed: it would
+ * read as output of the running command shown in the headline.
  */
 export function toolActivityPreview(entries: readonly ToolActivityEntry[], turnActive: boolean): { entryId: string; text: string } | undefined {
-  if (!turnActive) return undefined;
-  const running = activeToolEntries(entries, turnActive);
-  const current = running.at(-1);
-  const currentText = current && toolOutputPreview(current.part);
-  if (current && currentText) return { entryId: current.id, text: currentText };
-  for (const entry of [...entries].reverse()) {
-    const text = toolOutputPreview(entry.part);
-    if (text) return { entryId: entry.id, text };
-  }
+  const current = activeToolEntries(entries, turnActive).at(-1);
+  const text = current && toolOutputPreview(current.part);
+  return current && text ? { entryId: current.id, text } : undefined;
 }
 
 export function describeTool(part: ChatPart, copy: Copy): { kind: ToolKind; name: string; action: string; detail?: string } {

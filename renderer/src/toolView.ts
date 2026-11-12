@@ -24,7 +24,7 @@ interface ToolViewBase { status: ToolStatus; title: string }
 
 export type ToolView =
   | (ToolViewBase & { kind: 'edit'; files: ToolEditFile[]; truncated?: boolean })
-  | (ToolViewBase & { kind: 'command'; command: string; display: string; shell?: string; cwd?: string; output?: string; exitCode?: number; background?: boolean; actions?: ToolCommandAction[] })
+  | (ToolViewBase & { kind: 'command'; command: string; display: string; shell?: string; cwd?: string; output?: string; exitCode?: number; background?: boolean; actions?: ToolCommandAction[]; noMatches?: boolean })
   | (ToolViewBase & { kind: 'read'; path: string; offset?: number; limit?: number; pages?: number })
   | (ToolViewBase & { kind: 'search'; query: string; path?: string; glob?: string; flags?: ToolSearchFlags; matches?: number; files?: number; omitted?: boolean })
   | (ToolViewBase & { kind: 'web'; url?: string; query?: string; result?: string })
@@ -119,6 +119,30 @@ export function toolInputs(data: Record<string, unknown>): Record<string, unknow
   });
 }
 
+const SEARCH_COMMANDS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'findstr']);
+
+/**
+ * rg, grep, git grep and findstr exit with 1 when nothing matches. With no output, that is a result ("no matches"),
+ * not a failure, even though providers report the call as failed. Codex's own command parse decides when present.
+ */
+export function noMatchSearch(part: ChatPart): boolean {
+  if (part?.type !== 'tool') return false;
+  const data = record(part.data);
+  const exitCode = number(data.exitCode) ?? number(record(record(data.state).metadata).exit);
+  if (exitCode !== 1 || commandOutput(data)) return false;
+  const actions = array(data.commandActions).map(action => text(record(action).type));
+  if (actions.length) return actions.every(type => type === 'search');
+  let command: string | undefined;
+  for (const input of toolInputs(data)) {
+    command = text(input.command) ?? text(input.cmd) ?? text(input.script);
+    if (command) break;
+  }
+  const tokens = command ? shellTokens(commandDisplay(command).display) : undefined;
+  if (!tokens?.length) return false;
+  const program = shellBasename(tokens[0]!);
+  return SEARCH_COMMANDS.has(program) || (program === 'git' && tokens[1] === 'grep');
+}
+
 export function toolStatus(part: ChatPart): ToolStatus {
   const data = record(part?.data), state = record(data.state);
   const status = (part?.status || text(state.status) || text(data.status) || '').toLowerCase().replace(/[\s_-]/g, '');
@@ -126,6 +150,7 @@ export function toolStatus(part: ChatPart): ToolStatus {
   if (activity?.outcome === 'outcome_unknown') return 'failed';
   if (activity?.outcome === 'cancelled') return 'cancelled';
   if (['cancelled', 'canceled', 'interrupted', 'aborted'].includes(status)) return 'cancelled';
+  if (noMatchSearch(part)) return 'complete';
   if (['failed', 'error', 'declined', 'rejected'].includes(status)
     || activity?.outcome === 'failed'
     || data.isError === true || data.is_error === true
@@ -292,7 +317,8 @@ function classify(part: ChatPart): ToolView {
     const exitCode = number(data.exitCode) ?? number(record(record(data.state).metadata).exit);
     const background = arg('run_in_background') === true || data.processId !== undefined || /background/.test(nameLc);
     return { kind: 'command', status, title: `Run ${compact(displayed.display)}`, command, display: displayed.display, ...(displayed.shell ? { shell: displayed.shell } : {}), cwd: text(data.cwd), output: commandOutput(data), exitCode,
-      ...(background ? { background: true } : {}), ...(actions.length ? { actions: [...new Set(actions)] } : {}) };
+      ...(background ? { background: true } : {}), ...(actions.length ? { actions: [...new Set(actions)] } : {}),
+      ...(noMatchSearch(part) ? { noMatches: true } : {}) };
   }
 
   // File search.

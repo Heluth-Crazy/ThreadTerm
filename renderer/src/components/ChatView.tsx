@@ -24,7 +24,7 @@ import { usageCardsForItems } from '../usageCard';
 import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
 import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
 import { groupCodexTranscript, isGuardianReview, type CodexTurn } from "../codexTranscript";
-import { completedTurnPresentation, groupToolActivity, shouldShowWorkingIndicator, toolEntriesForItems, type ToolActivityEntry } from "../toolActivity";
+import { completedTurnPresentation, groupToolActivity, shouldShowWorkingIndicator, toolEntriesForItems, type ToolActivityEntry, type ToolThought } from "../toolActivity";
 import { ChatWorkingIndicator } from './ChatWorkingIndicator';
 import { ToolActivity } from './ToolActivity';
 import { SubagentCard } from './SubagentCard';
@@ -1964,14 +1964,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
-    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`, running = active) => <ToolActivity key={id} entries={entries} onInspect={viewport.pauseForNavigation} active={running} awaitingApproval={running && awaitingApproval} awaitingQuestion={running && awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
+    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`, running = active, thoughts?: ToolThought[]) => <ToolActivity key={id} entries={entries} thoughts={thoughts} renderThought={thoughts?.length ? thought => renderItem(thought, true) : undefined} onInspect={viewport.pauseForNavigation} active={running} awaitingApproval={running && awaitingApproval} awaitingQuestion={running && awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
     if (!group.settled) {
       // Keep earlier activity in place and preserve the first drawer's turn key.
       const entries = groupToolActivity(group.response, true);
       const lastDrawerIndex = entries.findLastIndex(entry => entry.type === 'tools');
       let drawerIndex = 0;
       const visible = entries.map((entry, index) => entry.type === 'tools'
-        ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`, active && index === lastDrawerIndex)
+        ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`, active && index === lastDrawerIndex, entry.thoughts)
         : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item)}</Fragment>);
       if (group.turnStatus && !group.items.some(item => item.parts.some(shouldRenderPart))) {
         visible.push(<p className="chat-duration" key={`${group.id}-status`}>{group.turnStatus === 'inProgress'

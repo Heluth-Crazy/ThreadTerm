@@ -100,13 +100,15 @@ function OutputBody({ text, copy }: { text: string; copy: Copy }) {
 
 function CommandBody({ view, sessionCwd, copy }: { view: Extract<ToolView, { kind: 'command' }>; sessionCwd?: string; copy: Copy }) {
   const cwd = commandDisplayCwd(view.cwd, sessionCwd);
-  const hasChips = Boolean(view.shell || cwd || view.background || view.exitCode !== undefined && view.exitCode !== 0 || view.actions?.length);
+  const failedExit = view.exitCode !== undefined && view.exitCode !== 0 && !view.noMatches;
+  const hasChips = Boolean(view.shell || cwd || view.background || failedExit || view.noMatches || view.actions?.length);
   return <>
     {hasChips && <div className="tool-chip-row">
       {view.shell && <span className="chip flat tool-chip" title={view.command}>{view.shell}</span>}
       {cwd && <span className="chip flat tool-chip" title={cwd}>{copy('cwd', '目录')}: {cwd}</span>}
       {view.background && <span className="chip flat is-accent tool-chip">{copy('Background', '后台')}</span>}
-      {view.exitCode !== undefined && view.exitCode !== 0 && <span className="chip flat is-danger tool-chip">{copy('exit', '退出码')} {view.exitCode}</span>}
+      {failedExit && <span className="chip flat is-danger tool-chip">{copy('exit', '退出码')} {view.exitCode}</span>}
+      {view.noMatches && <span className="chip flat tool-chip" title={copy('Exit code 1: the search found nothing', '退出码 1：搜索没有结果')}>{copy('No matches', '无匹配')}</span>}
       {view.actions?.map(action => <span className="chip flat tool-chip" key={action}>{action}</span>)}
     </div>}
     {view.output && <OutputBody text={view.output} copy={copy} />}

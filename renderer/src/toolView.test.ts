@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import type { ChatPart } from '@threadterm/protocol';
-import { toolView, type ToolView } from './toolView';
+import { noMatchSearch, toolStatus, toolView, type ToolView } from './toolView';
 
 interface Case { id: string; kind: ToolView['kind']; _unverified?: boolean; expect?: Record<string, unknown>; part: ChatPart }
 interface Fixture { provider: string; note: string; cases: Case[] }
@@ -195,4 +195,26 @@ test('an unquoted Windows path inside a shell wrapper keeps its backslashes', ()
   const view = toolView({ type: 'tool', toolName: 'Bash', data: { input: { command: 'powershell.exe -Command Get-ChildItem C:\Users\me\.pi' } } } as ChatPart);
   assert.equal(view.kind, 'command');
   if (view.kind === 'command') { assert.equal(view.display, 'Get-ChildItem C:\Users\me\.pi'); assert.equal(view.shell, 'powershell'); }
+});
+
+test('rg, grep, git grep and findstr with exit 1 and no output are "no matches", not failures', () => {
+  const codex = (command: string, extra: Record<string, unknown> = {}): ChatPart => ({ type: 'tool', toolName: 'commandExecution', status: 'failed',
+    data: { type: 'commandExecution', command, exitCode: 1, aggregatedOutput: '', ...extra } } as ChatPart);
+  const searchAction = { commandActions: [{ type: 'search', command: 'rg -n foo src' }] };
+  const parsed = codex('"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n foo src"', searchAction);
+  assert.equal(noMatchSearch(parsed), true);
+  assert.equal(toolStatus(parsed), 'complete');
+  const view = toolView(parsed);
+  assert.equal(view.kind === 'command' && view.noMatches, true);
+  for (const command of ['rg foo', 'grep -rn foo .', 'git grep foo', 'findstr /s foo *.ts', 'C:\\tools\\rg.exe foo', "bash -lc 'rg foo src'"]) {
+    assert.equal(toolStatus(codex(command)), 'complete', command);
+  }
+  // A real failure stays a failure.
+  assert.equal(toolStatus(codex('rg foo', { exitCode: 2 })), 'failed', 'rg exit 2 is an error');
+  assert.equal(toolStatus(codex('rg foo', { aggregatedOutput: 'rg: src: No such file or directory' })), 'failed', 'output means an error message');
+  assert.equal(toolStatus(codex('npm test')), 'failed', 'other commands keep exit 1 as failed');
+  assert.equal(toolStatus(codex('cd src && rg foo', { commandActions: [{ type: 'unknown' }, { type: 'search' }] })), 'failed', 'Codex parse decides compound commands');
+  assert.equal(toolStatus({ type: 'tool', toolName: 'Bash', status: 'failed', data: { input: { command: 'rg foo' } } } as ChatPart), 'failed', 'no exit code, no guess');
+  const opencode = { type: 'tool', toolName: 'bash', status: 'error', data: { state: { status: 'error', input: { command: 'grep -r foo .' }, metadata: { exit: 1 }, output: '' } } } as ChatPart;
+  assert.equal(toolStatus(opencode), 'complete', 'OpenCode exit metadata');
 });

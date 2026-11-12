@@ -75,6 +75,23 @@ try {
   assert.equal(await drawers.nth(0).locator('.is-running').count(), 0, 'earlier drawer is no longer running');
   assert.equal(await scope.locator('.chat-live-activity').count(), 0, 'running trailing drawer replaces the working status');
   await page.screenshot({ path: join(out, 'live-running-tool-light.png'), animations: 'disabled' }); report.screenshots.push('live-running-tool-light.png');
+  // Thinking between calls stays inside the trailing drawer: no third drawer, no loose "Thought process" rows.
+  const looseThinking = () => scope.locator('.v3-thinking').evaluateAll(nodes => nodes.filter(node => !node.closest('.chat-tool-activity')).length);
+  let mostDrawers = 0;
+  try {
+    await until(async () => { mostDrawers = Math.max(mostDrawers, await drawers.count()); return await scope.getByText('Second live update.', { exact: true }).count() > 0; }, 'second reply after thinking and two calls');
+  } finally {
+    report.liveStructure = await scope.locator('.v3-chat-log').evaluate(log => [...log.querySelectorAll('.chat-tool-activity, .v3-thinking, .v3-message-text')]
+      .map(node => node.classList.contains('chat-tool-activity') ? `drawer:${node.querySelector('.chat-tool-current-action')?.textContent}` : node.classList.contains('v3-thinking') ? `thinking${node.closest('.chat-tool-activity') ? '(in drawer)' : ''}` : `text:${node.textContent?.slice(0, 40)}`));
+  }
+  assert.equal(mostDrawers, 2, 'thinking between calls never splits the live drawer');
+  assert.equal(await looseThinking(), 0, 'thinking before and between calls is not a separate transcript row');
+  await drawers.nth(1).locator('> summary').click();
+  await until(async () => await drawers.nth(1).locator('.chat-tool-thought').count() === 2, 'thoughts listed in the open drawer');
+  assert.deepEqual(await drawers.nth(1).locator('.chat-tool-entries > [role="listitem"]').evaluateAll(nodes => nodes.map(node => node.classList.contains('chat-tool-thought') ? 'thought' : 'tool')), ['thought', 'tool', 'thought', 'tool'], 'thoughts and calls keep their order inside the drawer');
+  await page.screenshot({ path: join(out, 'live-thinking-in-drawer-light.png'), animations: 'disabled' }); report.screenshots.push('live-thinking-in-drawer-light.png');
+  await drawers.nth(1).locator('> summary').click();
+  report.checks.push('thinking between live calls stays in one drawer and is listed in order when the drawer is open');
   await until(async () => await scope.getByText('Second live update.', { exact: true }).count() && await scope.locator('.chat-live-activity').count() === 1, 'second text working status');
   assert.equal(await drawers.nth(1).locator('.is-running').count(), 0, 'second drawer stops claiming to run after its text');
   report.checks.push('live activity splits around interim assistant text and only the trailing drawer presents running work');

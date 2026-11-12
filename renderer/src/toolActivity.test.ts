@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { groupCodexTranscript } from './codexTranscript';
-import { activeToolEntries, completedTurnPresentation, describeTool, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, shouldShowWorkingIndicator, toolActivityPreview, toolActivityWaitingLabel, toolEntriesForItems, toolFailureSummary, toolOutputPreview, toolStatus, withoutToolParts } from './toolActivity';
+import { activeToolEntries, completedTurnPresentation, describeTool, drawerIsThinking, groupToolActivity, hiddenQuestionTool, orderCompletedTurnItems, shouldShowWorkingIndicator, toolActivityPreview, toolActivityWaitingLabel, toolEntriesForItems, toolFailureSummary, toolOutputPreview, toolStatus, withoutToolParts } from './toolActivity';
 
 const en = (english: string, _zh: string) => english;
 const zh = (_english: string, chinese: string) => chinese;
@@ -34,6 +34,44 @@ test('live activity splits across assistant text, including mixed parts, without
   assert.equal(new Set(live.map(entry => entry.id)).size, live.length);
   assert.deepEqual(groupToolActivity(items).map(entry => entry.type), ['tools', 'item']);
   assert.equal(JSON.stringify(items), before);
+});
+
+const thought = (text: string, status = 'completed'): ChatPart => ({ type: 'thinking', text, status });
+const shape = (entries: ReturnType<typeof groupToolActivity>) => entries.map(entry => entry.type === 'tools'
+  ? `tools[${entry.tools.map(tool => tool.part.toolId).join(',')}]${(entry.thoughts ?? []).map(t => `+${t.item.parts.map(part => part.text).join('')}@${t.before}`).join('')}`
+  : `item[${entry.item.parts.map(part => part.type).join(',')}]`);
+
+test('live thinking between tools stays in one drawer instead of splitting it (Codex reasons before each command)', () => {
+  const items = [row('r1', [thought('plan')]), row('c1', [tool('c1', 'commandExecution')]), row('r2', [thought('next')]),
+    row('c2', [tool('c2', 'commandExecution', 'running')])];
+  assert.deepEqual(shape(groupToolActivity(items, true)), ['tools[c1,c2]+plan@0+next@1']);
+  assert.deepEqual(shape(groupToolActivity(items.slice(0, 1), true)), ['item[thinking]'], 'thinking with no tool after it yet stands alone');
+  assert.deepEqual(shape(groupToolActivity(items.slice(0, 3), true)), ['tools[c1]+plan@0+next@1'], 'trailing thinking joins the open drawer');
+  assert.deepEqual(groupToolActivity(items).filter(entry => entry.type === 'tools').map(entry => entry.thoughts), [undefined], 'settled lists are unchanged');
+});
+
+test('live replies still split drawers (#8) and thinking before a reply stays with the reply', () => {
+  const items = [row('c1', [tool('c1', 'Read')]), row('r1', [thought('why')]), row('t1', [{ type: 'text', text: 'Found it.' }]),
+    row('r2', [thought('then')]), row('c2', [tool('c2', 'Read', 'running')])];
+  assert.deepEqual(shape(groupToolActivity(items, true)), ['tools[c1]+why@1', 'item[text]', 'tools[c2]+then@0']);
+  const beforeReply = [row('r0', [thought('first')]), row('t0', [{ type: 'text', text: 'Starting.' }])];
+  assert.deepEqual(shape(groupToolActivity(beforeReply, true)), ['item[thinking]', 'item[text]']);
+  const mixed = [row('m', [thought('inline'), { type: 'text', text: 'Reply.' }, tool('c3', 'Read')])];
+  assert.deepEqual(shape(groupToolActivity(mixed, true)), ['item[thinking,text]', 'tools[c3]'], 'a run with reply text is still a boundary');
+  const acp = [row('m1', [{ type: 'text', text: 'First live update.' }, thought('search next')]), row('c4', [tool('c4', 'Grep', 'running')])];
+  assert.deepEqual(shape(groupToolActivity(acp, true)), ['item[text]', 'tools[c4]+search next@0'], 'thinking appended to a reply message moves to the next drawer');
+  assert.deepEqual(shape(groupToolActivity(acp.slice(0, 1), true)), ['item[text]', 'item[thinking]'], 'until a call follows, it stands alone after the reply');
+  const nextTurn = [row('r9', [thought('old')], 'turn-a'), { id: 'u', role: 'user', parts: [{ type: 'text', text: 'go' }], createdAt: 'now' } as ChatItem];
+  assert.deepEqual(shape(groupToolActivity(nextTurn, true)), ['item[thinking]', 'item[text]'], 'waiting thinking is released before a user message');
+});
+
+test('a drawer whose newest activity is streaming thinking is its own working indicator', () => {
+  const thinking = groupToolActivity([row('c1', [tool('c1', 'Read')]), row('r1', [thought('more', 'streaming')])], true);
+  const done = groupToolActivity([row('c1', [tool('c1', 'Read')]), row('r1', [thought('more')])], true);
+  const last = thinking.at(-1)!;
+  assert.equal(last.type === 'tools' && drawerIsThinking(last.tools, last.thoughts), true);
+  assert.equal(shouldShowWorkingIndicator(true, thinking, false, false), false);
+  assert.equal(shouldShowWorkingIndicator(true, done, false, false), true);
 });
 
 test('live subagent parts form chronology boundaries within the same item', () => {
@@ -275,12 +313,13 @@ test('tool output previews use only provider result fields and normalize the las
   assert.equal(toolOutputPreview(tool('long', 'bash', 'complete', { output: long })), `${'x'.repeat(239)}…`);
 });
 
-test('tool activity previews prefer the latest running result then fall back to the newest available output', () => {
+test('tool activity previews show only the running call own output, never an earlier call output', () => {
   const entries = toolEntriesForItems([row('tools', [
     tool('finished', 'bash', 'complete', { result: { content: [{ type: 'text', text: 'finished output' }] } }),
     tool('running', 'bash', 'running', { args: { command: 'long job' } }),
   ])]);
-  assert.deepEqual(toolActivityPreview(entries, true), { entryId: entries[0]!.id, text: 'finished output' });
+  assert.equal(toolActivityPreview(entries, true), undefined, 'a running call without output borrows nothing');
+  assert.equal(toolActivityPreview(entries.slice(0, 1), true), undefined, 'no running call, no preview');
   const withLiveOutput = [...entries.slice(0, 1), { ...entries[1]!, part: tool('running', 'bash', 'running', { partialResult: { content: [{ type: 'text', text: 'live output' }] } }) }];
   assert.deepEqual(toolActivityPreview(withLiveOutput, true), { entryId: withLiveOutput[1]!.id, text: 'live output' });
   assert.equal(toolActivityPreview(entries, false), undefined);
