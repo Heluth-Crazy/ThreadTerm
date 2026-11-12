@@ -37,7 +37,7 @@ fn schema_empty_first_creation_has_no_upgrade_data_to_back_up() {
     drop(Database::open(&path).unwrap());
     assert!(backups(root.path()).is_empty());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
 }
@@ -66,7 +66,7 @@ fn schema_migration_three_creates_review_draft_tables_and_reopens() {
     drop(conn);
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn schema_migration_four_preserves_legacy_phone_credentials() {
     }
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
     let device: (String, Vec<u8>, Option<String>) = conn.query_row(
         "SELECT profile,token_hash,last_address FROM paired_devices WHERE id='phone'", [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -126,10 +126,10 @@ fn schema_old_copy_is_backed_up_verified_and_migrated_only_once() {
         "Daily"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
     assert_eq!(value(&conn, "schema.minReader"), "6");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
-    assert_eq!(history.as_array().unwrap().len(), 6);
+    assert_eq!(history.as_array().unwrap().len(), 7);
     assert_eq!(history[0]["version"], 1);
     assert!(history[0]["appliedAt"].as_str().is_some());
     assert_eq!(history[0]["appVersion"], crate::RUNTIME_VERSION);
@@ -174,7 +174,7 @@ fn schema_unversioned_database_without_presets_upgrades_without_a_backup() {
         "nothing unrecoverable to back up"
     );
     let conn = Connection::open(&path).unwrap();
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
     let history: Value = serde_json::from_str(&value(&conn, "schema.history")).unwrap();
     assert!(history[0]["backupFile"].is_null());
     assert!(conn.prepare("SELECT * FROM usage_facts").is_err());
@@ -506,7 +506,7 @@ fn schema_migration_five_preserves_listener_preferences_and_defaults_policy_off(
     let conn = Connection::open(&path).unwrap();
     let row: (bool,u16,String,bool) = conn.query_row("SELECT enabled,port,last_error,tailscale_only FROM remote_access_state", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
     assert_eq!(row,(true,12345,"retained".into(),false));
-    assert_eq!(value(&conn,"schema.version"),"6");
+    assert_eq!(value(&conn,"schema.version"),"7");
 }
 
 #[test]
@@ -531,5 +531,101 @@ fn schema_migration_six_adds_cross_network_settings_off_and_the_device_key_colum
     let mut columns = conn.prepare("PRAGMA table_info(paired_devices)").unwrap();
     let columns: Vec<String> = columns.query_map([], |row| row.get(1)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
     assert!(columns.iter().any(|column| column == "iroh_endpoint_id"));
-    assert_eq!(value(&conn, "schema.version"), "6");
+    assert_eq!(value(&conn, "schema.version"), "7");
+}
+
+#[test]
+fn schema_migration_seven_backfills_timeline_without_rewriting_chat_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("timeline-v6.sqlite");
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO sessions(
+             id,title,provider,mode,status,created_at,updated_at,followed,read_only,released
+         ) VALUES ('chat','Timeline','codex','chat','idle','session-created','session-updated',0,0,0);
+         INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at,timeline_seq)
+         VALUES ('z','chat','turn-z','message','{\"id\":\"z\",\"payload\":\"first\"}','same',7),
+                ('a','chat','turn-a','message','{\"id\":\"a\",\"payload\":\"second\"}','same',9);
+         DROP TRIGGER chat_items_timeline_insert;
+         DROP INDEX chat_items_timeline;
+         ALTER TABLE chat_items DROP COLUMN timeline_seq;
+         UPDATE metadata SET value='6' WHERE key='schema.version';
+         UPDATE metadata SET value='6' WHERE key='schema.minReader';",
+    )
+    .unwrap();
+    let before = conn
+        .prepare("SELECT id,turn_id,kind,data,created_at FROM chat_items ORDER BY id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    drop(conn);
+
+    drop(Database::open(&path).unwrap());
+    assert!(backups(root.path()).is_empty(), "timeline migration is additive");
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(value(&conn, "schema.version"), "7");
+    assert_eq!(value(&conn, "schema.minReader"), "6");
+    let after = conn
+        .prepare("SELECT id,turn_id,kind,data,created_at FROM chat_items ORDER BY id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(after, before, "migration preserves every preexisting chat field");
+    let ordered = conn
+        .prepare("SELECT id,timeline_seq FROM chat_items WHERE session_id='chat' ORDER BY timeline_seq,id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        ordered,
+        vec![
+            ("a".to_owned(), crate::db::CHAT_TIMELINE_STRIDE),
+            ("z".to_owned(), crate::db::CHAT_TIMELINE_STRIDE * 2),
+        ]
+    );
+
+    conn.execute(
+        "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at)
+         VALUES ('tail','chat','turn-tail','message','{\"id\":\"tail\"}','later')",
+        [],
+    )
+    .unwrap();
+    let tail_seq: i64 = conn
+        .query_row("SELECT timeline_seq FROM chat_items WHERE id='tail'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(tail_seq, crate::db::CHAT_TIMELINE_STRIDE * 3);
+    conn.execute(
+        "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at)
+         VALUES ('z','chat','turn-z','message','changed','changed')
+         ON CONFLICT(id) DO UPDATE SET data=excluded.data,turn_id=excluded.turn_id",
+        [],
+    )
+    .unwrap();
+    let retained: i64 = conn
+        .query_row("SELECT timeline_seq FROM chat_items WHERE id='z'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(retained, crate::db::CHAT_TIMELINE_STRIDE * 2);
 }

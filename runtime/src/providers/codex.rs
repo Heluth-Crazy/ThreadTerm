@@ -9,7 +9,7 @@ use super::{
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_scoped, ChatBackgroundTask, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter,
-    ProviderCapability, ProviderError, TerminalCommand,
+    NativeChatMessage, NativeChatMessageRole, ProviderCapability, ProviderError, TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
 use crate::chat_questions::answer_summary;
@@ -744,33 +744,18 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn history_read(&self, native_id: &str) -> Result<Value, ProviderError> {
-        validate_native_id(native_id)?;
-        let process = self.temporary_process()?;
-        let response = match codex_request(
-            &process,
-            "thread/read",
-            json!({"threadId":native_id,"includeTurns":true}),
-        ) {
-            Ok(response) => response,
-            Err(error) => {
-                if error.code == "provider_method_unsupported" {
-                    self.record_missing(CodexFeature::HistoryTurns);
-                }
-                return Err(error);
-            }
-        };
-        let thread = response.get("thread").unwrap_or(&response);
-        if thread.get("turns").is_some_and(Value::is_array) {
-            let thread = codex_history_thread(&response, native_id)?;
-            return Ok(Value::Array(codex_transcript_items(thread)));
-        }
-        // A transcript cannot be rebuilt without native turns. Report what to
-        // update instead of an empty history that would look like data loss.
-        self.record_missing(CodexFeature::HistoryTurns);
-        Err(ProviderError::new(
-            "provider_method_unsupported",
-            "Your Codex CLI is older than ThreadTerm expects: saved chat history cannot be displayed. Update Codex (for example npm install -g @openai/codex), then reopen the chat. / 当前 Codex CLI 版本低于 ThreadTerm 所需版本：无法显示已保存的对话记录。请更新 Codex（例如 npm install -g @openai/codex），然后重新打开对话。",
-        ))
+        let response = self.read_history_response(native_id)?;
+        let thread = codex_history_thread(&response, native_id)?;
+        Ok(Value::Array(codex_transcript_items(thread)))
+    }
+
+    fn completed_chat_messages(
+        &self,
+        native_id: &str,
+    ) -> Result<Vec<NativeChatMessage>, ProviderError> {
+        let response = self.read_history_response(native_id)?;
+        let thread = codex_history_thread(&response, native_id)?;
+        Ok(codex_completed_chat_messages(thread))
     }
 
     fn fork_session(
@@ -859,6 +844,31 @@ impl ProviderAdapter for CodexAdapter {
 }
 
 impl CodexAdapter {
+    fn read_history_response(&self, native_id: &str) -> Result<Value, ProviderError> {
+        validate_native_id(native_id)?;
+        let process = self.temporary_process()?;
+        let response = codex_request(
+            &process,
+            "thread/read",
+            json!({"threadId":native_id,"includeTurns":true}),
+        ).inspect_err(|error| {
+            if error.code == "provider_method_unsupported" {
+                self.record_missing(CodexFeature::HistoryTurns);
+            }
+        })?;
+        let thread = response.get("thread").unwrap_or(&response);
+        if thread.get("turns").is_some_and(Value::is_array) {
+            return Ok(response);
+        }
+        // A transcript cannot be rebuilt without native turns. Report what to
+        // update instead of an empty history that would look like data loss.
+        self.record_missing(CodexFeature::HistoryTurns);
+        Err(ProviderError::new(
+            "provider_method_unsupported",
+            "Your Codex CLI is older than ThreadTerm expects: saved chat history cannot be displayed. Update Codex (for example npm install -g @openai/codex), then reopen the chat. / 当前 Codex CLI 版本低于 ThreadTerm 所需版本：无法显示已保存的对话记录。请更新 Codex（例如 npm install -g @openai/codex），然后重新打开对话。",
+        ))
+    }
+
     /// The connect path, with the connection's live UI state returned beside the
     /// Chat so a test can inspect exactly what the connection keeps.
     fn open_chat_and_state(
@@ -5106,6 +5116,41 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
     transcript
 }
 
+fn codex_completed_chat_messages(thread: &Value) -> Vec<NativeChatMessage> {
+    let Some(thread_id) = thread.get("id").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let mut messages = Vec::new();
+    for turn in thread["turns"].as_array().into_iter().flatten() {
+        if turn.get("status").and_then(Value::as_str) != Some("completed") {
+            continue;
+        }
+        let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        for item in turn["items"].as_array().into_iter().flatten() {
+            let (role, phase) = match item.get("type").and_then(Value::as_str) {
+                Some("userMessage") => (NativeChatMessageRole::User, None),
+                Some("agentMessage") => (NativeChatMessageRole::Assistant, codex_message_phase(item)),
+                _ => continue,
+            };
+            let Some(item_id) = item.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            messages.push(NativeChatMessage {
+                thread_id: thread_id.to_owned(),
+                turn_id: turn_id.to_owned(),
+                item_id: item_id.to_owned(),
+                client_id: item.get("clientId").and_then(Value::as_str).map(str::to_owned),
+                role,
+                phase,
+                text: extract_text(item),
+            });
+        }
+    }
+    messages
+}
+
 fn codex_history_thread<'a>(response: &'a Value, native_id: &str) -> Result<&'a Value, ProviderError> {
     let thread = response.get("thread").ok_or_else(|| {
         ProviderError::new("invalid_history_transcript", "Codex history response did not contain a thread")
@@ -6994,6 +7039,51 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
             items[0]["forkAnchor"],
             json!({"nativeId":"thread-source","turnId":"turn-source","messageId":"reply-source"})
         );
+    }
+
+    #[test]
+    fn completed_messages_keep_native_coordinates_and_skip_incomplete_and_non_message_items() {
+        let messages = codex_completed_chat_messages(&json!({
+            "id":"thread-1",
+            "turns":[
+                {"id":"turn-local","status":"completed","items":[
+                    {"id":"user-local","type":"userMessage","clientId":"operation-1","content":[
+                        {"type":"text","text":"first "},{"type":"text","text":"prompt"}
+                    ]},
+                    {"id":"tool-local","type":"commandExecution","status":"completed"},
+                    {"id":"assistant-local","type":"agentMessage","phase":"final_answer","text":"first reply"}
+                ]},
+                {"id":"turn-running","status":"inProgress","items":[
+                    {"id":"user-running","type":"userMessage","text":"do not import"},
+                    {"id":"assistant-running","type":"agentMessage","text":"do not import"}
+                ]},
+                {"id":"turn-external","status":"completed","items":[
+                    {"id":"user-external","type":"userMessage","text":"same text"},
+                    {"id":"reasoning-external","type":"reasoning","summary":["skip"]},
+                    {"id":"assistant-external","type":"agentMessage","phase":"commentary","content":[
+                        {"type":"text","text":"same "},{"type":"text","text":"text"}
+                    ]}
+                ]}
+            ]
+        }));
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| (message.turn_id.as_str(), message.item_id.as_str(), message.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("turn-local", "user-local", "first prompt"),
+                ("turn-local", "assistant-local", "first reply"),
+                ("turn-external", "user-external", "same text"),
+                ("turn-external", "assistant-external", "same text"),
+            ]
+        );
+        assert_eq!(messages[0].thread_id, "thread-1");
+        assert_eq!(messages[0].client_id.as_deref(), Some("operation-1"));
+        assert_eq!(messages[0].role, NativeChatMessageRole::User);
+        assert_eq!(messages[1].role, NativeChatMessageRole::Assistant);
+        assert_eq!(messages[1].phase.as_deref(), Some("final_answer"));
+        assert_eq!(messages[3].phase.as_deref(), Some("commentary"));
     }
 
     #[test]

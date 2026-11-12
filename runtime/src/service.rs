@@ -211,6 +211,9 @@ fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &s
         return Err(error);
     }
     let _ = crate::chat_projection::expire_pending_approvals(db, session_id);
+    if session.provider == "codex" {
+        providers.clear_chat_history_reopen(session_id)?;
+    }
     Ok(())
 }
 
@@ -401,7 +404,8 @@ pub(crate) fn send_chat_message(
         "service.chat_send.begin", "service.chat_send.end", "chat.send",
     );
     db.require_interactive(session_id)?;
-    if !providers.chat_is_open(session_id) {
+    let reopen_history = providers.chat_history_reopen_pending(session_id)?;
+    if !reopen_history && !providers.chat_is_open(session_id) {
         return Err(anyhow::anyhow!("chat_not_open"));
     }
     validate_chat_images(images)?;
@@ -410,6 +414,17 @@ pub(crate) fn send_chat_message(
     }
     if let Some(result) = db.operation(operation_id)? {
         return Ok(result);
+    }
+    if reopen_history {
+        if providers.chat_is_open(session_id) {
+            if providers.chat_has_running_background_task(session_id)? {
+                return Err(anyhow::anyhow!("turn_in_progress"));
+            }
+            providers.restart_idle_chat(session_id, || Ok(()))?;
+        } else if db.session_by_id(session_id)?.is_some_and(|session| session.released) {
+            return Err(anyhow::anyhow!("chat_not_open"));
+        }
+        ensure_chat_session_open(db, providers, session_id)?;
     }
     let group_text = crate::group_chat::before_send(db, providers, session_id, operation_id, text)?;
     let text = group_text.as_deref().unwrap_or(text);
@@ -1149,6 +1164,70 @@ impl RuntimeService {
         })
     }
 
+    fn refresh_codex_history(&self, principal: &str, p: &ChatRepair) -> Result<Value> {
+        use crate::chat_history_refresh as refresh;
+
+        if p.session_id.is_empty() || p.operation_id.is_empty() || p.lease_epoch < 1 {
+            return Err(anyhow::anyhow!("invalid_request"));
+        }
+        let session_id = p.session_id.as_str();
+        let admission = crate::chat_fork::session_admission(&self.db, session_id)?;
+        let admitted = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        self.leases.require(&self.db, session_id, principal, p.lease_epoch)?;
+        self.db.bind_operation(&p.operation_id, refresh::METHOD, &json!({"sessionId":session_id}))?;
+        if let Some(result) = self.db.operation(&p.operation_id)? {
+            return Ok(result);
+        }
+        let complete_empty = || {
+            self.db.transaction(|tx| refresh::commit(tx, session_id, &p.operation_id, Vec::new()))
+        };
+        let session = self.db.session_by_id(session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+        let Some(native_id) = session.native_id.as_deref() else { return complete_empty() };
+        if session.provider != "codex" || session.mode != "chat" || session.read_only
+            || !(session.status == "idle" || session.released)
+            || self.release_refusal(&session)?.is_some()
+        {
+            return complete_empty();
+        }
+        let worker = self.providers.with_chat_repair_state(session_id, Ok)?;
+        if worker.connecting {
+            return complete_empty();
+        }
+        drop(admitted);
+        let messages = self.providers.completed_chat_messages("codex", native_id)?;
+
+        // Provider I/O finished before taking the lease fence. Recheck
+        // authority and native identity after allowing concurrent chat work.
+        let _admitted = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        let _control = self.leases.fence(session_id);
+        self.leases.require(&self.db, session_id, principal, p.lease_epoch)?;
+        if let Some(result) = self.db.operation(&p.operation_id)? {
+            return Ok(result);
+        }
+        let current = self.db.session_by_id(session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+        let revision = |session: &Session| session.activity.as_ref().map(|activity| activity.revision);
+        if current.native_id != session.native_id || current.status != session.status
+            || current.released != session.released || current.read_only
+            || revision(&current) != revision(&session) || self.release_refusal(&current)?.is_some()
+        {
+            return complete_empty();
+        }
+        // A transcript read must leave the current worker usable even when
+        // Codex cannot reopen the native thread. Reload before the next send.
+        self.providers.commit_chat_history_refresh(session_id, &worker, |unchanged| {
+            self.db.transaction(|tx| {
+                let additions = if unchanged {
+                    refresh::plan(tx, session_id, native_id, &messages)?
+                } else {
+                    Vec::new()
+                };
+                let changed = !additions.is_empty();
+                let result = refresh::commit(tx, session_id, &p.operation_id, additions)?;
+                Ok((result, changed))
+            })
+        })
+    }
+
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
         let providers = Arc::new(Providers::with_plugins(
             &config.data_dir,
@@ -1766,7 +1845,7 @@ impl RuntimeService {
             let slash_fork = request.method == "chat.send"
                 && request.params.get("text").and_then(Value::as_str).is_some_and(|text| text.trim() == "/fork")
                 && request.params.get("images").and_then(Value::as_array).is_none_or(Vec::is_empty);
-            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != "chat.projectTrust.set" && request.method != "chat.feedback.add" && request.method != "chat.feedback.dismiss"
+            if request.method != "session.lookup" && request.method != "chat.answer" && request.method != "chat.repair" && request.method != crate::chat_history_refresh::METHOD && request.method != "chat.projectTrust.set" && request.method != "chat.feedback.add" && request.method != "chat.feedback.dismiss"
                 && request.method != "chat.fork" && request.method != "git.undo" && !slash_fork {
                 if let Some(operation_id) =
                     request.params.get("operationId").and_then(Value::as_str)
@@ -2416,6 +2495,10 @@ impl RuntimeService {
                 "chat.repair" => {
                     let p: ChatRepair = parse(&request.params)?;
                     self.repair_chat_history(principal, &p)
+                }
+                crate::chat_history_refresh::METHOD => {
+                    let p: ChatRepair = parse(&request.params)?;
+                    self.refresh_codex_history(principal, &p)
                 }
                 "qa.chat.projection.fail" => {
                     let p: ChatRead = parse(&request.params)?;

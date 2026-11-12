@@ -18,6 +18,10 @@ use crate::output_loss::LossRecord;
 /// Reason carried by the terminal storage-degraded marker and event (F23).
 pub const TERMINAL_STORAGE_FAILED: &str = "terminal_output_storage_failed";
 pub const TERMINAL_OUTPUT_LOST: &str = "terminal_output_lost";
+/// Leave enough integer space between existing transcript rows for an idle
+/// native-history refresh to insert a bounded conversation without rewriting
+/// the rows on either side.
+pub(crate) const CHAT_TIMELINE_STRIDE: i64 = 1_i64 << 32;
 
 pub struct Database {
     connection: Mutex<Connection>,
@@ -112,7 +116,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS leases (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, client_id TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS output_chunks (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, start_cursor INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(session_id,start_cursor));
              CREATE TABLE IF NOT EXISTS deferred_codex_launches (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, phase TEXT NOT NULL, error_code TEXT, error_message TEXT, cwd TEXT);
-             CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, timeline_seq INTEGER);
              CREATE INDEX IF NOT EXISTS chat_items_session ON chat_items(session_id, created_at, id);
              CREATE INDEX IF NOT EXISTS group_reply_turn_items ON chat_items(session_id,turn_id,created_at);
              CREATE TABLE IF NOT EXISTS chat_repair_backups (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, created_at TEXT NOT NULL, items_json TEXT NOT NULL);
@@ -907,7 +911,7 @@ impl Database {
     pub fn chat_items_tail(&self, session_id: &str, limit: u32) -> Result<Vec<ChatItem>> {
         let rows: Vec<String> = self.transaction(|tx| {
             let mut statement = tx.prepare(
-                "SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                "SELECT data FROM chat_items WHERE session_id=? ORDER BY timeline_seq DESC, id DESC LIMIT ?",
             )?;
             let rows = statement.query_map(params![session_id, limit], |row| row.get::<_, String>(0))?;
             let mut rows_out = Vec::new();
@@ -1106,7 +1110,7 @@ impl Database {
         whole_transcript_reads(|count| count + 1);
         self.transaction(|tx| {
             let mut statement = tx
-                .prepare("SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at,id")?;
+                .prepare("SELECT data FROM chat_items WHERE session_id=? ORDER BY timeline_seq,id")?;
             let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
             let mut items = Vec::new();
             for row in rows {
@@ -4828,13 +4832,13 @@ mod tests {
         let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
         let plan: Vec<String> = db
             .transaction(|tx| {
-                let mut statement = tx.prepare("EXPLAIN QUERY PLAN SELECT data FROM chat_items WHERE session_id=? ORDER BY created_at,id")?;
+                let mut statement = tx.prepare("EXPLAIN QUERY PLAN SELECT data FROM chat_items WHERE session_id=? ORDER BY timeline_seq,id")?;
                 let rows = statement.query_map(["s"], |row| row.get::<_, String>(3))?;
                 Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .unwrap();
         // A table scan would read every Chat's items to show one; the index also supplies the order.
-        assert!(plan.iter().any(|step| step.contains("USING INDEX chat_items_session")), "{plan:?}");
+        assert!(plan.iter().any(|step| step.contains("USING INDEX chat_items_timeline")), "{plan:?}");
         assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")), "{plan:?}");
     }
 
