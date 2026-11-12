@@ -83,6 +83,7 @@ impl ProviderAdapter for PiAdapter {
             sign_in: None,
             remote_sign_in: None,
             homepage: Some(PI_HOME.to_owned()),
+            setup: super::install::builtin_setup("pi", installed),
         }
     }
 

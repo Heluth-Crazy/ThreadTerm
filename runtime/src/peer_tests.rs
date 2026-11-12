@@ -63,6 +63,7 @@ impl ProviderAdapter for EmittingAdapter {
             terminal_resume_capture: "none",
             reason: None,
             auth: "authenticated".into(),
+            setup: Default::default(),
         }
     }
     fn terminal_command(

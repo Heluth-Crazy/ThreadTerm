@@ -13,6 +13,7 @@ mod codex;
 mod conformance;
 pub(crate) mod common;
 mod grok;
+pub(crate) mod install;
 mod kimi_plan_usage;
 pub(crate) mod network;
 mod opencode;
@@ -184,28 +185,68 @@ pub(crate) fn builtin_cli_name(id: &str) -> Option<&'static str> {
     BUILTIN_AGENTS.iter().find(|agent| agent.id == id).map(|agent| agent.id)
 }
 
-pub(crate) fn builtin_sign_in(id: &str) -> Option<ProviderSignIn> {
+pub(crate) fn builtin_sign_in(id: &str) -> Option<ProviderCommand> {
     let descriptor = BUILTIN_AGENTS.iter().find(|agent| agent.id == id)?;
     if descriptor.sign_in_args.is_empty() { return None; }
     let spec = common::CommandSpec::provider(id, descriptor.sign_in_args).ok()?;
-    Some(ProviderSignIn { executable: spec.program, args: spec.args, display: spec.display })
+    Some(ProviderCommand::from_spec(spec))
 }
 
-pub(crate) fn builtin_remote_sign_in(id: &str) -> Option<ProviderSignIn> {
+pub(crate) fn builtin_remote_sign_in(id: &str) -> Option<ProviderCommand> {
     let args: &[&str] = match id {
         "codex" | "grok" => &["login", "--device-auth"],
         _ => return None,
     };
     let spec = common::CommandSpec::provider(id, args).ok()?;
-    Some(ProviderSignIn { executable: spec.program, args: spec.args, display: spec.display })
+    Some(ProviderCommand::from_spec(spec))
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// A command line handed to the renderer. `cwd` is the folder it runs in: that computer's home folder,
+/// because the renderer has no home path and a remote computer's home is only known to its runtime.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderSignIn {
+pub struct ProviderCommand {
     pub executable: String,
     pub args: Vec<String>,
     pub display: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+impl ProviderCommand {
+    pub(crate) fn from_spec(spec: common::CommandSpec) -> Self {
+        Self {
+            executable: spec.program,
+            args: spec.args,
+            display: spec.display,
+            cwd: install::home_directory(),
+        }
+    }
+}
+
+/// How to get, refresh and locate an agent on this computer. Flattened into [`ProviderCapability`], so an
+/// agent without a recipe adds nothing to the wire format.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSetup {
+    /// How to install the agent: only when it is not installed and a verified recipe exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<ProviderCommand>,
+    /// How to update it: only when the update path matches how it was installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<ProviderCommand>,
+    /// `npm`, `vendor` or `plugin`: how the installed agent got there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_source: Option<&'static str>,
+    /// The resolved path of this computer's installed CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<String>,
+    /// `node_missing`: the recipe needs npm and Node.js is missing on this computer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_blocked: Option<&'static str>,
+    /// How to get Node.js on this computer (winget, when it resolves).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_install: Option<ProviderCommand>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -300,10 +341,13 @@ pub struct ProviderCapability {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sign_in: Option<ProviderSignIn>,
+    pub sign_in: Option<ProviderCommand>,
     /// Sign-in from another computer, without needing a browser on the host.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub remote_sign_in: Option<ProviderSignIn>,
+    pub remote_sign_in: Option<ProviderCommand>,
+    /// Install, update and the install source. Flattened: an agent without a recipe adds no keys.
+    #[serde(flatten)]
+    pub setup: ProviderSetup,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
     pub id: String,
@@ -3670,6 +3714,7 @@ mod capability_cache_tests {
             id: id.into(), name, installed: true, version: None, terminal: false, chat: false,
             history: false, resume: false, terminal_resume_capture: "none", reason: None,
             auth: "unknown".into(),
+            setup: Default::default(),
         }
     }
 

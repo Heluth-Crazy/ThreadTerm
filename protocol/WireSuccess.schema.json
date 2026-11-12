@@ -5039,52 +5039,42 @@
           "description": "Plugin agents: the plugin's SVG icon as a `data:image/svg+xml;base64,` URL. Render it with <img>, never as markup."
         },
         "signIn": {
-          "type": "object",
-          "properties": {
-            "executable": {
-              "type": "string"
-            },
-            "args": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "display": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "executable",
-            "args",
-            "display"
-          ],
-          "additionalProperties": false,
+          "$ref": "#/definitions/ProviderCommand",
           "description": "The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show."
         },
         "remoteSignIn": {
-          "type": "object",
-          "properties": {
-            "executable": {
-              "type": "string"
-            },
-            "args": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "display": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "executable",
-            "args",
-            "display"
-          ],
-          "additionalProperties": false,
+          "$ref": "#/definitions/ProviderCommand",
           "description": "Sign-in command used from another computer's view, a flow that needs no browser on the host."
+        },
+        "install": {
+          "$ref": "#/definitions/ProviderCommand",
+          "description": "How to install the agent, only when it is not installed and a verified recipe exists."
+        },
+        "update": {
+          "$ref": "#/definitions/ProviderCommand",
+          "description": "How to update the agent, only when it is installed and the update path matches how it was installed."
+        },
+        "installSource": {
+          "type": "string",
+          "enum": [
+            "npm",
+            "vendor",
+            "plugin"
+          ],
+          "description": "How the installed agent got there: an npm global install, the vendor's own installer, or a plugin."
+        },
+        "executablePath": {
+          "type": "string",
+          "description": "The resolved path of the installed CLI, as this computer sees it; shown in the row's details."
+        },
+        "installBlocked": {
+          "type": "string",
+          "const": "node_missing",
+          "description": "Why installing is blocked: the recipe needs npm and Node.js is missing on that computer."
+        },
+        "nodeInstall": {
+          "$ref": "#/definitions/ProviderCommand",
+          "description": "How to get Node.js on that computer, shown before it runs (winget when it resolves, else the row links to nodejs.org)."
         },
         "homepage": {
           "type": "string"
@@ -5100,6 +5090,33 @@
         "resume"
       ],
       "additionalProperties": false
+    },
+    "ProviderCommand": {
+      "type": "object",
+      "properties": {
+        "executable": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "display": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "executable",
+        "args",
+        "display"
+      ],
+      "additionalProperties": false,
+      "description": "A command line the runtime hands the renderer to run in a terminal session. The renderer never builds or edits one: `executable`/`args` are run exactly as given, `display` is the line shown to the user before it runs, and `cwd` is the folder it runs in — that computer's home folder, because a remote computer's home is only known to its own runtime."
     },
     "RequestResult<\"project.add\">": {
       "$ref": "#/definitions/Project"
@@ -5629,7 +5646,7 @@
         "commands"
       ],
       "additionalProperties": false,
-      "description": "One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat, sign-in), shown to the user before the plugin is enabled."
+      "description": "One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat, sign-in, install and update), shown to the user before the plugin is enabled."
     },
     "BrowserBindingInfo": {
       "type": "object",

@@ -177,18 +177,34 @@ export interface ChatFeedbackNote { id:string; sessionId:string; turnId:string; 
 export interface SessionConfig { sessionId:string; revision:number; provider:ProviderId; mode:SessionMode; cwd:string; projectId?:string; title?:string; executable?:string; args:string[]; sourceSessionId?:string }
 export interface SessionRetryAttempt { id:string; sourceSessionId:string; attempt:number; dueAt:string; status:'pending'|'claimed'|'cancelled'|'completed'|'exhausted'; operationId:string; createdAt:string }
 export interface SessionRetryState { sessionId:string; revision:number; enabled:boolean; maxRetries:number; delaySeconds:number; attempts:SessionRetryAttempt[] }
+/** A command line the runtime hands the renderer to run in a terminal session. The renderer never builds or edits one:
+ * `executable`/`args` are run exactly as given, `display` is the line shown to the user before it runs, and `cwd` is the
+ * folder it runs in — that computer's home folder, because a remote computer's home is only known to its own runtime. */
+export interface ProviderCommand { executable:string; args:string[]; display:string; cwd?:string }
 export interface ProviderCapability { id:ProviderId; name:string; installed:boolean; version?:string; terminal:boolean; chat:boolean; history:boolean; resume:boolean; terminalResumeCapture?:'preassigned'|'none'; reason?:string; auth?:'authenticated'|'unauthenticated'|'unknown';
  /** Where the agent comes from: built into ThreadTerm, or contributed by a plugin (see `plugin.list`). Absent = builtin. */
  source?:'builtin'|'plugin'; pluginId?:string;
  /** Plugin agents: the plugin's SVG icon as a `data:image/svg+xml;base64,` URL. Render it with <img>, never as markup. */
  icon?:string;
  /** The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show. */
- signIn?:{ executable:string; args:string[]; display:string };
+ signIn?:ProviderCommand;
  /** Sign-in command used from another computer's view, a flow that needs no browser on the host. */
- remoteSignIn?:{ executable:string; args:string[]; display:string };
+ remoteSignIn?:ProviderCommand;
+ /** How to install the agent, only when it is not installed and a verified recipe exists. */
+ install?:ProviderCommand;
+ /** How to update the agent, only when it is installed and the update path matches how it was installed. */
+ update?:ProviderCommand;
+ /** How the installed agent got there: an npm global install, the vendor's own installer, or a plugin. */
+ installSource?:'npm'|'vendor'|'plugin';
+ /** The resolved path of the installed CLI, as this computer sees it; shown in the row's details. */
+ executablePath?:string;
+ /** Why installing is blocked: the recipe needs npm and Node.js is missing on that computer. */
+ installBlocked?:'node_missing';
+ /** How to get Node.js on that computer, shown before it runs (winget when it resolves, else the row links to nodejs.org). */
+ nodeInstall?:ProviderCommand;
  homepage?:string }
 /** One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat,
- * sign-in), shown to the user before the plugin is enabled. */
+ * sign-in, install and update), shown to the user before the plugin is enabled. */
 export interface PluginAgentInfo { id:ProviderId; name:string; terminal:boolean; chat:boolean; commands:string[] }
 /** A plugin folder found by the runtime. `bundled` plugins ship with ThreadTerm and are enabled by default; `user`
  * plugins live in the plugins directory and stay disabled until the user enables them. `issues` lists problems:

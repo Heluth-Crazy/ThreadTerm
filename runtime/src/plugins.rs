@@ -104,10 +104,44 @@ pub struct AgentDescriptor {
     pub terminal: Option<TerminalConfig>,
     pub chat_args: Option<Vec<String>>,
     pub sign_in_args: Option<Vec<String>>,
+    /// The npm package this agent installs from, declared by the manifest and validated as a package
+    /// name. The runtime builds the command lines; a plugin never supplies one.
+    pub install_package: Option<String>,
     pub plugin_dir: Option<PathBuf>,
 }
 
 impl AgentDescriptor {
+    /// The resolved CLI on this computer: a plugin-relative path inside the plugin folder, or the
+    /// command looked up on PATH.
+    pub(crate) fn cli_path(&self) -> Option<PathBuf> {
+        if let Some(suffix) = self
+            .command
+            .strip_prefix("{pluginDir}/")
+            .or_else(|| self.command.strip_prefix("{pluginDir}\\"))
+        {
+            let dir = self.plugin_dir.as_deref()?;
+            return Some(launch_path(&safe_plugin_path(dir, suffix).ok()?));
+        }
+        find_executable(&self.expand(&self.command).ok()?)
+    }
+
+    /// `false` only when the CLI belongs to the plugin folder: then the plugin, not npm or the
+    /// vendor, is what updates it.
+    fn plugin_owned(&self) -> bool {
+        self.command.starts_with("{pluginDir}/") || self.command.starts_with("{pluginDir}\\")
+    }
+
+    /// Install, update and install-source for this plugin agent. The manifest may declare an npm
+    /// package; the same verified recipe table turns it into the command lines.
+    pub(crate) fn setup(&self, installed: bool) -> crate::providers::ProviderSetup {
+        let cli = self.cli_path();
+        crate::providers::install::plugin_setup(
+            self.install_package.as_deref(),
+            installed,
+            cli.as_deref(),
+            self.plugin_owned(),
+        )
+    }
     pub fn command_spec(&self, extra: &[String]) -> Result<CommandSpec, ProviderError> {
         let _decision = crate::environment::provider_decision();
         let args = self
@@ -210,13 +244,9 @@ impl AgentDescriptor {
         }
     }
 
-    pub fn sign_in(&self) -> Option<crate::providers::ProviderSignIn> {
+    pub fn sign_in(&self) -> Option<crate::providers::ProviderCommand> {
         let spec = self.command_spec(&self.sign_in_args.clone()?).ok()?;
-        Some(crate::providers::ProviderSignIn {
-            executable: spec.program,
-            args: spec.args,
-            display: spec.display,
-        })
+        Some(crate::providers::ProviderCommand::from_spec(spec))
     }
 }
 
@@ -581,7 +611,14 @@ struct ManifestAgent {
     terminal: Option<Value>,
     chat: Option<Chat>,
     sign_in: Option<SignIn>,
+    install: Option<Install>,
     homepage: Option<String>,
+}
+/// A plugin may declare only an npm package name for its agent's install and update; the runtime
+/// builds the command lines, so a manifest never contributes a shell command.
+#[derive(Debug, Deserialize)]
+struct Install {
+    npm: String,
 }
 #[derive(Debug, Deserialize)]
 struct Chat {
@@ -913,6 +950,18 @@ fn validate_agent(
     if let Some(args) = &sign_in_args {
         validate_args(args, "signIn.args")?;
     }
+    let install_package = match agent.install {
+        Some(install) if crate::providers::install::valid_npm_package(&install.npm) => {
+            Some(install.npm)
+        }
+        Some(_) => {
+            return Err(
+                "install accepts only an npm package name, for example {\"npm\":\"@scope/name\"}"
+                    .into(),
+            )
+        }
+        None => None,
+    };
     let icon = match (directory, agent.icon.as_deref(), bundled_icon) {
         (Some(dir), Some(icon), _) => Some(read_icon(dir, icon)?),
         (None, Some(_), Some(bytes)) => Some(icon_data_url(bytes)?),
@@ -934,6 +983,7 @@ fn validate_agent(
         terminal,
         chat_args,
         sign_in_args,
+        install_package,
         plugin_dir: directory.map(Path::to_owned),
     };
     let commands = public_commands(&descriptor)?;
@@ -990,6 +1040,10 @@ fn public_commands(agent: &AgentDescriptor) -> Result<Vec<String>, String> {
             agent,
             &[agent.args.clone(), sign_in.clone()].concat(),
         ));
+    }
+    // The install and update command lines a plugin may run, so the user sees them before enabling it.
+    if let Some(package) = &agent.install_package {
+        lines.extend(crate::providers::install::plugin_command_lines(package));
     }
     lines.sort();
     lines.dedup();
@@ -1246,6 +1300,7 @@ impl ProviderAdapter for ManifestTerminalAdapter {
             icon: self.descriptor.icon.clone(),
             sign_in: self.descriptor.sign_in(),
             remote_sign_in: None,
+            setup: self.descriptor.setup(installed),
             homepage: self.descriptor.homepage.clone(),
         }
     }
@@ -1326,6 +1381,32 @@ mod tests {
         fs::write(plugin.join("agent.mjs"), "").unwrap();
         fs::write(plugin.join("icon.svg"), "<svg/>").unwrap();
         plugin
+    }
+
+    #[test]
+    fn a_manifest_may_declare_an_npm_package_for_install_and_nothing_else() {
+        let with_install = valid_manifest().replace(
+            "\"chat\":{\"protocol\":\"acp\",\"args\":[\"--acp\"]}",
+            "\"chat\":{\"protocol\":\"acp\",\"args\":[\"--acp\"]},\"install\":{\"npm\":\"@scope/echo\"}",
+        );
+        let candidate = user_candidate(&with_install);
+        assert!(candidate.info.issues.is_empty(), "{:?}", candidate.info.issues);
+        assert_eq!(candidate.descriptors[0].install_package.as_deref(), Some("@scope/echo"));
+        let setup = candidate.descriptors[0].setup(false);
+        assert!(setup.install.is_some(), "an installable plugin agent offers the verified npm command");
+        // A manifest never contributes a command line: only a package name is accepted.
+        for install in [
+            "{\"npm\":\"echo agent\"}",
+            "{\"npm\":\"Echo\"}",
+            "{\"npm\":\"echo; rm -rf /\"}",
+            "{\"command\":\"npm install -g echo\"}",
+            "{\"npm\":\"\"}",
+        ] {
+            let broken = with_install.replace("{\"npm\":\"@scope/echo\"}", install);
+            let candidate = user_candidate(&broken);
+            assert!(!candidate.info.issues.is_empty(), "{install} must be rejected");
+            assert!(candidate.descriptors.is_empty(), "{install} contributes no agent");
+        }
     }
 
     #[test]
@@ -1853,6 +1934,7 @@ mod tests {
             }),
             chat_args: None,
             sign_in_args: None,
+            install_package: None,
             plugin_dir: Some(temp.path().canonicalize().unwrap()),
         };
         assert!(descriptor.command_spec(&[]).is_ok());
@@ -1883,6 +1965,7 @@ mod tests {
             }),
             chat_args: None,
             sign_in_args: None,
+            install_package: None,
             plugin_dir: Some(temp.path().canonicalize().unwrap()),
         };
         let command = descriptor
@@ -1936,6 +2019,7 @@ mod tests {
             }),
             chat_args: None,
             sign_in_args: None,
+            install_package: None,
             plugin_dir: Some(temp.path().canonicalize().unwrap()),
         };
         fs::remove_file(temp.path().join("agent.mjs")).unwrap();

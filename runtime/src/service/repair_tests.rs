@@ -52,6 +52,7 @@ impl ProviderAdapter for RepairAdapter {
             terminal_resume_capture: "none",
             reason: None,
             auth: "authenticated".into(),
+            setup: Default::default(),
         }
     }
 

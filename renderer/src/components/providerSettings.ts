@@ -6,12 +6,14 @@ export type SignInTerminal = Readonly<{
   provider: "custom";
   executable: string;
   args: readonly string[];
+  /** The folder the runtime resolved for this command (that computer's home), absent on an older runtime. */
+  cwd?: string;
 }>;
 
 export function signInTerminal(capability: ProviderCapability, remote = isRemoteFiles()): SignInTerminal | undefined {
   const command = remote ? capability.remoteSignIn ?? capability.signIn : capability.signIn;
   if (!capability.installed || !command) return undefined;
-  return { provider: "custom", executable: command.executable, args: [...command.args] };
+  return { provider: "custom", executable: command.executable, args: [...command.args], ...(command.cwd ? { cwd: command.cwd } : {}) };
 }
 
 export function accountProviders(capabilities: readonly ProviderCapability[]): ProviderCapability[] {

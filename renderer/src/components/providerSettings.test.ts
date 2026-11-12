@@ -4,7 +4,7 @@ import type { ProviderCapability } from "@threadterm/protocol";
 import { accountProviders, signInTerminal } from "./providerSettings";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server.edge";
-import AgentsSettings, { agentRow } from "./AgentsSettings";
+import AgentsSettings, { agentRow, installRunKey, runCommand, runSettled } from "./AgentsSettings";
 import { providerReadiness } from "../providerReadiness";
 import type { Snapshot } from "@threadterm/protocol";
 
@@ -80,21 +80,108 @@ test("Gemini sign-in guidance is remote-only, bilingual, and limited to the bund
 
 test("an agent row shows one primary action: sign in when signed out, install help when missing, none when fine", () => {
   const signed = { ...capability("codex"), installed: true, auth: "authenticated" as const, signIn: { executable: "codex", args: ["login"], display: "codex login" } };
-  assert.deepEqual(agentRow(signed, false), { state: "signed-in" });
-  assert.deepEqual(agentRow({ ...signed, auth: "unauthenticated" }, false), { state: "signed-out", primary: "signIn" });
-  assert.deepEqual(agentRow({ ...signed, auth: undefined }, false), { state: "unknown" });
-  assert.deepEqual(agentRow({ ...signed, installed: false, homepage: "https://example.test" }, false), { state: "missing", primary: "homepage" });
-  assert.deepEqual(agentRow({ ...signed, installed: false, homepage: undefined }, false), { state: "missing", primary: undefined });
+  assert.deepEqual(agentRow(signed, { remote: false }), { state: "signed-in" });
+  assert.deepEqual(agentRow({ ...signed, auth: "unauthenticated" }, { remote: false }), { state: "signed-out", primary: "signIn" });
+  assert.deepEqual(agentRow({ ...signed, auth: undefined }, { remote: false }), { state: "unknown" });
+  assert.deepEqual(agentRow({ ...signed, installed: false, homepage: "https://example.test" }, { remote: false }), { state: "missing", primary: "homepage" });
+  assert.deepEqual(agentRow({ ...signed, installed: false, homepage: undefined }, { remote: false }), { state: "missing" });
 });
 
 test("a signed-out row offers sign-in only when the command exists for that machine", () => {
   const command = { executable: "grok", args: ["login"], display: "grok login" };
   const remoteCommand = { executable: "grok", args: ["login", "--device-auth"], display: "grok login --device-auth" };
   const signedOut = { ...capability("grok"), auth: "unauthenticated" as const };
-  assert.deepEqual(agentRow(signedOut, false), { state: "signed-out", primary: undefined });
-  assert.deepEqual(agentRow({ ...signedOut, signIn: command }, false), { state: "signed-out", primary: "signIn" });
-  assert.deepEqual(agentRow({ ...signedOut, remoteSignIn: remoteCommand }, false), { state: "signed-out", primary: undefined });
-  assert.deepEqual(agentRow({ ...signedOut, remoteSignIn: remoteCommand }, true), { state: "signed-out", primary: "signIn" });
-  assert.deepEqual(agentRow({ ...signedOut, signIn: command }, true), { state: "signed-out", primary: "signIn" });
-  assert.deepEqual(agentRow({ ...signedOut, signIn: command, installed: false }, true), { state: "missing", primary: undefined });
+  assert.deepEqual(agentRow(signedOut, { remote: false }), { state: "signed-out", primary: undefined });
+  assert.deepEqual(agentRow({ ...signedOut, signIn: command }, { remote: false }), { state: "signed-out", primary: "signIn" });
+  assert.deepEqual(agentRow({ ...signedOut, remoteSignIn: remoteCommand }, { remote: false }), { state: "signed-out", primary: undefined });
+  assert.deepEqual(agentRow({ ...signedOut, remoteSignIn: remoteCommand }, { remote: true }), { state: "signed-out", primary: "signIn" });
+  assert.deepEqual(agentRow({ ...signedOut, signIn: command }, { remote: true }), { state: "signed-out", primary: "signIn" });
+  assert.deepEqual(agentRow({ ...signedOut, signIn: command, installed: false }, { remote: true }), { state: "missing" });
+});
+
+test("an install row offers one action: install, Node.js first, or install help", () => {
+  const install = { executable: "C:/npm.cmd", args: ["install", "-g", "@openai/codex"], display: "npm install -g @openai/codex", cwd: "C:/Users/qa" };
+  const node = { executable: "C:/winget.exe", args: ["install", "--id", "OpenJS.NodeJS.LTS"], display: "winget install --id OpenJS.NodeJS.LTS", cwd: "C:/Users/qa" };
+  const missing = { ...capability("codex", false), install, homepage: "https://github.com/openai/codex" };
+  assert.deepEqual(agentRow(missing, { remote: false }), { state: "missing", primary: "install" });
+  // Node.js is missing: the row asks for it before the agent, and only when the command is known.
+  assert.deepEqual(agentRow({ ...missing, install: undefined, installBlocked: "node_missing", nodeInstall: node }, { remote: false }), { state: "node-missing", primary: "node" });
+  assert.deepEqual(agentRow({ ...missing, install: undefined, installBlocked: "node_missing", nodeInstall: undefined }, { remote: false }), { state: "missing", primary: "homepage" });
+  // No recipe at all: the homepage is the only action.
+  assert.deepEqual(agentRow({ ...missing, install: undefined }, { remote: false }), { state: "missing", primary: "homepage" });
+  assert.deepEqual(agentRow({ ...missing, install: undefined, homepage: undefined }, { remote: false }), { state: "missing" });
+});
+
+test("a run in flight, a failed run and a finished run drive the same row", () => {
+  const install = { executable: "C:/npm.cmd", args: ["install", "-g", "@openai/codex"], display: "npm install -g @openai/codex" };
+  const node = { executable: "C:/winget.exe", args: ["install"], display: "winget install --id OpenJS.NodeJS.LTS" };
+  const missing = { ...capability("codex", false), install, nodeInstall: node };
+  const running = { state: "installing" } as const;
+  assert.deepEqual(agentRow(missing, { remote: false, run: { kind: "install", sessionId: "s1" } }), running);
+  // Exit 0 keeps the row in progress until the refreshed capability arrives (the row then says 登录 or 已登录).
+  assert.deepEqual(agentRow(missing, { remote: false, run: { kind: "install", sessionId: "s1", exitCode: 0 } }), running);
+  assert.deepEqual(agentRow({ ...missing, installed: true, auth: "unauthenticated", signIn: { executable: "codex", args: ["login"], display: "codex login" } }, { remote: false, run: { kind: "install", sessionId: "s1", exitCode: 0 } }), running);
+  // A failure keeps the row and offers the same command again; Node.js first when that is what failed.
+  assert.deepEqual(agentRow(missing, { remote: false, run: { kind: "install", sessionId: "s1", exitCode: 1 } }), { state: "install-failed", primary: "install" });
+  assert.deepEqual(agentRow({ ...missing, install: undefined }, { remote: false, run: { kind: "node", sessionId: "s2", exitCode: 3 } }), { state: "install-failed", primary: "node" });
+  // An update never changes whether the agent is usable: a failed update keeps the row's own state (its failure
+  // line is drawn below the row), and so does a row without a run.
+  const installed = { ...capability("codex"), auth: "unauthenticated" as const, signIn: { executable: "codex", args: ["login"], display: "codex login" }, update: install };
+  assert.deepEqual(agentRow(installed, { remote: false }), { state: "signed-out", primary: "signIn" });
+  assert.deepEqual(agentRow(installed, { remote: false, run: { kind: "update", sessionId: "s3", exitCode: 2 } }), { state: "signed-out", primary: "signIn" });
+  assert.deepEqual(agentRow({ ...installed, auth: "authenticated" }, { remote: false, run: { kind: "update", sessionId: "s3", exitCode: 2 } }), { state: "signed-in" });
+  assert.deepEqual(agentRow(installed, { remote: false, run: { kind: "update", sessionId: "s3" } }), running);
+  // Retry re-runs the same kind of command, only while the capability still offers it.
+  assert.equal(runCommand(installed, "update"), install);
+  assert.equal(runCommand(missing, "node"), node);
+  assert.equal(runCommand({ ...missing, install: undefined }, "install"), undefined);
+});
+
+test("a finished run is dropped once the capability shows its goal, never while it runs", () => {
+  const install = { executable: "C:/npm.cmd", args: ["install", "-g", "@openai/codex"], display: "npm install -g @openai/codex" };
+  const node = { executable: "C:/winget.exe", args: ["install"], display: "winget install --id OpenJS.NodeJS.LTS" };
+  const missing = { ...capability("codex", false), install };
+  const installed = { ...capability("codex"), update: install };
+  const blocked = { ...missing, install: undefined, installBlocked: "node_missing" as const, nodeInstall: node };
+  // In flight: never settled, whatever the capability says (an update's agent is installed all along).
+  assert.equal(runSettled(installed, { kind: "update", sessionId: "u" }), false);
+  assert.equal(runSettled(installed, { kind: "install", sessionId: "i" }), false);
+  // Install: settled once the agent is installed, also after a failure fixed some other way.
+  assert.equal(runSettled(missing, { kind: "install", sessionId: "i", exitCode: 0 }), false);
+  assert.equal(runSettled(installed, { kind: "install", sessionId: "i", exitCode: 0 }), true);
+  assert.equal(runSettled(missing, { kind: "install", sessionId: "i", exitCode: 1 }), false);
+  assert.equal(runSettled(installed, { kind: "install", sessionId: "i", exitCode: 1 }), true);
+  // Node.js: settled once npm is found (the row then offers 安装), not while the capability still says it is missing.
+  assert.equal(runSettled(blocked, { kind: "node", sessionId: "n", exitCode: 0 }), false);
+  assert.equal(runSettled(missing, { kind: "node", sessionId: "n", exitCode: 0 }), true);
+  assert.equal(runSettled(blocked, { kind: "node", sessionId: "n", exitCode: 5 }), false);
+  // Update: exit 0 settles; a failed update stays until Retry or Dismiss, because nothing in the capability shows it.
+  assert.equal(runSettled(installed, { kind: "update", sessionId: "u", exitCode: 0 }), true);
+  assert.equal(runSettled(installed, { kind: "update", sessionId: "u", exitCode: 1 }), false);
+  assert.equal(runSettled(undefined, { kind: "install", sessionId: "i", exitCode: 0 }), false);
+});
+
+test("a sign-in terminal uses the runtime's folder instead of a project path", () => {
+  const signIn = { executable: "codex", args: ["login"], display: "codex login", cwd: "C:/Users/qa" };
+  assert.equal(signInTerminal({ ...capability("codex"), signIn }, false)?.cwd, "C:/Users/qa");
+  // An older runtime sends no cwd; the caller then falls back to a project folder or the picker.
+  assert.equal(signInTerminal({ ...capability("codex"), signIn: { executable: "codex", args: ["login"], display: "codex login" } }, false)?.cwd, undefined);
+});
+
+test("install progress is remembered per computer and agent", async () => {
+  const store = new Map<string, string>();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  try {
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value); },
+      removeItem: (key: string) => { store.delete(key); },
+    } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { threadterm: { machineId: "office-pc" } } });
+    assert.equal(installRunKey("codex"), "threadterm.agents.install.office-pc.codex");
+    assert.equal(installRunKey("codex", "local"), "threadterm.agents.install.local.codex");
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous); else Reflect.deleteProperty(globalThis, "localStorage");
+    Reflect.deleteProperty(globalThis, "window");
+  }
 });

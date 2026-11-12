@@ -9,14 +9,18 @@ export function installVisualFixture({ seed, theme }) {
   localStorage.setItem('threadterm.v3.recent-session-ids',JSON.stringify(seed.store.recentSessionIds));
   // Settings › Agents needs real row states in the review captures: signed in, signed out, not installed, unknown.
   const agent = (id,name,extra) => ({id,name,installed:true,terminal:true,chat:true,history:true,resume:true,...extra});
+  // Install/update fields are what a real runtime sends (design phase 2): a command with the home folder as cwd,
+  // the install source and the resolved CLI path. Kimi has no verified recipe, Gemini installs from npm.
+  const home = 'C:/Users/qa';
+  const command = (display, executable, args) => ({ executable, args, display, cwd: home });
   const providers = [
-    agent('codex','Codex',{version:'0.167.1',auth:'authenticated',homepage:'https://github.com/openai/codex'}),
-    agent('claude','Claude Code',{version:'2.1.280',auth:'authenticated',homepage:'https://claude.com/claude-code'}),
-    agent('kimi','Kimi',{version:'2.5.2',auth:'unknown',homepage:'https://kimi.com'}),
-    agent('gemini','Gemini',{installed:false,terminal:false,chat:false,history:false,resume:false,auth:'unknown',homepage:'https://github.com/google-gemini/gemini-cli'}),
-    agent('opencode','OpenCode',{version:'1.18.35',auth:'authenticated',homepage:'https://opencode.ai'}),
-    agent('grok','Grok',{version:'1.0.67',auth:'unauthenticated',signIn:{executable:'grok',args:['login'],display:'grok login'},homepage:'https://x.ai/cli'}),
-    agent('pi','Pi',{version:'1.1.0',auth:'unknown',homepage:'https://github.com/earendil-works/pi'}),
+    agent('codex','Codex',{version:'0.167.1',auth:'authenticated',homepage:'https://github.com/openai/codex',installSource:'npm',executablePath:'C:/Users/qa/AppData/Roaming/npm/codex.cmd',update:command('npm install -g @openai/codex@latest','C:/Program Files/nodejs/npm.cmd',['install','-g','@openai/codex@latest'])}),
+    agent('claude','Claude Code',{version:'2.1.280',auth:'authenticated',homepage:'https://claude.com/claude-code',installSource:'vendor',executablePath:'C:/Users/qa/.claude/local/claude.exe',update:command('claude update','C:/Users/qa/.claude/local/claude.exe',['update'])}),
+    agent('kimi','Kimi',{installed:false,terminal:false,chat:false,history:false,resume:false,auth:'unknown',homepage:'https://kimi.com'}),
+    agent('gemini','Gemini',{installed:false,terminal:false,chat:false,history:false,resume:false,auth:'unknown',homepage:'https://github.com/google-gemini/gemini-cli',install:command('npm install -g @google/gemini-cli','C:/Program Files/nodejs/npm.cmd',['install','-g','@google/gemini-cli'])}),
+    agent('opencode','OpenCode',{version:'1.18.35',auth:'authenticated',homepage:'https://opencode.ai',installSource:'npm',executablePath:'C:/Users/qa/AppData/Roaming/npm/opencode.cmd',update:command('npm install -g opencode-ai@latest','C:/Program Files/nodejs/npm.cmd',['install','-g','opencode-ai@latest'])}),
+    agent('grok','Grok',{version:'1.0.67',auth:'unauthenticated',signIn:command('grok login','C:/Users/qa/.grok/bin/grok.exe',['login']),homepage:'https://x.ai/cli',installSource:'vendor',executablePath:'C:/Users/qa/.grok/bin/grok.exe',update:command('grok update','C:/Users/qa/.grok/bin/grok.exe',['update'])}),
+    agent('pi','Pi',{version:'1.1.0',auth:'unknown',homepage:'https://github.com/earendil-works/pi',installSource:'npm',executablePath:'C:/Users/qa/AppData/Roaming/npm/pi.cmd'}),
     {id:'shell',name:'Shell',installed:true,terminal:true,chat:false,history:false,resume:false,auth:'unknown'},
     {id:'custom',name:'Custom',installed:true,terminal:true,chat:true,history:false,resume:false,auth:'unknown'},
   ];
@@ -25,7 +29,7 @@ export function installVisualFixture({ seed, theme }) {
   const sessions=seed.sessions.map((s,i)=>({id:s.id,projectId:s.project,worktreePath:seed.trees[s.tree].path,title:s.name,provider:s.agent.toLowerCase().replace(' code',''),mode:'terminal',status:({needs:'waiting',running:'running',failed:'error',ended:'exited',stalled:'interrupted'})[s.state],createdAt:sessionDate(s.time),updatedAt:sessionDate(s.time),nativeId:s.agent==='Shell'?undefined:'fixture-'+s.id,followed:seed.store.followed.includes(s.id),bookmarked:seed.store.bookmarks.includes(s.id),sortOrder:i,organizationRevision:0}));
   const inbox=[['orbit-approval-focus','orbit-claude','approval','确认焦点修复范围'],['orbit-input-checkout','orbit-claude','waiting','需要补充验收范围'],['pulse-failed-retry','pulse-codex','failed','重试连接已中断'],['docs-review-navigation','docs-gemini','review','导航文档待复核'],['orbit-stalled-server','orbit-shell','stalled','开发服务器长时间无新输出']].map(([id,sessionId,kind,title])=>({id,sessionId,kind,title,createdAt:date,read:false}));
   const state={epoch:'visual-fixture',revision:1,projects,sessions,inbox,providers,settings:{revision:1,theme,language,notifications:{native:true,attention:true,completed:true,sound:false},terminalCompatibility:{aiCompletionHints:true},customThemes:{'Ocean glass':{background:'#f7f8f8',surface:'#ffffff',text:'#282a30',muted:'#6b6f76',accent:'#5db9ff',border:'#eeeeee'}}},workspaces:[]};
-  const listeners=new Set(),calls=[];
+  const listeners=new Set(),calls=[];let providerRefreshGeneration=0;
   const changed=()=>listeners.forEach(fn=>fn({v:1,event:'state.changed',epoch:state.epoch,seq:++state.revision,data:{kind:'settings'}}));
   const output=id=>seed.sessions.find(s=>s.id===id)?.output.join('\r\n')||'';
   const clone=value=>structuredClone(value);
@@ -36,6 +40,9 @@ export function installVisualFixture({ seed, theme }) {
       case 'runtime.snapshot':return clone(state);
       case 'catalog.visibility.list':return [];
       case 'provider.list':return clone(providers);
+      case 'provider.refresh':{const refreshId=(providerRefreshGeneration+=1);queueMicrotask(()=>listeners.forEach(fn=>fn({v:1,event:'state.changed',epoch:state.epoch,seq:++state.revision,data:{kind:'providers',generation:refreshId,outcome:'ok'}})));return {refreshId};}
+      case 'session.create':{const session={id:'install-fixture-session',title:params.title??'',provider:params.provider,mode:params.mode,status:'running',createdAt:date,updatedAt:date};sessions.push(session);state.revision++;return clone(session);}
+      case 'session.present':case 'session.organize':case 'session.claim':case 'session.renew':case 'session.release':return null;
       case 'project.catalog.list':return projects.map((p,i)=>({...p,revision:0,pinned:false,sortOrder:i,git:{available:true,branch:trees.find(t=>t.projectId===p.id&&t.isMain)?.branch}}));
       case 'quickLaunch.setup.status':return [];
       case 'worktree.list':return clone(trees.filter(t=>t.projectId===params.projectId));

@@ -21,6 +21,7 @@ impl ProviderAdapter for Adapter {
             id: "reviewer".into(), name: "Reviewer".into(), installed: self.installed,
             version: None, terminal: false, chat: self.chat, history: false, resume: false,
             terminal_resume_capture: "none", reason: None, auth: "authenticated".into(),
+            setup: Default::default(),
         }
     }
     fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> { Err(ProviderError::new("unsupported", "fixture")) }

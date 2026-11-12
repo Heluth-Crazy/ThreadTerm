@@ -12,6 +12,21 @@
 .agents-row-end { display: inline-flex; align-items: center; gap: 8px; }
 .agents-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .agents-state.is-signed-out { color: var(--warn, var(--muted)); }
+.agents-state.is-node-missing { color: var(--warn, var(--muted)); }
+.agents-state.is-install-failed { color: var(--danger, var(--warn, var(--muted))); }
+/* In-row progress: the prototype's travelling bar, quiet enough for a one-line row. */
+.agents-spin { width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: agents-spin .8s linear infinite; flex: none; }
+@keyframes agents-spin { to { transform: rotate(360deg); } }
+/* One failure line under the row: what happened, the output, the retry. */
+.agents-failure { display: flex; align-items: center; gap: 8px; margin: 0 0 10px 34px; font-size: 12px; color: var(--danger, var(--warn, var(--muted))); }
+/* The confirm popover is portaled to <body> so the drawer's scroll area cannot clip it; fixed placement keeps it on
+   the button it belongs to, and z-index 120 puts it above the drawer (z-index 90). */
+.agents-confirm { position: fixed; z-index: 120; width: 340px; display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
+.agents-confirm-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.agents-confirm-command { display: block; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--raised, var(--bg)); font-family: var(--mono); font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.agents-confirm-note { font-size: 12.5px; color: var(--muted); }
+.agents-confirm-warning { font-size: 12px; color: var(--warn, var(--muted)); }
+.agents-confirm-foot { display: flex; justify-content: flex-end; gap: 6px; }
 .agents-detail { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 12px; margin: 0 0 10px 34px; font-size: 12px; color: var(--muted); }
 .agents-detail dt { color: var(--faint); }
 .agents-detail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text); }

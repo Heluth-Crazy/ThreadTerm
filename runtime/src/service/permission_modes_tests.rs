@@ -33,6 +33,7 @@ impl ProviderAdapter for PermissionAdapter {
             terminal_resume_capture: "none",
             reason: None,
             auth: "unknown".into(),
+            setup: Default::default(),
         }
     }
     fn terminal_command(

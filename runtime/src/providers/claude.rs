@@ -351,6 +351,7 @@ impl ProviderAdapter for ClaudeAdapter {
             terminal_resume_capture: self.terminal_capture().as_str(),
             reason,
             auth,
+            setup: super::install::builtin_setup("claude", installed),
         }
     }
 

@@ -25,6 +25,7 @@ impl ProviderAdapter for QuestionAdapter {
             id: self.id().into(), name: "Question fixture".into(), installed: true,
             version: None, terminal: false, chat: true, history: false, resume: false,
             terminal_resume_capture: "none", reason: None, auth: "authenticated".into(),
+            setup: Default::default(),
         }
     }
 

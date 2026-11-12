@@ -60,6 +60,7 @@ impl ProviderAdapter for RecordedAdapter {
             terminal_resume_capture: "none",
             reason: None,
             auth: "authenticated".into(),
+            setup: Default::default(),
         }
     }
 

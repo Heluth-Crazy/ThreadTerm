@@ -295,9 +295,12 @@ fn quote_cmd_token(value: &str) -> Result<String, ProviderError> {
 pub fn find_executable(command: &str) -> Option<PathBuf> {
     let environment = crate::environment::provider_environment();
     #[cfg(debug_assertions)]
-    if super::builtin_cli_name(command).is_some() || command == "gemini" {
+    if super::builtin_cli_name(command).is_some()
+        || matches!(command, "gemini" | "npm" | "winget")
+    {
         if let Some(directory) = env::var_os("THREADTERM_QA_PROVIDER_BIN") {
-            // Explicit debug-only dependency injection keeps QA away from installed CLIs.
+            // Explicit debug-only dependency injection keeps QA away from installed CLIs, and from
+            // the real npm/winget that an install recipe would otherwise hand to the user.
             let directory = PathBuf::from(directory);
             if !directory.is_absolute() { return None; }
             return find_executable_in(command, &environment.vars, &[directory]);

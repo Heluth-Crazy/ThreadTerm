@@ -661,6 +661,7 @@ impl ProviderAdapter for CodexAdapter {
             reason: codex_capability_reason(installed, &auth, probe_error)
                 .or_else(|| self.api_notice_message()),
             auth,
+            setup: super::install::builtin_setup("codex", installed),
         }
     }
 

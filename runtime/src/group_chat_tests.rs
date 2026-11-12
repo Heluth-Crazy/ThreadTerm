@@ -66,6 +66,7 @@ impl ProviderAdapter for Adapter {
             terminal_resume_capture: "none",
             reason: None,
             auth: "authenticated".into(),
+            setup: Default::default(),
         }
     }
 

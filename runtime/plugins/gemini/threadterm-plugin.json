@@ -14,7 +14,8 @@
       "args": [],
       "versionArgs": ["--version"],
       "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
-      "chat": { "protocol": "acp", "args": ["--acp"] }
+      "chat": { "protocol": "acp", "args": ["--acp"] },
+      "install": { "npm": "@google/gemini-cli" }
     }]
   }
 }

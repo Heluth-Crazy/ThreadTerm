@@ -490,6 +490,7 @@ fn provider_refresh_returns_before_the_probe_completes() {
                 id: "codex".into(), name: "blocked".into(), installed: true, version: None,
                 terminal: false, chat: false, history: false, resume: false,
                 terminal_resume_capture: "none", reason: None, auth: "unknown".into(),
+                setup: Default::default(),
             }
         }
         fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> std::result::Result<TerminalCommand, ProviderError> {

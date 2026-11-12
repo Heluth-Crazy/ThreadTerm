@@ -164,6 +164,8 @@ impl GrokAdapter {
     }
 }
 
+const GROK_HOME: &str = "https://x.ai/cli";
+
 impl ProviderAdapter for GrokAdapter {
     fn id(&self) -> &'static str {
         "grok"
@@ -194,7 +196,8 @@ impl ProviderAdapter for GrokAdapter {
             icon: None,
             sign_in: super::builtin_sign_in("grok"),
             remote_sign_in: super::builtin_remote_sign_in("grok"),
-            homepage: None,
+            // No verified Windows installer, so the missing row links here instead (design phase 2).
+            homepage: Some(GROK_HOME.to_owned()),
             id: "grok".to_owned(),
             name: super::builtin_name("grok").to_owned(),
             installed,
@@ -206,6 +209,7 @@ impl ProviderAdapter for GrokAdapter {
             terminal_resume_capture: self.terminal_capture().as_str(),
             reason: probe_error.or_else(|| protocol.err()),
             auth: grok_auth_state(),
+            setup: super::install::builtin_setup("grok", installed),
         }
     }
 

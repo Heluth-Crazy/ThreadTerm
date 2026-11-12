@@ -43,7 +43,8 @@ impl AcpAdapter {
                 name: super::builtin_name("kimi").into(),
                 plugin_id: None,
                 icon: None,
-                homepage: None,
+                // No verified Windows installer, so the missing row links here instead (design phase 2).
+                homepage: Some("https://www.kimi.com/code".into()),
                 command: "kimi".into(),
                 args: Vec::new(),
                 version_args: vec!["--version".into()],
@@ -53,6 +54,7 @@ impl AcpAdapter {
                 }),
                 chat_args: Some(vec!["acp".into()]),
                 sign_in_args: Some(vec!["login".into()]),
+                install_package: None,
                 plugin_dir: None,
             },
             kimi_native: true,
@@ -213,6 +215,7 @@ impl ProviderAdapter for AcpAdapter {
             icon: self.descriptor.icon.clone(),
             sign_in: self.descriptor.sign_in(),
             remote_sign_in: None,
+            setup: self.descriptor.setup(installed),
             homepage: self.descriptor.homepage.clone(),
         }
     }
@@ -4755,7 +4758,7 @@ createInterface({{input:process.stdin}}).on('line', line=>{{
  }}
  ok({{}});
 }});"#)).unwrap();
-            let descriptor = AgentDescriptor { id:"kimi".into(), name:"Fake ACP".into(), plugin_id:None, icon:None, homepage:None, command:node.to_string_lossy().into_owned(), args:vec![script.to_string_lossy().into_owned()], version_args:vec![], terminal:None, chat_args:None, sign_in_args:None, plugin_dir:None };
+            let descriptor = AgentDescriptor { id:"kimi".into(), name:"Fake ACP".into(), plugin_id:None, icon:None, homepage:None, command:node.to_string_lossy().into_owned(), args:vec![script.to_string_lossy().into_owned()], version_args:vec![], terminal:None, chat_args:None, sign_in_args:None, install_package:None, plugin_dir:None };
             let adapter = AcpAdapter::from_descriptor(descriptor, crate::provider_events::tap_channel(8).0);
             let requested = if scenario == "kimi-already-plan" { "plan" } else { "auto" };
             let result = adapter.open_chat_with_startup_options("s", "C:/", Some("native"), "worker", None, &super::super::ChatStartupOptions {project_trust:None, permissions:&json!([{"id":"mode","value":requested}]), pi_read_only_tools:false});
@@ -4938,7 +4941,7 @@ createInterface({{input:process.stdin,crlfDelay:Infinity}}).on('line', line => {
             id: "fake-acp-fork".into(), name: "Fake ACP fork".into(), plugin_id: None,
             icon: None, homepage: None, command: node.to_string_lossy().into_owned(),
             args: vec![script.to_string_lossy().into_owned()], version_args: vec![], terminal: None,
-            chat_args: None, sign_in_args: None, plugin_dir: None,
+            chat_args: None, sign_in_args: None, install_package: None, plugin_dir: None,
         };
         let (events, _) = crate::provider_events::tap_channel(8);
         Some((AcpAdapter::from_descriptor(descriptor, events), log, dir))

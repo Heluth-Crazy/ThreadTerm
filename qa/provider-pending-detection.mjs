@@ -61,13 +61,18 @@ try {
     const settings = { revision: 1, language: 'zh-CN', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false }, terminalCompatibility: { aiCompletionHints: false }, customThemes: {} };
     let providerCache = [];
     const calls = []; const listeners = new Set(); let providerListFails = false; let eventSeq = 0;
+    let refreshGeneration = 0; let refreshOutcome = 'ok'; let refreshRequestFails = false;
     const emit = () => listeners.forEach(listener => listener({ v: 1, event: 'state.changed', epoch: 'provider-pending-fixture', seq: ++eventSeq, data: { kind: 'providers' } }));
     const snapshot = () => ({ epoch: 'provider-pending-fixture', revision: 1, projects, sessions: [], inbox: [], providers: providerCache, settings, workspaces: [] });
-    window.__providerPendingQA = { calls, setProviders: next => { providerCache = next; emit(); }, setProviderListFails: value => { providerListFails = value; }, setPresentation: (language, theme) => { settings.language = language; settings.theme = theme; emit(); }, emitStateChanged: emit };
+    // `provider.refresh` answers with a generation and publishes its completion later, exactly like the runtime
+    // (runtime/src/service.rs set_capability_listener): the same event shape carries outcome ok or failed.
+    const emitRefresh = () => listeners.forEach(listener => listener({ v: 1, event: 'state.changed', epoch: 'provider-pending-fixture', seq: ++eventSeq, data: { kind: 'providers', generation: refreshGeneration, outcome: refreshOutcome } }));
+    window.__providerPendingQA = { calls, setProviders: next => { providerCache = next; emit(); }, setProviderListFails: value => { providerListFails = value; }, setRefreshOutcome: value => { refreshOutcome = value; }, setRefreshRequestFails: value => { refreshRequestFails = value; }, setPresentation: (language, theme) => { settings.language = language; settings.theme = theme; emit(); }, emitStateChanged: emit };
     window.threadterm = { platform: 'win32', request: async (method, params = {}) => {
       calls.push({ method, params });
       if (method === 'runtime.snapshot') return structuredClone(snapshot());
       if (method === 'provider.list') { if (providerListFails) throw new Error('provider detection unavailable'); return structuredClone(providerCache); }
+      if (method === 'provider.refresh') { if (refreshRequestFails) throw new Error('provider refresh unavailable'); refreshGeneration += 1; const generation = refreshGeneration; queueMicrotask(() => { if (generation === refreshGeneration) emitRefresh(); }); return { refreshId: generation }; }
       if (method === 'worktree.list') return [{ id: 'first-main', projectId: projects[0].id, path: projects[0].path, branch: 'main', isMain: true, locked: false, missing: false }];
       if (method === 'project.catalog.list') return projects.map(project => ({ ...project, pinned: false, sortOrder: 0, git: { available: true, branch: 'main' } }));
       if (method === 'catalog.visibility.list' || method === 'draft.list') return [];
@@ -117,6 +122,29 @@ try {
   await page.evaluate(() => window.__providerPendingQA.setProviders([{ id: 'codex', name: 'Codex', installed: false, terminal: false, chat: false, history: false, resume: false, auth: 'unknown', reason: 'not installed' }]));
   await page.locator('[data-agent-row="codex"][data-agent-state="missing"]').waitFor();
   await page.screenshot({ path: join(out, 'settings-confirmed-missing-zh.png') }); report.screenshots.push('settings-confirmed-missing-zh.png');
+  // A Check that cannot even be sent changes no global state: nothing was refreshed, so nothing may be re-read.
+  const snapshotsBeforeCheck = await countCalls('runtime.snapshot');
+  await page.evaluate(() => window.__providerPendingQA.setRefreshRequestFails(true));
+  await page.locator('[data-testid="agents-check"] button').click();
+  await account.getByRole('alert').getByText(/提供者状态|Provider status/).waitFor().catch(() => {});
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(await countCalls('runtime.snapshot'), snapshotsBeforeCheck, 'a Check whose request failed does not refresh the parent snapshot');
+  await page.evaluate(() => window.__providerPendingQA.setRefreshRequestFails(false));
+  // A round that completes as failed does publish its completion, so the snapshot is re-read exactly once and the
+  // row keeps the last known values instead of claiming a fresh detection.
+  await page.evaluate(() => window.__providerPendingQA.setRefreshOutcome('failed'));
+  await page.locator('[data-testid="agents-check"] button').click();
+  await page.waitForFunction(expected => window.__providerPendingQA.calls.filter(call => call.method === 'runtime.snapshot').length === expected, snapshotsBeforeCheck + 1);
+  await page.getByText('无法刷新提供商状态，正在显示上次检测结果。', { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-agent-row="codex"]').getAttribute('data-agent-state'), 'missing', 'a failed round keeps the row it already showed');
+  // A successful Check refreshes the snapshot exactly once.
+  const snapshotsBeforeOk = await countCalls('runtime.snapshot');
+  await page.evaluate(() => window.__providerPendingQA.setRefreshOutcome('ok'));
+  await page.locator('[data-testid="agents-check"] button').click();
+  await page.waitForFunction(expected => window.__providerPendingQA.calls.filter(call => call.method === 'runtime.snapshot').length === expected, snapshotsBeforeOk + 1);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await countCalls('runtime.snapshot'), snapshotsBeforeOk + 1, 'a successful Check refreshes the parent snapshot exactly once');
+  assert.equal(await page.evaluate(() => window.__providerPendingQA.calls.filter(call => call.method === 'provider.refresh').length), 3, 'one Check sends one refresh');
   await page.evaluate(() => window.__providerPendingQA.setProviders([]));
   await account.getByText('正在检测智能体…', { exact: true }).waitFor();
   await page.getByRole('button', { name: '关闭设置' }).click();
