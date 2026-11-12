@@ -8,7 +8,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -114,6 +114,8 @@ impl Database {
              CREATE TABLE IF NOT EXISTS deferred_codex_launches (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, phase TEXT NOT NULL, error_code TEXT, error_message TEXT, cwd TEXT);
              CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS chat_items_session ON chat_items(session_id, created_at, id);
+             CREATE INDEX IF NOT EXISTS chat_items_native_subagents ON chat_items(session_id, created_at, id)
+                 WHERE instr(id, ':assistant:subagent:') = length(session_id) + 1;
              CREATE INDEX IF NOT EXISTS group_reply_turn_items ON chat_items(session_id,turn_id,created_at);
              CREATE TABLE IF NOT EXISTS chat_repair_backups (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, created_at TEXT NOT NULL, items_json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS subagent_items (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, subagent_key TEXT NOT NULL, item_id TEXT NOT NULL, seq INTEGER NOT NULL, rev INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, subagent_key, item_id));
@@ -785,6 +787,14 @@ impl Database {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
+        self.snapshot_inner(false)
+    }
+
+    pub(crate) fn snapshot_with_native_subagents(&self) -> Result<Snapshot> {
+        self.snapshot_inner(true)
+    }
+
+    fn snapshot_inner(&self, include_native_subagents: bool) -> Result<Snapshot> {
         let conn = self
             .connection
             .lock()
@@ -807,6 +817,11 @@ impl Database {
             workspaces: collect_workspaces(&conn)?,
             inbox: collect_inbox(&conn)?,
             providers: vec![],
+            native_subagents: if include_native_subagents {
+                collect_native_subagents(&conn)?
+            } else {
+                BTreeMap::new()
+            },
         })
     }
     /// Sessions only: the Running agents view polls this, so it must not read
@@ -2534,6 +2549,51 @@ pub(crate) fn delete_git_undo(tx: &Transaction<'_>, id: &str) -> Result<()> {
 fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
+fn collect_native_subagents(conn: &Connection) -> Result<BTreeMap<String, Vec<Value>>> {
+    let mut statement = conn.prepare(
+        "SELECT session_id, data FROM chat_items
+         WHERE instr(id, ':assistant:subagent:') = length(session_id) + 1
+         ORDER BY session_id, created_at, id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut by_parent = BTreeMap::<String, Vec<Value>>::new();
+    for row in rows {
+        let (parent, data) = row?;
+        let Ok(card) = serde_json::from_str::<ChatItem>(&data) else {
+            continue;
+        };
+        if let Some(summary) = native_subagent_summary(&card) {
+            by_parent.entry(parent).or_default().push(summary);
+        }
+    }
+    Ok(by_parent)
+}
+
+pub(crate) fn native_subagent_summary(card: &ChatItem) -> Option<Value> {
+    let part = card.parts.first()?;
+    if part["type"] != "subagent" {
+        return None;
+    }
+    let info = part.get("data")?;
+    let status = info.get("status")?.as_str()?;
+    if !matches!(status, "running" | "completed" | "failed" | "cancelled") {
+        return None;
+    }
+    let mut summary = json!({
+        "key": info.get("key")?.as_str()?,
+        "provider": info.get("provider")?.as_str()?,
+        "status": status,
+    });
+    for field in ["name", "agentType", "description"] {
+        if let Some(text) = info.get(field).and_then(Value::as_str) {
+            summary[field] = json!(text.chars().take(300).collect::<String>());
+        }
+    }
+    Some(summary)
+}
+
 pub(crate) fn subagent_card_tx(
     tx: &Transaction<'_>,
     session: &str,

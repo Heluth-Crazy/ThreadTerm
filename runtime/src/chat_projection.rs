@@ -919,12 +919,15 @@ fn record_subagent(
         "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
         params![id, session, card.turn_id, "message", serde_json::to_string(&card)?, card.created_at],
     )?;
+    let summary_changed = previous.as_ref().and_then(crate::db::native_subagent_summary)
+        != crate::db::native_subagent_summary(&card);
+    let mut event = json!({"sessionId":session,"item":card});
+    if summary_changed {
+        event["nativeSubagentsChanged"] = json!(true);
+    }
     tx.execute(
         "INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",
-        params![
-            serde_json::to_string(&json!({"sessionId":session,"item":card}))?,
-            now
-        ],
+        params![serde_json::to_string(&event)?, now],
     )?;
     Ok(())
 }
@@ -1504,6 +1507,31 @@ mod tests {
 
     fn subagent_info(db: &Database) -> Value {
         db.subagent_card("s", "child").unwrap().unwrap().parts[0]["data"].clone()
+    }
+
+    #[test]
+    fn subagent_summary_publishes_only_catalog_changes() {
+        let db = db();
+        let mut revision = db.snapshot().unwrap().revision;
+        let updates = [
+            (json!({"name":"Child","prompt":"Private task"}), "running", true),
+            (json!({"lastActivity":"Reading the file","rev":2}), "running", false),
+            (json!({"status":"completed","summary":"Private result"}), "completed", true),
+        ];
+        for (patch, status, catalog_changed) in updates {
+            record(&db, "s", Some("turn"), "chat.subagent", &json!({
+                "key": "child", "info": patch
+            })).unwrap();
+            let snapshot = db.snapshot_with_native_subagents().unwrap();
+            assert_eq!(snapshot.native_subagents["s"], vec![json!({
+                "key": "child", "provider": "codex", "name": "Child", "status": status
+            })]);
+            let events = db.events_after(revision).unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].1, "chat.item");
+            assert_eq!(events[0].2["nativeSubagentsChanged"].as_bool(), catalog_changed.then_some(true));
+            revision = snapshot.revision;
+        }
     }
 
     #[test]

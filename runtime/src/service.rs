@@ -1891,7 +1891,11 @@ impl RuntimeService {
                 // The console host actually in use (conpty.rs), so xterm's Windows heuristics match it.
                 "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str(), "bundledAvailable": crate::conpty::bundled_available(), "pwshAvailable": crate::providers::common::find_executable("pwsh.exe").is_some()})),
                 "runtime.snapshot" => {
-                    let mut snapshot = self.db.snapshot()?;
+                    let mut snapshot = if request.params.get("includeNativeSubagents").and_then(Value::as_bool) == Some(true) {
+                        self.db.snapshot_with_native_subagents()?
+                    } else {
+                        self.db.snapshot()?
+                    };
                     // A failed provider probe does not make the runtime/catalog
                     // unavailable. Provider UI checks provider.list for its error.
                     snapshot.providers = self.providers.capability_snapshot();

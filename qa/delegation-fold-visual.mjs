@@ -16,6 +16,9 @@ const entry = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { ProjectCatalog } from './renderer/src/components/ProjectCatalog';
+import { ChatOverview } from './renderer/src/components/ChatOverview';
+import { NativeSubagentsContext } from './renderer/src/nativeSubagents';
+import { SubagentCard } from './renderer/src/components/SubagentCard';
 import { I18nProvider } from './renderer/src/i18n';
 import './renderer/src/styles.css';
 
@@ -35,9 +38,23 @@ const family=(prefix,project,path)=>{
 const allSessions=[...family('Git',gitProject,gitProject.path),...family('Plain',plainProject,plainProject.path)];
 let sessions=sessionStorage.getItem('delegation-fold-start-empty')==='true'?[]:[...allSessions],sessionsProvided=true;
 let visibility=[],locale='en',theme='light',selected=undefined;
+let nativeAgents=[];
+const parentId='Git parent';
+const copy=(en,cn)=>locale==='zh-CN'?cn:en;
+const nativeCard=(key,status)=>({key,name:key,provider:'codex',status,transcript:'live'});
+function renderNativeOverview(){
+ const parent=sessions.find(session=>session.id===parentId);
+ if(!parent||!nativeAgents.length)return null;
+ const delegates=sessions.filter(session=>session.delegation?.parentSessionId===parentId);
+ const items=nativeAgents.map(info=>({id:info.key,role:'assistant',createdAt:parent.createdAt,parts:[{type:'subagent',toolId:info.key,status:info.status,data:info}]}));
+ return <div data-testid="native-overview">
+   <ChatOverview session={parent} delegates={delegates} items={items} copy={copy} zh={locale==='zh-CN'} docked />
+   <div data-testid="native-inline">{nativeAgents.map(info=><SubagentCard key={info.key} sessionId={parentId} info={info} copy={copy} zh={locale==='zh-CN'} renderItem={()=>null} />)}</div>
+ </div>;
+}
 const calls=[],listeners=new Set();
 const root=createRoot(document.getElementById('root'));
-const render=()=>{const catalogProps=sessionsProvided?{sessions:[...sessions]}:{};document.documentElement.lang=locale;document.documentElement.dataset.theme=theme;root.render(<I18nProvider locale={locale}><aside style={{width:340,padding:12}}><ProjectCatalog selectedProjectId={gitProject.id} selectedWorktreePath={gitProject.path} selectedSessionId={selected} {...catalogProps} visibility={visibility} onAll={()=>{}} onProject={()=>{}} onWorktree={()=>{}} onSession={id=>{selected=id;render();}} onChanged={render}/></aside><main><h1>Delegation fold QA</h1></main></I18nProvider>);};
+const render=()=>{const catalogProps=sessionsProvided?{sessions:[...sessions]}:{};document.documentElement.lang=locale;document.documentElement.dataset.theme=theme;root.render(<I18nProvider locale={locale}><NativeSubagentsContext.Provider value={{[parentId]:nativeAgents}}><aside style={{width:340,padding:12}}><ProjectCatalog selectedProjectId={gitProject.id} selectedWorktreePath={gitProject.path} selectedSessionId={selected} {...catalogProps} visibility={visibility} onAll={()=>{}} onProject={()=>{}} onWorktree={()=>{}} onSession={id=>{selected=id;render();}} onChanged={render}/></aside><main><h1>Delegation fold QA</h1>{renderNativeOverview()}</main></NativeSubagentsContext.Provider></I18nProvider>);};
 window.threadterm={onEvent(fn){listeners.add(fn);return()=>listeners.delete(fn);},async request(method,params){
  calls.push({method,params});
  if(method==='project.catalog.list')return [gitProject,plainProject];
@@ -50,7 +67,7 @@ window.threadterm={onEvent(fn){listeners.add(fn);return()=>listeners.delete(fn);
  }
  throw Error('Unexpected fixture RPC '+method);
 }};
-window.qaDelegationFold={configure(next){locale=next.locale??locale;theme=next.theme??theme;render();},select(id){selected=id;render();},setActivity(id,state){sessions=sessions.map(session=>session.id===id?{...session,status:state==='awaiting_approval'?'waiting':state==='awaiting_input'?'idle':state==='idle'&&session.delegation?'exited':session.status,activity:{...session.activity,state,revision:session.activity.revision+1}}:session);render();},setSessions(next){sessions=next;sessionsProvided=true;render();},omitSessions(){sessionsProvided=false;render();},restoreSessions(){sessions=[...allSessions];sessionsProvided=true;render();},calls(){return calls;},selected(){return selected;}};
+window.qaDelegationFold={configure(next){locale=next.locale??locale;theme=next.theme??theme;render();},select(id){selected=id;render();},setActivity(id,state){sessions=sessions.map(session=>session.id===id?{...session,status:state==='awaiting_approval'?'waiting':state==='awaiting_input'?'idle':state==='idle'&&session.delegation?'exited':session.status,activity:{...session.activity,state,revision:session.activity.revision+1}}:session);render();},setSessions(next){sessions=next;sessionsProvided=true;render();},omitSessions(){sessionsProvided=false;render();},restoreSessions(){sessions=[...allSessions];visibility=[];sessionsProvided=true;render();},setNativeStatus(status){nativeAgents=[nativeCard('Native child one',status),nativeCard('Native child two',status)];render();},calls(){return calls;},selected(){return selected;}};
 render();
 `;
 
@@ -165,6 +182,50 @@ try{
  assert.deepEqual(deletes.map(call=>[call.params.id,call.params.visibility]).sort(),plain.finished.map(id=>[id,'removed']).sort(),'delete removes exactly the finished delegates of the plain parent');
  assert.deepEqual(await ids(plainScope),[plain.parent,...plain.running],'plain parent and running delegates stay after the group delete');
  report.checks.push('the fold row archives or deletes the whole finished group after one confirmation; parent and running delegates stay');
+ // Provider-native children arrive as inline transcript cards, without catalog session records.
+ await page.evaluate(()=>{window.qaDelegationFold.restoreSessions();window.qaDelegationFold.setNativeStatus('running');});
+ const inline=page.getByTestId('native-inline');
+ await inline.getByText('Native child one',{exact:true}).waitFor();
+ assert.equal(await inline.getByText('Running',{exact:true}).count(),2,'both source cards report running');
+ const overview=page.getByRole('region',{name:'Delegated agents',exact:true});
+ const title='Native child one';
+ const missing=[];
+ if(await overview.getByText(title,{exact:true}).count()!==1)missing.push('Chat overview');
+ if(await gitScope.getByText(title,{exact:true}).count()!==1)missing.push('sidebar');
+ assert.deepEqual(missing,[],'both summaries list the running native children');
+ for(const name of ['Native child one','Native child two']){
+  assert.equal(await overview.getByText(name,{exact:true}).count(),1);
+  assert.equal(await gitScope.getByText(name,{exact:true}).count(),1);
+ }
+ assert.equal(await overview.getByText('4 active',{exact:true}).count(),1);
+ assert.equal(await gitScope.getByText('4 active',{exact:true}).count(),1);
+ assert.equal(await overview.getByRole('button',{name:'4 finished',exact:true}).count(),1);
+ assert.equal(await row(git.parent).innerText(),'4 finished');
+ for(const width of [1280,1440,1920]){
+  await app.evaluate(({BrowserWindow},width)=>BrowserWindow.getAllWindows()[0].setContentSize(width,900),width);
+  await page.setViewportSize({width,height:900});
+  for(const theme of ['light','dark']){
+   await page.evaluate(theme=>window.qaDelegationFold.configure({theme}),theme);
+   await overview.getByText(title,{exact:true}).waitFor();
+   await gitScope.getByText(title,{exact:true}).waitFor();
+   const screenshot=`native-running-${width}-${theme}.png`;
+   await page.screenshot({path:join(out,screenshot),animations:'disabled'});
+   report.screenshots.push(screenshot);
+  }
+ }
+ if(await row(git.parent).getAttribute('aria-expanded')==='true')await row(git.parent).click();
+ await page.evaluate(()=>window.qaDelegationFold.setNativeStatus('completed'));
+ await inline.getByText('Completed',{exact:true}).first().waitFor();
+ await row(git.parent).getByText('6 finished',{exact:true}).waitFor();
+ assert.equal(await overview.getByText(title,{exact:true}).count(),0,'native children move to the collapsed finished overview');
+ assert.equal(await gitScope.getByText(title,{exact:true}).count(),0,'native children move to the collapsed sidebar fold');
+ await overview.getByRole('button',{name:'6 finished',exact:true}).click();
+ await row(git.parent).click();
+ for(const name of ['Native child one','Native child two']){
+  assert.equal(await overview.getByText(name,{exact:true}).count(),1);
+  assert.equal(await gitScope.getByText(name,{exact:true}).count(),1);
+ }
+ report.checks.push('both summaries list running native children and count them as finished after their inline cards complete');
  assert.deepEqual(errors,[],'fixture has no renderer errors');
  report.checks.push('an expanded finished delegate keeps its existing context menu and Archive action');
  report.passed=true;

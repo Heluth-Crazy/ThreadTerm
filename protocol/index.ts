@@ -257,7 +257,7 @@ export type ReviewDraftDelete =
  | {status:'deleted';draftId:string;revision:number}
  | {status:'conflict';draft:ReviewDraft|null};
 export interface InboxItem { id:string; sessionId:string; kind:string; title:string; createdAt:string; read:boolean }
-export interface Snapshot { epoch:string; revision:number; projects:Project[]; sessions:Session[]; settings:Settings; workspaces:Workspace[]; inbox:InboxItem[]; providers:ProviderCapability[] }
+export interface Snapshot { epoch:string; revision:number; projects:Project[]; sessions:Session[]; settings:Settings; workspaces:Workspace[]; inbox:InboxItem[]; providers:ProviderCapability[]; nativeSubagents?:NativeSubagentSummaries }
 export interface NativeHistoryItem { provider:ProviderId; nativeId:string; title:string; cwd?:string; updatedAt:string; resumable:boolean; reason?:string }
 /** A location in a local file. `sourceSearch` asks the runtime to resolve a package-relative JVM source path (`com/x/Foo.java`) by a bounded search of source roots under the session's root. */
 export interface FileReference { path:string; line?:number; column?:number; sourceSearch?:boolean }
@@ -299,6 +299,9 @@ export interface ChatRepairResult {
  revision:number;
 }
 export type SubagentStatus = 'running'|'completed'|'failed'|'cancelled'|'unknown';
+/** Display-only child identities, keyed by their owning ThreadTerm Chat. */
+export type NativeSubagentSummary = Pick<SubagentInfo, 'key'|'provider'|'name'|'agentType'|'description'> & {status:Exclude<SubagentStatus,'unknown'>};
+export type NativeSubagentSummaries = Record<string, NativeSubagentSummary[]>;
 export type SubagentTranscript = 'live'|'native'|'none'|'session';
 export interface SubagentInfo {
  key:string;
@@ -971,7 +974,7 @@ export interface RequestMap {
  /** Which console host Windows terminals run on: the in-box ConPTY or ThreadTerm's bundled OpenConsole. */
  'terminal.host': [{},{conptyHost:'system'|'bundled';bundledAvailable:boolean;pwshAvailable?:boolean}];
  'runtime.shutdown': [{operationId:string},null];
- 'runtime.snapshot': [{},Snapshot];
+ 'runtime.snapshot': [{includeNativeSubagents?:boolean},Snapshot];
  'project.add': [{path:string;name?:string;operationId:string},Project];
  'project.remove': [{id:string;operationId:string},null];
  'project.catalog.list': [{},ProjectCatalogItem[]];
