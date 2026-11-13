@@ -6984,6 +6984,42 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     }
 
     #[test]
+    fn account_gated_terminal_resume_keeps_allowed_threads_resumable() {
+        let frames = super::super::conformance::fixture("codex-resume-account-check.jsonl");
+        let frame = |case: &str| {
+            frames
+                .iter()
+                .find(|frame| frame["case"] == case)
+                .unwrap_or_else(|| panic!("missing Codex account-resume fixture case {case}"))
+        };
+        let rejection = frame("mismatched_cli_account");
+        assert_eq!(rejection["request"]["method"], "thread/resume");
+        assert_eq!(rejection["scenario"]["featureEnabled"], true);
+        assert_eq!(rejection["scenario"]["attributed"], true);
+        assert_eq!(rejection["scenario"]["clientName"], "codex-tui");
+        assert_eq!(rejection["response"]["error"]["code"], -32600);
+        assert!(rejection["response"]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("different ChatGPT account or workspace")));
+
+        for (case, feature_enabled, attributed, client_name) in [
+            ("feature_disabled", false, true, "codex-tui"),
+            ("untagged_thread", true, false, "codex-tui"),
+            ("threadterm_chat", true, true, "threadterm"),
+            ("floor_feature_disabled", false, true, "codex-tui"),
+        ] {
+            let frame = frame(case);
+            assert_eq!(frame["scenario"]["featureEnabled"], feature_enabled);
+            assert_eq!(frame["scenario"]["attributed"], attributed);
+            assert_eq!(frame["scenario"]["clientName"], client_name);
+            let requested = frame["request"]["params"]["threadId"].as_str().unwrap();
+            let thread = &frame["response"]["thread"];
+            assert_eq!(thread["id"], requested, "{case} keeps its native identity");
+            assert!(validate_resume_thread(thread).is_ok(), "{case} remains resumable");
+        }
+    }
+
+    #[test]
     fn terminal_output_never_becomes_codex_identity_evidence() {
         // Codex identity is obtained only from app-server thread/start. There
         // is intentionally no output parser that could bind spoofed text.

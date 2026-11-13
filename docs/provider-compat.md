@@ -10,7 +10,7 @@ upstream release is never a reason to refactor, redesign or add features.
 
 | Provider | Adapter | Floor (oldest supported) | Target (newest verified) | Pinned dependency |
 |---|---|---|---|---|
-| Codex | `runtime/src/providers/codex.rs` | 0.161.0 | 0.166.0 | — |
+| Codex | `runtime/src/providers/codex.rs` | 0.161.0 | 0.169.0 | — |
 | Claude Code | `runtime/src/providers/claude.rs`, `providers/claude-sdk/src` | 2.1.287 | 2.1.318 | `@anthropic-ai/claude-agent-sdk` 0.3.266 |
 | OpenCode | `runtime/src/providers/opencode.rs` | 1.18.35 | 2.3.0 | — |
 | Kimi (ACP) | `runtime/src/providers/acp.rs`, `runtime/src/providers/kimi_plan_usage.rs` | 2.0.2 | 2.0.2 | — |
