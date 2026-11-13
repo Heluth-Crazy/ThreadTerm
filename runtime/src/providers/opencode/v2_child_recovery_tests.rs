@@ -861,14 +861,25 @@ fn a_waiting_childs_card_keeps_its_owner_when_settled_children_are_pruned() {
     assert!(state.children.len() <= MAX_SESSIONS);
 }
 
-/// A reconnect peer that still lists one pending native form on a proven child.
-fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<()>) {
+/// Replays a busy background child or an idle child with a pending native form.
+fn reconnect_peer(
+    child_busy: bool,
+) -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let (sender, paths) = mpsc::channel();
     let handle = thread::spawn(move || {
         let info = |id: &str, parent: Option<&str>| json!({"id":id,"parentID":parent,"location":{"directory":"C:/isolated"},"time":{"created":0,"updated":1,"busy":0,"idle":1}});
+        let mut child = info("ses-child", Some("ses-root"));
+        let mut tool = json!({"type":"tool","id":"call-root-child","name":"subagent","state":{"status":"running","input":{},"metadata":{"sessionID":"ses-child"}}});
+        let mut forms = json!([{"id":"form-child","sessionID":"ses-child","title":"still pending","fields":[{"key":"answer","title":"Answer","type":"string","required":true}]}]);
+        if child_busy {
+            child["time"] = json!({"created":0,"updated":2,"busy":2,"idle":1});
+            tool["state"]["status"] = json!("completed");
+            tool["state"]["output"] = json!("Background job accepted");
+            forms = json!([]);
+        }
         let mut seen = Vec::new();
         for _ in 0..10 {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -885,7 +896,9 @@ fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<
                 }
             };
             stream.set_nonblocking(false).unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             let mut request = Vec::new();
             let mut chunk = [0; 1024];
             loop {
@@ -902,12 +915,12 @@ fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<
             let path = first.split_whitespace().nth(1).unwrap().to_owned();
             let response = match path.as_str() {
                 "/api/session/ses-root" => json!({"data":info("ses-root",None)}).to_string(),
-                "/api/session/ses-root/message?limit=128&order=desc" => json!({"data":[{"id":"msg-root","type":"assistant","time":{"created":1},"content":[{"type":"tool","id":"call-root-child","name":"subagent","state":{"status":"running","input":{},"metadata":{"sessionID":"ses-child"}}}]}],"cursor":{}}).to_string(),
+                "/api/session/ses-root/message?limit=128&order=desc" => json!({"data":[{"id":"msg-root","type":"assistant","time":{"created":1},"content":[tool]}],"cursor":{}}).to_string(),
                 "/api/session/active" => json!({"data":{}}).to_string(),
                 "/api/session/ses-root/inbox" | "/api/session/ses-root/form" | "/api/session/ses-root/permission" => json!({"data":[]}).to_string(),
-                "/api/session/ses-child" => json!({"data":info("ses-child",Some("ses-root"))}).to_string(),
+                "/api/session/ses-child" => json!({"data":child}).to_string(),
                 "/api/session/ses-child/message?limit=128&order=desc" => json!({"data":[],"cursor":{}}).to_string(),
-                "/api/session/ses-child/form" => json!({"data":[{"id":"form-child","sessionID":"ses-child","title":"still pending","fields":[{"key":"answer","title":"Answer","type":"string","required":true}]}]}).to_string(),
+                "/api/session/ses-child/form" => json!({"data":forms}).to_string(),
                 "/api/session/ses-child/permission" => json!({"data":[]}).to_string(),
                 other => panic!("unexpected native path {other}"),
             };
@@ -917,6 +930,55 @@ fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<
         sender.send(seen).unwrap();
     });
     (base, paths, handle)
+}
+
+#[test]
+fn a_busy_background_child_survives_reconnect_and_settles_once() {
+    let (mut target, mut events) = target();
+    let (base, paths, peer) = reconnect_peer(true);
+    target.base_url = base;
+    recover(&target).unwrap();
+    peer.join().unwrap();
+    assert_eq!(paths.recv().unwrap().len(), 10);
+
+    let mut card_events = || {
+        std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| event.kind == "chat.subagent")
+            .map(|event| event.data)
+            .collect::<Vec<_>>()
+    };
+    let recovered = card_events();
+    assert!(recovered
+        .iter()
+        .all(|card| card["info"]["status"] != "completed"));
+    let running = recovered
+        .iter()
+        .find(|card| card["info"]["status"] == "running")
+        .unwrap();
+    assert_eq!(running["key"], "call-root-child");
+    assert_eq!(running["info"]["native"]["id"], "ses-child");
+    assert_eq!(running["reopen"], true);
+
+    let finished = json!({
+        "id":"evt-child-terminal","created":3,"type":"session.execution.succeeded",
+        "durable":{"aggregateID":"ses-child","seq":2,"version":1},
+        "data":{"sessionID":"ses-child"}
+    });
+    push_event(&target, finished.clone());
+    push_event(&target, finished);
+    push_event(
+        &target,
+        json!({
+            "id":"evt-child-idle-again","created":4,"type":"session.execution.succeeded",
+            "durable":{"aggregateID":"ses-child","seq":3,"version":1},
+            "data":{"sessionID":"ses-child"}
+        }),
+    );
+    let settled = card_events();
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0]["key"], "call-root-child");
+    assert_eq!(settled[0]["info"]["status"], "completed");
+    assert_eq!(settled[0]["info"]["native"]["id"], "ses-child");
 }
 
 /// Verification round 4, rule 1 and its accepted limitation: the root turn
@@ -973,7 +1035,7 @@ fn a_card_expired_with_a_pending_native_request_is_raised_again_on_reconnect() {
         recovering: true,
         ..Default::default()
     };
-    let (base, paths, peer) = reconnect_peer();
+    let (base, paths, peer) = reconnect_peer(false);
     target.base_url = base;
     recover(&target).unwrap();
     peer.join().unwrap();
