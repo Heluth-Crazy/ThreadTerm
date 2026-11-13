@@ -561,6 +561,130 @@ fn push_event(target: &EventTarget, raw: Value) {
 }
 
 #[test]
+fn opencode_230_background_subagent_waits_for_its_native_child() {
+    let fixture = crate::providers::conformance::fixture("opencode-v230-background-subagent.jsonl");
+    let frame = |kind: &str| {
+        fixture
+            .iter()
+            .find(|row| row["case"] == kind)
+            .unwrap_or_else(|| panic!("missing fixture case {kind}"))["value"]
+            .clone()
+    };
+    let success = frame("parent_success");
+    let child = frame("child_created")["data"]["sessionID"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let parent = success["data"]["sessionID"].as_str().unwrap().to_owned();
+    let call = success["data"]["id"].as_str().unwrap().to_owned();
+
+    for omit_success_metadata in [false, true] {
+        let (mut target, mut events) = target();
+        target.native_id.clone_from(&parent);
+        target.v2.lock().unwrap().recovering = false;
+        let scratch = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(&scratch.path().join("chat.sqlite")).unwrap();
+        let session = db
+            .create_session(crate::db::CreateSession {
+                project_id: None,
+                title: None,
+                provider: "opencode",
+                mode: "chat",
+                native_id: Some(&parent),
+                operation_id: "opencode-background-replay",
+            })
+            .unwrap();
+        target.threadterm_session = session.id;
+
+        for kind in ["parent_tool_start", "parent_called", "parent_progress"] {
+            push_event(&target, frame(kind));
+        }
+        {
+            // Isolate the status projection after the native session GET has
+            // verified the recorded parent and placed the child in recovery state.
+            assert_eq!(frame("child_created")["data"]["parentID"], parent);
+            let mut state = target.v2.lock().unwrap();
+            assert_eq!(
+                state.task_candidates.remove(&child),
+                Some((parent.clone(), call.clone()))
+            );
+            state.parents.insert(child.clone(), parent.clone());
+            state.children.insert(child.clone(), call.clone());
+        }
+        let mut success = success.clone();
+        if omit_success_metadata {
+            success["data"].as_object_mut().unwrap().remove("metadata");
+        }
+        push_event(&target, success.clone());
+
+        let mut project_events = || {
+            let mut terminal = 0;
+            while let Ok(event) = events.try_recv() {
+                if event.kind == "chat.subagent" {
+                    terminal += usize::from(event.data["info"]["status"] == "completed");
+                    crate::chat_projection::record(
+                        &db,
+                        &event.session_id,
+                        event.turn_id.as_deref(),
+                        &event.kind,
+                        &event.data,
+                    )
+                    .unwrap();
+                }
+            }
+            terminal
+        };
+        let card = || {
+            db.subagent_card(&target.threadterm_session, &call)
+                .unwrap()
+                .unwrap()
+                .parts[0]
+                .clone()
+        };
+        assert_eq!(
+            project_events(),
+            0,
+            "parent tool success must not settle the child card"
+        );
+        assert_eq!(card()["status"], "running");
+        assert_eq!(card()["data"]["native"]["id"], child);
+
+        push_event(&target, frame("child_started"));
+        let finished = frame("child_succeeded");
+        push_event(&target, finished.clone());
+        push_event(&target, finished);
+        push_event(&target, success);
+        assert_eq!(
+            project_events(),
+            1,
+            "repeated frames settle the child only once"
+        );
+        assert_eq!(card()["status"], "completed");
+        assert_eq!(card()["data"]["native"]["id"], child);
+        assert!(card()["data"]["endedAt"].is_string());
+
+        // A subsequent run of the same child reopens the existing card.
+        let mut next_start = frame("child_started");
+        next_start["id"] = json!("evt-followup-start");
+        next_start["created"] = json!(next_start["created"].as_i64().unwrap() + 1000);
+        next_start["durable"]["seq"] = json!(next_start["durable"]["seq"].as_u64().unwrap() + 100);
+        push_event(&target, next_start);
+        assert_eq!(project_events(), 0);
+        assert_eq!(card()["status"], "running");
+        assert!(card()["data"]["endedAt"].is_null());
+
+        let mut next_finish = frame("child_succeeded");
+        next_finish["id"] = json!("evt-followup-finish");
+        next_finish["created"] = json!(next_finish["created"].as_i64().unwrap() + 1000);
+        next_finish["durable"]["seq"] = json!(next_finish["durable"]["seq"].as_u64().unwrap() + 100);
+        push_event(&target, next_finish.clone());
+        push_event(&target, next_finish);
+        assert_eq!(project_events(), 1);
+        assert_eq!(card()["status"], "completed");
+    }
+}
+
+#[test]
 fn a_captured_225_marker_binds_the_child_only_through_the_verified_parent_link() {
     let (base, finished, peer) = child_peer("ses-root");
     let (mut target, mut events) = target();
