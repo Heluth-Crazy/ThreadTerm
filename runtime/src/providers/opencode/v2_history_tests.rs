@@ -712,3 +712,134 @@ fn a_fork_timeout_keeps_its_evidence_through_the_uncertain_mapping() {
         "a timed-out copy keeps its server"
     );
 }
+
+#[test]
+fn opencode_230_fork_hook_delay_preserves_native_identity_and_unknown_outcomes() {
+    use std::io::{BufRead, BufReader};
+
+    let _serialized = provider_global_test_lock();
+    let fixture = crate::providers::conformance::fixture("opencode-v230-fork-hook.jsonl");
+    let fork = fixture
+        .iter()
+        .find(|frame| frame["case"] == "fork")
+        .unwrap();
+    let parent = fork["value"]["data"]["fork"]["sessionID"].as_str().unwrap();
+    let child = fork["value"]["data"]["id"].as_str().unwrap();
+
+    for (timeout, reply_late) in [
+        (Duration::from_secs(3), false),
+        (Duration::from_millis(400), true),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (adapter_done, wait_for_adapter) = mpsc::channel();
+        let frames = fixture.clone();
+        let peer = thread::spawn(move || {
+            for frame in frames.iter().take(if reply_late { 2 } else { 3 }) {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let (stream, _) = loop {
+                    match listener.accept() {
+                        Ok(value) => break value,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("fork fixture peer: {error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut first = String::new();
+                stream.read_line(&mut first).unwrap();
+                let method = frame["request"]["method"].as_str().unwrap();
+                let path = frame["request"]["path"].as_str().unwrap();
+                assert_eq!(first.trim_end(), format!("{method} {path} HTTP/1.1"));
+                let mut content_length = 0;
+                loop {
+                    let mut header = String::new();
+                    assert_ne!(stream.read_line(&mut header).unwrap(), 0);
+                    if header == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap();
+                        }
+                    }
+                }
+                let mut request_body = vec![0; content_length];
+                stream.read_exact(&mut request_body).unwrap();
+                if frame["case"] == "fork" {
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&request_body).unwrap(),
+                        frame["request"]["body"]
+                    );
+                    // The native copy already has an ID. Hold its reply while the hook runs.
+                    if reply_late {
+                        wait_for_adapter
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap();
+                    } else {
+                        thread::sleep(Duration::from_millis(40));
+                    }
+                }
+                let body = frame["value"].to_string();
+                let sent = write!(
+                    stream.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                if !reply_late {
+                    sent.unwrap();
+                }
+            }
+            if !reply_late {
+                wait_for_adapter
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            }
+            let deadline = Instant::now() + Duration::from_millis(150);
+            while Instant::now() < deadline {
+                let extra = listener.accept().expect_err("duplicate native fork");
+                assert_eq!(extra.kind(), std::io::ErrorKind::WouldBlock);
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let api = NativeApi::new(
+            Client::builder().no_proxy().build().unwrap(),
+            base,
+            "C:/scratch".into(),
+            "pw".into(),
+            ApiDialect::V2,
+        );
+        let stopped = Arc::new(AtomicBool::new(false));
+        v2_store_live_owner(parent, api, Arc::clone(&stopped), None);
+        api::set_v2_fork_timeout_for_test(Some(timeout));
+        let result = opencode_v2_fork("C:/scratch", parent, None, true);
+        api::set_v2_fork_timeout_for_test(None);
+        let parent_still_owned = v2_live_owner(parent).is_some();
+        let child_read = v2_live_owner(child).map(|owner| owner.api.read_session(child));
+        adapter_done.send(()).unwrap();
+        stopped.store(true, Ordering::SeqCst);
+        v2_forget_live_owner(parent);
+        v2_forget_live_owner(child);
+        peer.join().unwrap();
+
+        assert!(parent_still_owned);
+        if reply_late {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, "operation_outcome_unknown");
+            assert!(v2_timed_out(&error));
+            assert!(child_read.is_none());
+        } else {
+            assert_eq!(result.unwrap().as_deref(), Some(child));
+            assert_eq!(child_read.unwrap().unwrap()["id"], child);
+        }
+    }
+}
