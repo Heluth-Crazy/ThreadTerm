@@ -64,8 +64,9 @@ export async function startHarness() {
   };
 }
 
-export async function enter(page, origin, source = 'threadterm-app-v3') {
-  await page.goto(`${origin}/${source}/`);
+export async function enter(page, origin, source = 'prototype') {
+  const response = await page.goto(`${origin}/${source}/`);
+  assert.ok(response?.ok(), `Prototype entry must load: ${source} (${response?.status()})`);
   const welcome = page.getByRole('button', { name: '开始体验', exact: true });
   if (await welcome.count()) await welcome.click();
 }

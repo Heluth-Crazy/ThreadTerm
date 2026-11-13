@@ -36,3 +36,12 @@ test('a panel without a selected tab has no cut and no feet', () => {
   assert.ok(border.startsWith('M 8 0.5 H'), 'untabbed panels retain their top hairline');
   assert.ok(border.endsWith('8 0.5'), 'untabbed top-left corner closes into the top hairline');
 });
+
+test('flush panes use square image clips and a straight selected-tab join', () => {
+  const panel = { x: 100, y: 80, w: 200, h: 300 };
+  const shape = backgroundShape(panel, { x: 120, y: 50, w: 120, h: 30 }, 0);
+  assert.equal(shape.radius, 0);
+  assert.deepEqual(shape.tab, { x: 120, y: 50, w: 120, h: 30 });
+  assert.equal(shape.feet, '');
+  assert.equal(tabShape(shape), 'M 120 81 V 50 H 240 V 81 Z');
+});

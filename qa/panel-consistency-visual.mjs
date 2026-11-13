@@ -10,6 +10,7 @@ import {mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,resolve} from 'node:path';
 import {build as esbuild} from 'esbuild';
 import {build as viteBuild} from 'vite';
+import {PNG} from 'pngjs';
 import {electron} from './lib/desktop1.mjs';
 import {connectPeer} from './pipe-client.mjs';
 import {closeBrowserViewFixture} from './lib/browser-view-cleanup.mjs';
@@ -32,7 +33,7 @@ if(baseline){
  }
  baselineSources.set(join(root,'renderer/src/components/panel-headers.css').replaceAll('\\','/').toLowerCase(),'');
 }
-const appDir=join(scratch,'app'),bin=join(scratch,'bin'),work=join(scratch,'work'),plugins=join(scratch,'plugins');
+const appDir=join(scratch,'app'),bin=join(scratch,'bin'),work=join(scratch,'work'),plugins=join(scratch,'plugins'),backgroundFixture=join(scratch,'panel-background.png');
 const runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),pipe=`\\\\.\\pipe\\tt-panel-${randomUUID()}`,lock=join(scratchBase,'qa-electron.lock');
 const report={passed:false,checks:[],measurements:[],screenshots:[],errors:[],violations:[],limitations:[]};
 let app,page,runtimeProcess,locked=false,chat,terminal,server,baseUrl;
@@ -42,7 +43,7 @@ const request=(method,params={})=>page.evaluate(([method,params])=>window.thread
 async function until(probe,label,ms=30000){const end=Date.now()+ms;for(;;){if(await probe())return;if(Date.now()>end)throw Error(`Timed out: ${label}`);await sleep(100)}}
 function env(){
  const value=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe','threadterm_v3_plugin_dirs'].includes(key.toLowerCase())));
- Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_QA_PROVIDER_BIN:bin,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_QA_BROWSER_URL:baseUrl});
+ Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_QA_PROVIDER_BIN:bin,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_QA_BROWSER_URL:baseUrl,THREADTERM_V3_PICK_BACKGROUND_QA:backgroundFixture});
  assert.equal(Object.keys(value).filter(key=>key.toLowerCase()==='path').length,1);return value;
 }
 async function settings(language,theme){const snap=await request('runtime.snapshot');await request('settings.update',{patch:{language,theme,themeSelection:theme,notifications:{native:false,attention:false,completed:false,sound:false}},expectedRevision:snap.settings.revision,operationId:randomUUID()});await page.waitForFunction(({language,theme})=>document.documentElement.lang===(language==='zh-CN'?'zh-CN':'en')&&document.documentElement.dataset.theme===theme,{language,theme})}
@@ -130,7 +131,8 @@ async function capture(name){
   if(verify&&shell.toolbar){
    assert.ok(Math.abs(shell.toolbar.height-46)<=.5,`${name}: session toolbar is 46px`);
    assert.ok(Math.abs(shell.caption.width-138)<=.5&&Math.abs(shell.caption.height-46)<=.5,`${name}: Windows caption group is 138x46`);
-   if(shell.sidebar.display!=='none'){assert.ok(Math.abs(shell.sidebar.width-244)<=.5,`${name}: sidebar is 244px`);assert.ok(Math.abs(shell.sidebar.y-shell.window.y)<=2&&Math.abs(shell.sidebar.height-shell.window.height)<=2,`${name}: sidebar spans the full window height`);}
+   if(shell.sidebar.display!=='none'&&shell.sidebar.width>1){assert.ok(Math.abs(shell.sidebar.width-244)<=.5,`${name}: sidebar is 244px`);assert.ok(Math.abs(shell.sidebar.y-shell.window.y)<=2&&Math.abs(shell.sidebar.height-shell.window.height)<=2,`${name}: sidebar spans the full window height`);}
+   else {assert.ok(shell.sidebar.width<=1,`${name}: collapsed sidebar consumes no width`);assert.equal(await page.locator('.shell-toolbar-prefix button:visible').count(),2,`${name}: collapsed toolbar retains sidebar and New terminal controls`);}
    if(shell.activity)assert.ok(Math.abs(shell.activity.height-28)<=.5,`${name}: Run activity is 28px`);
   }
  }
@@ -139,8 +141,12 @@ async function capture(name){
 }
 async function closeDialog(){const close=page.locator('.session-config .dialog-title button, .settings-panel > header .icon-btn, .dialog .dlg-head > .icon-btn').last();if(await close.isVisible().catch(()=>false))await close.click();else await page.keyboard.press('Escape');await settled()}
 async function optional(name,run){try{await run()}catch(error){report.limitations.push(`${name}: ${error.message}`);console.log(`LIMIT ${name}: ${error.message.split('\n')[0]}`);await closeDialog().catch(()=>{})}}
+async function openSettings(){await page.getByRole('button',{name:'Local user',exact:true}).click();await page.locator('.account-menu').getByRole('button',{name:'Settings',exact:true}).click();await page.locator('.settings-panel').waitFor();}
+async function verifySettingsWindow(theme){const panel=page.locator('.settings-panel');const geometry=await panel.evaluate(node=>{const box=node.getBoundingClientRect(),side=node.querySelector('.mac-settings-side')?.getBoundingClientRect(),bar=node.querySelector('.mac-settings-bar')?.getBoundingClientRect();return{width:box.width,height:box.height,side:side?.width,bar:bar?.height};});assert.ok(Math.abs(geometry.width-880)<=1&&Math.abs(geometry.height-610)<=1,`Settings ${theme}: window is 880x610`);assert.ok(Math.abs(geometry.side-228)<=1&&Math.abs(geometry.bar-46)<=1,`Settings ${theme}: sidebar/header are 228/46`);const search=panel.getByRole('searchbox',{name:'Search settings',exact:true});await search.fill('Browser');assert.equal(await panel.getByRole('tab',{name:'Browser',exact:true}).count(),1,`Settings ${theme}: search filters navigation`);await search.fill('');const appearance=panel.getByRole('tab',{name:'Appearance',exact:true});await appearance.focus();await page.keyboard.press('ArrowDown');assert.equal(await panel.getByRole('tab',{name:'Appearance',exact:true}).getAttribute('aria-selected'),'false',`Settings ${theme}: vertical tab keyboard navigation changes page`);await appearance.click();}
+async function assertPictureTreatment(theme,enabled){const treatment=await page.evaluate(()=>{const style=node=>{const value=getComputedStyle(document.querySelector(node));return{blur:value.backdropFilter,background:value.backgroundColor};};return{sidebar:style('.sidebar'),panel:style('.inspector,.wb-panel'),toolbar:getComputedStyle(document.querySelector('.ws-top')).backgroundColor};});if(enabled){for(const [name,value] of Object.entries({sidebar:treatment.sidebar.blur,panel:treatment.panel.blur}))assert.ok(value.includes('blur(24px)')&&value.includes('saturate(1.6)'),`background ${theme}: ${name} has blur(24px) saturate(1.6)`);assert.ok(treatment.toolbar==='rgba(0, 0, 0, 0)'||treatment.toolbar==='transparent',`background ${theme}: toolbar is transparent`);}else{assert.ok(!treatment.sidebar.blur||treatment.sidebar.blur==='none',`background ${theme}: None removes sidebar blur`);assert.ok(!treatment.panel.blur||treatment.panel.blur==='none',`background ${theme}: None removes panel blur`);}return treatment;}
 try{
  await Promise.all([out,appDir,bin,work,plugins].map(path=>mkdir(path,{recursive:true})));
+ const fixturePng=new PNG({width:32,height:24});for(let y=0;y<fixturePng.height;y++)for(let x=0;x<fixturePng.width;x++){const offset=(y*fixturePng.width+x)*4,light=(x+y)%2===0;fixturePng.data[offset]=light?24:168;fixturePng.data[offset+1]=light?106:208;fixturePng.data[offset+2]=light?210:82;fixturePng.data[offset+3]=255;}await writeFile(backgroundFixture,PNG.sync.write(fixturePng));
  cpSync(join(root,'qa/fixtures/browser-plugins'),join(plugins,'browser-preview-acp-qa'),{recursive:true});
  server=createServer((_,response)=>{response.writeHead(200,{'content-type':'text/html'});response.end('<!doctype html><title>Panel browser fixture</title><h1>Loopback browser panel</h1>')});
  await new Promise(done=>server.listen(0,'127.0.0.1',done));baseUrl=`http://127.0.0.1:${server.address().port}`;
@@ -227,6 +233,16 @@ try{
   if(surface==='local-history'){await page.getByRole('button',{name:language==='zh-CN'?'ThreadTerm 记录':'ThreadTerm records',exact:true}).click();await page.locator('.session-history-rail').waitFor();await capture(`${language}-${theme}-fixture-local-history-saved`)}
  }
  await app.evaluate(({webContents},id)=>webContents.fromId(id)?.close(),fixtureId);page=productionPage;
+ page.setDefaultTimeout(10000);
+ for(const theme of ['light','dark']){
+  await settings('en',theme);const details=page.getByRole('button',{name:'Session details',exact:true});if(await details.getAttribute('aria-pressed')!=='true')await details.click();await page.locator('.inspector').waitFor();await openSettings();await verifySettingsWindow(theme);await capture(`settings-${theme}`);
+  const quickChoose=page.getByTestId('background-quick-choose');await quickChoose.waitFor();await quickChoose.click();
+  await until(async()=>{const value=await request('runtime.snapshot'),selection=String(value.settings.themeSelection??'');return selection.startsWith('custom:')&&Boolean(value.settings.customThemes?.[selection.slice(7)]?.backgrounds?.window);},`background ${theme}: Choose imports fixture`);
+  await closeDialog();await until(()=>page.locator('.app-shell[data-window-background] > .sidebar[data-background-region]').count().then(Boolean),'background regions painted');await assertPictureTreatment(theme,true);await capture(`background-${theme}`);
+  await openSettings();await page.getByTestId('background-quick-remove').click();await until(async()=>await page.getByTestId('background-quick-remove').isDisabled(),`background ${theme}: None removes picture`);await closeDialog();await until(()=>page.locator('.sidebar[data-background-region]').count().then(count=>count===0),'background regions cleared');await assertPictureTreatment(theme,false);
+  if(theme==='light'){const sidebar=page.locator('.sidebar'),width=await sidebar.evaluate(node=>node.getBoundingClientRect().width);await page.locator('.chat-compose-shell textarea').blur();await page.keyboard.press('Control+B');await until(async()=>await sidebar.evaluate(node=>node.getBoundingClientRect().width)<2,'sidebar collapse');await capture('background-light-sidebar-collapsed');await page.keyboard.press('Control+B');await until(async()=>Math.abs((await sidebar.evaluate(node=>node.getBoundingClientRect().width))-width)<=1,'sidebar restore');}
+  check(`background ${theme}: Settings Choose/None, geometry, search and keyboard navigation verified`);
+ }
  check('mounted production Block Inspector, worktree manager, task-map details, Git history/review and delegation inventory captured');
  if(verify){
   for(const language of ['en','zh-CN'])for(const theme of ['light','dark']){

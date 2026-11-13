@@ -68,3 +68,14 @@ body .mac-settings-window .theme-choice:hover:not(:disabled) { background:none; 
 .mac-mode-thumb .mac-mode-thumb-second-bar { position:absolute; left:36%; top:17px; width:30%; height:4px; border-radius:2px; background:currentColor; opacity:.25; }
 .mac-mode-thumb .mac-mode-thumb-accent { position:absolute; right:7px; bottom:7px; width:10px; height:10px; border-radius:50%; background:var(--primary); }
 
+/* Beat legacy Settings field rules without changing ordinary text inputs. */
+body .settings-drawer .settings-panel.mac-settings-window label.mac-settings-search input[type=search] { height:28px; min-height:28px; padding:0 0 0 6px; border:0; border-radius:0; background:transparent; box-shadow:none; }
+body .settings-drawer .settings-panel.mac-settings-window .tt-select.tt-select { height:24px; min-height:24px; background:var(--control); }
+body .settings-drawer .settings-panel.mac-settings-window .tt-select.tt-select .tt-select-trigger { height:24px; min-height:24px; padding:0 5px 0 9px; }
+.mac-settings-window .theme-choice:first-child .mac-mode-thumb { color:var(--mode-auto-ink); }
+body .mac-settings-window .settings-group.active { gap:0; }
+.mac-settings-window .mac-settings-account small { display:inline; }
+.mac-settings-window .mac-settings-tile { box-shadow:inset 0 0 0 .5px var(--settings-tile-edge); }
+.mac-settings-window .mac-mode-thumb { box-shadow:0 0 0 .5px var(--separator-strong); }
+.mac-settings-window .theme-choice.selected .mac-mode-thumb { box-shadow:0 0 0 .5px var(--separator-strong),0 0 0 3px var(--primary); }
+body .mac-settings-window :is(.settings-card-row,.settings-background-quick) .settings-card-title { font-weight:400; }

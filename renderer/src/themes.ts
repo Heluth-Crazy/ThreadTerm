@@ -324,9 +324,17 @@ export function themeUsesSystemAppearance(selection: string | undefined, customT
  * roles; arbitrary presets and user palettes derive cohesive roles from their public colours. */
 export function themeCssVariables(resolved: ResolvedTheme): Record<string, string> {
   const { colors, syn } = resolved;
-  const mac = !resolved.custom && resolved.presetId === "threadterm-light"
+  // Adding a picture makes a persisted custom copy without changing the palette.
+  // Its hex-only stored border is flattened, so compare the actual public color roles.
+  const base = presetById(resolved.presetId);
+  const stock = base && (['frame', 'sidebar', 'panel', 'editor', 'text', 'muted', 'accent'] as const)
+    .every(role => colors[role].toLowerCase() === base.c[role].toLowerCase());
+  const storedStockBorder = resolved.presetId === 'threadterm-light' ? '#e7e7e7' : '#313131';
+  const macPalette = stock && ['threadterm-light', 'threadterm-dark'].includes(resolved.presetId)
+    && [base!.c.border, storedStockBorder].includes(colors.border.toLowerCase());
+  const mac = macPalette && resolved.presetId === "threadterm-light"
     ? { panel: "#f6f6f8", tabbar: "#ececee", bubble: "#ececf0", menu: "rgba(244,244,246,.92)", fillHover: "rgba(0,0,0,.045)", fillSelected: "rgba(0,0,0,.08)", control: "#ffffff", controlEdge: "rgba(0,0,0,.15)", controlDrop: "rgba(0,0,0,.1)", menuEdge: "rgba(0,0,0,.14)", group: "#f5f5f7", raised: "#f5f5f7", faint: "#a1a1a6", runningText: "#1f7f38", needsText: "#995000", failedText: "#cf241b" }
-    : !resolved.custom && resolved.presetId === "threadterm-dark"
+    : macPalette && resolved.presetId === "threadterm-dark"
       ? { panel: "#232325", tabbar: "#252527", bubble: "#2f2f33", menu: "rgba(40,40,42,.92)", fillHover: "rgba(255,255,255,.055)", fillSelected: "rgba(255,255,255,.1)", control: "#3a3a3c", controlEdge: "rgba(255,255,255,.07)", controlDrop: "rgba(0,0,0,.35)", menuEdge: "rgba(255,255,255,.12)", group: "#262628", raised: "#2a2a2c", faint: "#636366", runningText: "#30d158", needsText: "#ffb340", failedText: "#ff6b61" }
       : { panel: colors.panel, tabbar: colors.frame, bubble: colors.panel, menu: colors.panel, fillHover: "color-mix(in srgb, var(--text) 5.5%, transparent)", fillSelected: "color-mix(in srgb, var(--text) 10%, transparent)", control: colors.panel, controlEdge: colors.border, controlDrop: "rgba(0,0,0,.1)", menuEdge: colors.border, group: colors.panel, raised: colors.panel, faint: colors.muted, runningText: colors.ok, needsText: colors.warn, failedText: colors.danger };
   return {
@@ -350,9 +358,9 @@ export function themeCssVariables(resolved: ResolvedTheme): Record<string, strin
     "--text": colors.text,
     "--muted": colors.muted,
     "--faint": mac.faint,
-    "--border": colors.border,
+    "--border": macPalette ? base!.c.border : colors.border,
     "--primary": colors.accent,
-    "--primary-fg": colors.accentFg,
+    "--primary-fg": macPalette ? base!.c.accentFg : colors.accentFg,
     "--amber": colors.warn,
     "--danger": colors.danger,
     "--st-needs": colors.warn,

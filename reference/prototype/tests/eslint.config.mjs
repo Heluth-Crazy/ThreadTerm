@@ -16,7 +16,7 @@ export default [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: readonly('window document navigator location history localStorage console HTMLElement Element HTMLInputElement HTMLTextAreaElement HTMLSelectElement Node FormData URL Blob File FileReader TextEncoder setTimeout clearTimeout setInterval clearInterval requestAnimationFrame cancelAnimationFrame CSS performance matchMedia'),
+      globals: readonly('window document navigator location history localStorage console HTMLElement Element HTMLInputElement HTMLTextAreaElement HTMLSelectElement Node Event FormData URL Blob File FileReader TextEncoder setTimeout clearTimeout setInterval clearInterval requestAnimationFrame cancelAnimationFrame queueMicrotask CSS performance matchMedia'),
     },
     rules,
   },
@@ -25,7 +25,7 @@ export default [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: readonly('process Buffer URL console setTimeout clearTimeout window document location history localStorage navigator HTMLElement FormData CompositionEvent DataTransfer DragEvent innerWidth innerHeight'),
+      globals: readonly('process Buffer URL console setTimeout clearTimeout window document location history localStorage navigator HTMLElement FormData CompositionEvent DataTransfer DragEvent innerWidth innerHeight getComputedStyle'),
     },
     rules,
   },

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyThemeTokens, contrastRatio, customHoverTarget, customPrimaryForeground, customSwitchOffForeground, customTheme, customTokens, resolveTheme, subscribeThemeState, themeCssVariables, themeUsesSystemAppearance, type ThemeTokens } from './themes';
+import { customThemeFromResolved } from './appearance/backgrounds';
 
 const tokens = (overrides: Partial<ThemeTokens> = {}): ThemeTokens => ({ background: '#182430', surface: '#22303d', text: '#f1f5f9', muted: '#94a3b8', accent: '#ff7a45', border: '#44505d', ...overrides });
 
@@ -179,4 +180,19 @@ test('themeCssVariables exposes Mac component roles and derives them for non-sto
   const macLight = themeCssVariables(resolveTheme('light', { systemDark: false }));
   assert.deepEqual({ panel: macLight['--panel'], tabbar: macLight['--tabbar'], bubble: macLight['--bubble'], menu: macLight['--menu'], hover: macLight['--fill-hover'], selected: macLight['--fill-selected'] }, { panel: '#f6f6f8', tabbar: '#ececee', bubble: '#ececf0', menu: 'rgba(244,244,246,.92)', hover: 'rgba(0,0,0,.045)', selected: 'rgba(0,0,0,.08)' });
   for (const value of Object.values(variables)) assert.ok(typeof value === 'string' && value.length > 0);
+});
+
+test('adding a background preserves every stock Mac component role while edited palettes still derive their roles', () => {
+  for (const mode of ['light', 'dark'] as const) {
+    const original = resolveTheme(mode, { systemDark: mode === 'dark' });
+    const copy = customThemeFromResolved(original, { window: { image: 'a'.repeat(64), opacity: 100, blur: 0, overlay: 0, fit: 'cover', focusX: 50, focusY: 50, scale: 100 } });
+    const restored = resolveTheme('custom:picture', { systemDark: false, customThemes: { picture: copy } });
+    assert.equal(restored.custom, true);
+    assert.deepEqual(themeCssVariables(restored), themeCssVariables(original));
+    const edited = resolveTheme('custom:edited', { systemDark: false, customThemes: { edited: { ...copy, accent: '#a055aa' } } });
+    assert.equal(themeCssVariables(edited)['--bubble'], edited.colors.panel);
+    assert.notEqual(themeCssVariables(edited)['--bubble'], themeCssVariables(original)['--bubble']);
+    const borderEdited = resolveTheme('custom:border', { systemDark: false, customThemes: { border: { ...copy, border: '#123456' } } });
+    assert.equal(themeCssVariables(borderEdited)['--border'], '#123456');
+  }
 });

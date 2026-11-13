@@ -3,7 +3,7 @@ import type { BackgroundRecord } from '../../../desktop/src/backgroundImagesCore
 import type { ResolvedTheme, ThemeBackgrounds } from '../themes';
 import { ensureBlurVariant, listBackgroundImages } from './backgroundPipeline';
 import { placement, regionColor, resolveBackgrounds, type BackgroundRegion, type PlacementBox } from './backgrounds';
-import { backgroundShape, panelBorder, tabShape, type BackgroundShape } from './backgroundGeometry';
+import { backgroundShape, tabShape, type BackgroundShape } from './backgroundGeometry';
 import { backgroundLayoutEvent, setTerminalBackground } from './backgroundState';
 import './background-layers.css';
 
@@ -70,7 +70,7 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
       const visible = (element: HTMLElement) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
       const nextMarked = new Set<HTMLElement>(), targets = new Set<Element>([shell]);
       const regions: RegionGeometry[] = [];
-      const add = (element: HTMLElement, region: BackgroundRegion, panel: HTMLElement, tab?: HTMLElement, radius = 8) => {
+      const add = (element: HTMLElement, region: BackgroundRegion, panel: HTMLElement, tab?: HTMLElement, radius = 0) => {
         targets.add(element); targets.add(panel); if (tab) targets.add(tab);
         if (!usable(region) || !visible(element)) return;
         mark(element, region); nextMarked.add(element);
@@ -80,16 +80,16 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
           const strip = tab!.closest('.workspace-tabs');
           if (strip) { const clip = rect(strip); const right = Math.min(tabBox.x + tabBox.w, clip.x + clip.w); tabBox = { ...tabBox, x: Math.max(tabBox.x, clip.x), w: right - Math.max(tabBox.x, clip.x) }; }
         }
-        const shape = backgroundShape(panelBox, tabBox);
+        const shape = backgroundShape(panelBox, tabBox, radius);
         regions.push({ key: element.dataset.paneId ?? region, region, shape, radius });
       };
       const sidebar = shell.querySelector<HTMLElement>(':scope > .sidebar');
       if (sidebar) add(sidebar, 'sidebar', sidebar, undefined, 0);
-      for (const panel of shell.querySelectorAll<HTMLElement>('.wb-sidebar > .wb-panel')) add(panel, 'sidebar2', panel);
+      for (const panel of shell.querySelectorAll<HTMLElement>('.wb-sidebar > .wb-panel')) add(panel, 'sidebar2', panel, undefined, 0);
       for (const pane of shell.querySelectorAll<HTMLElement>('.workspace-pane')) {
         const panel = pane.querySelector<HTMLElement>(':scope > .pane-card');
         const region = pane.dataset.appearanceRegion as BackgroundRegion | undefined;
-        if (panel && region) add(pane, region, panel, pane.querySelector<HTMLElement>('.workspace-tab.active') ?? undefined);
+        if (panel && region) add(pane, region, panel, pane.querySelector<HTMLElement>('.workspace-tab.active') ?? undefined, 0);
       }
       for (const element of marked) if (!nextMarked.has(element)) { delete element.dataset.backgroundRegion; marked.delete(element); }
       for (const target of targets) if (!observed.has(target)) { observer.observe(target); observed.add(target); }
@@ -124,22 +124,24 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
   const paint = (region: BackgroundRegion, key: string, shape: BackgroundShape, radius: number) => {
     const value = resolved[region];
     if (!value.imageUrl || !value.layer) return null;
+    // CSS owns the single 72% glass tint for inherited navigation regions.
+    if (value.source === 'window' && (region === 'sidebar' || region === 'sidebar2')) return null;
     const own = value.source === 'own', record = records.find(record => record.id === value.layer!.image);
     if (!record) return null;
     const picture = value.layer.blur > 0 ? record.variants[String(value.layer.blur)] ?? record : record;
     const p = placement(value.layer, shape.box, picture), [width, height] = p.size.split(' ').map(parseFloat);
     const clip = `${id}-${key}`, tile = `${clip}-tile`, color = regionColor(theme, region);
     const pane = !['window','sidebar','sidebar2'].includes(region);
+    const frostedNavigation = region === 'sidebar' || region === 'sidebar2';
     return <g key={key} data-background-layer={region} data-overlay={value.overlay} data-floor={value.floor} data-source={value.source}>
       <defs><clipPath id={clip}><rect x={shape.panel.x} y={shape.panel.y} width={shape.panel.w} height={shape.panel.h} rx={radius}/>{shape.tab && <path d={tabShape(shape)}/>}</clipPath>
         {own && p.repeat === 'repeat' && <pattern id={tile} patternUnits="userSpaceOnUse" x={p.x} y={p.y} width={width} height={height}><image href={value.imageUrl} width={width} height={height} preserveAspectRatio="none"/></pattern>}
       </defs>
       <g clipPath={`url(#${clip})`}>
         {own && <><rect width="100%" height="100%" fill={color}/>{p.repeat === 'repeat' ? <rect width="100%" height="100%" fill={`url(#${tile})`} opacity={value.layer.opacity / 100}/> : <image href={value.imageUrl} x={p.x} y={p.y} width={width} height={height} opacity={value.layer.opacity / 100} preserveAspectRatio="none"/>}</>}
-        <rect width="100%" height="100%" fill={color} opacity={value.overlay}/>
+        {!frostedNavigation && <rect width="100%" height="100%" fill={color} opacity={value.overlay}/>}
         {pane && <rect data-background-lift="" width="100%" height="100%" fill={color} opacity={theme.mode === 'dark' ? 0.75 : 0.5}/>}
       </g>
-      {pane && <path data-background-border="" d={panelBorder(shape)} fill="none" stroke="var(--border)" strokeWidth="1"/>}
     </g>;
   };
   return <svg ref={host} className="appearance-backgrounds" aria-hidden="true" data-ready={records.length > 0} width="100%" height="100%">

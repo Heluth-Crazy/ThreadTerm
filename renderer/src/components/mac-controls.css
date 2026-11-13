@@ -13,7 +13,10 @@ body .ql-split .btn { border-radius:0; }
 body .ql-split .btn:first-child { border-radius:6px 0 0 6px; }
 body .ql-split .btn:last-of-type { border-radius:0 6px 6px 0; }
 body .tt-select.tt-select { height:24px; min-height:24px; border:0; border-radius:6px; background:var(--control); color:var(--text); box-shadow:0 0 0 .5px var(--control-edge),0 .5px 1.5px var(--control-drop); font:12.5px var(--font); }
-body .tt-select.tt-select .tt-select-trigger { height:24px; min-height:24px; padding:0 5px 0 9px; gap:6px; }
+body .tt-select.tt-select .tt-select-trigger { height:24px; min-height:24px; padding:0 5px 0 9px; gap:6px; border:0; background:transparent; box-shadow:none; }
+body .tt-select.tt-select.btn-sm { height:22px; min-height:22px; padding:0; }
+body .tt-select.tt-select.btn-sm .tt-select-trigger { height:22px; min-height:22px; padding:0 9px; font-size:12px; }
+body .wb-review-diff > .file-bar .icon-btn.icon-btn-sm { height:22px; min-height:22px; }
 body .tt-select-chevron { width:11px; height:11px; color:var(--muted); }
 body :is(button,input,textarea,select,[role="button"]):focus-visible { outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent); outline-offset:0; }
 body .input-wrap:has(input:focus-visible), body .setting-switch input:focus-visible + span { outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent); outline-offset:0; }
@@ -51,7 +54,11 @@ body .dialog .dlg-head { padding:18px 20px 4px; border-bottom:0; }
 body .dialog .dlg-head h2 { font-size:15px; font-weight:600; }
 body .dialog .dlg-head .sheet-icon { display:none; }
 body .dialog .dlg-head p { font-size:12.5px; color:var(--muted); }
-body .dialog .dlg-foot { display:flex; justify-content:flex-end; gap:8px; padding:14px 20px 18px; }
+body .dialog.sheet .dlg-head.sheet-head, body .session-config .dialog-title { padding:18px 20px 4px; border:0; }
+body .dialog.sheet .dlg-head.sheet-head h2, body .session-config .dialog-title h2 { font-size:15px; }
+body .dialog.sheet .dlg-head.sheet-head p, body .session-config .dialog-title p { font-size:12.5px; }
+body .dialog .dlg-foot { display:flex; justify-content:flex-end; gap:8px; padding:16px 20px 18px; }
+html[data-theme="dark"] body :is(.runtime-overlay,.scrim) > .dialog:not(.palette):not(.settings-panel) { background:var(--panel); }
 body .dialog .create-type-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; padding:0 16px; }
 body .dialog .create-type-grid .provider-choice { min-width:0; }
 body .dialog .create-type-grid .create-type { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; width:100%; height:auto; min-height:0; padding:12px 4px 10px; border:0; border-radius:10px; font-size:12px; background:transparent; box-shadow:none; }
@@ -64,6 +71,8 @@ body .workspace-tab:has(> :focus-visible) > .workspace-tab-select::after { borde
 /* Context-specific toolbar controls retain their prototype metrics. */
 body .workspace-tabbar.ws-strip .icon-btn { width:28px; height:28px; }
 body .wb-panel-head :is(.btn,.icon-btn), body .wb-tools-head :is(.btn,.icon-btn), body .wb-history-title :is(.btn,.icon-btn), body .worktree-manager :is(.wtm-list,.wtm-detail) > header :is(.btn,.icon-btn), body .task-graph-details > header :is(.btn,.icon-btn) { height:24px; min-height:24px; }
+body .wb-history-title .wb-history-scope { border:0; padding:2px; }
+body .wb-history-title .wb-history-scope .seg-btn { height:24px; min-height:24px; padding:0 7px; }
 @keyframes mac-sheet-drop { from { opacity:0; transform:translateY(-14px); } }
 @media (prefers-reduced-motion:reduce) { body :is(.runtime-overlay,.scrim) > .dialog { animation:none; } }
 

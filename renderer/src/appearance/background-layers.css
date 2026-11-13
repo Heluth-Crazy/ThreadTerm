@@ -1,7 +1,6 @@
 /* Only image-backed regions opt in. Solid tokens remain unchanged for dense content and overlays. */
 .app-shell[data-has-backgrounds] { isolation:isolate; }
 .appearance-backgrounds { position:absolute; inset:0; z-index:-1; pointer-events:none; overflow:hidden; }
-.app-shell[data-window-background] > .titlebar,
 .app-shell[data-window-background] .runtime-workspace .ws-content:not(.pane-workspace),
 .app-shell[data-window-background] .runtime-workspace .ws-top { background:transparent; }
 .app-shell > .sidebar[data-background-region],
@@ -33,3 +32,16 @@
 .app-shell[data-has-backgrounds] :is(.chip.is-accent,.chat-menu-badge) { background:color-mix(in srgb,var(--primary) 11%,var(--surface)); }
 .app-shell[data-has-backgrounds] .badge.amber { background:color-mix(in srgb,var(--amber) 18%,var(--surface)); }
 .workspace-pane[data-background-region="editor"] :is(.tt-diff-shell,.tt-diff-host,.merge-editor,.wb-review-diff) { background:var(--editor); }
+
+/* Flush shell: window pictures extend through every route's toolbar. */
+.app-shell[data-window-background] :is(.window-controls,.shell-route-toolbar,.page-head,.ov-page-head,.usage-head),
+.app-shell[data-window-background] .project-file-page > .ws-top { background:transparent; }
+.app-shell[data-window-background] .content.main > :is(.page,.terminals-page,section.ov-page) > :is(.page-head,.ov-page-head) { background:transparent; }
+/* Glass is opt-in, and the SVG keeps the source picture beneath this single tint. */
+.app-shell[data-has-backgrounds] > aside.sidebar[data-background-region],
+.app-shell[data-has-backgrounds] .runtime-workspace .wb-panel[data-background-region] {
+ background:color-mix(in srgb,var(--side) 72%,transparent);
+ backdrop-filter:blur(24px) saturate(1.6);
+}
+.app-shell[data-has-backgrounds] .runtime-workspace .wb-sidebar-slot,
+.app-shell[data-has-backgrounds] .runtime-workspace .wb-panel[data-background-region] :is(.wb-panel-head,.wb-panel-body > .inspector,.wb-view,.file-list.wb-embedded-tools,.wb-tools-head) { background:transparent; }
