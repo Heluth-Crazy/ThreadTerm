@@ -8,6 +8,7 @@
 @import url("../../reference/prototype/features/settings.css");
 @import url("./components/mac-panels.css");
 @import url("./components/mac-controls.css");
+@import url("./components/mac-settings.css");
 
 /* The navigation mark is the generated product tile, not the terminal glyph. */
 .brand-mark:has(img) { background: transparent; }
@@ -23,6 +24,7 @@
   --panel:#f6f6f8; --tabbar:#ececee; --bubble:#ececf0; --group:#f5f5f7;
   --menu:rgba(244,244,246,.92); --menu-edge:rgba(0,0,0,.14);
   --fill-hover:rgba(0,0,0,.045); --fill-selected:rgba(0,0,0,.08);
+  --settings-shadow:0 30px 90px -10px rgba(0,0,0,.45);
   --dialog-edge:rgba(0,0,0,.22); --sheet-shadow:0 24px 70px -10px rgba(0,0,0,.45);
   --control:#ffffff; --control-edge:rgba(0,0,0,.15); --control-drop:rgba(0,0,0,.1);
   --st-running:#34c759; --st-needs:#ff9500; --st-failed:#ff3b30; --st-ended:#a1a1a6;
@@ -38,6 +40,7 @@
   --panel:#232325; --tabbar:#252527; --bubble:#2f2f33; --group:#262628;
   --menu:rgba(40,40,42,.92); --menu-edge:rgba(255,255,255,.12);
   --fill-hover:rgba(255,255,255,.055); --fill-selected:rgba(255,255,255,.1);
+  --settings-shadow:0 30px 90px -10px rgba(0,0,0,.75);
   --dialog-edge:rgba(0,0,0,.75); --sheet-shadow:0 24px 70px -10px rgba(0,0,0,.7);
   --control:#3a3a3c; --control-edge:rgba(255,255,255,.07); --control-drop:rgba(0,0,0,.35);
   --st-running:#30d158; --st-needs:#ff9f0a; --st-failed:#ff453a; --st-ended:#636366;
@@ -46,6 +49,10 @@
   --shadow:0 16px 48px rgba(0,0,0,.42); --shadow-soft:0 8px 24px rgba(0,0,0,.32);
 }
 :root {
+  --mask:rgba(0,0,0,.12);
+  --avatar-fill:linear-gradient(180deg,#a1a1a6,#7c7c80);
+  --mode-light-content:#fff; --mode-light-side:#ebebed; --mode-light-ink:#1d1d1f;
+  --mode-dark-content:#1e1e1e; --mode-dark-side:#2a2a2c; --mode-dark-ink:#fff;
   --control-glint:rgba(255,255,255,.1);
   --menu-shadow:0 12px 34px -6px rgba(0,0,0,.28);
   --spot-shadow:0 24px 70px -10px rgba(0,0,0,.4);
