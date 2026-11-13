@@ -249,7 +249,7 @@ export function Select({
         onKeyDown={onTriggerKeyDown}
       >
         <span className="tt-select-value">{selected?.label ?? currentValue}</span>
-        <Icon name="chevD" className="tt-select-chevron" />
+        <svg className="tt-select-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9.5 4-4 4 4M8 14.5l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
       </button>
       {open && menuStyle && createPortal(
         <div ref={menu} id={menuId} className="tt-select-menu" role="listbox" style={menuStyle} aria-label={buttonProps["aria-label"]}>

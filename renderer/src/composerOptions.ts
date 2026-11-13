@@ -218,7 +218,7 @@ export function isRecommended(option: ChatSessionOption, choice: ChatSessionChoi
  * The model menu sets `--chat-menu-row-height` from this value; every virtual
  * row (header and choice) is pinned to it.
  */
-export const MODEL_ROW_HEIGHT = 28;
+export const MODEL_ROW_HEIGHT = 24;
 
 /** First and last (exclusive) flat rows to render for a scroll position. */
 export function virtualWindow({
