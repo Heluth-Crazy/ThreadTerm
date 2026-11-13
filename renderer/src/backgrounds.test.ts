@@ -61,7 +61,7 @@ test('a stored layer is validated down to its exact shape and ranges', () => {
   assert.equal(themeBackgrounds([]), undefined);
   assert.equal(themeBackgrounds('none'), undefined);
   // customTokens keeps the palette and only the valid backgrounds.
-  const base = { background: light.colors.frame, surface: light.colors.panel, text: light.colors.text, muted: light.colors.muted, accent: light.colors.accent, border: light.colors.border };
+  const base = customThemeFromResolved(light);
   const tokens = customTokens({ ...base, backgrounds: { window: layer(white), chat: layer(black, { opacity: 900 }) } });
   assert.ok(tokens);
   assert.deepEqual(tokens.backgrounds, { window: layer(white) });
@@ -254,6 +254,15 @@ test('a custom copy keeps all eight role colours, the base preset and its backgr
   assert.equal(customThemeFromResolved(light).backgrounds, undefined);
   // An invalid background can never leave this function (the settings validation would refuse the theme).
   assert.equal(customThemeFromResolved(light, { window: layer(white, { opacity: 101 } as unknown as Partial<ThemeBackgroundLayer>) }).backgrounds, undefined);
+});
+
+test('a custom copy flattens the Mac preset hairline into its opaque surface', () => {
+  const light = customThemeFromResolved(resolveTheme('preset:threadterm-light', { systemDark: false }));
+  const dark = customThemeFromResolved(resolveTheme('preset:threadterm-dark', { systemDark: true }));
+  assert.equal(light.border, '#e7e7e7');
+  assert.equal(dark.border, '#313131');
+  assert.ok(customTokens(light));
+  assert.ok(customTokens(dark));
 });
 
 test('referencedImageIds is the keep list for pruning and ignores anything invalid', () => {

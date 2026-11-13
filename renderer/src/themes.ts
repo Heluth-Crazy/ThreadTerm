@@ -320,18 +320,36 @@ export function themeUsesSystemAppearance(selection: string | undefined, customT
   return resolveTheme(selection, { systemDark: false, customThemes }).key !== resolveTheme(selection, { systemDark: true, customThemes }).key;
 }
 
-/** The CSS custom properties for a resolved theme (root-level tokens only; hover/soft/faint derivatives are CSS
- * `color-mix` of these, and `--st-stalled` stays with the stylesheet because no preset role covers it). */
+/** The CSS custom properties for a resolved theme. Stock ThreadTerm palettes carry the Mac reference's exact component
+ * roles; arbitrary presets and user palettes derive cohesive roles from their public colours. */
 export function themeCssVariables(resolved: ResolvedTheme): Record<string, string> {
   const { colors, syn } = resolved;
+  const mac = !resolved.custom && resolved.presetId === "threadterm-light"
+    ? { panel: "#f6f6f8", tabbar: "#ececee", bubble: "#ececf0", menu: "rgba(244,244,246,.92)", fillHover: "rgba(0,0,0,.045)", fillSelected: "rgba(0,0,0,.08)", control: "#ffffff", controlEdge: "rgba(0,0,0,.15)", controlDrop: "rgba(0,0,0,.1)", menuEdge: "rgba(0,0,0,.14)", group: "#f5f5f7", raised: "#f5f5f7", faint: "#a1a1a6", runningText: "#1f7f38", needsText: "#995000", failedText: "#cf241b" }
+    : !resolved.custom && resolved.presetId === "threadterm-dark"
+      ? { panel: "#232325", tabbar: "#252527", bubble: "#2f2f33", menu: "rgba(40,40,42,.92)", fillHover: "rgba(255,255,255,.055)", fillSelected: "rgba(255,255,255,.1)", control: "#3a3a3c", controlEdge: "rgba(255,255,255,.07)", controlDrop: "rgba(0,0,0,.35)", menuEdge: "rgba(255,255,255,.12)", group: "#262628", raised: "#2a2a2c", faint: "#636366", runningText: "#30d158", needsText: "#ffb340", failedText: "#ff6b61" }
+      : { panel: colors.panel, tabbar: colors.frame, bubble: colors.panel, menu: colors.panel, fillHover: "color-mix(in srgb, var(--text) 5.5%, transparent)", fillSelected: "color-mix(in srgb, var(--text) 10%, transparent)", control: colors.panel, controlEdge: colors.border, controlDrop: "rgba(0,0,0,.1)", menuEdge: colors.border, group: colors.panel, raised: colors.panel, faint: colors.muted, runningText: colors.ok, needsText: colors.warn, failedText: colors.danger };
   return {
     "--bg": colors.frame,
     "--side": colors.sidebar,
     "--sidebar": colors.sidebar,
     "--surface": colors.panel,
     "--editor": colors.editor,
+    "--panel": mac.panel,
+    "--tabbar": mac.tabbar,
+    "--bubble": mac.bubble,
+    "--menu": mac.menu,
+    "--fill-hover": mac.fillHover,
+    "--fill-selected": mac.fillSelected,
+    "--control": mac.control,
+    "--control-edge": mac.controlEdge,
+    "--control-drop": mac.controlDrop,
+    "--menu-edge": mac.menuEdge,
+    "--group": mac.group,
+    "--raised": mac.raised,
     "--text": colors.text,
     "--muted": colors.muted,
+    "--faint": mac.faint,
     "--border": colors.border,
     "--primary": colors.accent,
     "--primary-fg": colors.accentFg,
@@ -340,6 +358,9 @@ export function themeCssVariables(resolved: ResolvedTheme): Record<string, strin
     "--st-needs": colors.warn,
     "--st-running": colors.ok,
     "--st-failed": colors.danger,
+    "--st-running-text": mac.runningText,
+    "--st-needs-text": mac.needsText,
+    "--st-failed-text": mac.failedText,
     "--st-ended": colors.muted,
     "--term-bg": colors.editor,
     "--term-fg": colors.text,

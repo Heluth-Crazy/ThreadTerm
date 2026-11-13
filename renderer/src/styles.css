@@ -11,31 +11,47 @@
 .brand-mark:has(img) { background: transparent; }
 .brand-mark img { width: 20px; height: 20px; display: block; border-radius: 5px; }
 
-/* App palette "A · Warm" (user decision 2026-09-29, Claude Desktop direction; departs from the prototype's cool greys):
-   ivory canvas, a slightly deeper warm sidebar, near-white warm cards, warm greys for text and hairlines; dark is a
-   soft warm charcoal instead of near-black. The brand indigo (--primary and its aliases) stays the prototype's.
-   Terminals match their cards: keep --term-bg in step with terminalTheme.ts. Custom themes set inline tokens and win. */
+/* Mac-neutral Flush palette, copied from prototypes/mac-style/index.html.
+   Preset/custom colours are applied as inline roles by themeCssVariables. */
 :root, [data-theme="light"] {
-  --bg:#f5f4ef; --side:#eeede6; --surface:#fefdfb; --raised:#f8f7f3;
-  --soft:rgba(64,52,28,.055); --border:rgba(64,52,28,.115);
-  --text:#23221f; --muted:#6c6961; --faint:#9a968d;
-  --term-bg:#fefdfb; --term-fg:#23221f; --term-line:rgba(64,52,28,.115);
-  --shadow:0 16px 48px rgba(48,38,18,.12); --shadow-soft:0 8px 24px rgba(48,38,18,.08); --app-window-stroke:rgba(64,52,28,.14);
+  --bg:#ffffff; --side:#ebebed; --surface:#ffffff; --raised:#f5f5f7;
+  --soft:rgba(0,0,0,.045); --border:rgba(0,0,0,.095);
+  --text:#1d1d1f; --muted:#6e6e73; --faint:#a1a1a6;
+  --primary:#007aff; --primary-fg:#fff;
+  --panel:#f6f6f8; --tabbar:#ececee; --bubble:#ececf0; --group:#f5f5f7;
+  --menu:rgba(244,244,246,.92); --menu-edge:rgba(0,0,0,.14);
+  --fill-hover:rgba(0,0,0,.045); --fill-selected:rgba(0,0,0,.08);
+  --control:#ffffff; --control-edge:rgba(0,0,0,.15); --control-drop:rgba(0,0,0,.1);
+  --st-running:#34c759; --st-needs:#ff9500; --st-failed:#ff3b30; --st-ended:#a1a1a6;
+  --st-running-text:#1f8a3b; --st-needs-text:#995000; --st-failed-text:#cf241b;
+  --term-bg:#ffffff; --term-fg:#1d1d1f; --term-line:rgba(0,0,0,.095);
+  --shadow:0 16px 48px rgba(0,0,0,.12); --shadow-soft:0 8px 24px rgba(0,0,0,.08);
 }
 [data-theme="dark"] {
-  --bg:#262624; --side:#1f1e1d; --surface:#2c2c2a; --raised:#33332f;
-  --soft:rgba(250,244,228,.055); --border:rgba(250,244,228,.10);
-  --text:#ecebe5; --muted:#a8a59c; --faint:#77746c;
-  --term-bg:#2c2c2a; --term-fg:#ecebe5; --term-line:rgba(250,244,228,.10);
-  --shadow:0 16px 48px rgba(0,0,0,.42); --shadow-soft:0 8px 24px rgba(0,0,0,.32); --app-window-stroke:rgba(250,244,228,.12);
+  --bg:#1e1e1e; --side:#2a2a2c; --surface:#1e1e1e; --raised:#2a2a2c;
+  --soft:rgba(255,255,255,.055); --border:rgba(255,255,255,.085);
+  --text:#ececec; --muted:#98989d; --faint:#636366;
+  --primary:#0a84ff; --primary-fg:#fff;
+  --panel:#232325; --tabbar:#252527; --bubble:#2f2f33; --group:#262628;
+  --menu:rgba(40,40,42,.92); --menu-edge:rgba(255,255,255,.12);
+  --fill-hover:rgba(255,255,255,.055); --fill-selected:rgba(255,255,255,.1);
+  --control:#3a3a3c; --control-edge:rgba(255,255,255,.07); --control-drop:rgba(0,0,0,.35);
+  --st-running:#30d158; --st-needs:#ff9f0a; --st-failed:#ff453a; --st-ended:#636366;
+  --st-running-text:#30d158; --st-needs-text:#ffb340; --st-failed-text:#ff6961;
+  --term-bg:#1e1e1e; --term-fg:#ececec; --term-line:rgba(255,255,255,.085);
+  --shadow:0 16px 48px rgba(0,0,0,.42); --shadow-soft:0 8px 24px rgba(0,0,0,.32);
 }
+:root {
+  --font:"Segoe UI Variable Text","Segoe UI",system-ui,"Microsoft YaHei UI",sans-serif;
+  --mono:"Cascadia Mono","Cascadia Code",Consolas,monospace;
+  font-family:var(--font); font-size:13px;
+}
+body, button, input, textarea, select { font-family:var(--font); }
 
 /* Palette roles are set together by themeCssVariables; every derived fill follows them. */
 :root {
   --sidebar:var(--side); --editor:var(--surface);
-  --raised:color-mix(in srgb,var(--surface) 45%,var(--bg));
-  --soft:color-mix(in srgb,var(--text) 5.5%,transparent);
-  --faint:color-mix(in srgb,var(--muted) 70%,var(--surface));
+  --soft:var(--fill-hover);
   --primary-hover:color-mix(in srgb,var(--primary) 88%,var(--custom-hover-target,var(--text)));
   --primary-tint:color-mix(in srgb,var(--primary) 12%,transparent);
   --primary-contrast:var(--primary-fg); --switch-off-fg:var(--custom-switch-off-fg,var(--surface));
@@ -49,20 +65,18 @@
   --term-dim:var(--muted); --term-line:var(--border); --term-prompt:var(--primary);
   --app-window-stroke:var(--border);
 }
-:root[data-theme="dark"] { --raised:color-mix(in srgb,var(--text) 4%,var(--surface)); --faint:color-mix(in srgb,var(--muted) 60%,var(--surface)); }
+
 * { scrollbar-color:var(--scrollbar) transparent; }
 ::-webkit-scrollbar-thumb { background:var(--scrollbar); }
 ::-webkit-scrollbar-thumb:hover { background:var(--scrollbar-hover); }
 
-/* Status colours (user decision 2026-09-28, departs from the prototype): stalled was purple, next to the brand
-   indigo; it is orange now. Pill text is 80% status + 20% text so light pills reach 4.5:1 on their tint (they were
-   3.9-4.5:1); the dot keeps the pure status colour. Dark after light: both selectors match <html>. Dark stalled is
-   #e27a36 since the warm palette: #db6d28 measured 4.44:1 as a pill on the lighter charcoal cards (now 4.83:1). */
+/* Status dots retain the prototype colours. Pill text is contrast-corrected on its tint;
+   stalled retains its distinct orange-brown. */
 :root, [data-theme="light"] { --st-stalled:#bc4c00; }
 [data-theme="dark"] { --st-stalled:#e27a36; }
-.chip.st-needs { color:color-mix(in srgb, var(--st-needs) 80%, var(--text)); }
-.chip.st-running { color:color-mix(in srgb, var(--st-running) 80%, var(--text)); }
-.chip.st-failed { color:color-mix(in srgb, var(--st-failed) 80%, var(--text)); }
+.chip.st-needs { color:var(--st-needs-text); }
+.chip.st-running { color:color-mix(in srgb,var(--st-running-text) 90%,var(--text)); }
+.chip.st-failed { color:var(--st-failed-text); }
 .chip.st-ended { color:color-mix(in srgb, var(--st-ended) 80%, var(--text)); }
 .chip.st-stalled { color:color-mix(in srgb, var(--st-stalled) 80%, var(--text)); }
 .chip.st-needs::before { background:var(--st-needs); }

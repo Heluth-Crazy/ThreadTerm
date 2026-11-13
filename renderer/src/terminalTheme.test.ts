@@ -14,6 +14,17 @@ test('custom terminal theme uses custom surfaces while preserving the ANSI palet
   assert.equal(themed.red, terminalTheme('light').red);
 });
 
+test('stock terminal themes follow the Mac-neutral surface tokens', () => {
+  assert.deepEqual(
+    { background: terminalTheme('light').background, foreground: terminalTheme('light').foreground, cursor: terminalTheme('light').cursor },
+    { background: '#ffffff', foreground: '#1d1d1f', cursor: '#007aff' },
+  );
+  assert.deepEqual(
+    { background: terminalTheme('dark').background, foreground: terminalTheme('dark').foreground, cursor: terminalTheme('dark').cursor },
+    { background: '#1e1e1e', foreground: '#ececec', cursor: '#0a84ff' },
+  );
+});
+
 test('xtermThemeFor puts the terminal on the editor role with the preset ANSI palette', () => {
   const resolved = resolveTheme('preset:gruvbox-dark', { systemDark: true });
   const theme = xtermThemeFor(resolved);

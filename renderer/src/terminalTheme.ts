@@ -1,21 +1,21 @@
 import type { ITheme } from '@xterm/xterm';
 import { customPrimaryForeground, type ResolvedTheme, type ThemeTokens } from './themes';
 
-/** Terminal colors are independent of the application's accent color. The background equals the card it sits in
- * (`--term-bg`/`--surface` of the warm palette in styles.css); keep the two in step. */
+/** Terminal colours are independent of the application's accent colour. Their background follows the stock Mac
+ * surface token, while custom themes provide their own background. */
 export function terminalTheme(theme: 'light' | 'dark', customTokens?: ThemeTokens): ITheme {
   if (customTokens) return { ...terminalTheme(theme), background: customTokens.background, foreground: customTokens.text, cursor: customTokens.accent, cursorAccent: customPrimaryForeground(customTokens), selectionBackground: customTokens.accent, selectionInactiveBackground: customTokens.accent, selectionForeground: customPrimaryForeground(customTokens) };
-  if (theme === 'dark') return { background: '#2c2c2a', foreground: '#ecebe5', cursor: '#b3baf0', cursorAccent: '#2c2c2a' };
+  if (theme === 'dark') return { background: '#1e1e1e', foreground: '#ececec', cursor: '#0a84ff', cursorAccent: '#ffffff' };
   return {
-    background: '#fefdfb', foreground: '#23221f', cursor: '#23221f', cursorAccent: '#fefdfb',
-    selectionBackground: '#e4e1d8', selectionInactiveBackground: '#eeebe4', selectionForeground: '#23221f',
-    scrollbarSliderBackground: '#23221f26', scrollbarSliderHoverBackground: '#23221f40', scrollbarSliderActiveBackground: '#23221f59',
+    background: '#ffffff', foreground: '#1d1d1f', cursor: '#007aff', cursorAccent: '#ffffff',
+    selectionBackground: '#007aff33', selectionInactiveBackground: '#007aff1f', selectionForeground: '#1d1d1f',
+    scrollbarSliderBackground: '#1d1d1f26', scrollbarSliderHoverBackground: '#1d1d1f40', scrollbarSliderActiveBackground: '#1d1d1f59',
     // When a TUI uses ANSI 0 for an input/menu surface, keep that surface light;
     // xterm's minimumContrastRatio also makes ANSI-0 foreground text readable.
-    black: '#f2f0ea', red: '#a33a3a', green: '#35633e', yellow: '#806020',
-    blue: '#385f87', magenta: '#765078', cyan: '#444444', white: '#666666',
-    brightBlack: '#666666', brightRed: '#a33a3a', brightGreen: '#35633e', brightYellow: '#806020',
-    brightBlue: '#385f87', brightMagenta: '#765078', brightCyan: '#404040', brightWhite: '#404040',
+    black: '#f5f5f7', red: '#c41a16', green: '#1f8a3b', yellow: '#9a6200',
+    blue: '#007aff', magenta: '#9b2393', cyan: '#0b4f79', white: '#6e6e73',
+    brightBlack: '#a1a1a6', brightRed: '#ff3b30', brightGreen: '#34c759', brightYellow: '#ff9500',
+    brightBlue: '#0a84ff', brightMagenta: '#c41a16', brightCyan: '#5d6c79', brightWhite: '#1d1d1f',
   };
 }
 

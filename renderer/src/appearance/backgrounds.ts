@@ -240,6 +240,20 @@ export function customCopyName(presetName: string, existingNames: readonly strin
   }
 }
 
+const hexColour = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
+const rgbaColour = /^rgba\((\d+),(\d+),(\d+),((?:0?\.\d+)|(?:[01](?:\.\d+)?))\)$/;
+
+/** Custom theme records deliberately accept only opaque hex colours. Preset CSS may use a translucent hairline, so
+ * flatten that one presentation colour onto the copied preset surface before it crosses into persisted settings. */
+function opaqueColour(colour: string, surface: string): string {
+  if (hexColour.test(colour)) return colour;
+  const rgba = rgbaColour.exec(colour), backdrop = hexColour.exec(surface);
+  if (!rgba || !backdrop) return colour;
+  const alpha = Number(rgba[4]);
+  const channels = [1, 2, 3].map(index => Math.round(Number(rgba[index]) * alpha + Number.parseInt(backdrop[index], 16) * (1 - alpha)));
+  return `#${channels.map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
 /** The custom theme that carries a preset's palette plus backgrounds: all eight role colours, the base preset id. */
 export function customThemeFromResolved(resolved: ResolvedTheme, backgrounds?: ThemeBackgrounds): ThemeTokens {
   const colors = resolved.colors;
@@ -249,7 +263,7 @@ export function customThemeFromResolved(resolved: ResolvedTheme, backgrounds?: T
     text: colors.text,
     muted: colors.muted,
     accent: colors.accent,
-    border: colors.border,
+    border: opaqueColour(colors.border, colors.panel),
     sidebar: colors.sidebar,
     editor: colors.editor,
     base: resolved.presetId,

@@ -160,10 +160,10 @@ test('custom themes default sidebar to the frame, editor to the panel and the ba
   assert.equal(resolveTheme('custom:plain', { systemDark: false, customThemes: { plain: { ...plain, accent: 'nope' } } }).presetId, 'threadterm-light');
 });
 
-test('themeCssVariables exposes the existing tokens plus sidebar and editor', () => {
+test('themeCssVariables exposes Mac component roles and derives them for non-stock themes', () => {
   const resolved = resolveTheme('preset:solarized-dark', { systemDark: true });
   const variables = themeCssVariables(resolved);
-  const expected = ['--bg', '--side', '--sidebar', '--surface', '--editor', '--text', '--muted', '--border', '--primary', '--primary-fg', '--amber', '--danger', '--st-needs', '--st-running', '--st-failed', '--st-ended', '--term-bg', '--term-fg', '--syn-keyword', '--syn-string', '--syn-number', '--syn-comment', '--syn-function', '--syn-type', '--syn-property', '--syn-punct', '--syn-meta', '--syn-deleted'];
+  const expected = ['--bg', '--side', '--sidebar', '--surface', '--editor', '--panel', '--tabbar', '--bubble', '--menu', '--fill-hover', '--fill-selected', '--control', '--control-edge', '--control-drop', '--menu-edge', '--group', '--raised', '--text', '--muted', '--faint', '--border', '--primary', '--primary-fg', '--amber', '--danger', '--st-needs', '--st-running', '--st-failed', '--st-running-text', '--st-needs-text', '--st-failed-text', '--st-ended', '--term-bg', '--term-fg', '--syn-keyword', '--syn-string', '--syn-number', '--syn-comment', '--syn-function', '--syn-type', '--syn-property', '--syn-punct', '--syn-meta', '--syn-deleted'];
   assert.deepEqual(Object.keys(variables).sort(), expected.slice().sort());
   assert.equal(variables['--bg'], resolved.colors.frame);
   assert.equal(variables['--sidebar'], resolved.colors.sidebar);
@@ -176,5 +176,7 @@ test('themeCssVariables exposes the existing tokens plus sidebar and editor', ()
   assert.equal(variables['--st-running'], resolved.colors.ok);
   assert.equal(variables['--syn-function'], resolved.syn.fn);
   assert.equal(variables['--syn-deleted'], resolved.colors.danger);
-  for (const value of Object.values(variables)) assert.match(value, /^#[0-9a-f]{6}$/);
+  const macLight = themeCssVariables(resolveTheme('light', { systemDark: false }));
+  assert.deepEqual({ panel: macLight['--panel'], tabbar: macLight['--tabbar'], bubble: macLight['--bubble'], menu: macLight['--menu'], hover: macLight['--fill-hover'], selected: macLight['--fill-selected'] }, { panel: '#f6f6f8', tabbar: '#ececee', bubble: '#ececf0', menu: 'rgba(244,244,246,.92)', hover: 'rgba(0,0,0,.045)', selected: 'rgba(0,0,0,.08)' });
+  for (const value of Object.values(variables)) assert.ok(typeof value === 'string' && value.length > 0);
 });

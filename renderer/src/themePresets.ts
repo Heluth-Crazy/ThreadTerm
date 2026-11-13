@@ -59,12 +59,24 @@ export type ThemePreset = {
 export const THEME_PRESETS: readonly ThemePreset[] = [
   {
     id: "threadterm-light", family: "ThreadTerm", name: "ThreadTerm Light", mode: "light",
+    c: { frame: "#ffffff", sidebar: "#ebebed", panel: "#ffffff", editor: "#ffffff", text: "#1d1d1f", muted: "#6e6e73", border: "rgba(0,0,0,.095)", accent: "#007aff", accentFg: "#ffffff", ok: "#34c759", warn: "#ff9500", danger: "#ff3b30" },
+    syn: { keyword: "#9b2393", string: "#c41a16", number: "#1c00cf", comment: "#5d6c79", fn: "#0b4f79", type: "#0b4f79", prop: "#0b4f79", punct: "#1d1d1f" },
+    ansi: ["#1d1d1f", "#c41a16", "#1f8a3b", "#9a6200", "#007aff", "#9b2393", "#0b4f79", "#6e6e73", "#a1a1a6", "#ff3b30", "#34c759", "#ff9500", "#0a84ff", "#c41a16", "#5d6c79", "#ffffff"],
+  },
+  {
+    id: "threadterm-dark", family: "ThreadTerm", name: "ThreadTerm Dark", mode: "dark",
+    c: { frame: "#1e1e1e", sidebar: "#2a2a2c", panel: "#1e1e1e", editor: "#1e1e1e", text: "#ececec", muted: "#98989d", border: "rgba(255,255,255,.085)", accent: "#0a84ff", accentFg: "#ffffff", ok: "#30d158", warn: "#ff9f0a", danger: "#ff453a" },
+    syn: { keyword: "#fc5fa3", string: "#fc6a5d", number: "#d0bf69", comment: "#7f8c98", fn: "#5dd8ff", type: "#5dd8ff", prop: "#5dd8ff", punct: "#ececec" },
+    ansi: ["#2a2a2c", "#ff453a", "#30d158", "#ff9f0a", "#0a84ff", "#fc5fa3", "#5dd8ff", "#98989d", "#636366", "#ff6b61", "#5be07a", "#ffb340", "#409cff", "#ff85b5", "#8be3ff", "#ececec"],
+  },
+  {
+    id: "threadterm-warm-light", family: "ThreadTerm Warm", name: "ThreadTerm Warm Light", mode: "light",
     c: { frame: "#f5f4ef", sidebar: "#eeede6", panel: "#fefdfb", editor: "#fefdfb", text: "#23221f", muted: "#6c6961", border: "#e4e2da", accent: "#4f59c8", accentFg: "#ffffff", ok: "#1a7f37", warn: "#9a6700", danger: "#cf222e" },
     syn: { keyword: "#7c3aed", string: "#15803d", number: "#c2410c", comment: "#6b7280", fn: "#2563eb", type: "#b45309", prop: "#0f766e", punct: "#52525b" },
     ansi: ["#3d3b36", "#b0362f", "#2f6f3e", "#8a6414", "#335f8f", "#7a4f86", "#2a6f73", "#cfccc3", "#6c6961", "#c7473f", "#3b8a4e", "#a67b1b", "#4373ab", "#9161a0", "#348a8f", "#f5f4ef"],
   },
   {
-    id: "threadterm-dark", family: "ThreadTerm", name: "ThreadTerm Dark", mode: "dark",
+    id: "threadterm-warm-dark", family: "ThreadTerm Warm", name: "ThreadTerm Warm Dark", mode: "dark",
     c: { frame: "#262624", sidebar: "#1f1e1d", panel: "#2c2c2a", editor: "#2c2c2a", text: "#ecebe5", muted: "#a8a59c", border: "#3b3a37", accent: "#8b93f0", accentFg: "#1f1e1d", ok: "#3fb950", warn: "#d29922", danger: "#f85149" },
     syn: { keyword: "#c4b5fd", string: "#86efac", number: "#fdba74", comment: "#8b93a7", fn: "#93c5fd", type: "#fcd34d", prop: "#5eead4", punct: "#a1a1aa" },
     ansi: ["#3a3936", "#e5786d", "#8fbf7f", "#d9b56b", "#82a8d9", "#c49ad6", "#7cc2c0", "#d6d3ca", "#6f6c65", "#f08a80", "#a3d193", "#e8c67c", "#98bbe8", "#d4aee3", "#91d3d1", "#f4f2ec"],
@@ -171,6 +183,7 @@ export type ThemeFamily = { id: string; name: string; light?: string; dark?: str
 /** Families in picker order; `light`/`dark` are preset ids. Dark-only families have no light variant. */
 export const THEME_FAMILIES: readonly ThemeFamily[] = [
   { id: "threadterm", name: "ThreadTerm", light: "threadterm-light", dark: "threadterm-dark" },
+  { id: "threadterm-warm", name: "ThreadTerm Warm", light: "threadterm-warm-light", dark: "threadterm-warm-dark" },
   { id: "github", name: "GitHub", light: "github-light", dark: "github-dark" },
   { id: "solarized", name: "Solarized", light: "solarized-light", dark: "solarized-dark" },
   { id: "catppuccin", name: "Catppuccin", light: "catppuccin-latte", dark: "catppuccin-mocha" },
