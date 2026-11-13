@@ -1076,7 +1076,9 @@ function currentUserSidHash(): Promise<string> {
       reject(new RuntimeUnavailableError('A default V3 runtime pipe requires a Windows SID'));
       return;
     }
-    execFile('whoami', ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: CONNECT_TIMEOUT_MS }, (error, stdout) => {
+    // Absolute path: in a Git Bash launch, PATH finds Git's coreutils whoami first, which rejects /user.
+    const whoami = join(env.SystemRoot || env.windir || 'C:\\Windows', 'System32', 'whoami.exe');
+    execFile(whoami, ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: CONNECT_TIMEOUT_MS }, (error, stdout) => {
       if (error) {
         reject(new RuntimeUnavailableError(`Could not determine the current Windows SID: ${error.message}`));
         return;
