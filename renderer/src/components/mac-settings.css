@@ -79,3 +79,14 @@ body .mac-settings-window .settings-group.active { gap:0; }
 .mac-settings-window .mac-mode-thumb { box-shadow:0 0 0 .5px var(--separator-strong); }
 .mac-settings-window .theme-choice.selected .mac-mode-thumb { box-shadow:0 0 0 .5px var(--separator-strong),0 0 0 3px var(--primary); }
 body .mac-settings-window :is(.settings-card-row,.settings-background-quick) .settings-card-title { font-weight:400; }
+/* Per-region background editor sits behind a disclosure row; the quick Choose/None row covers the common case. */
+body .mac-settings-window .settings-background-disclosure { position:relative; display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:42px; padding:7px 14px; border:0; border-radius:0; background:none; color:inherit; font:inherit; text-align:left; }
+body .mac-settings-window .settings-background-disclosure::before { content:""; position:absolute; top:0; left:14px; right:14px; height:1px; background:var(--border); }
+body .mac-settings-window .settings-background-disclosure > span { display:flex; flex-direction:column; min-width:0; }
+body .mac-settings-window .settings-background-disclosure .settings-card-title { font-weight:400; }
+body .mac-settings-window .settings-background-disclosure .hint { margin-top:2px; font-size:11.5px; line-height:1.35; }
+body .mac-settings-window .settings-background-disclosure .ico { width:13px; height:13px; flex:none; color:var(--faint); transition:transform .15s ease; }
+body .mac-settings-window .settings-background-disclosure[aria-expanded="true"] .ico { transform:rotate(90deg); }
+body .mac-settings-window .settings-background-disclosure:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+body .mac-settings-window .settings-backgrounds .background-actions .btn { height:26px; min-height:26px; }
+body .mac-settings-window .settings-backgrounds > p.background-notice { margin:0 14px 10px; padding:6px 10px; }

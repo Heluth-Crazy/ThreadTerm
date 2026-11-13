@@ -38,7 +38,7 @@ function environment(overrides = {}) {
     HOME: join(scratch, 'home'), USERPROFILE: join(scratch, 'home'), CODEX_HOME: join(scratch, 'home', '.codex'),
     THREADTERM_V3_DATA: activeData, THREADTERM_V3_USER_DATA: activeProfile, THREADTERM_V3_PIPE: pipe,
     THREADTERM_V3_RUNTIME: runtime, THREADTERM_V3_RUNTIME_BIN: runtime,
-    THREADTERM_V3_PLUGIN_DIRS: plugins,
+    THREADTERM_V3_PLUGIN_DIRS: plugins, THREADTERM_QA_PROVIDER_BIN: bin,
     THREADTERM_V3_PICK_BACKGROUND_QA: source, THREADTERM_V3_EXPORT_THEME_QA: exported,
   }, overrides);
   assert.equal(Object.keys(env).filter(key => key.toLowerCase() === 'path').length, 1, 'isolated environment has one PATH');
@@ -64,6 +64,7 @@ async function openAppearance(language = 'en') {
   await page.locator('.settings-panel').waitFor();
   await page.getByRole('tab', { name: language === 'zh-CN' ? '外观' : 'Appearance', exact: true }).click();
   await bg().waitFor();
+  const customize = bg().getByTestId('background-customize'); if (await customize.getAttribute('aria-expanded') !== 'true') await customize.click();
 }
 async function closeSettings(language = 'en') { await page.keyboard.press('Escape'); await page.locator('.settings-panel').waitFor({ state: 'detached' }); if (language === 'zh-CN') await page.waitForFunction(() => document.documentElement.lang === 'zh-CN'); }
 async function chooseRegion(name) { await region(name).getByTestId(`background-region-${name}`).click(); }
@@ -105,7 +106,7 @@ try {
   const project = await request('project.add', { path: work, name: 'Background settings QA', operationId: randomUUID() }); const chat = await request('session.create', { projectId: project.id, cwd: work, provider: 'chat-visual-echo', mode: 'chat', title: 'Background settings chat', operationId: randomUUID() }); const terminal = await request('session.create', { projectId: project.id, cwd: work, provider: 'codex', mode: 'terminal', title: 'Background settings terminal', operationId: randomUUID() }); await show(chat.id); await page.locator('.chat-compose-shell').waitFor();
   await page.locator('.workspace-pane.selected').getByRole('button', { name: 'Workspace actions', exact: true }).click(); await page.getByRole('button', { name: 'Split right', exact: true }).click(); await page.locator('.workspace-pane.selected').getByRole('button', { name: 'Choose session', exact: true }).click(); await page.locator('.switcher-row').filter({ hasText: 'Background settings terminal' }).click(); await page.locator('.xterm:visible').waitFor(); await page.locator('.chat-compose-shell:visible').waitFor();
   await resize(1440, 900); await openAppearance(); await selectPreset(); await chooseRegion('window'); await selectImage('#c42f4d');
-  for (const selector of ['[data-testid="background-choose"]','[data-testid="background-fit-fill"]','[data-testid="background-focus-center"]']) { const metrics = await bg().locator(selector).evaluate(node => { const style = getComputedStyle(node); return { height: Math.round(node.getBoundingClientRect().height), radius: Math.round(parseFloat(style.borderRadius)) }; }); assert.deepEqual(metrics, { height: 32, radius: 6 }, `${selector} follows the shared compact control geometry`); }
+  for (const [selector, height] of [['[data-testid="background-choose"]',26],['[data-testid="background-fit-fill"]',32],['[data-testid="background-focus-center"]',32]]) { const metrics = await bg().locator(selector).evaluate(node => { const style = getComputedStyle(node); return { height: Math.round(node.getBoundingClientRect().height), radius: Math.round(parseFloat(style.borderRadius)) }; }); assert.deepEqual(metrics, { height, radius: 6 }, `${selector} follows the Settings control geometry`); }
   const sliderMetrics = await bg().getByTestId('background-opacity').evaluate(node => { const style = getComputedStyle(node), label = getComputedStyle(document.querySelector(`label[for="${node.id}"]`)); return { height: node.getBoundingClientRect().height, radius: style.borderRadius, top: label.marginTop, bottom: label.marginBottom }; }); assert.deepEqual(sliderMetrics, { height: 32, radius: '6px', top: '0px', bottom: '0px' });
   await bg().getByTestId('background-custom-copy-notice').waitFor();
   await shot('created-custom-copy-notice.png');
