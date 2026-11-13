@@ -1,7 +1,9 @@
 import type { PaneLayout } from '@threadterm/protocol';
 
-export const PANE_GAP = 4;
-export const PANE_DIVIDER_SIZE = 4;
+/** Flush panes reserve only the painted hairline; the divider's hit target is
+ * expanded visually without contributing layout space. */
+export const PANE_GAP = 0;
+export const PANE_DIVIDER_SIZE = 1;
 type Length = { fraction:number; pixels:number };
 export type PaneRect = { left:Length; top:Length; width:Length; height:Length };
 type Positioned<T> = { node:T; rect:PaneRect };

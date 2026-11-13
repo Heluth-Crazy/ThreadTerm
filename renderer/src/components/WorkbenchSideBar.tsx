@@ -34,7 +34,7 @@ function readStored():Stored {
   view:VIEW_IDS.includes(value.view as WorkbenchView) ? value.view as WorkbenchView : 'files',
   widths:Object.fromEntries(VIEW_IDS.map(view => {
    const width = Number(value.widths?.[view]);
-   return [view, view==='browser' ? (Number.isFinite(width)&&width>0?width:0) : clampWidth(Number.isFinite(width)&&width>0 ? width : Number.isFinite(legacy)&&legacy>0 ? legacy : view==='details'?320:300)];
+   return [view, view==='browser' ? (Number.isFinite(width)&&width>0?width:0) : clampWidth(Number.isFinite(width)&&width>0 ? width : Number.isFinite(legacy)&&legacy>0 ? legacy : 304)];
   })) as Record<WorkbenchView,number>,
  };
 }

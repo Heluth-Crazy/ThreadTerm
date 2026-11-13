@@ -1,0 +1,31 @@
+/* Flush pane surroundings and inspector from the Mac prototype. */
+.app-shell .runtime-workspace .ws-content:not(.pane-workspace) { padding:0; background:var(--surface); }
+.runtime-workspace .wb-sidebar-slot { margin-left:0; background:var(--panel); }
+.runtime-workspace .wb-sidebar-strip { display:none; }
+.runtime-workspace .wb-panel { border:0; border-left:1px solid var(--border); border-radius:0; background:var(--panel); box-shadow:none; }
+.runtime-workspace .wb-panel-body > .inspector { border:0; border-radius:0; background:var(--panel); }
+.runtime-workspace .wb-panel-head { height:38px; min-height:38px; gap:2px; padding:0 6px 0 14px; background:var(--panel); font-size:13px; }
+.runtime-workspace .wb-panel-head strong { font-size:13px; }
+.runtime-workspace .wb-panel-head :is(.icon-btn,.btn) { height:24px; min-height:24px; border-radius:6px; }
+.runtime-workspace .wb-panel-head .icon-btn { width:26px; }
+.runtime-workspace .wb-panel-head .ico { width:15px; height:15px; }
+.runtime-workspace .wb-panel-actions { gap:2px; }
+.runtime-workspace .wb-panel-actions:not(:empty) + .wb-panel-close { margin-left:0; }
+.runtime-workspace .wb-panel-close::before { display:none; }
+.runtime-workspace .wb-resize { left:-4px; width:9px; }
+.runtime-workspace .wb-resize:hover::after, .runtime-workspace .wb-resize:focus-visible::after { left:4px; width:1px; border-radius:0; }
+.runtime-workspace .wb-view { background:var(--panel); }
+.runtime-workspace .ins-scroll { padding:0 10px 12px; }
+.runtime-workspace .ins-block { padding:10px 4px; border-bottom:1px solid var(--border); }
+.runtime-workspace .ins-block h3 { color:var(--faint); font-size:11px; font-weight:600; }
+.runtime-workspace .ins-block p { font-size:12.5px; }
+.runtime-workspace .wb-panel { --wb-modified:var(--st-needs); --wb-added:var(--st-running); --wb-deleted:var(--st-failed); --wb-row:26px; }
+.runtime-workspace .wb-tree-row, .runtime-workspace .wb-change-row { min-height:26px; border-radius:6px; font-size:12.5px; }
+.runtime-workspace .wb-change-open { height:26px; min-height:26px; gap:7px; font-size:12.5px; }
+.runtime-workspace .wb-tree-row:hover, .runtime-workspace .wb-change-row:hover { background:var(--fill-hover); }
+.runtime-workspace .wb-tree-row.selected, .runtime-workspace .wb-change-row.selected { background:var(--fill-selected); }
+.runtime-workspace :is(.wb-tree-row,.wb-change-row) .wb-name { color:var(--text); }
+.runtime-workspace .wb-deco { font-size:11px; }
+.runtime-workspace .wb-dir { color:var(--faint); font-size:11.5px; }
+/* The shared docked family uses the same 24px icon action targets as the inspector. */
+:is(.wb-tools-head,.wb-history-title,.task-graph-details > header,.wtm-list > header,.wtm-detail > header) :is(.icon-btn,.btn) { height:24px; min-height:24px; }

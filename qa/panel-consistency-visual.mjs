@@ -1,5 +1,5 @@
 // Real production surfaces on Desktop 1; isolated runtime and fake Codex only.
-// Docked panel headers (38 px) and pane tab strips (43 px Chrome-style tabs, T1) are two
+// Docked panel headers (38 px) and pane tab strips (30 px Finder-style tabs) are two
 // families with their own rules: qa/lib/visual-consistency.mjs holds both rule sets.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -103,7 +103,7 @@ async function capture(name){
    if(!row.title.inside&&!row.title.ellipsis)errors.push('title outside header');
   }
   // A tab is part of the strip shape: its own controls sit inside the tab, and tabs scrolled out of the
-  // strip are clipped by it (T1 overflow), so bounds are judged by the tab geometry rule instead.
+  // strip are clipped by it (tab overflow), so bounds are judged by the tab geometry rule instead.
   for(const control of row.controls.filter(control=>!control.inTab))if(control.x<row.rect.x-1||control.right>row.rect.right+1||control.y<row.rect.y-1||control.bottom>row.rect.bottom+1)errors.push(`action outside header: ${control.label}`);
   if(row.title&&['docked','pane','sheet-dialog','create-dialog','floating','settings','popover'].includes(row.family))for(const control of row.controls){const title=row.title.visibleRect;if(title.x<control.right-.5&&title.right>control.x+.5&&title.y<control.bottom-.5&&title.bottom>control.y+.5)errors.push(`title overlaps action: ${control.label}`)}
   if(controls.violations?.length)errors.push(...controls.violations.map(v=>v.message??JSON.stringify(v)));
@@ -127,6 +127,12 @@ async function capture(name){
  if(await page.locator('.app-shell').count()){
   const shell=await page.evaluate(()=>{const box=selector=>{const node=document.querySelector(selector);if(!node)return null;const r=node.getBoundingClientRect(),s=getComputedStyle(node);return {x:r.x,y:r.y,width:r.width,height:r.height,display:s.display,gridRow:s.gridRow,padding:s.padding,background:s.backgroundColor}};return {window:box('.app-shell'),sidebar:box('.sidebar'),toolbar:box('.ws-top'),caption:box('.window-controls'),activity:box('.ql-activity'),more:box('.session-header-more')};});
   (report.shellMeasurements??=[]).push({name,...shell});
+  if(verify&&shell.toolbar){
+   assert.ok(Math.abs(shell.toolbar.height-46)<=.5,`${name}: session toolbar is 46px`);
+   assert.ok(Math.abs(shell.caption.width-138)<=.5&&Math.abs(shell.caption.height-46)<=.5,`${name}: Windows caption group is 138x46`);
+   if(shell.sidebar.display!=='none'){assert.ok(Math.abs(shell.sidebar.width-244)<=.5,`${name}: sidebar is 244px`);assert.ok(Math.abs(shell.sidebar.y-shell.window.y)<=2&&Math.abs(shell.sidebar.height-shell.window.height)<=2,`${name}: sidebar spans the full window height`);}
+   if(shell.activity)assert.ok(Math.abs(shell.activity.height-28)<=.5,`${name}: Run activity is 28px`);
+  }
  }
  report.measurements.push({name,rows});
  const filename=`${name}.png`;await page.screenshot({path:join(out,filename),animations:'disabled'});report.screenshots.push(filename);
@@ -230,13 +236,13 @@ try{
    const signature=row=>JSON.stringify({padding:row.padding,gap:row.gap,background:row.background,border:row.border,radius:row.radius,font:row.title&&[row.title.fontSize,row.title.fontWeight,row.title.color,row.title.lineHeight]});
    assert.equal(new Set(docked.map(signature)).size,1,`${language}-${theme}: docked heading typography, insets, gap, surface and rule match`);
    assert.ok(docked.every(row=>Math.abs(row.rect.height-38)<=.5),`${language}-${theme}: 38px docked family height`);
-   assert.ok(docked.every(row=>row.controls.every(control=>Math.abs(control.height-26)<=.5&&(!control.icons.length||Math.abs(control.width-26)<=.5))),`${language}-${theme}: 26px docked icon actions and text control height`);
-   // Pane tab strips are a family of their own (T1): one 43 px strip per pane, one selected
+   assert.ok(docked.every(row=>row.controls.every(control=>Math.abs(control.height-24)<=.5&&(!control.icons.length||Math.abs(control.width-26)<=.5))),`${language}-${theme}: 24px docked action height and 26px icon width`);
+   // Pane tab strips are a family of their own: one 30 px strip per pane, one selected
    // tab per strip, identical strip geometry in every pane kind.
    const strips=rows.filter(isPaneStrip);assert.ok(strips.length>0,`${language}-${theme}: pane tab strips measured`);
    const stripFailures=paneStripViolations(rows);
    if(stripFailures.length)report.violations.push({name:`${language}-${theme}`,surface:'pane strips',errors:stripFailures.map(failure=>`${failure.surface}: ${failure.errors.join('; ')}`)});
-   assert.deepEqual(stripFailures,[],`${language}-${theme}: ${PANE_STRIP_HEIGHT}px pane tab strips with the T1 tab geometry\n${JSON.stringify(stripFailures,null,2)}`);
+   assert.deepEqual(stripFailures,[],`${language}-${theme}: ${PANE_STRIP_HEIGHT}px pane tab strips with the Flush tab geometry\n${JSON.stringify(stripFailures,null,2)}`);
    const kinds=[...new Set(strips.map(row=>row.paneKind))],missing=PANE_KINDS.filter(kind=>!kinds.includes(kind));
    assert.deepEqual(missing,[],`${language}-${theme}: pane strip measured in every pane kind; missing ${missing.join(', ')}`);
    const sheets=rows.filter(row=>row.family==='sheet-dialog');assert.ok(sheets.length>=2);

@@ -81,7 +81,10 @@ export function ChatApprovalCard({
   return (
     <div className={`chat-approval-card ${part.status ?? "pending"}${delegation?.route === "parent" ? " is-delegated" : ""}`}>
       {subagent && <span className="chat-subagent-chip">{copy("Subagent", "子代理")} · {subagent.label || copy("Subagent", "子代理")}</span>}
-      <strong>{wideningText ? wideningText.title : title}</strong>
+      <div className="chat-approval-heading">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M12 3 4.5 6v5.3c0 4.5 3.1 7.7 7.5 9.7 4.4-2 7.5-5.2 7.5-9.7V6L12 3Z"/><path d="m9.2 12.1 1.8 1.8 3.9-4"/></svg>
+        <strong>{wideningText ? wideningText.title : title}</strong>
+      </div>
       {wideningText && <p className="chat-approval-delegated">{wideningText.detail}</p>}
       {data.requestType && <small className="chat-approval-type">{data.requestType}</small>}
       {part.status === "pending" && delegation?.route === "parent" && <p className="chat-approval-delegated">{copy("The agent that delegated this session decides this request. You can still answer it yourself.", "此请求由委派这个会话的代理决定。你也可以直接处理。")}</p>}
@@ -101,7 +104,7 @@ export function ChatApprovalCard({
       {resolved && <p>{copy("Decision sent. This does not confirm that the tool already ran.", "决定已发送。这不代表工具已经执行。")}</p>}
       {part.status === "pending" && data.choices.length > 0 && (
         <div className="chat-approval-actions">
-          {data.choices.map(choice => (
+          {orderChoices(data.choices).map(choice => (
             <ApprovalButton key={choice.choiceId} choice={choice} disabled={!enabled} busy={submitting === choice.choiceId} onChoose={onChoose} copy={copy} />
           ))}
         </div>
@@ -114,6 +117,17 @@ function detailsText(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
   try { return JSON.stringify(value, null, 2); } catch { return ""; }
+}
+
+function orderChoices(choices: readonly ChatApprovalChoice[]): readonly ChatApprovalChoice[] {
+  return choices.map((choice, index) => ({ choice, index })).sort((left, right) => choiceOrder(left.choice) - choiceOrder(right.choice) || left.index - right.index).map(({ choice }) => choice);
+}
+
+function choiceOrder(choice: ChatApprovalChoice): number {
+  if (choice.kind === 'deny') return 0;
+  if (choice.kind === 'allow' && choice.scope === 'persistent') return 1;
+  if (choice.kind === 'allow') return 2;
+  return 3;
 }
 
 function ApprovalButton({
@@ -133,6 +147,7 @@ function ApprovalButton({
     <button
       type="button"
       className={`btn btn-sm chat-approval-choice kind-${choice.kind}`}
+      data-scope={choice.scope}
       disabled={disabled}
       aria-label={`${choiceLabel(choice, copy)}. ${scopeLabel(choice.scope, copy)}`}
       onClick={() => onChoose(choice.choiceId)}

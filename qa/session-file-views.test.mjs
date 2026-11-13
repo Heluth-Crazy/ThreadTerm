@@ -88,8 +88,8 @@ test('the pane area splits when both halves stay usable',()=>{
  // Default 1440 px window with the Files side panel open measures 854 px; 960 px minimum window about 406 px.
  assert.equal(canSplitPaneArea(854),true);
  assert.equal(canSplitPaneArea(1146),true);
- assert.equal(canSplitPaneArea(2*MIN_SPLIT_PANE_WIDTH+12),true);
- assert.equal(canSplitPaneArea(2*MIN_SPLIT_PANE_WIDTH+11),false);
+ assert.equal(canSplitPaneArea(2*MIN_SPLIT_PANE_WIDTH+1),true);
+ assert.equal(canSplitPaneArea(2*MIN_SPLIT_PANE_WIDTH),false);
  assert.equal(canSplitPaneArea(406),false);
 });
 

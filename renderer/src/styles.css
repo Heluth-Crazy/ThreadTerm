@@ -6,6 +6,7 @@
 @import url("../../reference/prototype/features/editor.css");
 @import url("../../reference/prototype/features/sessions.css");
 @import url("../../reference/prototype/features/settings.css");
+@import url("./components/mac-panels.css");
 
 /* The navigation mark is the generated product tile, not the terminal glyph. */
 .brand-mark:has(img) { background: transparent; }
@@ -42,6 +43,8 @@
   --shadow:0 16px 48px rgba(0,0,0,.42); --shadow-soft:0 8px 24px rgba(0,0,0,.32);
 }
 :root {
+  --alert-shadow:0 6px 18px -6px rgba(0,0,0,.14);
+  --composer-shadow:0 2px 12px -2px rgba(0,0,0,.08);
   --caption-close:#c42b1c; --caption-close-fg:#fff;
   --font:"Segoe UI Variable Text","Segoe UI",system-ui,"Microsoft YaHei UI",sans-serif;
   --mono:"Cascadia Mono","Cascadia Code",Consolas,monospace;

@@ -1,0 +1,196 @@
+/* S4: Mac-style session chat. Scope every override to the production session-chat root. */
+.chat-view.v3-session-chat.v3-session-chat { font-family:var(--font); }
+.chat-view.v3-session-chat.v3-session-chat .v3-chat-log {
+  padding:26px max(32px, calc((100% - 740px) / 2 + 32px)) 14px;
+  padding-right:max(52px, calc((100% - 740px) / 2 + 32px));
+}
+
+.chat-view.v3-session-chat.v3-session-chat .v3-chat-message.is-native {
+  font-size:13.5px;
+  line-height:1.6;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .v3-chat-message.is-native.assistant {
+  max-width:740px;
+  font-size:13.5px;
+  line-height:1.6;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .v3-chat-message.is-native.user {
+  max-width:min(82%, 740px);
+  margin-bottom:18px;
+  padding:8px 14px;
+  border-radius:18px;
+  background:var(--bubble);
+  font-size:13.5px;
+  line-height:1.6;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .codex-tool-disclosure > summary,
+.chat-view.v3-session-chat.v3-session-chat .chat-tool-activity > summary,
+.chat-view.v3-session-chat.v3-session-chat .chat-tool-entry-label {
+  min-height:28px;
+  gap:8px;
+  font-size:12.5px;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .codex-tool-disclosure > summary {
+  display:flex;
+  align-items:center;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .codex-markdown pre,
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-command,
+.chat-view.v3-session-chat.v3-session-chat .chat-question-command {
+  border:1px solid var(--border);
+  border-radius:9px;
+  background:var(--raised);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-overview-card,
+.chat-view.v3-session-chat.v3-session-chat .chat-subagent-card {
+  border-radius:10px;
+  background:var(--group);
+  box-shadow:inset 0 0 0 .5px var(--border);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-overview-card,
+.chat-view.v3-session-chat.v3-session-chat .chat-subagent-card { border:0; }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-overview-section + .chat-overview-section { border-top:0; }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-overview-section + .chat-overview-section::before {
+  content:"";
+  position:absolute;
+  top:0;
+  left:10px;
+  right:10px;
+  height:1px;
+  background:var(--border);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-subagent-body {
+  position:relative;
+  border-top:0;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-subagent-body::before {
+  content:"";
+  position:absolute;
+  top:0;
+  left:10px;
+  right:10px;
+  height:1px;
+  background:var(--border);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-card {
+  border-radius:12px;
+  display:grid;
+  grid-template-columns:32px minmax(0,1fr);
+  gap:0 12px;
+  padding:14px;
+  background:var(--control);
+  box-shadow:inset 0 0 0 .5px var(--border),var(--alert-shadow);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-heading {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-heading svg {
+  width:32px;
+  height:32px;
+  flex:none;
+  padding:7px;
+  border-radius:8px;
+  background:color-mix(in srgb, var(--st-needs) 16%, transparent);
+  color:var(--st-needs);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-heading strong { min-width:0; }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-actions {
+  justify-content:flex-end;
+  margin-top:2px;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-choice.kind-allow:not([data-scope="persistent"]) {
+  background:var(--primary);
+  color:var(--primary-fg);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-choice.kind-deny,
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-choice.kind-allow[data-scope="persistent"] { background:var(--control); }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-shell {
+  margin:8px max(16px, calc((100% - 760px) / 2)) 16px;
+  padding:0 7px 7px;
+  border:.5px solid var(--border);
+  border-radius:14px;
+  background:var(--surface);
+  box-shadow:var(--composer-shadow);
+}
+
+[data-theme="dark"] .chat-view.v3-session-chat.v3-session-chat .chat-compose-shell { background:var(--raised); }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-shell textarea,
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-highlights-scroll {
+  font-size:13.5px;
+  line-height:1.5;
+  min-height:46px;
+  padding:12px 15px 2px;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-chip,
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-more,
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-leading > button {
+  height:26px;
+  padding:0 7px;
+  border-radius:7px;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-chip { gap:5px; }
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-chip .ico { width:14px; height:14px; }
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-chip .chev { width:10px; height:10px; }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-bar { gap:1px; }
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-left,
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-right { gap:1px; }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-chip:hover,
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-more:hover,
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-leading > button:hover { background:var(--fill-hover); }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-send {
+  width:28px;
+  height:28px;
+  border-radius:50%;
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-send:not(.is-stop) {
+  background:var(--primary);
+  color:var(--primary-fg);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-send.is-stop {
+  background:var(--text);
+  color:var(--surface);
+}
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-heading { display:contents; }
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-heading svg { grid-column:1; grid-row:1 / span 20; }
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-heading strong,
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-card > :not(.chat-approval-heading) { grid-column:2; }
+.chat-view.v3-session-chat.v3-session-chat .codex-markdown pre { border:0; box-shadow:inset 0 0 0 .5px var(--border); font:12px/1.65 var(--mono); }
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-bar { padding-top:4px; }
+.chat-view.v3-session-chat.v3-session-chat .chat-compose-chip { font-size:12px; }
+
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-command { margin:8px 0 12px; padding:7px 10px; border:0; border-radius:7px; background:var(--raised); box-shadow:inset 0 0 0 .5px var(--border); font:12px var(--mono); white-space:pre-wrap; }
+.chat-view.v3-session-chat.v3-session-chat .chat-approval-actions { gap:8px; }

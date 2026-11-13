@@ -75,7 +75,7 @@ async function domCorners(label,required='.pane-card'){await layoutSettled(label
  const records=await page.evaluate(({selectors,required})=>[...document.querySelectorAll(selectors)].map((node,index)=>{
   const rect=node.getBoundingClientRect(),style=getComputedStyle(node),hit=document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2);
   const workspaceSurface=node.matches('.pane-card,.inspector,.wb-panel');
-  const rounded=workspaceSurface||node.matches('.settings-panel,.chat-overview-card,.dialog.sheet')||node.matches('.history-rail:not(.history-rail-native)');
+   const rounded=!workspaceSurface&&(node.matches('.settings-panel,.chat-overview-card,.dialog.sheet')||node.matches('.history-rail:not(.history-rail-native)'));
   return{index,selector:node.className,required:node.matches(required),visible:style.visibility!=='hidden'&&style.display!=='none'&&rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0&&rect.right<=innerWidth+.5&&rect.bottom<=innerHeight+.5&&Boolean(hit&&node.contains(hit)),rounded,workspaceSurface,outerRight:rect.right>=innerWidth-.5,
    rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height,right:rect.right,bottom:rect.bottom},radii:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overflow:[style.overflowX,style.overflowY],borders:{top:parseFloat(style.borderTopWidth)||0,right:parseFloat(style.borderRightWidth)||0,bottom:parseFloat(style.borderBottomWidth)||0,left:parseFloat(style.borderLeftWidth)||0},hasTabStrip:Boolean(node.previousElementSibling?.matches('.workspace-tabbar.ws-strip')),borderColors:[style.borderTopColor,style.borderBottomColor],boxShadow:style.boxShadow};
  }),{selectors,required});
@@ -84,18 +84,14 @@ async function domCorners(label,required='.pane-card'){await layoutSettled(label
  for(const record of records){
   if(!record.visible)continue;
   const result={label,...record};report.domCorners.push(result);
-  if(!record.rounded)continue;
    if(record.workspaceSurface){
-    // Tabbed pane cards deliberately have no top hairline: the selected tab and
-    // panel merge by fill. Their remaining edges stay single-device-pixel borders.
-    const scale=await page.evaluate(()=>devicePixelRatio),hairline=value=>value>0&&value*scale>=.5&&value*scale<=1.5;
-    if(record.selector.includes('pane-card')&&record.hasTabStrip){
-     assert.equal(record.borders.top,0,`${label}: tabbed ${record.selector} has no top hairline below the strip`);
-     assert.ok([record.borders.right,record.borders.bottom,record.borders.left].every(hairline),`${label}: tabbed ${record.selector} keeps quantized side and bottom hairlines`);
-    }else assert.ok(Object.values(record.borders).every(hairline),`${label}: ${record.selector} keeps quantized theme hairlines`);
-   assert.equal(record.boxShadow,'none',`${label}: ${record.selector} has no outer shadow`);
-   assert.ok(record.radii.every(radius=>radius>0),`${label}: ${record.selector} keeps four rounded floating-panel corners`);
-  }else assert.ok(record.radii.every(radius=>radius>0),`${label}: ${record.selector} retains four rounded corners`);
+    assert.ok(Object.values(record.borders).every(value=>value===0),`${label}: ${record.selector} has no exterior card hairline`);
+    assert.equal(record.boxShadow,'none',`${label}: ${record.selector} has no outer shadow`);
+    assert.ok(record.radii.every(radius=>radius===0),`${label}: ${record.selector} joins flush with square corners`);
+    tested++;continue;
+   }
+   if(!record.rounded)continue;
+   assert.ok(record.radii.every(radius=>radius>0),`${label}: ${record.selector} retains four rounded corners`);
   assert.ok(record.selector.includes('chat-overview-card')||record.overflow.every(value=>['hidden','clip'].includes(value)),`${label}: ${record.selector} clips its content`);
   // Isolate clipping from a card's decorative shadow without changing its geometry or radius.
   const saved=await page.evaluate(({selectors,index})=>{const node=document.querySelectorAll(selectors)[index],saved={};for(const key of ['visibility','box-shadow'])saved[key]=[node.style.getPropertyValue(key),node.style.getPropertyPriority(key)];node.style.setProperty('box-shadow','none','important');return saved},{selectors,index:record.index});
@@ -150,5 +146,5 @@ try{assert.ok(existsSync(runtime),`missing ${runtime}; build runtime/target-qa f
  await openBeside('corners.ts');await page.getByTestId('file-editor-surface').locator('.cm-editor').waitFor();await domCorners('file editor');
  await openBeside('corners.html');const htmlEditor=page.locator('.file-workspace:visible').filter({has:page.getByTestId('file-editor-surface')});await htmlEditor.getByRole('button',{name:'Preview',exact:true}).click();await page.locator('iframe[title="Saved HTML preview"]').waitFor();await domCorners('HTML iframe preview');
  const details=page.getByRole('button',{name:'Session details',exact:true});if(await details.getAttribute('aria-pressed')!=='true')await details.click();await page.locator('aside.inspector[aria-label="Session details"]').waitFor();await domCorners('Session inspector','.inspector');await page.locator('aside.inspector').getByRole('button',{name:'Task map',exact:true}).click();await page.locator('.task-map[data-view-ready=true]').waitFor();await domCorners('Task map');await details.click();
- await page.getByRole('button',{name:'Local user'}).click();await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('dialog').waitFor();await domCorners('Settings dialog','.settings-panel');await page.keyboard.press('Escape');report.limitations.push('Content-backed Git diff/review/history and delegated-agent cards require their dedicated git/delegation fixtures; this harness does not run git-writing setup. Floating windows are source-audited here because opening them uses app activation paths incompatible with the no-focus QA rule. Inline sidebar/delegation containers are recorded without inventing an independent rounded card boundary.');assert.deepEqual(report.errors,[],report.errors.join('\n'));report.passed=true;
+ await page.getByRole('button',{name:'Local user'}).click();await page.locator('.account-menu').getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('dialog').waitFor();await domCorners('Settings dialog','.settings-panel');await page.keyboard.press('Escape');report.limitations.push('Content-backed Git diff/review/history and delegated-agent cards require their dedicated git/delegation fixtures; this harness does not run git-writing setup. Floating windows are source-audited here because opening them uses app activation paths incompatible with the no-focus QA rule. Inline sidebar/delegation containers are recorded without inventing an independent rounded card boundary.');assert.deepEqual(report.errors,[],report.errors.join('\n'));report.passed=true;
 }catch(error){report.errors.push(error?.stack??String(error));if(page)await within(()=>page.screenshot({path:join(out,'failure.png')}),5000);process.exitCode=1}finally{if(app&&page)await within(()=>writeBrowserViewDiagnostics(app,page,out),5000).then(result=>{if(result.error)report.errors.push(`Diagnostics: ${result.error}`)});await close(true);if(report.errors.length)report.passed=false;await mkdir(out,{recursive:true});await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));await rm(scratch,{recursive:true,force:true,maxRetries:5}).catch(()=>{});process.exitCode=report.passed?0:1;console.log(report.passed?'PANE CORNERS VISUAL QA PASSED':`PANE CORNERS VISUAL QA FAILED\n${report.errors.join('\n')}`)}

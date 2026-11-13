@@ -119,16 +119,18 @@ async function panePixelGeometry() {
     const strip = pane.querySelector(':scope > .workspace-tabbar.ws-strip'), card = pane.querySelector(':scope > .pane-card'), tabs = strip?.querySelector('.workspace-tabs'), selected = tabs?.querySelector('.workspace-tab.active');
     if (!strip || !card || !tabs || !selected) return [];
     const title = selected.querySelector('.workspace-tab-label'), close = selected.querySelector('.workspace-tab-close'), prefix = strip.querySelector('.workspace-tab-prefix'), add = strip.querySelector('.workspace-tab-add-slot'), actions = strip.querySelector('.workspace-tab-actions');
-    const style = getComputedStyle(card), focused = document.activeElement?.closest?.('.workspace-tab');
+    const style = getComputedStyle(card), selectedStyle = getComputedStyle(selected), focused = document.activeElement?.closest?.('.workspace-tab');
     const titleStyle = title && getComputedStyle(title), measure = document.createElement('canvas').getContext('2d');
     if (measure && titleStyle) measure.font = titleStyle.font;
-    const titleMetrics = title ? { ...rect(title), text: title.textContent?.trim() ?? '', color: titleStyle?.color, scrollWidth: title.scrollWidth, clientWidth: title.clientWidth, sixCharacterWidth: measure?.measureText((title.textContent?.trim() ?? '').slice(0, 6)).width ?? 0 } : undefined;
+    const titleMetrics = title ? { ...rect(title), text: title.textContent?.trim() ?? '', color: titleStyle?.color, scrollWidth: title.scrollWidth, clientWidth: title.clientWidth, overflow:titleStyle?.overflow, textOverflow:titleStyle?.textOverflow } : undefined;
     // Pane content (e.g. a chat's clipped empty state in a short stacked pane) can sit right under the card's top edge.
     const textAt = (x, y) => { const hit = document.elementFromPoint(x, y); if (!hit || hit === card || !card.contains(hit)) return false; const walker = document.createTreeWalker(hit, NodeFilter.SHOW_TEXT); for (let node = walker.nextNode(); node; node = walker.nextNode()) { const range = document.createRange(); range.selectNodeContents(node); if ([...range.getClientRects()].some(box => x >= box.left - 1 && x <= box.right + 1 && y >= box.top - 1 && y <= box.bottom + 1)) return true; } return false; };
     const footText = [selected.getBoundingClientRect().left - 10, selected.getBoundingClientRect().right + 10].map(x => textAt(x, card.getBoundingClientRect().top + 1));
-    return [{ id: pane.dataset.paneId ?? 'pane', footText, strip: rect(strip), card: rect(card), tabs: rect(tabs), selected: { ...rect(selected), offsetWidth: selected.offsetWidth }, isFirstTab: selected === tabs.querySelector(':scope > .workspace-tab'), title: titleMetrics, close: close ? rect(close) : undefined, prefix: prefix ? rect(prefix) : undefined, add: add ? rect(add) : undefined, actions: actions ? rect(actions) : undefined, expectedSurface: style.backgroundColor, expectedBorder: style.borderTopColor, focused: focused === selected, overflow: [strip, ...strip.querySelectorAll('*')].filter(visible).map(element => ({ tag: element.tagName, className: String(element.className), scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, overflowY: getComputedStyle(element).overflowY })) }];
+    const addButton=add?.querySelector('.workspace-tab-add');
+    return [{ id: pane.dataset.paneId ?? 'pane', footText, strip: rect(strip), card: rect(card), tabs: {...rect(tabs),scrollWidth:tabs.scrollWidth}, selected: { ...rect(selected), offsetWidth: selected.offsetWidth, radius: selectedStyle.borderTopLeftRadius }, tabMetrics:[...tabs.querySelectorAll('.workspace-tab')].map(tab=>({ ...rect(tab), radius:getComputedStyle(tab).borderTopLeftRadius })), isFirstTab: selected === tabs.querySelector(':scope > .workspace-tab'), title: titleMetrics, close: close ? rect(close) : undefined, prefix: prefix ? rect(prefix) : undefined, add: add ? rect(add) : undefined, addButton: addButton ? rect(addButton) : undefined, actions: actions ? rect(actions) : undefined, expectedSurface: style.backgroundColor, expectedBorder: getComputedStyle(strip).borderBottomColor, stripColor:getComputedStyle(strip).backgroundColor, focusColor:getComputedStyle(selected.querySelector('.workspace-tab-select'),'::after').borderTopColor, cardBorders:[style.borderTopWidth,style.borderRightWidth,style.borderBottomWidth,style.borderLeftWidth].map(value=>parseFloat(value)||0), cardRadii:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0), focused: focused === selected, overflow: [strip, ...strip.querySelectorAll('*')].filter(visible).map(element => ({ tag: element.tagName, className: String(element.className), scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, overflowY: getComputedStyle(element).overflowY })) }];
    }),
-   panels: [...document.querySelectorAll('.workspace-pane[data-pane-id]:not([hidden]) > .pane-card, .wb-sidebar, .inspector')].filter(visible).filter(panel => !(panel.matches('.inspector') && panel.closest('.wb-sidebar'))).map(panel => ({ className: String(panel.className), ...rect(panel) }))
+    border: getComputedStyle(document.documentElement).getPropertyValue('--border'),
+    panels: [...document.querySelectorAll('.workspace-pane[data-pane-id]:not([hidden]) > .pane-card, .wb-sidebar, .inspector')].filter(visible).filter(panel => !(panel.matches('.inspector') && panel.closest('.wb-sidebar'))).map(panel => ({ className: String(panel.className), surface:getComputedStyle(panel).backgroundColor, ...rect(panel) }))
   };
  });
 }
@@ -173,147 +175,59 @@ function thumbRuns(image, box, scale) {
  return runs;
 }
 async function assertPanelBottomGap(name, image, geometry, scale) {
- const content = geometry.content;
- assert.ok(content, 'content main bounds are available for panel-bottom measurements');
- const panels = geometry.panels.filter(panel => panel.bottom <= content.bottom + 1 && panel.top >= content.top - 1);
- assert.ok(panels.length > 0, 'visible panels participate in bottom-gap measurements');
- const panelEvidence = [];
- for (const panel of panels) {
-  const lowerStrip = geometry.panes.filter(pane => pane.strip.top >= panel.bottom - 1 && Math.min(panel.right, pane.strip.right) - Math.max(panel.left, pane.strip.left) > 8).sort((left, right) => left.strip.top - right.strip.top)[0];
-  const gap = lowerStrip ? lowerStrip.strip.top - panel.bottom : content.bottom - panel.bottom;
-  assert.ok(Math.abs(gap - 12) <= 1, `${panel.className}: ${lowerStrip ? 'vertical split internal' : 'content bottom'} gap is 12px ±1 (${gap})`);
-  panelEvidence.push({ panel, kind: lowerStrip ? 'internal' : 'content-bottom', gap, nextStripTop: lowerStrip?.strip.top });
+ const content=geometry.content;assert.ok(content,'content main bounds are available for flush-edge measurements');
+ const panels=geometry.panels.filter(panel=>panel.bottom<=content.bottom+1&&panel.top>=content.top-1);assert.ok(panels.length>0,'visible panels participate in flush-edge measurements');
+ const border=rgba(geometry.border),evidence=[];
+ for(const panel of panels){
+  const lowerStrip=geometry.panes.filter(pane=>pane.strip.top>=panel.bottom-1&&Math.min(panel.right,pane.strip.right)-Math.max(panel.left,pane.strip.left)>8).sort((a,b)=>a.strip.top-b.strip.top)[0];
+  const gap=lowerStrip?lowerStrip.strip.top-panel.bottom:content.bottom-panel.bottom,expectedGap=lowerStrip?1:0;
+  assert.ok(Math.abs(gap-expectedGap)<=1,`${panel.className}: ${lowerStrip?'flush divider':'content edge'} is ${expectedGap}px ±1 (${gap})`);
+  const surface=rgba(panel.surface)?.slice(0,3);assert.ok(surface,`${panel.className}: pane surface is RGB`);
+  const x=device(Math.max(panel.left+2,Math.min(panel.right-2,panel.left+panel.width/2)),scale.x,image.width),y=device(Math.max(panel.top+2,panel.bottom-1),scale.y,image.height);
+  const edge=pixel(image,x,y);assert.ok(distance(edge,surface)<=4,`${panel.className}: bottom flush edge retains pane surface pixels`);
+  if(!lowerStrip&&Math.abs(content.right-panel.right)<=1){const right=pixel(image,device(panel.right-1,scale.x,image.width),device(panel.top+panel.height/2,scale.y,image.height));assert.ok(distance(right,surface)<=4,`${panel.className}: right flush edge retains pane surface pixels`);}
+  let divider;
+  if(lowerStrip&&border){divider=pixel(image,x,device(panel.bottom+.5,scale.y,image.height));assert.ok(distance(divider,composite(border,surface))<=8,`${panel.className}: internal divider is a one-pixel border`);}
+  evidence.push({className:panel.className,gap,edge,divider});
  }
- const lower = panelEvidence.filter(item => item.kind === 'content-bottom');
- const rightmost = lower.sort((left, right) => right.panel.right - left.panel.right)[0];
- const lowest = panels.filter(panel => !panels.some(other => other !== panel && other.top >= panel.bottom - 1 && Math.min(other.right, panel.right) - Math.max(other.left, panel.left) > 8));
- const rightmostPanel = lowest.sort((left, right) => right.right - left.right)[0] ?? panels[0];
- const bottomPanel = lowest[0] ?? panels[0];
- const frame = {
-  corner: { x: device(content.right - 3, scale.x, image.width), y: device(content.bottom - 3, scale.y, image.height), value: pixel(image, device(content.right - 3, scale.x, image.width), device(content.bottom - 3, scale.y, image.height)) },
-  bottom: { x: device(bottomPanel.left + bottomPanel.width / 2, scale.x, image.width), y: device(content.bottom - 3, scale.y, image.height) },
-  right: { x: device(content.right - 3, scale.x, image.width), y: device(rightmostPanel.top + rightmostPanel.height / 2, scale.y, image.height) }
- };
- frame.bottom.value = pixel(image, frame.bottom.x, frame.bottom.y);
- frame.right.value = pixel(image, frame.right.x, frame.right.y);
- const bottomPixels = lowest.map(panel => {
-  const x = device(panel.left + panel.width / 2, scale.x, image.width), startY = device(content.bottom - 1, scale.y, image.height);
-  let boundaryY;
-  for (let y = startY; y >= device(Math.max(content.top, panel.bottom - 4), scale.y, image.height); y--) if (distance(pixel(image, x, y), frame.bottom.value) > 3) { boundaryY = y; break; }
-  assert.notEqual(boundaryY, undefined, `${panel.className}: raster scan finds its bottom edge against the frame`);
-  const measuredPixels = startY - boundaryY, expectedPixels = Math.round((content.bottom - panel.bottom) * scale.y);
-  assert.ok(Math.abs(measuredPixels - expectedPixels) <= 1 && Math.abs(measuredPixels / scale.y - 12) <= 1, `${panel.className}: screenshot bottom gap is 12px ±1 (${(measuredPixels / scale.y).toFixed(2)} CSS px; ${measuredPixels} raster px)`);
-  return { className: panel.className, x, startY, boundaryY, measuredPixels, cssPixels: measuredPixels / scale.y, expectedPixels, frame: frame.bottom.value, boundary: pixel(image, x, boundaryY) };
- });
- let rightPixel;
- if (rightmost) {
-  const sideGap = content.right - rightmost.panel.right;
-  assert.ok(Math.abs(sideGap - rightmost.gap) <= 1, `rightmost panel side gap (${sideGap}) equals its bottom gap (${rightmost.gap})`);
-  assert.ok(Math.abs(sideGap - 12) <= 1, `rightmost panel side gap is 12px ±1 (${sideGap})`);
-  const y = device(rightmost.panel.top + rightmost.panel.height / 2, scale.y, image.height), startX = device(content.right - 1, scale.x, image.width);
-  let boundaryX;
-  for (let x = startX; x >= device(Math.max(content.left, rightmost.panel.right - 4), scale.x, image.width); x--) if (distance(pixel(image, x, y), frame.right.value) > 3) { boundaryX = x; break; }
-  assert.notEqual(boundaryX, undefined, `${rightmost.panel.className}: raster scan finds its right edge against the frame`);
-  const measuredPixels = startX - boundaryX, expectedPixels = Math.round(sideGap * scale.x);
-  assert.ok(Math.abs(measuredPixels - expectedPixels) <= 1 && Math.abs(measuredPixels / scale.x - 12) <= 1, `${rightmost.panel.className}: screenshot right gap is 12px ±1 (${(measuredPixels / scale.x).toFixed(2)} CSS px; ${measuredPixels} raster px)`);
-  rightPixel = { className: rightmost.panel.className, y, startX, boundaryX, measuredPixels, cssPixels: measuredPixels / scale.x, expectedPixels, frame: frame.right.value, boundary: pixel(image, boundaryX, y) };
- }
- let cropPath;
- if (name.includes('chat-sidebar-closed-en-light-1440') || name.includes('chat-sidebar-closed-en-dark-1440') || name.includes('four-panes-vertical-split') && name.endsWith('-960')) {
-  const target = rightmost?.panel ?? panels[0], filename = `${name}-bottom-gap.png`;
-  const left = device(Math.max(content.left, target.left - 4), scale.x, image.width), top = device(Math.max(content.top, target.bottom - 8), scale.y, image.height);
-  const right = device(Math.min(content.right, target.right + 16), scale.x, image.width), bottom = device(Math.min(content.bottom, target.bottom + 18), scale.y, image.height);
-  await writeFile(join(pixelEvidenceDir, filename), PNG.sync.write(crop(image, left, top, right - left + 1, bottom - top + 1)));
-  cropPath = `pixel-evidence/${filename}`;
- }
- return { panels: panelEvidence, frame, bottomPixels, rightmost: rightmost ? { className: rightmost.panel.className, sideGap: content.right - rightmost.panel.right, bottomGap: rightmost.gap } : undefined, rightPixel, crop: cropPath };
+ const filename=`${name}-flush-edges.png`,target=panels[0],left=device(target.left,scale.x,image.width),top=device(Math.max(content.top,target.bottom-4),scale.y,image.height),right=device(target.right,scale.x,image.width),bottom=device(Math.min(content.bottom,target.bottom+4),scale.y,image.height);
+ await writeFile(join(pixelEvidenceDir,filename),PNG.sync.write(crop(image,left,top,right-left+1,bottom-top+1)));
+ return {panels:evidence,flush:true,crop:`pixel-evidence/${filename}`};
 }
 async function assertScreenshotPixels(name, screenshot, keyboardFocus = false) {
- const geometry = await panePixelGeometry(), image = PNG.sync.read(screenshot), scale = { x: image.width / geometry.viewport.width, y: image.height / geometry.viewport.height };
- await writeFile(join(pixelEvidenceDir, `${name}-geometry.json`), JSON.stringify({ geometry, image: { width: image.width, height: image.height }, scale }, null, 2));
- const evidence = { screenshot: `${name}.png`, image: { width: image.width, height: image.height }, viewport: geometry.viewport, scale, panes: [] };
- for (const pane of geometry.panes) {
-  const surfaceRaw = rgba(pane.expectedSurface), borderRaw = rgba(pane.expectedBorder);
-  assert.ok(surfaceRaw && borderRaw, `CSS colors are RGB/RGBA for pane ${pane.id}`);
-  const surfaceTarget = surfaceRaw.slice(0, 3), borderTarget = composite(borderRaw, surfaceTarget);
-  const referenceTop = Math.max(pane.card.top + 2, Math.min(pane.card.top + 7, pane.card.bottom - 6)), referenceBottom = Math.max(referenceTop + 1, Math.min(pane.card.top + 26, pane.card.bottom - 2));
-  const surface = referencePixel(image, surfaceTarget, candidateGrid(pane.card, scale, image, 14, referenceTop, referenceBottom));
-  const seamY = device(pane.card.top, scale.y, image.height), insideLeft = device(pane.selected.left + 10, scale.x, image.width), insideRight = device(pane.selected.right - 10, scale.x, image.width);
-  const horizontalLeft = device(pane.card.left + 8, scale.x, image.width), horizontalRight = device(pane.card.right - 8, scale.x, image.width);
-  const referenceXs = [
-   ...Array.from({ length: Math.max(0, device(pane.selected.left - 12, scale.x, image.width) - horizontalLeft + 1) }, (_, index) => horizontalLeft + index),
-   ...Array.from({ length: Math.max(0, horizontalRight - device(pane.selected.right + 12, scale.x, image.width) + 1) }, (_, index) => device(pane.selected.right + 12, scale.x, image.width) + index)
-  ];
-  const strip = horizontalBorderReference(image, referenceXs.map(x => [x, seamY - 2]), surface.value);
-  assert.ok(insideRight - insideLeft >= 16, `selected tab has room for a continuous seam column for pane ${pane.id}`);
-  const seamX = device(pane.selected.left + 10, scale.x, image.width), seamValue = pixel(image, seamX, seamY), seamSamples = [{ x: seamX, y: seamY, value: seamValue, delta: distance(seamValue, surface.value) }];
-  assert.ok(distance(seamValue, surface.value) <= 3, `selected tab surface continues across the panel border at x=${seamX}, y=${seamY} for ${pane.id}`);
-  // Skip the one-pixel card border itself; the eight samples begin in the
-  // panel's filled interior after that edge row.
-  const panelRows = Array.from({ length: 8 }, (_, offset) => seamY + offset + 2), centerX = Math.round((insideLeft + insideRight) / 2);
-  const columnCandidates = Array.from({ length: Math.max(0, insideRight - insideLeft + 1) }, (_, offset) => insideLeft + offset).sort((left, right) => Math.abs(left - centerX) - Math.abs(right - centerX));
-  const blankColumn = columnCandidates.map(x => ({ x, seam: pixel(image, x, seamY), samples: panelRows.map(y => { const value = pixel(image, x, y); return { x, y, value, delta: distance(value, surface.value) }; }) })).find(candidate => distance(candidate.seam, surface.value) <= 3 && candidate.samples.every(sample => sample.delta <= 3));
-  const panelSurfaceSkip = pane.card.height < 90;
-  if (!keyboardFocus && !panelSurfaceSkip) assert.ok(blankColumn, `an empty selected-tab column continues from its seam into the panel for eight pixels for ${pane.id}`);
-  if (panelSurfaceSkip) report.limitations.push(`Eight-pixel interior column omitted for ${name} / ${pane.id}: the existing 960px four-pane compact projection leaves less than 90px of card height, so child controls overlap every candidate column. The seam row and outside feet remain pixel-checked.`);
-  const outside = [{ side: 'left', x: device(pane.selected.left - 10, scale.x, image.width) }, { side: 'right', x: device(pane.selected.right + 10, scale.x, image.width) }];
-  const outsideSamples = outside.map(sample => ({ ...sample, y: seamY, value: pixel(image, sample.x, seamY), below: pixel(image, sample.x, seamY + 1), above: pixel(image, sample.x, seamY - 2), delta: distance(pixel(image, sample.x, seamY + 1), surface.value), aboveDelta: distance(pixel(image, sample.x, seamY - 2), strip.value) }));
-  assert.ok(outsideSamples.every(sample => sample.x >= horizontalLeft && sample.x <= horizontalRight), `both tab feet have horizontal top-border paint room for ${pane.id}: ${JSON.stringify({ outsideSamples, horizontalLeft, horizontalRight })}`);
-  const checkedFeet = outsideSamples.filter((sample, index) => !pane.footText?.[index]);
-  if (checkedFeet.length < outsideSamples.length) report.limitations.push(`Outside-foot band check omitted for ${name} / ${pane.id} on the ${outsideSamples.filter((sample, index) => pane.footText?.[index]).map(sample => sample.side).join(' and ')} side: pane text sits under the card's top edge there.`);
-  assert.ok(checkedFeet.every(sample => sample.delta <= 3 && sample.aboveDelta <= 3), `panel surface meets the strip without a third-colour band outside both feet for ${pane.id}: ${JSON.stringify(outsideSamples)}`);
-  for (const sample of checkedFeet) {
-   const delta = strip.value.map((channel, index) => surface.value[index] - channel), denominator = delta.reduce((sum, channel) => sum + channel * channel, 0);
-   const alpha = denominator ? Math.max(0, Math.min(1, delta.reduce((sum, channel, index) => sum + channel * (sample.value[index] - strip.value[index]), 0) / denominator)) : 0;
-   assert.ok(distance(sample.value, strip.value.map((channel, index) => Math.round(channel + alpha * delta[index]))) <= 3, `fractional top row contains only the strip/surface transition for ${pane.id}`);
-  }
-  const seams = [];
-  for (const [side, x] of [['left', pane.selected.left - 10], ['right', pane.selected.right - 10]]) {
-   const left = device(x, scale.x, image.width), top = device(pane.card.top - 9, scale.y, image.height), filename = `${name}-${pane.id}-${side}-foot.png`;
-   const arc = crop(image, left, top, 20, 18), values = [];
-   for (let row = 0; row < arc.height; row++) for (let column = 0; column < arc.width; column++) values.push(pixel(arc, column, row));
-   const surfacePixels = values.filter(value => distance(value, surface.value) <= 3).length, stripPixels = values.filter(value => distance(value, strip.value) <= 3).length;
-   assert.ok(surfacePixels > 0 && stripPixels > 0, `${side} foot crop has both panel surface and strip pixels for ${pane.id}`);
-   const footLeft = side === 'left' ? pane.selected.left - 7 : pane.selected.right;
-   const mixed = [];
-   for (let y = device(pane.card.top - 8, scale.y, image.height); y < seamY; y++) for (let px = device(footLeft, scale.x, image.width); px < device(footLeft + 7, scale.x, image.width); px++) {
-    const value = pixel(image, px, y), delta = strip.value.map((channel, index) => surface.value[index] - channel);
-    const denominator = delta.reduce((sum, channel) => sum + channel * channel, 0);
-    const alpha = denominator ? Math.max(0, Math.min(1, delta.reduce((sum, channel, index) => sum + channel * (value[index] - strip.value[index]), 0) / denominator)) : 0;
-    const expected = strip.value.map((channel, index) => Math.round(channel + alpha * delta[index]));
-    if (distance(value, expected) > 6) mixed.push({ x: px, y, value, expected });
-   }
-   assert.deepEqual(mixed, [], `${side} foot contains only surface/strip blends, with no differently coloured border band for ${pane.id}`);
-   await writeFile(join(pixelEvidenceDir, filename), PNG.sync.write(arc)); seams.push({ side, crop: `pixel-evidence/${filename}`, surfacePixels, stripPixels });
-  }
-  const joinCropName = name === 'chat-sidebar-closed-en-light-1440' ? 'selected-tab-join-light.png' : name === 'chat-sidebar-closed-en-dark-1440' ? 'selected-tab-join-dark.png' : name === 'chat-custom-theme-en' ? 'selected-tab-join-custom.png' : name === 'chat-125-en-light' ? 'selected-tab-join-125.png' : name === 'chat-125-en-dark' ? 'selected-tab-join-125-dark.png' : undefined;
-  let joinCrop;
-  if (joinCropName && pane === geometry.panes[0]) {
-   const left = device(pane.selected.left - 14, scale.x, image.width), top = device(pane.selected.top - 3, scale.y, image.height), right = device(pane.selected.right + 14, scale.x, image.width), bottom = device(pane.card.top + 8, scale.y, image.height);
-   await writeFile(join(pixelEvidenceDir, joinCropName), PNG.sync.write(crop(image, left, top, right - left + 1, bottom - top + 1)));
-   joinCrop = `pixel-evidence/${joinCropName}`;
-  }
-  const overflowFailures = pane.overflow.filter(item => item.scrollHeight > item.clientHeight && !['hidden', 'clip'].includes(item.overflowY));
-  assert.deepEqual(overflowFailures, [], `strip has no vertical overflow: ${pane.id} ${JSON.stringify(overflowFailures)}`);
-  // The old regression was the inherited .ws-strip scrollbar at the strip's
-  // outer right edge. The tab viewport's right edge may coincide with an
-  // active-tab border or keyboard focus outline, so scanning it creates a
-  // false scrollbar positive without improving coverage of that defect.
-  const scrollThumbs = thumbRuns(image, pane.strip, scale);
-  assert.deepEqual(scrollThumbs, [], `no vertical scrollbar thumb at strip outer edge: ${pane.id} ${JSON.stringify(scrollThumbs)}`);
-  const available = pane.strip.width - (pane.prefix?.width ?? 0) - (pane.add?.width ?? 0) - (pane.actions?.width ?? 0) - 8;
-  const effectiveZoom = pane.selected.offsetWidth ? pane.selected.width / pane.selected.offsetWidth : 1, minimumWidth = 120 * effectiveZoom;
-  if (available >= minimumWidth) {
-   assert.ok(pane.selected.width >= minimumWidth - 1, `selected tab remains at its 120 CSS-pixel readable width (${Math.round(minimumWidth)} rendered px) when available (${Math.round(available)}px) in ${pane.id}`);
-   if (pane.title) assert.ok(pane.title.width + 1 >= Math.min(pane.title.sixCharacterWidth, pane.title.scrollWidth), `selected tab shows six readable title characters in ${pane.id}: ${JSON.stringify(pane.title)}`);
-  }
-  const paneEvidence = { id: pane.id, seamY, expected: { surfaceRaw, borderRaw, surface: surfaceTarget, border: borderTarget }, references: { surface, strip }, seamSamples, panelSurfaceColumn: blankColumn, panelSurfaceSkip, blankColumnFocusException: keyboardFocus, outsideSamples, footCrops: seams, joinCrop, verticalOverflow: overflowFailures, scrollThumbs, active: { width: pane.selected.width, offsetWidth: pane.selected.offsetWidth, effectiveZoom, minimumWidth, available, title: pane.title } };
+ const geometry=await panePixelGeometry(),image=PNG.sync.read(screenshot),scale={x:image.width/geometry.viewport.width,y:image.height/geometry.viewport.height};
+ await writeFile(join(pixelEvidenceDir,`${name}-geometry.json`),JSON.stringify({geometry,image:{width:image.width,height:image.height},scale},null,2));
+ const evidence={screenshot:`${name}.png`,image:{width:image.width,height:image.height},viewport:geometry.viewport,scale,panes:[]};
+ for(const pane of geometry.panes){
+  assert.ok(Math.abs(pane.strip.height-30)<=1&&Math.abs(pane.selected.height-30)<=1,`30px flush strip/tab for ${pane.id}`);
+  assert.ok(pane.tabMetrics.every(tab=>(parseFloat(tab.radius)||0)===0),`square tab corners for ${pane.id}`);
+  assert.ok(pane.cardBorders.every(value=>value===0)&&pane.cardRadii.every(value=>value===0),`flat borderless pane for ${pane.id}`);
+  if(pane.close)assert.ok(Math.abs(pane.close.width-18)<=1&&Math.abs(pane.close.height-18)<=1&&pane.close.left<pane.selected.left+8,`18px left close for ${pane.id}`);
+  if(pane.addButton)assert.ok(Math.abs(pane.addButton.width-28)<=1&&Math.abs(pane.addButton.height-28)<=1,`28px add target for ${pane.id}`);
+  const surfaceRaw=rgba(pane.expectedSurface),stripRaw=rgba(pane.stripColor),borderRaw=rgba(pane.expectedBorder);assert.ok(surfaceRaw&&stripRaw&&borderRaw,`resolved RGB surfaces for ${pane.id}`);
+  const surfaceTarget=surfaceRaw.slice(0,3),stripTarget=stripRaw.slice(0,3),borderTarget=composite(borderRaw,stripTarget);
+  const surface=referencePixel(image,surfaceTarget,candidateGrid(pane.card,scale,image,14,pane.card.top+2,Math.min(pane.card.top+26,pane.card.bottom-2)));
+  const seamY=device(pane.card.top+.5,scale.y,image.height),seamSamples=[];
+  const start=Math.max(pane.selected.left+4,pane.tabs.left+1),end=Math.min(pane.selected.right-4,pane.tabs.right-1);
+  for(let x=start;x<=end;x+=Math.max(1,(end-start)/12)){const px=device(x,scale.x,image.width),value=pixel(image,px,seamY);seamSamples.push({x:px,y:seamY,value,delta:distance(value,surface.value)});}
+  assert.ok(seamSamples.length&&seamSamples.every(sample=>sample.delta<=4),`active tab merges into pane without a seam band for ${pane.id}`);
+  // Outside the active tab, a flat join may contain only tabbar/surface/hairline paint.
+  const outsideSamples=[];
+  for(const x of [pane.selected.left-6,pane.selected.right+6])if(x>pane.strip.left+1&&x<pane.strip.right-1){for(const y of [pane.card.top-1,pane.card.top]){const value=pixel(image,device(x,scale.x,image.width),device(y,scale.y,image.height));const allowed=value.every((channel,index)=>channel>=Math.min(surfaceTarget[index],stripTarget[index],borderTarget[index])-4&&channel<=Math.max(surfaceTarget[index],stripTarget[index],borderTarget[index])+4);assert.ok(allowed,`flat join has no third-colour band for ${pane.id}`);outsideSamples.push({x,y,value});}}
+  const seams=[];
+  for(const [side,x] of [['left',pane.selected.left],['right',pane.selected.right]]){const left=device(Math.max(pane.strip.left,x-8),scale.x,image.width),right=device(Math.min(pane.strip.right-1,x+8),scale.x,image.width),top=device(pane.card.top-8,scale.y,image.height),bottom=device(pane.card.top+7,scale.y,image.height),filename=`${name}-${pane.id}-${side}-join.png`;await writeFile(join(pixelEvidenceDir,filename),PNG.sync.write(crop(image,left,top,Math.max(1,right-left+1),Math.max(1,bottom-top+1))));seams.push({side,crop:`pixel-evidence/${filename}`});}
+  const overflowFailures=pane.overflow.filter(item=>item.scrollHeight>item.clientHeight&&!['hidden','clip'].includes(item.overflowY));assert.deepEqual(overflowFailures,[],`no vertical strip overflow for ${pane.id}`);
+  const scrollThumbs=thumbRuns(image,pane.strip,scale);assert.deepEqual(scrollThumbs,[],`no vertical strip scrollbar for ${pane.id}`);
+  const equalWidth=pane.tabMetrics.length<2||pane.tabs.scrollWidth>pane.tabs.width+1||pane.tabMetrics.every(tab=>Math.abs(tab.width-pane.tabMetrics[0].width)<=1);assert.ok(equalWidth,`equal width tabs for ${pane.id}`);
+  const zoom=pane.selected.offsetWidth?pane.selected.width/pane.selected.offsetWidth:1;
+  if(pane.title){assert.ok(pane.title.text.length>0&&pane.title.width>0&&pane.selected.width>=72*zoom-1,`visible nonblank active label for ${pane.id}`);if(pane.title.scrollWidth>pane.title.clientWidth+1)assert.equal(pane.title.textOverflow,'ellipsis',`clipped title ellipsizes for ${pane.id}`);}
+  const paneEvidence={id:pane.id,seamY,expected:{surface:surfaceTarget,strip:stripTarget,border:borderTarget},references:{surface},seamSamples,outsideSamples,footCrops:seams,verticalOverflow:overflowFailures,scrollThumbs,active:{width:pane.selected.width,equalWidth,title:pane.title}};
   if (keyboardFocus && pane.focused) {
-   const primary = rgba(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--primary')))?.slice(0, 3);
+   const primary = composite(rgba(pane.focusColor), surface.value);
    assert.ok(primary, `primary is RGB for focused pane ${pane.id}`);
    const focusPixels = [];
    for (let y = device(pane.selected.top, scale.y, image.height); y <= device(pane.selected.top + 5, scale.y, image.height); y++) for (let x = device(pane.selected.left + 3, scale.x, image.width); x <= device(pane.selected.right - 3, scale.x, image.width); x++) if (distance(pixel(image, x, y), primary) <= 36) focusPixels.push({ x, y });
-   const closeStart = device((pane.close?.left ?? pane.selected.right) - 3, scale.x, image.width), closePixels = focusPixels.filter(sample => sample.x >= closeStart);
+   const closeStart = device((pane.close?.left ?? pane.selected.right) - 3, scale.x, image.width), closePixels = focusPixels.filter(sample => sample.x >= closeStart && sample.x <= device((pane.close?.right ?? pane.selected.right)+3,scale.x,image.width));
    const seamFocusPixels = seamSamples.filter(sample => distance(sample.value, primary) <= 36);
    assert.ok(focusPixels.length >= 6 && closePixels.length >= 1, `keyboard focus ring reaches the tab close region for ${pane.id}`);
    assert.equal(seamFocusPixels.length, 0, `keyboard focus ring does not cross the merged seam for ${pane.id}`);
@@ -330,9 +244,7 @@ async function assertScreenshotPixels(name, screenshot, keyboardFocus = false) {
   }
  evidence.panes.push(paneEvidence);
  }
- evidence.bottomGaps = await assertPanelBottomGap(name, image, geometry, scale);
- report.pixelEvidence.push(evidence);
- await writeFile(join(pixelEvidenceDir, `${name}.json`), JSON.stringify(evidence, null, 2));
+ evidence.bottomGaps=await assertPanelBottomGap(name,image,geometry,scale);report.pixelEvidence.push(evidence);await writeFile(join(pixelEvidenceDir,`${name}.json`),JSON.stringify(evidence,null,2));
 }
 async function capture(name, metadata) {
  if (phase === 'after') await assertPaneTabContract();

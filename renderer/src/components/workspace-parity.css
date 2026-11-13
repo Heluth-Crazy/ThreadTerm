@@ -1,31 +1,30 @@
 /* Native pane hosts preserve the reference geometry; shared .ws and .term
    classes are defined by the approved stylesheet. */
 .ws-content.pane-workspace { position:relative; display:flex; flex-direction:column; padding:0; min-width:0; min-height:0; flex:1; }
-.pane-grid { position:relative; display:flex; flex:1; min-width:0; min-height:0; gap:4px; }
+.pane-grid { position:relative; display:flex; flex:1; min-width:0; min-height:0; gap:0; }
 .pane-grid > .workspace-pane { position:absolute; }
-.pane-split { display:flex; min-width:0; min-height:0; gap:var(--pane-gap,4px); }
+.pane-split { display:flex; min-width:0; min-height:0; gap:var(--pane-gap,0px); }
 .pane-grid > .pane-split { position:absolute; pointer-events:none; z-index:2; }
 .pane-split.vertical { flex-direction:column; }
 .pane-split.horizontal { flex-direction:row; }
 .pane-split-child { display:flex; min-width:0; min-height:0; }
 .pane-split-child > .workspace-pane { flex:1; min-width:0; min-height:0; }
-.pane-divider { flex:0 0 var(--pane-divider-size,4px); position:relative; z-index:3; touch-action:none; user-select:none; pointer-events:auto; }
+.pane-divider { flex:0 0 var(--pane-divider-size,1px); position:relative; z-index:3; touch-action:none; user-select:none; pointer-events:auto; background:var(--border); }
+.pane-divider::before { content:""; position:absolute; z-index:1; inset:-4px; }
 .pane-split.horizontal > .pane-divider { cursor:col-resize; }
 .pane-split.vertical > .pane-divider { cursor:row-resize; }
-.pane-divider:hover { background:var(--primary); border-radius:4px; }
-.workspace-pane.ws-pane { --pane-inner-radius:calc(8px - 1px); display:flex; flex-direction:column; overflow:visible; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.pane-divider:hover { background:var(--primary); }
+.workspace-pane.ws-pane { --pane-inner-radius:0px; display:flex; flex-direction:column; overflow:visible; border:0; border-radius:0; background:transparent; box-shadow:none; }
 .workspace-pane.ws-pane { --pane-surface:var(--surface); }
 .workspace-pane.ws-pane:has(> .pane-card > .pane-body > .pane-tab-surface:not([hidden]) > :is(.file-workspace,.terminal-wrap,.wb-review-diff)) { --pane-surface:var(--editor); }
-.workspace-pane.ws-pane > .pane-card { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--pane-surface); box-shadow:none; }
-/* Under a tab strip the card has no top hairline (Chrome: strip and panel meet by fill only); the side borders taper
-   off around the top corners and the 1 px padding keeps every child where the top border used to put it. */
-.workspace-tabbar.ws-strip + .pane-card { border-top-width:0; padding-top:1px; }
+.workspace-pane.ws-pane > .pane-card { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:0; border-radius:0; background:var(--pane-surface); box-shadow:none; }
+.workspace-tabbar.ws-strip + .pane-card { padding-top:0; }
 .workspace-pane.ws-pane.fullscreen { position:absolute; inset:2px; z-index:8; }
 .workspace-pane .ws-pane-tab { display:flex; align-items:center; gap:5px; min-width:0; max-width:220px; height:24px; padding:0 4px; border:0; background:transparent; color:inherit; font-size:12px; }
 .workspace-pane .ws-pane-tab.active { font-weight:600; }
 .workspace-pane .ws-pane-tab .ws-tile-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .browser-page-tabs { display:contents; }
-.browser-page-tab { width:240px; container:browser-page-tab / inline-size; }
+.browser-page-tab { width:auto; container:browser-page-tab / inline-size; }
 .browser-page-favicon,.browser-page-loading { display:block; flex:none; width:16px; height:16px; }
 .browser-page-loading { box-sizing:border-box; border:2px solid color-mix(in srgb,var(--muted) 25%,transparent); border-top-color:var(--text); border-radius:50%; animation:browser-page-spin .8s linear infinite; }
 @keyframes browser-page-spin { to { transform:rotate(360deg); } }
@@ -51,48 +50,44 @@
 .pane-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; flex:1; min-width:0; min-height:0; padding:16px; color:var(--muted); text-align:center; }
 .pane-empty .ico { width:28px; height:28px; opacity:.55; }
 .workspace-toolbar-host { flex:none; min-width:0; }
-.workspace-tabbar.ws-strip { position:relative; z-index:1; display:flex; flex:none; align-items:flex-end; min-width:0; height:43px; margin-bottom:-1px; padding:0 8px; gap:4px; overflow:clip; overflow-clip-margin:2px; border:0; box-shadow:none; background:transparent; }
-/* Leave paint room for the overlap when the card edge falls between device pixels. */
-.workspace-tabs { display:flex; flex:0 1 auto; min-width:0; max-width:100%; height:35px; margin-bottom:-2px; align-items:flex-end; gap:0; padding:0 8px 2px 12px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; scroll-padding-inline:12px 8px; }
+.workspace-tabbar.ws-strip { position:relative; z-index:1; display:flex; flex:none; align-items:stretch; min-width:0; height:30px; margin:0; padding:0; gap:0; overflow:hidden; border:0; border-bottom:1px solid var(--border); box-shadow:none; background:var(--tabbar); }
+.workspace-tabs { display:flex; flex:1 1 0; min-width:0; max-width:none; height:30px; margin:0; align-items:stretch; gap:0; padding:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; scroll-padding-inline:0; }
 .workspace-tabs::-webkit-scrollbar { display:none; }
 /* Overflow edges fade (24px = TAB_FADE in WorkspaceTabBar) instead of cutting a tab mid-word. */
 .workspace-tabs.fade-start { mask-image:linear-gradient(to right, transparent, #000 24px); }
 .workspace-tabs.fade-end { mask-image:linear-gradient(to right, #000 calc(100% - 24px), transparent); }
 .workspace-tabs.fade-start.fade-end { mask-image:linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent); }
-.workspace-tab { position:relative; display:flex; flex:0 1 240px; align-items:center; max-width:240px; min-width:48px; height:32px; margin-bottom:1px; border-radius:8px 8px 0 0; color:var(--muted); }
-.workspace-tab:not(.active):not(:hover):has(+ .workspace-tab:not(.active):not(:hover))::after { content:""; position:absolute; top:8px; right:0; bottom:8px; width:1px; background:var(--border); pointer-events:none; }
+.workspace-tab { position:relative; display:flex; flex:1 1 0; align-items:center; max-width:none; min-width:72px; height:30px; margin:0; border-left:1px solid var(--border); border-radius:0; color:var(--muted); }
+.workspace-tab:first-child { border-left:0; }
+.workspace-tab:not(.active):not(:hover):has(+ .workspace-tab:not(.active):not(:hover))::after { display:none; }
 .workspace-tab:hover { background:var(--soft); color:var(--text); }
-.workspace-tab.active { z-index:1; min-width:120px; height:33px; margin-bottom:0; border:1px solid transparent; background:var(--pane-surface,var(--surface)); box-shadow:0 2px 0 var(--pane-surface,var(--surface)); color:color-mix(in srgb,var(--text) 82%,var(--muted)); }
-.workspace-tab.active::before,.workspace-tab.active::after { content:""; position:absolute; bottom:0; width:8px; height:9px; pointer-events:none; }
-/* Fill-only concave feet: the curve is cut out with a mask instead of painted in the frame colour, so whatever is
-   behind the strip (frame colour or a window picture) shows through it. */
-.workspace-tab.active::before { left:-8px; background:var(--pane-surface,var(--surface)); -webkit-mask:radial-gradient(circle at 0 0,transparent 7.5px,currentColor 8.5px); mask:radial-gradient(circle at 0 0,transparent 7.5px,currentColor 8.5px); }
-.workspace-tab.active::after { right:-8px; background:var(--pane-surface,var(--surface)); -webkit-mask:radial-gradient(circle at 100% 0,transparent 7.5px,currentColor 8.5px); mask:radial-gradient(circle at 100% 0,transparent 7.5px,currentColor 8.5px); }
+.workspace-tab.active { z-index:1; min-width:72px; height:30px; margin-bottom:-1px; border-left-color:var(--border); background:var(--pane-surface,var(--surface)); box-shadow:none; color:var(--text); }
+.workspace-tab.active::before,.workspace-tab.active::after { display:none; }
 .workspace-pane.selected .workspace-tab.active { color:var(--text); font-weight:600; }
-.workspace-tab-select { display:flex; align-items:center; gap:7px; flex:1; height:30px; min-width:0; padding:0 4px 0 9px; border:0; background:transparent; color:inherit; font:inherit; font-size:12px; text-align:left; }
+.workspace-tab-select { display:flex; align-items:center; justify-content:center; gap:6px; flex:1; height:30px; min-width:0; padding:0 28px; border:0; background:transparent; color:inherit; font:inherit; font-size:12px; text-align:left; }
 .workspace-tab-select span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.workspace-tab-select .ico,.workspace-tab-select .agent-icon { flex:none; width:14px; height:14px; }
-.workspace-tab-close { display:grid; place-items:center; flex:none; width:28px; height:28px; margin-right:2px; padding:0; border:0; border-radius:5px; background:transparent; color:inherit; }
-.workspace-tab-close .ico { width:12px; height:12px; }
-.workspace-tab-close:hover { color:var(--text); background:var(--border); }
+.workspace-tab-label { min-width:0; }
+.workspace-tab-select .ico,.workspace-tab-select .agent-icon,.workspace-tab-select [data-agent-tile] { flex:none; width:14px; height:14px; }
+.workspace-tab-close { position:absolute; z-index:3; top:6px; left:6px; display:grid; place-items:center; width:18px; height:18px; padding:0; border:0; border-radius:4px; background:transparent; color:inherit; opacity:0; pointer-events:none; }
+.workspace-tab-close .ico { width:11px; height:11px; }
+.workspace-tab:is(:hover,:focus-within) .workspace-tab-close { opacity:1; pointer-events:auto; }
+.workspace-tab-close:hover { color:var(--text); background:var(--fill-selected); }
 .workspace-tab:has(> :focus-visible) > .workspace-tab-select::after { content:""; position:absolute; inset:3px 3px 4px; z-index:2; border:2px solid var(--primary); border-radius:5px 5px 2px 2px; pointer-events:none; }
 .workspace-tab-select:focus-visible,.workspace-tab-close:focus-visible { outline:none; }
 .workspace-tab-close:focus-visible { background:var(--border); }
-.workspace-tab-prefix,.workspace-tab-add-slot,.workspace-tab-actions,.workspace-primary-actions { display:flex; align-items:center; flex:none; gap:5px; height:32px; margin-bottom:1px; }
+.workspace-tab-prefix,.workspace-tab-add-slot,.workspace-tab-actions,.workspace-primary-actions { display:flex; align-items:center; flex:none; gap:2px; height:30px; margin:0; }
 .workspace-tab-actions { margin-left:auto; }
-.workspace-tab-add-slot { position:sticky; right:0; z-index:2; padding:0 2px; background:var(--workspace-bg,transparent); }
+.workspace-tab-add-slot { position:sticky; right:0; z-index:2; padding:0 2px; background:var(--tabbar); border-left:1px solid var(--border); }
 .workspace-tab-add { width:28px; height:28px; }
-.workspace-tab-select .workspace-tab-icon { position:relative; display:grid; place-items:center; flex:none; width:16px; height:16px; overflow:visible; }
+.workspace-tab-select .workspace-tab-icon { position:relative; display:grid; place-items:center; flex:none; width:14px; height:14px; overflow:visible; }
 .workspace-tab-select .workspace-tab-marker { position:absolute; right:-3px; bottom:-2px; display:grid; place-items:center; box-sizing:content-box; overflow:visible; width:8px; height:8px; border:2px solid transparent; border-radius:3px; background:var(--bg); color:inherit; }
 .workspace-tab:hover .workspace-tab-marker { background:linear-gradient(var(--soft),var(--soft)),var(--bg); }
 .workspace-tab.active .workspace-tab-marker { border-color:var(--pane-surface,var(--surface)); background:var(--pane-surface,var(--surface)); }
 .workspace-tab-select .workspace-tab-marker > .ico { width:8px; height:8px; }
-.workspace-tab[data-compact] .workspace-tab-label,.workspace-tab[data-compact] small { display:none; }
-.workspace-tab[data-compact] .workspace-tab-select { justify-content:center; padding:0; }
-.workspace-tab[data-compact] .workspace-tab-close { margin-right:0; opacity:0; pointer-events:none; }
-.workspace-tab[data-compact] .workspace-tab-icon { transform:translateX(14px); }
-.workspace-tab[data-compact]:is(:hover,:focus-within) .workspace-tab-icon { transform:none; }
-.workspace-tab[data-compact]:is(:hover,:focus-within) .workspace-tab-close { opacity:1; pointer-events:auto; }
+.workspace-tab[data-compact] .workspace-tab-label { display:block; }
+.workspace-tab[data-compact] small { display:none; }
+.workspace-tab[data-compact] .workspace-tab-select { gap:4px; padding:0 4px 0 24px; }
+.browser-page-tab-title { display:block !important; }
 .workspace-tab-marker-description { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .workspace-tab-actions .icon-btn { width:28px; height:28px; }
 .workspace-primary-actions .btn { min-height:28px; padding:4px 8px; font-size:12px; }

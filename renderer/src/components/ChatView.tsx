@@ -100,6 +100,7 @@ import { useChatFlowSync } from '../chatFlowSync';
 import { providerRetryPresentation } from '../providerRetry';
 import { ProviderRetryStatus } from './ProviderRetryStatus';
 import './chat-viewport.css';
+import './mac-chat.css';
 import { PageShotDrafts } from './PageComments';
 import { usePageShotDraft } from '../pageShotDraft';
 
