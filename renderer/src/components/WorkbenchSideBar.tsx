@@ -141,14 +141,15 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   {id:'details', icon:'info', label:text('Session details', '会话详情面板'), shortcut:''},
  ];
  const current = stored.view==='browser' ? {label:text('Browser','浏览器')} : stored.view==='run' ? {label:text('Run', '运行')} : stored.view==='details' ? {label:text('Session details', '会话详情')} : views.find(view => view.id === stored.view)!;
- const switcher = <nav className="wb-switcher" aria-label={text('Workbench views', '侧栏视图')}>
-  {views.map(view => <button key={view.id} type="button" className={`wb-switch-btn${open && stored.view === view.id ? ' active' : ''}`}
+ const viewButton = (view:typeof views[number]) => <button key={view.id} type="button" className={`wb-switch-btn${open && stored.view === view.id ? ' active' : ''}`}
    data-view={view.id} aria-pressed={open && stored.view === view.id} aria-label={view.label}
    title={`${view.label}${view.shortcut ? ` (${view.shortcut})` : ''}${open && stored.view === view.id ? text(' · click to hide the side bar (Ctrl+Alt+B)', ' · 再次点击隐藏侧栏（Ctrl+Alt+B）') : ''}`}
    onClick={() => select(view.id)}>
    <WbIcon name={view.icon}/>{view.badge ? <span className="wb-switch-badge">{view.badge > 99 ? '99+' : view.badge}</span> : null}
-  </button>)}
- </nav>;
+  </button>;
+ const switcher = <div className="wb-toolbar-views"><div className="wb-switcher" role="group" aria-label={text('Workbench views', '侧栏视图')}>
+  {views.filter(view=>view.id!=='details').map(viewButton)}
+ </div>{views.filter(view=>view.id==='details').map(viewButton)}</div>;
  return <>
   {headerHost&&createPortal(switcher, headerHost)}
   {open && <div ref={slot} className={`wb-sidebar-slot${browserWidth?' wb-sidebar-browser':''}`} style={{width:browserWidth&&!workspaceWidth?'45%':width}}><div className="wb-sidebar-strip" aria-hidden="true"/><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>

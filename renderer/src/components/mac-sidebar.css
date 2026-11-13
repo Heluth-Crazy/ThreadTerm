@@ -56,7 +56,7 @@
 .machine-rows .machine-add > .ico { width: 16px; height: 16px; color: var(--primary); }
 .project-catalog .tree-list { margin: 0; }
 .project-catalog .tree-row { padding-left: 30px; }
-.project-catalog .sess-row { position: relative; padding-left: 44px; }
+.project-catalog .sess-row { position: relative; padding-left: 30px; }
 .project-catalog .sess-row-wrap.is-delegate { padding-left: 14px; }
 .project-catalog .sess-row .bico { flex: 0 0 20px; width: 20px; min-width: 20px; gap: 0; }
 .project-catalog .sess-row .session-agent-icon { width: 16px; height: 16px; }
@@ -113,3 +113,9 @@
 .project-catalog .tree-new:hover { background: var(--fill-selected); color: var(--text); }
 @keyframes mac-sidebar-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .project-catalog .sess-row .session-activity-running::after { animation: none; } }
+
+.project-catalog .side-label, .machine-rows .machine-add { width:calc(100% - 20px); }
+.machine-rows .machine-dot { border-radius:50%; }
+
+.project-catalog .side-tree { padding:0; gap:0; }
+.project-catalog .side-label { letter-spacing:normal; }

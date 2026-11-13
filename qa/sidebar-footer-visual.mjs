@@ -164,7 +164,7 @@ async function standaloneRoutes(){
  await visit('standalone inbox',()=>page.locator('.side-nav .nav-item').filter({hasText:'Inbox'}).click());
  await visit('standalone all terminals',()=>page.locator('.side-nav .nav-item').filter({hasText:'All terminals'}).click());
  await page.getByRole('button',{name:'Local user',exact:true}).click();await page.getByRole('button',{name:'Usage',exact:true}).click();await settled();await footerGeometry('standalone usage');await bottomGapPixels('standalone usage');
- await page.getByRole('button',{name:'Local user',exact:true}).click();await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('dialog',{name:'Settings',exact:true}).waitFor();await footerGeometry('standalone settings');await page.keyboard.press('Escape');
+ await page.getByRole('button',{name:'Local user',exact:true}).click();await page.locator('.account-menu').getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('dialog',{name:'Settings',exact:true}).waitFor();await footerGeometry('standalone settings');await page.keyboard.press('Escape');
  check('standalone Inbox, All terminals, Usage and Settings have no app-wide status footer');
 }
 // The same authenticated delayed-pipe pattern as runtime-startup-recovery, with a controllable snapshot response.

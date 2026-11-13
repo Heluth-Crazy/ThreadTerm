@@ -13,6 +13,7 @@ import {build as viteBuild} from 'vite';
 import {electron} from './lib/desktop1.mjs';
 import {connectPeer} from './pipe-client.mjs';
 import {closeBrowserViewFixture} from './lib/browser-view-cleanup.mjs';
+import {sendChatPrompt} from './lib/chat-send.mjs';
 import {PANE_STRIP_CONTROL_SELECTOR,PANE_STRIP_HEIGHT,checkControlConsistency,isPaneStrip,paneStripViolations} from './lib/visual-consistency.mjs';
 
 const root=resolve(import.meta.dirname,'..'),scratchBase=resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to the QA scratch directory');})());
@@ -123,6 +124,10 @@ async function capture(name){
  const peers=rows.filter(row=>['Session details','Worktree list','Worktree details'].includes(row.surface));
  const adjacent=peers.filter(row=>Math.abs(row.rect.y-peers[0].rect.y)<=1);
  if(adjacent.length>1){const delta=Math.max(...adjacent.map(row=>row.rect.bottom))-Math.min(...adjacent.map(row=>row.rect.bottom));if(delta>1)report.violations.push({name,surface:'adjacent headers',errors:[`bottom delta ${delta}`]})}
+ if(await page.locator('.app-shell').count()){
+  const shell=await page.evaluate(()=>{const box=selector=>{const node=document.querySelector(selector);if(!node)return null;const r=node.getBoundingClientRect(),s=getComputedStyle(node);return {x:r.x,y:r.y,width:r.width,height:r.height,display:s.display,gridRow:s.gridRow,padding:s.padding,background:s.backgroundColor}};return {window:box('.app-shell'),sidebar:box('.sidebar'),toolbar:box('.ws-top'),caption:box('.window-controls'),activity:box('.ql-activity'),more:box('.session-header-more')};});
+  (report.shellMeasurements??=[]).push({name,...shell});
+ }
  report.measurements.push({name,rows});
  const filename=`${name}.png`;await page.screenshot({path:join(out,filename),animations:'disabled'});report.screenshots.push(filename);
 }
@@ -162,15 +167,15 @@ try{
    const button=page.locator('.ws-top .wb-switcher').getByRole('button',{name:view[zh?1:0],exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();
    await capture(`${cell}-${view[0].replaceAll(' ','-')}`);
   }
-  await optional('Configure session',async()=>{await page.locator('.inspector').getByRole('button',{name:zh?'配置':'Configure',exact:true}).click();await page.locator('.session-config').waitFor();await capture(`${cell}-configure`);if(verify){const subtitle=page.locator('.session-config .dialog-title p');const original=await subtitle.evaluate(node=>{const text=node.textContent;node.textContent=text.repeat(40);return text});assert.ok(await subtitle.evaluate(node=>node.scrollWidth>node.clientWidth&&getComputedStyle(node).textOverflow==='ellipsis'),'long session title ellipsizes');await capture(`${cell}-configure-long-title`);await subtitle.evaluate((node,text)=>node.textContent=text,original)}await closeDialog()});
-  await optional('Task map',async()=>{await page.locator('.inspector').getByRole('button',{name:zh?'任务图':'Task map',exact:true}).click();await page.locator('.task-map').waitFor();await capture(`${cell}-task-map`);await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
+  await optional('Configure session',async()=>{const details=page.getByRole('button',{name:zh?'会话详情面板':'Session details',exact:true});if(await details.getAttribute('aria-pressed')!=='true')await details.click();await page.locator('.inspector').getByRole('button',{name:zh?'配置':'Configure',exact:true}).click();await page.locator('.session-config').waitFor();await capture(`${cell}-configure`);if(verify){const subtitle=page.locator('.session-config .dialog-title p');const original=await subtitle.evaluate(node=>{const text=node.textContent;node.textContent=text.repeat(40);return text});assert.ok(await subtitle.evaluate(node=>node.scrollWidth>node.clientWidth&&getComputedStyle(node).textOverflow==='ellipsis'),'long session title ellipsizes');await capture(`${cell}-configure-long-title`);await subtitle.evaluate((node,text)=>node.textContent=text,original)}await closeDialog()});
+  await optional('Task map',async()=>{const details=page.getByRole('button',{name:zh?'会话详情面板':'Session details',exact:true});if(await details.getAttribute('aria-pressed')!=='true')await details.click();await page.locator('.inspector').getByRole('button',{name:zh?'任务图':'Task map',exact:true}).click();await page.locator('.task-map').waitFor();await capture(`${cell}-task-map`);await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
   await optional('File editor/preview',async()=>{await page.locator('.ws-top .wb-switcher').getByRole('button',{name:zh?'文件':'Files',exact:true}).click();await page.locator('.wb-tree').getByText('plan.md',{exact:true}).dblclick();await page.locator('.file-workspace').waitFor();await capture(`${cell}-file`);const preview=page.locator('.file-workspace').getByRole('button',{name:zh?'预览':'Preview',exact:true});if(await preview.count()){await preview.click();await capture(`${cell}-preview`)}await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
   await optional('Browser and DevTools',async()=>{
    const browser=page.locator('.wb-web-preview:visible');
    if(!await browser.count()){
     await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click();
-    await page.locator('.chat-compose-shell textarea:visible').fill('open preview');await page.locator('.chat-compose-send[type=submit]:visible').click();
-    await page.locator('.wb-web-preview:visible').waitFor({timeout:30000});
+    await sendChatPrompt({composer:page.locator('.chat-compose-shell textarea:visible'),sendButton:page.locator('.chat-compose-send[type=submit]:visible'),text:'open preview',readSnapshot:()=>request('chat.snapshot',{sessionId:chat.id}),readConnection:()=>request('chat.snapshot',{sessionId:chat.id}).then(value=>value.connection),onDiagnostic:async value=>{(report.sendDiagnostics??=[]).push(value)}});
+    await page.locator('.wb-web-preview:visible').waitFor({timeout:30000}).catch(async error=>{const value=await request('chat.snapshot',{sessionId:chat.id});(report.browserDiagnostics??=[]).push({items:value.items,connection:value.connection});throw error;});
    }
    await capture(`${cell}-browser`);
    const tools=page.locator('.wb-web-preview:visible').getByRole('button',{name:zh?'开发者工具':'Developer tools',exact:true});
@@ -195,7 +200,7 @@ try{
    await until(async()=>(await page.locator('[data-pane-id]').count())===panes,'pane closed');
   });
   await optional('Account menu',async()=>{await page.getByRole('button',{name:zh?'本地用户':'Local user',exact:true}).click();await page.locator('.account-menu').waitFor();await capture(`${cell}-account`);await page.keyboard.press('Escape')});
-  await optional('Settings',async()=>{await page.getByRole('button',{name:zh?'本地用户':'Local user',exact:true}).click();await page.getByRole('button',{name:zh?'设置':'Settings',exact:true}).click();await page.locator('.settings-panel').waitFor();await capture(`${cell}-settings`);await closeDialog()});
+  await optional('Settings',async()=>{await page.getByRole('button',{name:zh?'本地用户':'Local user',exact:true}).click();await page.locator('.account-menu').getByRole('button',{name:zh?'设置':'Settings',exact:true}).click();await page.locator('.settings-panel').waitFor();await capture(`${cell}-settings`);await closeDialog()});
   await optional('Add project',async()=>{await page.locator('.side-scope').click();await page.getByRole('menuitem',{name:zh?'添加项目':'Add project',exact:true}).click();await page.getByRole('dialog').waitFor();await capture(`${cell}-add-project`);await closeDialog()});
   check(`${cell}: production panel/header inventory and screenshots captured`);
  }

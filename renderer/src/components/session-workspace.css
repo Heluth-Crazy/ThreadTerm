@@ -43,3 +43,39 @@
  .runtime-workspace .runtime-nav-toggle { display:grid; place-items:center; flex:none; }
  .runtime-workspace .runtime-nav-scrim { display:block; position:fixed; z-index:30; inset:0; border:0; background:color-mix(in srgb,var(--text) 16%,transparent); cursor:default; }
 }
+
+/* 46px Flush toolbar, copied from the approved .toolbar/.tb-title/.seg. */
+.app-shell .runtime-workspace .ws-top { display:flex; flex:none; align-items:center; gap:6px; height:46px; min-height:46px; padding-top:0; padding-bottom:0; padding-left:10px; background:var(--surface); border-bottom:1px solid var(--border); }
+.runtime-workspace .ws-top > .ws-back { display:grid; place-items:center; width:30px; height:28px; padding:0; border:0; border-radius:6px; color:var(--muted); }
+.runtime-workspace .ws-top > .ws-back .ico { width:17px; height:17px; }
+.runtime-workspace .ws-top > .ws-back:hover { background:var(--fill-hover); color:var(--text); }
+.session-toolbar-identity { display:flex; flex-direction:column; justify-content:center; flex:0 1 200px; min-width:64px; margin:0 6px 0 4px; line-height:1.25; }
+.session-toolbar-title { display:block; width:100%; min-width:0; padding:0; border:0; background:transparent; color:var(--text); font:600 13px var(--font); text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.session-toolbar-subtitle { display:flex; align-items:center; gap:4px; min-width:0; font-size:11px; color:var(--muted); white-space:nowrap; }
+.session-project-crumb, .session-branch-crumb { display:inline-flex; align-items:center; gap:3px; min-width:0; height:16px; padding:0 3px; margin:0 -3px; border:0; border-radius:4px; background:transparent; color:inherit; font-size:11px; }
+.session-project-crumb:hover, .session-branch-crumb:hover { background:var(--fill-selected); color:var(--text); }
+.session-branch-crumb span { overflow:hidden; text-overflow:ellipsis; }
+.session-branch-crumb .ico { width:11px; height:11px; flex:none; }
+.runtime-workspace .ws-top > .top-spacer { flex:1; min-width:8px; }
+.runtime-workspace .ws-top .session-header-more { flex:none; width:30px; height:28px; border-radius:6px; }
+.session-header-run-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:5px 8px; }
+.runtime-workspace .wb-toolbar-views { display:flex; align-items:center; gap:6px; flex:none; }
+.runtime-workspace .wb-switcher { display:inline-flex; align-items:center; height:28px; gap:1px; padding:2px; border-radius:7px; background:var(--fill-hover); }
+.runtime-workspace .wb-switch-btn { display:inline-flex; align-items:center; justify-content:center; gap:5px; height:24px; min-width:30px; width:auto; padding:0 7px; border:0; border-radius:5px; color:var(--muted); font-size:12px; }
+.runtime-workspace .wb-switch-btn .ico { width:16px; height:16px; }
+.runtime-workspace .wb-switch-btn:hover { background:transparent; color:var(--text); }
+.runtime-workspace .wb-switch-btn.active { background:var(--control); color:var(--text); box-shadow:0 0 0 .5px var(--control-edge),0 1px 2px var(--control-drop); }
+.runtime-workspace .wb-switch-badge { position:static; min-width:0; height:auto; padding:0; border:0; border-radius:0; background:none; box-shadow:none; color:var(--muted); font-size:10.5px; font-weight:600; line-height:1; }
+.runtime-workspace .wb-switch-btn[data-view="details"] { width:30px; height:28px; margin:0; border-radius:6px; padding:0; }
+.runtime-workspace .wb-switch-btn[data-view="details"]::before { display:none; }
+.runtime-workspace .wb-switch-btn[data-view="details"].active { background:var(--fill-selected); box-shadow:none; }
+@media (max-width:1100px) { .session-toolbar-identity { flex-basis:140px; } .runtime-workspace .ws-top > .top-spacer { min-width:0; } }
+@media (max-width:760px) {
+ .session-toolbar-identity { flex-basis:100px; min-width:40px; }
+ .runtime-workspace .ws-top .ql-activity { width:180px; min-width:120px; flex:1; }
+ .runtime-workspace .wb-switch-btn { min-width:24px; padding:0 4px; }
+ .runtime-workspace .runtime-nav-toggle { display:none; }
+}
+
+.runtime-workspace .ws-top .runtime-nav-toggle { display:none; }
+@media (max-width:760px) { .app-shell:not(.sidebar-collapsed) .runtime-workspace .ws-top .runtime-nav-toggle { display:grid; } }

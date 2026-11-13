@@ -46,6 +46,7 @@ import type { ContextItem } from '../chatContext';
 import { ContextHost } from './ContextHost';
 import { ContextSendDialogHost } from './ContextSendAction';
 import { retitleGroupTabs } from '../groupNavigation';
+import { CatalogPopover } from './CatalogActions';
 
 const working=(s:Session)=>!s.readOnly&&['starting','running','idle','waiting'].includes(s.status);
 const tabFor=(s:Session)=>({id:`session-${s.id}`,kind:'session' as const,sessionId:s.id});
@@ -136,6 +137,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const [pinPicker,setPinPicker]=useState(false);
  const [picker,setPicker]=useState<{mode:'switch'|'add'|'fill';paneId?:string}>(),[query,setQuery]=useState(''),[allProjects,setAllProjects]=useState(false);
  const [configOpen,setConfigOpen]=useState(false);
+ const [headerMore,setHeaderMore]=useState<HTMLElement>();
  const [navigationOpen,setNavigationOpen]=useState(false);
  const navigationToggle=useRef<HTMLButtonElement>(null);
  const [issue,setIssue]=useState<string>(),[fullscreen,setFullscreen]=useState(false);
@@ -608,16 +610,25 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const backTitle=home?(zh?`返回 ${home}`:`Back to ${home}`):(zh?'返回所有终端':'Back to all terminals');
  return <section className={`ws session-screen runtime-workspace${fullscreen?' terminal-fullscreen':''}`} data-external-files data-external-disabled-reason={externalDisabledReason} data-git-workbench data-git-workbench-host={gitWorkbenchHost.current} data-git-repository={git?'true':undefined} data-run-workbench data-run-workbench-host={runWorkbenchHost.current} data-run-project-id={project?.id} data-run-worktree-path={path} data-navigation-open={navigationOpen||undefined} aria-label={zh?'终端工作区':'Terminal workspace'}>
   {navigationOpen&&<button type="button" className="runtime-nav-scrim" aria-label={zh?'关闭导航':'Close navigation'} onClick={()=>closeNavigation()}/>}
-  <header className="ws-top">
-   <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/><span>{zh?'返回':'Back'}</span></button>
+  <header className="ws-top prototype-session-header">
+   <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/></button>
    <button ref={navigationToggle} type="button" className="runtime-nav-toggle icon-btn" aria-label={zh?'打开导航':'Open navigation'} aria-expanded={navigationOpen} aria-controls="runtime-navigation" onClick={()=>navigationOpen?closeNavigation(false):setNavigationOpen(true)}><Icon name="panel"/></button>
-   {project&&<button className="ws-chip" title={project.name} onClick={()=>onProject(project.id)}><span className="dot primary"/><span className="ws-chip-label">{project.name}</span></button>}
-   {project&&<button className="ws-chip branch" title={displayPath(path??'')} onClick={()=>onProject(project.id,path)}><Icon name="branch"/><span className="ws-chip-label">{currentTree?.branch??git?.branch??displayPath(path??'').split(/[\\/]/).at(-1)}</span></button>}
-   {project&&path&&<QuickLaunchMenu key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb} onOpenRunView={()=>setWorkbenchCommand({view:'run',key:crypto.randomUUID()})} openSignal={quickPickSignal}/>}
-   {session.run&&<QuickLaunchRunChip session={session} onOpenPreview={paneWorkbench.openWeb}/>}
+   <div className="session-toolbar-identity">
+    <button type="button" className="session-toolbar-title" title={session.title} onClick={()=>setConfigOpen(true)}>{session.title}</button>
+    <span className="session-toolbar-subtitle">{project&&<><button type="button" className="session-project-crumb" onClick={()=>onProject(project.id)}>{project.name}</button><span>·</span><button type="button" className="session-branch-crumb" title={displayPath(path??'')} onClick={()=>onProject(project.id,path)}><Icon name="branch"/><span>{currentTree?.branch??git?.branch??displayPath(path??'').split(/[\\/]/).at(-1)}</span></button></>}</span>
+   </div>
+   <div className="top-spacer"/>
+   {project&&path&&<QuickLaunchMenu presentation="activity" key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb} onOpenRunView={()=>setWorkbenchCommand({view:'run',key:crypto.randomUUID()})} openSignal={quickPickSignal}/>}
    <div className="top-spacer"/>
    <div className="ws-tools-host" ref={setHeaderTools}/>
+   <button type="button" className="icon-btn session-header-more" aria-label={zh?'会话更多操作':'More session actions'} aria-haspopup="menu" aria-expanded={Boolean(headerMore)} onClick={event=>setHeaderMore(headerMore?undefined:event.currentTarget)}><Icon name="more"/></button>
   </header>
+  {headerMore&&<CatalogPopover anchor={headerMore} align="start" label={zh?'会话操作':'Session actions'} onClose={()=>setHeaderMore(undefined)}>
+   <button type="button" role="menuitem" className="menu-item" onClick={()=>{setHeaderMore(undefined);setConfigOpen(true);}}><Icon name="gear"/>{zh?'配置':'Configure'}</button>
+   <button type="button" role="menuitem" className="menu-item" onClick={()=>{setHeaderMore(undefined);setPicker({mode:'switch'});setQuery('');}}><Icon name="terminal"/>{zh?'切换会话':'Switch session'}</button>
+   {project&&<button type="button" role="menuitem" className="menu-item" onClick={()=>{setHeaderMore(undefined);onProject(project.id,path);}}><Icon name="branch"/>{zh?'工作树':'Worktree'}</button>}
+   {session.run&&<div className="session-header-run-meta"><QuickLaunchRunChip session={session} onOpenPreview={url=>{setHeaderMore(undefined);paneWorkbench.openWeb?.(url);}}/></div>}
+  </CatalogPopover>}
   <div className="ws-body"><div className="ws-center">
    {issue&&<p className="surface-error" role="alert">{issue}</p>}
    {commentNotice&&<div className="ws-notice-anchor"><p role="status">{commentNotice}</p></div>}
