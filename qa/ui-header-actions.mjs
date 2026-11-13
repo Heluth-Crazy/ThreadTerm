@@ -74,7 +74,7 @@ async function configure(page, app, width, height, theme, lang, origin) {
   await page.goto(`${origin}/?theme=${theme}&lang=${lang}`);
   await page.locator('.sess-row').first().waitFor();
   await page.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme);
-  await page.addStyleTag({ content: '.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr)!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
+  await page.addStyleTag({ content: '.window-controls.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr)!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
   const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
   await page.evaluate(([language, revision, id]) => window.threadterm.request('settings.update', { patch: { language }, expectedRevision: revision, operationId: id }), [lang === 'zh' ? 'zh-CN' : 'en', settings.revision, randomUUID()]);
   await page.waitForTimeout(80);

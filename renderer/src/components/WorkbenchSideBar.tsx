@@ -144,7 +144,7 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
  const switcher = <nav className="wb-switcher" aria-label={text('Workbench views', '侧栏视图')}>
   {views.map(view => <button key={view.id} type="button" className={`wb-switch-btn${open && stored.view === view.id ? ' active' : ''}`}
    data-view={view.id} aria-pressed={open && stored.view === view.id} aria-label={view.label}
-   title={`${view.label}${view.shortcut ? ` (${view.shortcut})` : ''}${open && stored.view === view.id ? text(' · click to hide the side bar (Ctrl+B)', ' · 再次点击隐藏侧栏（Ctrl+B）') : ''}`}
+   title={`${view.label}${view.shortcut ? ` (${view.shortcut})` : ''}${open && stored.view === view.id ? text(' · click to hide the side bar (Ctrl+Alt+B)', ' · 再次点击隐藏侧栏（Ctrl+Alt+B）') : ''}`}
    onClick={() => select(view.id)}>
    <WbIcon name={view.icon}/>{view.badge ? <span className="wb-switch-badge">{view.badge > 99 ? '99+' : view.badge}</span> : null}
   </button>)}
@@ -154,7 +154,7 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   {open && <div ref={slot} className={`wb-sidebar-slot${browserWidth?' wb-sidebar-browser':''}`} style={{width:browserWidth&&!workspaceWidth?'45%':width}}><div className="wb-sidebar-strip" aria-hidden="true"/><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>
    <section className="wb-panel" aria-label={current.label}>
     <header className="wb-panel-head"><strong>{current.label}</strong><div className="wb-panel-actions" ref={setActionsHost}>{browserWidth&&browserActions}</div>
-     <button type="button" className="icon-btn wb-panel-close" title={text('Close side bar (Ctrl+B)', '关闭侧栏（Ctrl+B）')} aria-label={text('Close side bar', '关闭侧栏')} onClick={() => setOpen(false)}><Icon name="close"/></button></header>
+     <button type="button" className="icon-btn wb-panel-close" title={text('Close side bar (Ctrl+Alt+B)', '关闭侧栏（Ctrl+Alt+B）')} aria-label={text('Close side bar', '关闭侧栏')} onClick={() => setOpen(false)}><Icon name="close"/></button></header>
     <div className="wb-panel-body">
      {stored.view==='browser'&&browser?.(()=>setOpen(false))}
      {stored.view==='details'&&details}

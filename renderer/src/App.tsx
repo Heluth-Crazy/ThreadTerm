@@ -119,6 +119,7 @@ function MachineApp() {
   const floatingWindow = new URLSearchParams(window.location.search).get("floating") === "1";
   const nativeChrome = new URLSearchParams(window.location.search).get("chrome") === "native";
   const [windowMaximized, setWindowMaximized] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   useEffect(() => {
     let disposed = false;
     void windowState().then((state) => { if (!disposed) setWindowMaximized(state.maximized); });
@@ -386,6 +387,10 @@ function MachineApp() {
       const modifier = event.ctrlKey || event.metaKey;
       if (modifier && event.key !== "Control" && event.key !== "Meta")
         modifierChordUsed.current = true;
+      if (modifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "b" && !(event.target as Element | null)?.closest?.(".xterm")) {
+        event.preventDefault();
+        setSidebarCollapsed(value => !value);
+      }
       if (modifier && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setPaletteOpen(true);
@@ -420,39 +425,28 @@ function MachineApp() {
       <NativeSubagentsContext.Provider value={data?.nativeSubagents}>
       <AppSettingsProvider settings={data?.settings}>
       {remoteMachine && <HostFiles />}
-      <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}${remoteMachine ? ' remote-machine' : ''}`} style={{ '--machine-color': currentMachine?.color } as CSSProperties}>
+      <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}${remoteMachine ? ' remote-machine' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} style={{ '--machine-color': currentMachine?.color } as CSSProperties}>
         {!remoteMachine && themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
-        <header className="titlebar app-chrome">
-          <div className="drag-region"><span className="chrome-title">{remoteMachine ? `ThreadTerm — ${currentMachine?.name ?? ''}` : 'ThreadTerm'}</span><MachineChrome zh={locale === 'zh-CN'} /></div>
-          <div className="window-controls">
-            <button
-              aria-label={t("minimize")}
-              onClick={() => void windowAction("minimize")}
-            >
-              <Icon name="minimize" />
-            </button>
-            <button
-              aria-label={t("maximize")}
-              onClick={() => void windowAction("maximize")}
-            >
-              <Icon name="maximize" />
-            </button>
-            <button
-              aria-label={t("closeWindow")}
-              onClick={() => void windowAction("close")}
-            >
-              <Icon name="close" />
-            </button>
-          </div>
-        </header>
+        <div className="window-controls app-chrome" role="group" aria-label={locale === 'zh-CN' ? '窗口控制' : 'Window controls'}>
+          <button type="button" aria-label={t("minimize")} onClick={() => void windowAction("minimize")}><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" /></svg></button>
+          <button type="button" aria-label={t("maximize")} onClick={() => void windowAction("maximize")}><svg viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" rx="1" /></svg></button>
+          <button type="button" className="caption-close" aria-label={t("closeWindow")} onClick={() => void windowAction("close")}><svg viewBox="0 0 10 10" aria-hidden="true"><path d="m.5.5 9 9m0-9-9 9" /></svg></button>
+        </div>
+        {sidebarCollapsed && <div className="shell-toolbar-prefix">
+          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={false} onClick={() => setSidebarCollapsed(false)}><Icon name="panel" /></button>
+          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4H4v16h16V10M12 12l8-8 2 2-8 8-4 1z" /></svg></button>
+          {remoteMachine && <MachineChrome zh={locale === 'zh-CN'} />}
+        </div>}
         <aside className="sidebar">
           <div className="side-head">
-            <button className="brand-home" onClick={() => void navigate({ kind: "workbench" })}><span className="brand-mark"><img src="./brand-mark.png" alt="" /></span>ThreadTerm</button>
-            <button className="icon-btn" aria-label={t("commandPalette")} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
+            <button className="brand-home" aria-label="ThreadTerm" title="ThreadTerm" onClick={() => void navigate({ kind: "workbench" })}><span className="brand-mark"><img src="./brand-mark.png" alt="" /></span></button>
+            <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed(true)}><Icon name="panel" /></button>
             <button aria-label={t("inbox")} className="icon-btn" aria-expanded={shellMenu?.kind==="notifications"} onClick={event => setShellMenu(shellMenu?.kind==="notifications"?undefined:{kind:"notifications",anchor:event.currentTarget})}><Icon name="bell" />{inboxUnread > 0 && <i className="bell-badge">{inboxUnread}</i>}</button>
+            <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4H4v16h16V10M12 12l8-8 2 2-8 8-4 1z" /></svg></button>
           </div>
+          <div className="side-search"><button type="button" className="search-field" aria-label={t("commandPalette")} onClick={() => setPaletteOpen(true)}><Icon name="search" /><span>{locale === 'zh-CN' ? '搜索' : 'Search'}</span><kbd>Ctrl K</kbd></button></div>
+          {remoteMachine && <div className="sidebar-machine-head"><span>ThreadTerm — {currentMachine?.name}</span><MachineChrome zh={locale === 'zh-CN'} /></div>}
           <div className="side-scroll"><nav className="side-nav" aria-label={t("primaryNavigation")}>
-            <button className="nav-item new" onClick={() => setCreatorOpen(true)}><Icon name="plus" />{locale==="zh-CN"?"新建终端":"New terminal"}</button>
             <button
               className={route.kind === "inbox" ? "nav-item active" : "nav-item"}
               onClick={() => void navigate({ kind: "inbox" })}
@@ -463,7 +457,7 @@ function MachineApp() {
               className={route.kind === "all" ? "nav-item active" : "nav-item"}
               onClick={() => void navigate({ kind: "all" })}
             >
-              <Icon name="terminal" />{locale==="zh-CN"?"所有终端":"All terminals"}
+              <Icon name="terminal" /><span className="grow">{locale==="zh-CN"?"所有终端":"All terminals"}</span><span className="badge">{data?.sessions.filter(item => !item.archived).length ?? 0}</span>
             </button>
           </nav>
           <MachineRows zh={locale === 'zh-CN'} onAddComputer={() => { if (remoteMachine) void machineBridge()?.machineSettings(); else { setSettingsInitialTab('computers'); setSettingsOpen(true); } }}>
@@ -485,10 +479,11 @@ function MachineApp() {
           />
           </MachineRows>
           </div>
-          <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar runtime-avatar"><WbIcon name="person" /><RuntimeAvatarBadge state={visibleRuntimeProblem} locale={locale} /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button></div>
+          <div className="side-foot"><button className="user-row" aria-label={locale === "zh-CN" ? "本地用户" : "Local user"} aria-expanded={shellMenu?.kind==="account"} onClick={event => setShellMenu(shellMenu?.kind==="account"?undefined:{kind:"account",anchor:event.currentTarget})}><span className="avatar runtime-avatar"><WbIcon name="person" /><RuntimeAvatarBadge state={visibleRuntimeProblem} locale={locale} /></span><span className="user-copy"><span>{locale === "zh-CN" ? "本地用户" : "Local user"}</span><small>{locale === "zh-CN" ? "本地配置" : "Local profile"}</small></span><WbIcon name="chev-up" className="user-selector" /></button><button type="button" className="icon-btn" aria-label={t("settings")} onClick={() => setSettingsOpen(true)}><Icon name="gear" /></button></div>
         </aside>
         <main className="content main">
           {remoteMachine && currentMachine && ['incompatible', 'pin-mismatch'].includes(currentMachine.state) && <div className="machine-failure" role="alert"><strong>{currentMachine.state === 'pin-mismatch' ? (locale === 'zh-CN' ? '此电脑的身份已更改' : 'This computer’s identity changed') : (locale === 'zh-CN' ? '版本不一致' : 'Version mismatch')}</strong><p>{currentMachine.message}</p><button type="button" className="btn" onClick={() => void machineBridge()?.machineShow('local')}>{locale === 'zh-CN' ? '返回这台电脑' : 'Back to This PC'}</button></div>}
+          {(route.kind === 'workbench' || !data || Boolean(error)) && <header className="shell-route-toolbar"><strong>{route.kind === 'workbench' ? (locale === 'zh-CN' ? '工作台' : 'Workbench') : 'ThreadTerm'}</strong></header>}
           <div data-runtime-header-host />
           <div className="toolbar legacy-toolbar">
             <div>

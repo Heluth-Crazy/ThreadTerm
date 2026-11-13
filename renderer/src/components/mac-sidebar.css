@@ -1,0 +1,115 @@
+/* Flush Mac source-list geometry from prototypes/mac-style/index.html.  Kept
+   component-scoped so the shell owns the sidebar frame and header. */
+.project-catalog .catalog-head { margin-top: 12px; }
+.project-catalog .side-label,
+.machine-rows .machine-row,
+.project-catalog .proj-row,
+.project-catalog .tree-row,
+.project-catalog .sess-row,
+.machine-rows .machine-add {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  height: 28px;
+  margin: 0 10px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  text-align: left;
+  white-space: nowrap;
+}
+.project-catalog .side-label { height: 26px; color: var(--faint); font-size: 11px; font-weight: 600; }
+.project-catalog .side-label:hover,
+.machine-rows .machine-row:hover,
+.project-catalog .proj-row:hover,
+.project-catalog .tree-row:hover,
+.project-catalog .sess-row:hover,
+.machine-rows .machine-add:hover { background: var(--fill-hover); }
+.project-catalog .proj-row-wrap.active > .proj-row,
+.project-catalog .tree-row.active,
+.project-catalog .sess-row.active,
+.machine-rows .machine-row.active { background: var(--fill-selected); }
+
+.project-catalog .proj-row-wrap,
+.project-catalog .tree-row-wrap,
+.project-catalog .sess-row-wrap,
+.machine-rows .machine-row-wrap { min-height: 28px; }
+.project-catalog .proj-disclosure,
+.machine-rows .machine-disclosure {
+  display: grid;
+  place-items: center;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 28px;
+  margin-right: -2px;
+  color: var(--faint);
+}
+.project-catalog .proj-disclosure .chev,
+.machine-rows .machine-disclosure .chev { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform .15s; }
+.project-catalog .proj-disclosure.open .chev,
+.machine-rows .machine-disclosure.open .chev { transform: rotate(0); }
+.project-catalog .proj-row > .ico,
+.project-catalog .tree-row > .bico > .ico,
+.machine-rows .machine-add > .ico { width: 16px; height: 16px; color: var(--primary); }
+.project-catalog .tree-list { margin: 0; }
+.project-catalog .tree-row { padding-left: 30px; }
+.project-catalog .sess-row { position: relative; padding-left: 44px; }
+.project-catalog .sess-row-wrap.is-delegate { padding-left: 14px; }
+.project-catalog .sess-row .bico { flex: 0 0 20px; width: 20px; min-width: 20px; gap: 0; }
+.project-catalog .sess-row .session-agent-icon { width: 16px; height: 16px; }
+.project-catalog .sess-row .session-agent-icon [data-agent-tile] { width: 16px !important; height: 16px !important; }
+.project-catalog .sess-row .bico-dot { position: absolute; right: 9px; top: 10px; width: 7px; height: 7px; }
+.project-catalog .sess-row { padding-right: 24px; }
+.project-catalog .sess-row .bico-dot.st-ended,
+.project-catalog .sess-row .bico-dot.st-stalled,
+.project-catalog .sess-row .bico-dot.st-running { display: none; }
+.project-catalog .sess-row .session-attention-ring,
+.project-catalog .sess-row .session-attention-icon,
+.project-catalog .session-attention-bar { display: none; }
+.project-catalog .sess-row .session-activity-running::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  top: 8px;
+  width: 12px;
+  height: 12px;
+  border: 1.6px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  border-top-color: var(--muted);
+  border-radius: 50%;
+  animation: mac-sidebar-spin .9s linear infinite;
+}
+.project-catalog .sess-row .session-activity-running .bico-dot { display: none; }
+.project-catalog .sess-row .grow,
+.project-catalog .proj-row .grow,
+.project-catalog .tree-row .grow,
+.machine-rows .machine-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.project-catalog .delegate-chip,
+.project-catalog .group-state,
+.project-catalog .follow-star { max-width: 0; overflow: hidden; opacity: 0; margin: 0; padding: 0; }
+.project-catalog .catalog-head,
+.project-catalog .side-label { text-transform: none; }
+.project-catalog .badge,
+.machine-rows .badge { background: transparent; color: var(--muted); font-size: 12px; font-weight: 400; }
+
+.machine-rows { margin-top: 12px; }
+.machine-rows .machine-group { margin-top: 12px; }
+.machine-rows .machine-row-wrap { display: flex; align-items: center; }
+.machine-rows .machine-row { flex: 1; min-height: 26px; height: 26px; margin-left: 0; background: transparent; box-shadow: none; color: var(--faint); font-size: 11px; font-weight: 600; }
+.machine-rows .machine-row.active { background: transparent; box-shadow: none; }
+.machine-rows .machine-row .machine-dot { width: 6px; height: 6px; background: var(--faint); }
+.machine-rows .machine-row-wrap[data-state="local"] .machine-dot,
+.machine-rows .machine-row-wrap[data-state="connected"] .machine-dot { background: var(--st-running); }
+.machine-rows .machine-row small { margin-left: auto; color: var(--muted); font-size: 11px; }
+.machine-rows .machine-add { color: var(--text); }
+.machine-rows .machine-add > .ico { color: var(--primary); }
+.machine-rows .machine-more,
+.project-catalog .row-more,
+.project-catalog .tree-new { border-radius: 5px; color: var(--muted); }
+.machine-rows .machine-more:hover,
+.project-catalog .row-more:hover,
+.project-catalog .tree-new:hover { background: var(--fill-selected); color: var(--text); }
+@keyframes mac-sidebar-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .project-catalog .sess-row .session-activity-running::after { animation: none; } }

@@ -73,7 +73,7 @@ try {
     const language = lang === 'zh' ? 'zh-CN' : 'en';
     await page.evaluate(([language, revision, id]) => window.threadterm.request('settings.update', { patch: { language }, expectedRevision: revision, operationId: id }), [language, settings.revision, crypto.randomUUID()]);
     await page.waitForFunction(language => document.body.innerText.includes(language === 'zh-CN' ? '所有终端' : 'All terminals'), language);
-    await page.addStyleTag({ content: '.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr)!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
+    await page.addStyleTag({ content: '.window-controls.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr)!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
     await page.locator('.proj-row').first().waitFor();
     await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
     if (proposalCss) await page.addStyleTag({ content: proposalCss });

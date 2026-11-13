@@ -7,6 +7,7 @@ import { sameCanonicalScope } from '../projectScope';
 import { sessionState, sessionStateLabel } from '../sessionState';
 import { isTerminalAttentionSession, sessionActivity, sessionActivityLabel, sortSessionsByActivity } from '../sessionActivity';
 import { boundedExpandedParents, foldedDelegateRows } from '../delegateFold';
+import './mac-sidebar.css';
 
 export function MachineRows({ zh, children, onAddComputer }: { zh: boolean; children?: ReactNode; onAddComputer?: () => void }) {
   return <MachineRowsView zh={zh} snapshot={useMachines()} feed={useMachineTree()} onAddComputer={onAddComputer}>{children}</MachineRowsView>;
@@ -75,7 +76,7 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
       const key = machineTreeKey(machine.id, 'machine', machine.id), own = snapshot.currentId === machine.id;
       const name = machine.id === 'local' && zh ? '这台电脑' : machine.name;
       return <div className="machine-group" key={key} data-machine-id={machine.id}>
-        <div className="machine-row-wrap" style={{ '--machine-color': machine.color } as CSSProperties}>
+        <div className="machine-row-wrap" data-state={machine.state} style={{ '--machine-color': machine.color } as CSSProperties}>
           {online && <button type="button" className={`machine-disclosure${expanded(key) ? ' open' : ''}`} aria-expanded={expanded(key)} aria-label={`${expanded(key) ? (zh ? '收起' : 'Collapse') : (zh ? '展开' : 'Expand')} ${name}`} onClick={() => toggle(key)}><Icon name="chevron" className="chev" /></button>}
           <button type="button" className={`machine-row${own ? ' active' : ''}`} aria-current={own ? 'true' : undefined} onClick={() => open(machine.id)}>
             <i className="machine-dot" aria-hidden="true" /><span className="machine-name">{name}</span>{online ? count(tree?.needsYou ?? 0) : <small>{machineStateLabel(machine.state, zh)}</small>}

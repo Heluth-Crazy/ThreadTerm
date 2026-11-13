@@ -25,7 +25,7 @@ const appDir=join(scratch,'app'),bin=join(scratch,'bin'),work=join(scratch,'work
 const out=join(root,'qa/results/sidebar-footer',process.argv[2]&&/^[\w.-]+$/.test(process.argv[2])?process.argv[2]:'current');
 const runtime=process.env.THREADTERM_V3_RUNTIME_BIN??join(root,'runtime/target-qa/debug/threadterm-v3-runtime.exe'),pipe=`\\\\.\\pipe\\tt-sidebar-footer-${randomUUID()}`;
 const lock=join(scratchBase,'qa-electron.lock');
-const report={passed:false,checks:[],screenshots:[],geometry:[],bottomGapPixels:[],runtimeStates:[],errors:[],contrast:[],limitations:['Reconnect states use the existing QA-only control-drop/resume IPC with the isolated runtime. Unavailable is represented by a protocol-valid runtime.transport/incompatible event delivered through the same Electron event channel used by RuntimeClient. The app applies its required 1000 ms problem-state delay before this harness samples reconnecting or unavailable. Fullscreen geometry is checked with the existing fullscreen class; no terminal provider is started. The app has no shell-sidebar collapse control.']};
+const report={passed:false,checks:[],screenshots:[],geometry:[],bottomGapPixels:[],runtimeStates:[],errors:[],contrast:[],limitations:['Reconnect states use the existing QA-only control-drop/resume IPC with the isolated runtime. Unavailable is represented by a protocol-valid runtime.transport/incompatible event delivered through the same Electron event channel used by RuntimeClient. The app applies its required 1000 ms problem-state delay before this harness samples reconnecting or unavailable. Fullscreen geometry is checked with the existing fullscreen class; no terminal provider is started. The shell sidebar supports Ctrl+B; the workbench panel uses Ctrl+Alt+B.']};
 let app,page,runtimeProcess,locked=false;
 let fixtureSnapshot,fixtureFailure=false,holdSnapshot=false,held=[],servers=[],peers=[],sequence=0,fakeRequests=[];
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));
@@ -220,6 +220,13 @@ try{
 
  await matrix();
  await settings('en','light');await standaloneRoutes();
+ await page.keyboard.press('Control+b');await page.locator('.app-shell.sidebar-collapsed').waitFor();
+ assert.equal(await page.locator('.sidebar').isVisible(),false,'Ctrl+B collapses the shell source list');
+ await page.locator('.shell-toolbar-prefix').getByRole('button',{name:'New terminal',exact:true}).waitFor();
+ await page.locator('.shell-toolbar-prefix').getByRole('button',{name:'Toggle sidebar',exact:true}).click();
+ await page.locator('.app-shell:not(.sidebar-collapsed)').waitFor();
+ assert.equal(await page.locator('.sidebar').isVisible(),true,'toolbar toggle restores the same source list');
+ check('shell Ctrl+B collapse moves toggle/New terminal to toolbar and restores navigation');
  await openWorkspace();await matrix('workspace');
  await settings('en','light');
  // Layout-only guards exercise the production CSS selectors without starting a terminal.

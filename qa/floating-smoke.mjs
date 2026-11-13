@@ -96,11 +96,11 @@ try {
   if(!await page.locator('.session-fullscreen-row').count())await page.getByRole('button',{name:/^Session details$|^会话详情面板$/}).click();
   const fullscreen = page.getByRole('button', { name: /fullscreen terminal|全屏终端/i });
   await fullscreen.click();
-  await page.waitForFunction(() => getComputedStyle(document.querySelector('.titlebar')).display === 'none');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.window-controls')).display === 'none');
   const beforeEscape = await runtimeRequest('runtime.snapshot', {});
   assert.equal(beforeEscape.sessions.find((item) => item.id === third.id)?.status, 'running');
   await page.keyboard.press('Escape');
-  await page.waitForFunction(() => getComputedStyle(document.querySelector('.titlebar')).display !== 'none');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.window-controls')).display !== 'none');
   const afterEscape = await runtimeRequest('runtime.snapshot', {});
   assert.equal(afterEscape.sessions.find((item) => item.id === third.id)?.status, 'running');
   report.checks.push('terminal fullscreen hid chrome and Escape restored it without ending the active PTY');

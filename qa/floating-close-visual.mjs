@@ -86,13 +86,13 @@ try {
   assert.ok(floatPage, `floating window did not open (${seen.length}): ${seen.join(' | ')}`);
   floatPage.setDefaultTimeout(20_000);
   await floatPage.locator('#boot-splash').waitFor({ state: 'detached' }).catch(() => undefined);
-  await floatPage.locator('.floating-shell > .titlebar').waitFor();
+  await floatPage.locator('.floating-shell > .window-controls').waitFor();
   const composer = floatPage.locator(`[data-testid="session-chat-${session.id}"] textarea`);
   await composer.waitFor();
   await composer.fill('dirty floating draft survives close');
   await floatPage.waitForTimeout(700); // Let the production debounced durable draft writer settle before close.
   const geometry = await floatPage.locator('.floating-shell').evaluate(node => getComputedStyle(node).gridTemplateRows);
-  assert.match(geometry, /36px/, `floating header row is missing: ${geometry}`);
+  assert.equal(geometry.trim().split(/\s+/).length, 1, `floating shell has one full-height row: ${geometry}`);
   for (const [language, theme, width, label, closeName] of [['en', 'light', 1100, 'wide', 'Close window'], ['zh-CN', 'dark', 560, 'narrow', '关闭窗口']]) {
     const snap = await rpc('runtime.snapshot');
     await rpc('settings.update', { patch: { language, theme, notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snap.settings.revision, operationId: randomUUID() });
@@ -100,7 +100,7 @@ try {
     const close = floatPage.getByRole('button', { name: closeName });
     await close.waitFor();
     const box = await close.boundingBox();
-    assert.ok(box && box.y < 40 && box.height > 0, `${label}: close control is outside the 36px titlebar`);
+    assert.ok(box && box.y < 12 && Math.abs(box.height - 46) < 1, `${label}: close control is outside the 46px toolbar`);
     await floatPage.screenshot({ path: join(out, `float-${language}-${theme}-${label}.png`) });
     report.screenshots.push(join(out, `float-${language}-${theme}-${label}.png`));
   }

@@ -249,7 +249,7 @@ try {
   assert.ok(!remoteSnapshot.projects.some(item => item.name === 'Client-only project'));
   assert.ok(!(await rpc(localPage, 'runtime.snapshot')).projects.some(item => item.id === hostProject.id));
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()), 'ThreadTerm — Office-PC');
-  const chrome = await remotePage.locator('.titlebar').evaluate(element => ({ width: getComputedStyle(element).borderTopWidth, color: getComputedStyle(element).borderTopColor }));
+  const chrome = await remotePage.locator('.app-shell').evaluate(element => ({ width: getComputedStyle(element, '::after').height, color: getComputedStyle(element, '::after').backgroundColor }));
   assert.equal(chrome.color, 'rgb(63, 184, 166)');
   assert.ok(Math.abs(parseFloat(chrome.width) - 3) <= 1 / await remotePage.evaluate(() => devicePixelRatio), '3px border within one physical pixel of DPI rounding');
   await remotePage.getByText('on Office-PC', { exact: true }).waitFor();

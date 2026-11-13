@@ -591,9 +591,10 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    // Ctrl+F5 / Shift+F5 / Ctrl+Shift+F5 act on this worktree's current configuration from any side bar view.
    const run=runKeyCommand(event);
    if(run){event.preventDefault();const scope=workbenchScopeRef.current,runScope=scope&&{projectId:scope.projectId,root:scope.rootPath};if(run.current==='run'&&runScope&&!currentRunEntry(runScope,latestData.current.sessions,runCurrentConfigs.get(runScope)))setQuickPickSignal(value=>(value??0)+1);else performRunCommand(run);return;}
-   if(!(event.ctrlKey||event.metaKey)||event.altKey||(event.target as Element|null)?.closest?.('.xterm'))return;
+   if(!(event.ctrlKey||event.metaKey)||(event.target as Element|null)?.closest?.('.xterm'))return;
+   if(event.altKey){if(!event.shiftKey&&event.key.toLowerCase()==='b'){event.preventDefault();setWorkbenchCommand({view:'toggle',key:crypto.randomUUID()});}return;}
    const letter=event.key.toLowerCase();
-   const view:WorkbenchView|'toggle'|undefined=event.shiftKey?({e:'files',f:'search',g:'scm'} as Record<string,WorkbenchView>)[letter]:letter==='b'?'toggle':undefined;
+   const view:WorkbenchView|'toggle'|undefined=event.shiftKey?({e:'files',f:'search',g:'scm'} as Record<string,WorkbenchView>)[letter]:undefined;
    if(!event.shiftKey&&letter==='p'){event.preventDefault();setQuickOpen(true);return;}
    if(!event.shiftKey&&letter==='o'){event.preventDefault();void chooseOutsideRef.current();return;}
    if(view){event.preventDefault();setWorkbenchCommand({view,key:crypto.randomUUID()});}

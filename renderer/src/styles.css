@@ -42,6 +42,7 @@
   --shadow:0 16px 48px rgba(0,0,0,.42); --shadow-soft:0 8px 24px rgba(0,0,0,.32);
 }
 :root {
+  --caption-close:#c42b1c; --caption-close-fg:#fff;
   --font:"Segoe UI Variable Text","Segoe UI",system-ui,"Microsoft YaHei UI",sans-serif;
   --mono:"Cascadia Mono","Cascadia Code",Consolas,monospace;
   font-family:var(--font); font-size:13px;
@@ -129,29 +130,64 @@ html { color-scheme:light; }
 html[data-theme="dark"] { color-scheme:dark; }
 #root { isolation:isolate; padding:10px; }
 #root:has(.app-shell.is-maximized), #root:has(.app-shell.native-chrome) { padding:0; }
-.app-shell { position:relative; height:100%; display:grid; grid-template-columns:240px minmax(0,1fr); grid-template-rows:36px minmax(0,1fr); background:var(--bg); container-name:app; container-type:inline-size; border:1px solid var(--app-window-stroke, var(--border)); border-radius:var(--radius-window, 8px); overflow:hidden; }
-/* Native chrome (Windows 11): DWM rounds the opaque window, so no CSS frame. */
+/* Flush shell: one row; the source list reaches the window top. */
+.app-shell { --sidebar-width:244px; --caption-width:138px; position:relative; height:100%; display:grid; grid-template-columns:var(--sidebar-width) minmax(0,1fr); grid-template-rows:minmax(0,1fr); background:var(--bg); container-name:app; container-type:inline-size; border:1px solid var(--app-window-stroke,var(--border)); border-radius:10px; overflow:hidden; }
 .app-shell.is-maximized, .app-shell.native-chrome { border:0; border-radius:0; }
-.app-shell > .titlebar { grid-column:1 / -1; grid-row:1; display:flex; align-items:center; height:36px; border-bottom:1px solid var(--border); background:var(--side); }
-.drag-region { flex:1; height:100%; display:flex; align-items:center; padding-left:12px; -webkit-app-region:drag; }
-.chrome-title { font-size:12px; color:var(--muted); }
-.window-controls { display:flex; height:36px; -webkit-app-region:no-drag; }
-.window-controls button { display:grid; place-items:center; width:46px; height:36px; padding:0; border:0; border-radius:0; background:transparent; }
-.window-controls button:hover:not(:disabled) { background:var(--soft); }
-.window-controls button:last-child:hover:not(:disabled) { background:var(--danger); color:var(--bg); }
-.window-controls svg { width:12px; height:12px; }
-.app-shell > .sidebar, .app-shell > .content.main { grid-row:2; }
-.app-shell > .sidebar { grid-column:1; background:var(--sidebar); }
+.app-shell.sidebar-collapsed { --sidebar-width:0px; }
+.app-shell > .sidebar, .app-shell > .content.main { grid-row:1; min-width:0; min-height:0; }
+.app-shell > .sidebar { grid-column:1; background:var(--side); border-right:1px solid var(--border); overflow:hidden; }
+.app-shell.sidebar-collapsed > .sidebar { visibility:hidden; border:0; }
 .app-shell > .content.main { grid-column:2; padding:0; }
+.app-shell > .window-controls { position:absolute; right:0; top:0; z-index:45; display:flex; height:46px; -webkit-app-region:no-drag; }
+.window-controls button { display:grid; place-items:center; width:46px; height:46px; padding:0; border:0; border-radius:0; background:transparent; color:var(--text); }
+.window-controls button:hover:not(:disabled) { background:var(--fill-selected); }
+.window-controls .caption-close:hover:not(:disabled) { background:var(--caption-close); color:var(--caption-close-fg); }
+.window-controls svg { width:10px; height:10px; fill:none; stroke:currentColor; stroke-width:1; }
+.shell-toolbar-prefix { position:absolute; top:9px; left:10px; z-index:44; display:flex; align-items:center; gap:2px; -webkit-app-region:no-drag; }
+.shell-toolbar-prefix .icon-btn { width:30px; height:28px; border-radius:6px; }
+.app-shell .side-head { height:46px; min-height:46px; padding:0 8px 0 14px; gap:2px; border:0; -webkit-app-region:drag; }
+.side-head button, .side-search button, .sidebar-machine-head .machine-chip { -webkit-app-region:no-drag; }
+.side-head .brand-home { margin-right:auto; padding:0; }
+.side-head .brand-mark, .side-head .brand-mark img { width:18px; height:18px; border-radius:5px; }
+.app-shell .side-head .icon-btn { width:30px; height:28px; border-radius:6px; color:var(--muted); }
+.side-head .icon-btn:hover { background:var(--fill-hover); color:var(--text); }
+.side-search { flex:none; padding:0 10px 6px; }
+.search-field { display:flex; align-items:center; gap:6px; width:100%; height:28px; padding:0 8px; border:0; border-radius:7px; background:var(--fill-selected); color:var(--faint); text-align:left; }
+.search-field:hover { background:color-mix(in srgb,var(--text) 14%,transparent); }
+.search-field .ico { width:14px; height:14px; color:var(--muted); }
+.search-field span { flex:1; }
+.search-field kbd { font:11px var(--font); color:var(--faint); letter-spacing:.02em; border:0; background:none; padding:0; }
+.sidebar-machine-head { display:grid; gap:2px; padding:0 10px 6px; color:var(--muted); font-size:11px; }
+.sidebar-machine-head .machine-chip { margin:0; padding:0; border:0; font-size:11px; }
+.app-shell .side-foot { display:flex; align-items:center; gap:8px; height:46px; min-height:46px; padding:0 8px 0 16px; border:0; }
+.app-shell .side-foot .user-row { flex:1; min-width:0; padding:0; height:38px; gap:8px; }
+.side-foot .user-copy { font-size:12.5px; line-height:1.2; }
+.side-foot .user-copy small { font-size:11px; }
+.app-shell .side-foot .avatar { width:24px; height:24px; font-size:10px; }
+.side-foot > .icon-btn { width:30px; height:28px; flex:none; }
 .legacy-toolbar { display:none; }
 .content.main:has(> .session-screen), .content.main:has(> .file-workspace), .content.main:has(> .pane-workspace) { display:flex; flex-direction:column; overflow:hidden; }
-.floating-shell { grid-template-columns:minmax(0,1fr); grid-template-rows:36px minmax(0,1fr); }
+.shell-route-toolbar { display:flex; align-items:center; flex:none; height:46px; min-height:46px; padding:0 calc(var(--caption-width) + 10px) 0 14px; border-bottom:1px solid var(--border); background:var(--surface); font-size:13px; -webkit-app-region:drag; }
+.shell-route-toolbar strong { font-weight:600; }
+.app-shell .content.main > :is(.page,.terminals-page,section.ov-page) { max-width:none; padding:0 24px 12px; }
+.app-shell .content.main > :is(.page,.terminals-page,section.ov-page) > :is(.page-head,.ov-page-head) { display:flex; flex-wrap:nowrap; align-items:center; gap:6px; height:46px; min-height:46px; margin:0 -24px 20px; padding:0 calc(var(--caption-width) + 10px) 0 14px; border-bottom:1px solid var(--border); background:var(--surface); -webkit-app-region:drag; }
+.app-shell :is(.page-head,.ov-page-head) .page-title { font-size:13px; font-weight:600; line-height:16px; }
+.app-shell :is(.page-head,.ov-page-head) .page-sub { margin:0; font-size:11px; line-height:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.app-shell :is(.page-head,.ov-page-head) > :first-child { min-width:0; flex:1; }
+.app-shell :is(.page-head,.ov-page-head,.ws-top) :is(button,input,select,textarea,[role="button"],.tt-select) { -webkit-app-region:no-drag; }
+.app-shell .runtime-workspace .ws-top, .app-shell .project-file-page > .ws-top, .app-shell .usage-page .usage-head { height:46px; min-height:46px; padding-right:calc(var(--caption-width) + 10px); -webkit-app-region:drag; }
+.app-shell.sidebar-collapsed :is(.ws-top,.shell-route-toolbar), .app-shell.sidebar-collapsed .content.main > :is(.page,.terminals-page,section.ov-page) > :is(.page-head,.ov-page-head) { padding-left:80px; }
+.floating-shell { --sidebar-width:0px; grid-template-columns:minmax(0,1fr); }
 .floating-shell > .sidebar { display:none; }
-.floating-shell > .content.main { grid-row:2; grid-column:1; }
-.app-shell:has(.terminal-fullscreen) > .sidebar, .app-shell:has(.terminal-fullscreen) > .titlebar { display:none; }
+.floating-shell > .content.main { grid-row:1; grid-column:1; }
+.app-shell:has(.terminal-fullscreen) > :is(.sidebar,.window-controls,.shell-toolbar-prefix) { display:none; }
 .app-shell:has(.terminal-fullscreen) { grid-template-columns:1fr; grid-template-rows:1fr; }
 .app-shell:has(.terminal-fullscreen) > .content.main { grid-column:1; grid-row:1; }
 .terminal-fullscreen .prototype-session-header { display:none; }
+.remote-machine::after { content:""; position:absolute; z-index:46; inset:0 0 auto; height:3px; background:var(--machine-color); pointer-events:none; }
+@media (max-width:760px) {
+ .app-shell:not(.sidebar-collapsed):has(.runtime-workspace) > .sidebar { top:0; }
+}
 /* Route roots no longer reserve space for the removed application status row. */
 .page, .start, .terminals-page, .ov-page { padding-bottom:12px; }
 .usage-scroll { padding-bottom:12px; }
@@ -868,3 +904,11 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 .chat-connect-logo .agent-tile { width: 64px; height: 64px; }
 .chat-connect-logo .agent-tile svg,
 .chat-connect-logo .agent-tile img { width: 72%; height: 72%; }
+
+/* Source-list navigation shares the prototype's compact rows. */
+.app-shell .side-nav { padding:2px 10px 0; gap:0; }
+.app-shell .side-nav .nav-item { display:flex; align-items:center; gap:7px; height:28px; min-height:28px; padding:0 8px; border-radius:6px; font-size:13px; color:var(--text); }
+.side-nav .nav-item > .ico { width:16px; height:16px; color:var(--primary); }
+.app-shell .side-nav .nav-item:hover { background:var(--fill-hover); }
+.app-shell .side-nav .nav-item.active { background:var(--fill-selected); }
+.app-shell .side-nav .badge { padding:0; background:none; color:var(--muted); font-size:12px; font-weight:400; }

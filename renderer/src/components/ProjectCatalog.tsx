@@ -11,6 +11,7 @@ import { subagentTitle } from '../subagentActivity';
 import { AgentTile, Icon, SessionIcon } from "./PrototypeIcon";
 import { CatalogActions, CatalogPopover, restoreCatalogTarget, type CatalogTarget } from "./CatalogActions";
 import "./project-catalog.css";
+import "./mac-sidebar.css";
 import { sessionState, sessionStateLabel } from "../sessionState";
 import { activityOrder, isTerminalAttentionSession, sessionActivity, sessionActivityLabel, sortSessionsByActivity } from "../sessionActivity";
 import { isCodeReviewSession } from "../codeReview";
