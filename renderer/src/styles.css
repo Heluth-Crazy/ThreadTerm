@@ -751,6 +751,8 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
 .v3-thinking[open] > summary::before { transform:rotate(45deg); }
 .v3-thinking > summary:hover { color:var(--text); }
 .v3-thinking > summary:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+.v3-thinking-group > div:first-of-type { margin-top:6px; }
+.v3-thinking-group > div + div { margin-top:4px; }
 .v3-thinking .v3-message-text { margin-top:6px; max-height:220px; overflow:auto; }
 @media (prefers-reduced-motion:reduce) { .v3-thinking > summary::before { transition:none; } }
 .chat-first-response-wait, .chat-live-activity { display:flex; align-items:center; gap:6px; margin:0 0 24px; color:var(--muted); font-size:15px; line-height:1.6; }

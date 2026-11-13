@@ -60,7 +60,10 @@ export function ToolActivity({ entries, thoughts = [], renderThought, active, aw
   // Two lines at most: while a call runs, its own output; otherwise the failures.
   const failures = current ? undefined : toolFailureSummary(entries, copy);
   const thoughtsBefore = (index: number) => renderThought && open ? thoughts.filter(thought => thought.before === index)
-    .map(thought => <div key={thought.id} role="listitem" className="chat-tool-thought">{renderThought(thought.item)}</div>) : null;
+    .map(thought => {
+      const content = renderThought(thought.item);
+      return content == null ? null : <div key={thought.id} role="listitem" className="chat-tool-thought">{content}</div>;
+    }) : null;
   const summaryAccessibleLabel = !current && !waiting && entries.length > 1 ? summaryText || headline : [headline, summaryText].filter(Boolean).join(' · ');
   return <article className={`v3-chat-message assistant is-native is-${provider} chat-tool-activity-card`}>
     <details className="chat-tool-activity" open={open} onToggle={event => setOpen(event.currentTarget.open)}>

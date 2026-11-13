@@ -119,6 +119,39 @@ function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; str
   );
 }
 
+type ThinkingEntry = { itemId: string; part: ChatPart };
+type ThinkingGroups = ReadonlyMap<ChatPart, ThinkingEntry[] | null>;
+
+function groupCompletedThinking(items: readonly ChatItem[]): ThinkingGroups {
+  const groups = new Map<ChatPart, ThinkingEntry[] | null>();
+  let run: ThinkingEntry[] = [];
+  function finish() {
+    if (run.length > 1) {
+      groups.set(run[0]!.part, run);
+      for (const entry of run.slice(1)) groups.set(entry.part, null);
+    }
+    run = [];
+  }
+  // Read original parts, before the settled projection moves tools and replies
+  // out of the activity disclosure.
+  for (const item of items) {
+    if (!item.turnId || item.role !== 'assistant') {
+      finish();
+      continue;
+    }
+    for (const part of item.parts) {
+      if (part.type === 'thinking' && part.text &&
+          (part.status === 'complete' || part.status === 'completed' || part.status === undefined)) {
+        run.push({ itemId: item.id, part });
+      } else if (part.type === 'tool' || shouldRenderPart(part)) {
+        finish();
+      }
+    }
+  }
+  finish();
+  return groups;
+}
+
 const codexMarkdownCache = new Map<string, string>();
 const codexMarkdownCacheLimit = 300;
 function renderCodexMarkdown(text: string, zh: boolean): string {
@@ -1922,13 +1955,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       window.setTimeout(() => { button.textContent = zhRef.current ? '复制' : 'Copy'; delete button.dataset.copying; }, 1500);
     }).catch(() => undefined);
   }
-  function renderItem(item: ChatItem, nested = false, replyEligible = true) {
+  function renderItem(item: ChatItem, nested = false, replyEligible = true, thinkingGroups?: ThinkingGroups) {
       if (!item.parts.length) return null;
       if (!nested && item.parts.some(isSubagentPart)) {
         const lastReplyIndex = item.parts.reduce((last, part, index) => isReplyTextPart(part) ? index : last, -1);
         return <Fragment key={item.id}>
         {item.parts.map((part, index) => {
-          if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] }, false, index === lastReplyIndex)}</Fragment>;
+          if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] }, false, index === lastReplyIndex, thinkingGroups)}</Fragment>;
           const info = subagentInfo(part);
           return info ? <SubagentCard
             key={`${session.id}:${info.key}`}
@@ -1952,13 +1985,25 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       const live = itemShowsStreaming(item, presentation);
       const replyText = item.role === 'assistant' && !nested && replyEligible && item.parts.some(isReplyTextPart) ? replyActions.get(item.id) ?? '' : '';
       const showReplyActions = !!replyText;
+      const parts = item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage)) || (Array.isArray(asRecord(part.data).imageRefs) && (asRecord(part.data).imageRefs as unknown[]).some(isChatImageRef)));
+      if (parts.length && parts.every(part => thinkingGroups?.get(part) === null)) return null;
       return <article data-chat-item={item.id} className={`v3-chat-message ${item.role} is-native is-${session.provider}${showReplyActions ? ' has-reply-actions' : ''}`} key={item.id} onClick={copyCodeBlock}>
-      {item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage)) || (Array.isArray(asRecord(part.data).imageRefs) && (asRecord(part.data).imageRefs as unknown[]).some(isChatImageRef))).map((part, index) => {
+      {parts.map((part, index) => {
         if (isSubagentPart(part)) {
           const info = subagentInfo(part);
           return <p className="chat-subagent-nested" key={`subagent-${index}`}>{info ? subagentTitle(info, copy) : copy('Subagent', '子代理')}</p>;
         }
-        if (part.type === "thinking") return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
+        if (part.type === "thinking") {
+          const run = thinkingGroups?.get(part);
+          if (run === null) return null;
+          if (run) return <details className="v3-thinking v3-thinking-group" key={`thinking-${index}`}>
+            <summary>{copy(`Thought process (${run.length})`, `思考过程（${run.length}）`)}</summary>
+            {run.map((entry, entryIndex) => <div data-chat-item={entryIndex > 0 && run[entryIndex - 1]?.itemId !== entry.itemId ? entry.itemId : undefined} key={entryIndex}>
+              <ThinkingPart part={entry.part} streaming={false} copy={copy} openFile={openFile} />
+            </div>)}
+          </details>;
+          return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
+        }
         if (part.type === 'status' && providerRetryPresentation(part.data)) return <ProviderRetryStatus key={`retry-${index}`} data={part.data} copy={copy} />;
         if (isGuardianReview(part)) return <GuardianReviewCard key={`review-${index}`} part={part} copy={copy} />;
         if (part.type === "status") return <CodexStatusCard key={`status-${index}`} part={part} copy={copy} />;
@@ -2002,10 +2047,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     // Display activity follows runtime liveness even in a read-only observer;
     // it is independent of whether this window owns the control lease.
     const displayTurn = liveTurn;
+    const thinkingGroups = groupCompletedThinking(group.items);
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
-    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`, running = active, thoughts?: ToolThought[]) => <ToolActivity key={id} entries={entries} thoughts={thoughts} renderThought={thoughts?.length ? thought => renderItem(thought, true) : undefined} onInspect={viewport.pauseForNavigation} active={running} awaitingApproval={running && awaitingApproval} awaitingQuestion={running && awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
+    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`, running = active, thoughts?: ToolThought[]) => <ToolActivity key={id} entries={entries} thoughts={thoughts} renderThought={thoughts?.length ? thought => renderItem(thought, true, true, thinkingGroups) : undefined} onInspect={viewport.pauseForNavigation} active={running} awaitingApproval={running && awaitingApproval} awaitingQuestion={running && awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
     if (!group.settled) {
       // Keep earlier activity in place and preserve the first drawer's turn key.
       const entries = groupToolActivity(group.response, true);
@@ -2013,7 +2059,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       let drawerIndex = 0;
       const visible = entries.map((entry, index) => entry.type === 'tools'
         ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`, active && index === lastDrawerIndex, entry.thoughts)
-        : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item)}</Fragment>);
+        : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item, false, true, thinkingGroups)}</Fragment>);
       if (group.turnStatus && !group.items.some(item => item.parts.some(shouldRenderPart))) {
         visible.push(<p className="chat-duration" key={`${group.id}-status`}>{group.turnStatus === 'inProgress'
           ? copy('Saved turn: in progress', '保存的回合：进行中') : copy('Saved turn: status unknown', '保存的回合：状态未知')}</p>);
@@ -2034,7 +2080,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       outcome && turnOutcome(group.turnStatus, group.items)
         ? <p className="chat-duration" key={`${group.id}-status`}>{outcome}</p> : null,
       !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <FoldedActivity key={`${group.id}-work`} summary={<>{summary}<Icon name="chevR" /></>}>
-        {() => activity.length ? activity.map(item => renderItem(item)) : <p className="dim">{copy('No additional activity recorded.', '没有记录额外的过程。')}</p>}
+        {() => activity.map(item => renderItem(item, false, true, thinkingGroups))}
       </FoldedActivity> : null),
       tools.length ? drawer(tools) : null,
       ...subagents.map(item => <Fragment key={`${item.id}-subagent`}>{renderItem(item)}</Fragment>),
