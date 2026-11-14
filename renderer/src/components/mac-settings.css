@@ -24,16 +24,6 @@ body .mac-settings-bar .settings-close { display:grid; place-items:center; flex:
 body .mac-settings-bar .settings-close:hover { background:var(--caption-close); color:var(--caption-close-fg); }
 body .mac-settings-bar .settings-close svg { width:10px; height:10px; fill:none; stroke:currentColor; stroke-width:1; }
 body .mac-settings-window > .settings-body, body .mac-settings-window > .settings-scroll { grid-column:2; grid-row:2; min-width:0; min-height:0; overflow:auto; padding:4px 28px 28px; background:var(--surface); }
-body .mac-settings-window .settings-group { padding:0; background:transparent; }
-body .mac-settings-window :is(.settings-card,.settings-section) { position:relative; display:block; padding:0; margin:0 0 18px; border:0; border-radius:10px; background:var(--group); box-shadow:inset 0 0 0 .5px var(--border); overflow:hidden; }
-body .mac-settings-window .settings-card-row { position:relative; display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:42px; padding:7px 14px; border:0; background:transparent; font-size:13px; }
-body .mac-settings-window .settings-card-row + .settings-card-row::before { content:""; position:absolute; top:0; left:14px; right:14px; height:1px; background:var(--border); }
-body .mac-settings-window .settings-card-title { font-size:13px; font-weight:600; }
-body .mac-settings-window .settings-card-row p { margin:2px 0 0; color:var(--muted); font-size:11.5px; line-height:1.35; }
-body .mac-settings-window :is(.settings-card,.settings-section) > :is(h3,h4,.settings-tools-heading) { margin:0; padding:10px 14px 7px; border:0; font:600 13px var(--font); }
-body .mac-settings-window .settings-section > :is(label,.tool-row,.setting-switch,.shortcut-row) { min-height:42px; padding:7px 14px; margin:0; border:0; border-radius:0; }
-body .mac-settings-window .settings-section > :is(label,.tool-row,.setting-switch,.shortcut-row) + :is(label,.tool-row,.setting-switch,.shortcut-row) { position:relative; }
-body .mac-settings-window .settings-section > :is(label,.tool-row,.setting-switch,.shortcut-row) + :is(label,.tool-row,.setting-switch,.shortcut-row)::before { content:""; position:absolute; top:0; left:14px; right:14px; height:1px; background:var(--border); }
 body .mac-settings-window .setting-switch { flex-direction:row-reverse; justify-content:space-between; }
 body .mac-settings-window .tt-select.tt-select { width:auto; height:24px; min-height:24px; background:var(--control); }
 body .mac-settings-window .tt-select.tt-select .tt-select-trigger { height:24px; min-height:24px; padding:0 5px 0 9px; }
@@ -49,20 +39,13 @@ body .mac-settings-window .theme-choice.selected { color:var(--text); font-weigh
 .theme-choice:nth-child(3) .mac-mode-thumb::before { background:var(--mode-dark-side); }
 .theme-choice:first-child .mac-mode-thumb::before { background:linear-gradient(135deg,var(--mode-light-side) 50%,var(--mode-dark-side) 50%); }
 .mac-mode-thumb::after { content:""; position:absolute; left:36%; top:9px; width:44%; height:4px; border-radius:2px; background:currentColor; opacity:.35; box-shadow:0 8px 0 currentColor; }
-body .mac-settings-window .theme-gallery { padding:0 14px 14px; }
 body .mac-settings-window .theme-gallery-grid { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; }
 body .mac-settings-window .theme-gallery-card { min-width:0; border-radius:7px; }
-body .mac-settings-window .background-editor { margin-top:18px; }
-body .mac-settings-window .settings-section > p, body .mac-settings-window .settings-section > .hint { margin:0; padding:0 14px 10px; font-size:11.5px; }
 @media (max-width:760px) { body .settings-drawer .settings-panel.mac-settings-window { grid-template-columns:minmax(170px,28%) minmax(0,1fr); } body .mac-settings-window > .settings-body, body .mac-settings-window > .settings-scroll { padding-left:16px; padding-right:16px; } body .mac-settings-window .theme-mode-switch { gap:10px; } }
 
 body .settings-drawer .settings-panel.mac-settings-window label.mac-settings-search { display:flex; align-items:center; flex-direction:row; gap:0; height:28px; min-height:28px; margin:9px 10px 10px; padding:0 8px; }
 body .mac-settings-window .settings-card-row .tt-select.tt-select { min-width:0; max-width:240px; }
-body .mac-settings-window .settings-background-quick { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:42px; padding:7px 14px; }
-body .mac-settings-window .settings-background-quick p { margin:2px 0 0; font-size:11.5px; line-height:1.35; }
 body .mac-settings-window .settings-background-quick .background-actions { flex:none; margin:0; gap:8px; }
-body .mac-settings-window .settings-backgrounds > :is(.hint,.background-notice,.surface-error) { margin:0; padding:0 14px 10px; }
-body .mac-settings-window .settings-backgrounds > :is(.background-layout,.background-library) { margin:0; padding:14px; }
 body .mac-settings-window .theme-choice:hover:not(:disabled) { background:none; }
 .mac-settings-window .mac-mode-thumb::after { box-shadow:none; }
 .mac-mode-thumb .mac-mode-thumb-second-bar { position:absolute; left:36%; top:17px; width:30%; height:4px; border-radius:2px; background:currentColor; opacity:.25; }
@@ -73,20 +56,34 @@ body .settings-drawer .settings-panel.mac-settings-window label.mac-settings-sea
 body .settings-drawer .settings-panel.mac-settings-window .tt-select.tt-select { height:24px; min-height:24px; background:var(--control); }
 body .settings-drawer .settings-panel.mac-settings-window .tt-select.tt-select .tt-select-trigger { height:24px; min-height:24px; padding:0 5px 0 9px; }
 .mac-settings-window .theme-choice:first-child .mac-mode-thumb { color:var(--mode-auto-ink); }
-body .mac-settings-window .settings-group.active { gap:0; }
 .mac-settings-window .mac-settings-account small { display:inline; }
 .mac-settings-window .mac-settings-tile { box-shadow:inset 0 0 0 .5px var(--settings-tile-edge); }
 .mac-settings-window .mac-mode-thumb { box-shadow:0 0 0 .5px var(--separator-strong); }
 .mac-settings-window .theme-choice.selected .mac-mode-thumb { box-shadow:0 0 0 .5px var(--separator-strong),0 0 0 3px var(--primary); }
-body .mac-settings-window :is(.settings-card-row,.settings-background-quick) .settings-card-title { font-weight:400; }
 /* Per-region background editor sits behind a disclosure row; the quick Choose/None row covers the common case. */
-body .mac-settings-window .settings-background-disclosure { position:relative; display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:42px; padding:7px 14px; border:0; border-radius:0; background:none; color:inherit; font:inherit; text-align:left; }
-body .mac-settings-window .settings-background-disclosure::before { content:""; position:absolute; top:0; left:14px; right:14px; height:1px; background:var(--border); }
+body .mac-settings-window .settings-background-disclosure { position:relative; display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:0; padding:12px 0 0; border:0; border-top:1px solid var(--border); border-radius:0; background:none; color:inherit; font:inherit; text-align:left; }
 body .mac-settings-window .settings-background-disclosure > span { display:flex; flex-direction:column; min-width:0; }
-body .mac-settings-window .settings-background-disclosure .settings-card-title { font-weight:400; }
-body .mac-settings-window .settings-background-disclosure .hint { margin-top:2px; font-size:11.5px; line-height:1.35; }
+body .mac-settings-window .settings-background-disclosure .hint { margin-top:4px; color:var(--muted); font-size:13px; line-height:1.5; }
 body .mac-settings-window .settings-background-disclosure .ico { width:13px; height:13px; flex:none; color:var(--faint); transition:transform .15s ease; }
 body .mac-settings-window .settings-background-disclosure[aria-expanded="true"] .ico { transform:rotate(90deg); }
 body .mac-settings-window .settings-background-disclosure:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
 body .mac-settings-window .settings-backgrounds .background-actions .btn { height:26px; min-height:26px; }
-body .mac-settings-window .settings-backgrounds > p.background-notice { margin:0 14px 10px; padding:6px 10px; }
+
+/* Cards follow Settings › Agents (owner 2026-11-14: "最好看的部分是智能体设置那里，但是其他页面都不行"). The base
+   grammar from reference settings.css and settings-parity.css applies unchanged: 16 px inset, 1 px border, a 14/600
+   title over a 13 px muted line, 12 px rhythm. The Mac window only adds its frame. Every card is a grid, so stacked
+   parts keep that rhythm, and the gutter is stable, so pages with and without a scrollbar share one width. */
+body .mac-settings-window > .settings-body { scrollbar-gutter:stable; }
+body .mac-settings-window .settings-card { display:grid; gap:12px; align-content:start; }
+body .mac-settings-window :is(.settings-card,.settings-section) > * { min-width:0; }
+body .mac-settings-window .settings-background-quick { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+body .mac-settings-window .settings-background-quick .settings-card-title + .hint { margin-top:4px; }
+body .mac-settings-window .settings-backgrounds > p.background-notice { margin:0; padding:6px 10px; }
+/* A row keeps its control on the right: the text takes the room and wraps, the control never drops below it. */
+body .mac-settings-window .settings-card-row { flex-wrap:nowrap; align-items:center; }
+body .mac-settings-window .settings-card-row > :first-child { flex:1 1 auto; min-width:0; }
+body .mac-settings-window .settings-card-row > :not(:first-child) { flex:none; }
+/* A switch on a titled row is the whole control, as in System Settings: its On/Off word stays in the accessibility
+   tree and innerText, but is not painted beside the switch. Switch rows whose word is the row label are unchanged. */
+body .mac-settings-window :is(.settings-card-row,.settings-chat-tool-row) > .setting-switch { gap:0; font-size:0; }
+body .mac-settings-window .theme-gallery-current { flex:none; white-space:nowrap; }
