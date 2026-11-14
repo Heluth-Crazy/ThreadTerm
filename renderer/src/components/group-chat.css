@@ -20,7 +20,7 @@
 .gc-member > time { color:var(--gc-muted); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .gc-read-only > .ico { width:12px; height:12px; }
 /* Mirror .v3-chat-log: a single 920px reading column shared with the composer. */
-.gc-timeline { flex:1; min-height:0; min-width:0; padding:24px max(24px,calc((100% - 920px)/2)); overflow:auto; overflow-x:hidden; overflow-anchor:none; scrollbar-width:thin; overscroll-behavior:contain; }
+.gc-timeline { flex:1; min-height:0; min-width:0; padding:24px max(24px,calc((100% - 920px)/2)); overflow:auto; overflow-x:hidden; overflow-anchor:none; overscroll-behavior:contain; }
 /* The scrollbar must not narrow cards relative to .chat-compose-shell. */
 .gc-timeline-item { width:min(920px,calc(100cqw - 48px)); min-width:0; margin-bottom:16px; }
 .gc-timeline-item:last-child { margin-bottom:0; }

@@ -51,7 +51,7 @@
 .wb-panel-actions:not(:empty) + .wb-panel-close { margin-left:5px; }
 .wb-panel-actions:not(:empty) + .wb-panel-close::before { content:""; position:absolute; top:6px; bottom:6px; left:-4px; width:1px; background:var(--border); }
 .wb-panel-body { position:relative; flex:1; min-height:0; overflow:hidden; }
-.wb-view { height:100%; overflow:auto; scrollbar-width:thin; }
+.wb-view { height:100%; overflow:auto; }
 .wb-view[hidden] { display:none; }
 /* Fills the 12px gutter; the highlight matches the 4px pane divider. */
 .wb-resize { position:absolute; top:0; left:-12px; bottom:0; width:12px; cursor:col-resize; z-index:3; touch-action:none; outline:none; }
@@ -64,7 +64,7 @@
 .wb-tools-head strong { flex:1; min-width:0; overflow:hidden; color:var(--text); font-size:12.5px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
 .wb-tools-head > .icon-btn { width:26px; height:26px; }
 .wb-tools-head > .icon-btn .ico { width:16px; height:16px; }
-.wb-tools-scroll { flex:1; min-height:0; overflow:auto; scrollbar-width:thin; }
+.wb-tools-scroll { flex:1; min-height:0; overflow:auto; }
 .wb-tools-scroll .wb-explorer, .wb-tools-scroll .wb-scm { min-height:0; }
 .wb-tools-scroll .wb-tree { padding-bottom:8px; }
 .wb-tools-section { border-top:1px solid var(--border); }
@@ -255,7 +255,7 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .git-push-preview-meta, .git-push-preview-warning, .git-push-preview-dialog .surface-error { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .git-push-preview-meta { color:var(--muted); font-size:12px; }
 .git-push-preview-warning { padding:10px 12px; border:1px solid color-mix(in srgb,var(--amber) 35%,var(--border)); border-radius:var(--radius); background:color-mix(in srgb,var(--amber) 8%,var(--surface)); color:var(--text); font-size:12px; line-height:1.45; }
-.git-push-preview-list { max-height:min(320px,42dvh); overflow:auto; border:1px solid var(--border); border-radius:var(--radius); scrollbar-width:thin; }
+.git-push-preview-list { max-height:min(320px,42dvh); overflow:auto; border:1px solid var(--border); border-radius:var(--radius); }
 .git-push-preview-list .wb-commit-row { border-radius:0; }
 .git-push-preview-list .wb-commit-row:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
 .git-push-confirm-label { display:grid; gap:6px; color:var(--text); font-size:12px; }
@@ -311,7 +311,7 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 
 /* ---- Tabs: history and review ---- */
 .wb-history { display:grid; grid-template-columns:minmax(240px,34%) minmax(0,1fr); height:100%; min-height:0; background:var(--surface); }
-.wb-history-list { min-height:0; padding:0 6px 12px; overflow:auto; border-right:1px solid var(--border); scrollbar-width:thin; }
+.wb-history-list { min-height:0; padding:0 6px 12px; overflow:auto; border-right:1px solid var(--border); }
 .wb-history-title { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px; height:38px; margin:0 -6px 4px; padding:0 14px; border-bottom:1px solid var(--border); background:var(--surface); font-size:12.5px; }
 .wb-history-title > .ico { width:16px; height:16px; color:var(--muted); }
 .wb-history-title strong { font-weight:600; }

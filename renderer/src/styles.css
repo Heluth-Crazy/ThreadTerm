@@ -88,9 +88,13 @@ body, button, input, textarea, select { font-family:var(--font); }
   --app-window-stroke:var(--border);
 }
 
-* { scrollbar-color:var(--scrollbar) transparent; }
-::-webkit-scrollbar-thumb { background:var(--scrollbar); }
-::-webkit-scrollbar-thumb:hover { background:var(--scrollbar-hover); }
+/* Mac-style pill scrollbars. The standard scrollbar-color/-width properties would switch Chromium to its Windows
+   renderer, which paints arrow buttons; the ::-webkit-scrollbar pseudo-elements keep the thumb only. */
+::-webkit-scrollbar { width:11px; height:11px; background:transparent; }
+::-webkit-scrollbar-button { display:none; }
+::-webkit-scrollbar-corner { background:transparent; }
+::-webkit-scrollbar-thumb { min-height:28px; min-width:28px; border:3px solid transparent; border-radius:999px; background:var(--scrollbar); background-clip:content-box; }
+::-webkit-scrollbar-thumb:hover { background:var(--scrollbar-hover); background-clip:content-box; }
 
 /* Status dots retain the prototype colours. Pill text is contrast-corrected on its tint;
    stalled retains its distinct orange-brown. */

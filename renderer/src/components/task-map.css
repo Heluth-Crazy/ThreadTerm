@@ -19,7 +19,7 @@
 .task-graph-lane-label > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .task-graph-lane-label > svg { flex:none; }
 .task-graph-scroll-wrap { position:relative; display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
-.task-graph-scroll { position:relative; flex:1; box-sizing:border-box; min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; scroll-padding:36px 12px 12px; overflow-anchor:none; }
+.task-graph-scroll { position:relative; flex:1; box-sizing:border-box; min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; scroll-padding:36px 12px 12px; overflow-anchor:none; }
 .task-graph-world { position:relative; flex:none; }
 .task-graph-edges { position:absolute; left:0; top:0; pointer-events:none; z-index:0; overflow:visible; }
 .task-graph-edge { fill:none; stroke:var(--faint); stroke-width:1.5; }
@@ -77,7 +77,7 @@
 .task-graph-details > header > .ico { flex:none; width:16px; height:16px; color:var(--muted); }
 .task-graph-details > header > strong { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
 .task-graph-details-close { flex:none; }
-.task-map-details { flex:1; min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; background:var(--surface); }
+.task-map-details { flex:1; min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; background:var(--surface); }
 .task-graph-members { flex:1; min-height:0; overflow:auto; padding:8px; }
 .task-graph-member { display:flex; align-items:flex-start; width:100%; gap:8px; padding:8px; border:0; border-radius:var(--radius); background:transparent; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
 .task-graph-member:hover { background:var(--soft); }
