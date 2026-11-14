@@ -1281,7 +1281,7 @@ function FileWorkspaceInstance({
                 {sendAction}
                 {!external && !image && (!conflictedFile || dirty) && <span className="file-bar-save-slot">{dirty && !document.readonly && !busy && <button className="btn btn-sm" aria-label={copy.save} title={`${copy.save} (Ctrl+S)`} onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button>}</span>}
                 {view === "file" && !external && !image && conflictedFile && !busy && !dirty && !document.readonly && !stageReason && <ConflictStageAction key={document.path} scope={scope} path={document.path} revision={document.fingerprint} disabled={false} zh={zh} onStaged={() => void refreshGit()} />}
-                {!embedded && !external && <button className="icon-btn icon-btn-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
+                {!embedded && !external && <button className="cg-ghost cg-icon cg-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
                 <FileBarActions items={fileMenuItems} zh={zh} />
                 {embeddedClose()}
               </div>
@@ -1302,14 +1302,14 @@ function FileWorkspaceInstance({
                   {compare && <span className="ws-chip file-bar-optional file-bar-compare" title={`${compare.committedOnly ? (zh ? "仅已提交的更改" : "Committed changes only") : (zh ? "工作区" : "Working tree")} · ${zh ? `对比 ${compare.base}` : `vs ${compare.base}`} · ${compare.committedOnly || document.readonly ? copy.readOnly : zh ? "左侧基线只读，右侧可编辑" : "Baseline is read-only; current file is editable"}`}>{compare.base}</span>}
                   </div>
                   {diff && !diff.binary && hunkCount > 0 && <span className="wb-hunk-nav" role="group" aria-label={zh ? "更改块" : "Hunks"}>
-                    <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
+                    <button type="button" className="cg-ghost cg-icon cg-sm" aria-label={zh ? "上一个更改块" : "Previous hunk"} onClick={() => moveHunk(-1)}><WbIcon name="chev-up" /></button>
                     <span className="wb-hunk-count"><span className="file-change-label">{zh ? "更改" : "Change"} </span>{hunk + 1}/{hunkCount}</span>
-                    <button type="button" className="icon-btn icon-btn-sm" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
+                    <button type="button" className="cg-ghost cg-icon cg-sm" aria-label={zh ? "下一个更改块" : "Next hunk"} onClick={() => moveHunk(1)}><Icon name="chevron" /></button>
                   </span>}
                   <DiffFileNavigation paths={navigationPaths} path={document.path} zh={zh} disabled={busy || navigationDisabled || fileNavigation} onNavigate={onNavigateDiff ? path => onNavigateDiff(path, () => open(path, "diff")) : path => choose(path, "diff")} />
                   {pinAction}
-                  {dirty && !staged && compareEditable && !document.readonly && !busy ? <button className="btn btn-sm" aria-label={zh ? "保存变更" : "Save changes"} title="Ctrl+S" onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button> : !compare && !dirty && !busy && (staged || !stageReason) && <button className="btn btn-sm" onClick={() => void changeIndex(staged)}>{staged ? (zh ? "取消暂存" : "Unstage file") : (zh ? "暂存文件" : "Stage file")}</button>}
-                  {!embedded && <button className="icon-btn icon-btn-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
+                  {dirty && !staged && compareEditable && !document.readonly && !busy ? <button className="cg-ghost cg-sm cg-primary" aria-label={zh ? "保存变更" : "Save changes"} title="Ctrl+S" onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button> : !compare && !dirty && !busy && (staged || !stageReason) && <button className="cg-ghost cg-sm" onClick={() => void changeIndex(staged)}>{staged ? (zh ? "取消暂存" : "Unstage file") : (zh ? "暂存文件" : "Stage file")}</button>}
+                  {!embedded && <button className="cg-ghost cg-icon cg-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
                   <FileBarActions items={fileMenuItems} zh={zh} />
                   {embeddedClose()}
                 </div>

@@ -48,3 +48,29 @@
 .file-workspace-bar .wb-file-nav{border-left:1px solid var(--border);padding-left:4px;margin-left:2px}
 @container file-surface (max-width:320px){.file-workspace .file-workspace-bar .btn{font-size:11px;padding-inline:4px}.file-workspace-bar .file-bar-segments button{padding-inline:4px}}
 @container file-surface (max-width:240px){.file-workspace-bar .file-bar-segments button{font-size:10px}.file-workspace-bar .file-bar-location{gap:3px}}
+
+/* ---- Track G — Cursor-referenced editor bar and gutter (owner 2026-11-14) ----
+   Prototype screen Editor: breadcrumbs as quiet segments, ghost actions on the right, a quiet gutter whose
+   current line number takes the text colour, and the change bars (added green, modified primary, deleted wedge).
+   The primitives themselves live in components/cursor-grammar.css. */
+.file-workspace :is(.file-view-tabs,.file-bar).file-workspace-bar { height:34px; min-height:34px; max-height:34px; padding:0 6px; gap:2px; }
+.file-workspace-bar .file-bar-breadcrumb { gap:1px; font-size:12px; }
+.file-bar-crumb { display:inline-flex; align-items:center; gap:4px; flex:none; height:22px; padding:0 5px; border-radius:5px; color:var(--muted); white-space:nowrap; }
+.file-bar-crumb:hover { background:var(--fill-hover); color:var(--text); }
+.file-bar-crumb-label { max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+.file-bar-crumb-sep { width:10px; height:10px; flex:none; color:var(--faint); }
+.file-workspace-bar .file-bar-name { color:var(--text); font-weight:400; }
+.file-workspace-bar .file-bar-segments button { padding:0 7px; }
+/* The bar keeps one row: the breadcrumb gives way first. */
+.file-workspace-bar .file-bar-location { overflow:hidden; }
+.file-workspace-bar > .cg-ghost, .file-workspace-bar .cg-seg { flex:none; }
+/* Quiet gutter: numbers in faint, the current line's number in text colour. The change bars keep their tokens. */
+.cm-lineNumbers .cm-gutterElement { color:var(--faint); }
+.cm-lineNumbers .cm-activeLineGutter { color:var(--text); background:transparent; }
+.cm-editor .cm-activeLine { background:var(--fill-hover); }
+/* The gutter hunk popup is the shared popover plus ghost actions (gitHunkPopup.ts). */
+.cm-git-hunk-popup { padding:6px; gap:4px; border:0; border-radius:12px; background:var(--menu); box-shadow:0 0 0 .5px var(--menu-edge),var(--menu-shadow); }
+.cm-git-hunk-header, .cm-git-hunk-actions { gap:2px; }
+.cm-git-hunk-header strong { margin-right:4px; color:var(--muted); font-weight:500; font-size:12px; }
+.cm-git-hunk-header .cg-stat { padding-right:4px; }
+.cm-git-hunk-lines { padding:2px 0; border-radius:6px; background:var(--surface); }

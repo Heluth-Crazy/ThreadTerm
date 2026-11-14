@@ -27,6 +27,8 @@ import {
   GutterMarker,
   ViewPlugin,
   gutter,
+  highlightActiveLine,
+  highlightActiveLineGutter,
   keymap,
   lineNumbers,
   type DecorationSet,
@@ -368,6 +370,9 @@ export function CodeEditor({
     const extensions: Extension = [
         blameSlot.of([]),
         lineNumbers(),
+        // Cursor's quiet editor: the current line's number and row are marked, nothing else.
+        highlightActiveLineGutter(),
+        highlightActiveLine(),
         gitGutter,
         hunks.extension,
         gitMarkerOpen.of((editor,position)=>hunks.open(editor,position)),

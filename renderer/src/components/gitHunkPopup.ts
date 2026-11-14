@@ -23,7 +23,7 @@ export function gitHunkPopup(snapshot:(view:EditorView)=>GitHunkSnapshot|undefin
    const state=this.fresh(),chunk=state?.chunks[index];if(!chunk)return false;
    this.chunk=chunk;this.index=index;
    if(!this.dom) {
-    this.dom=document.createElement('div');this.dom.className='cm-git-hunk-popup';this.dom.setAttribute('role','dialog');this.dom.setAttribute('aria-label',label('Git change','Git 更改'));
+    this.dom=document.createElement('div');this.dom.className='cm-git-hunk-popup cg-pop';this.dom.setAttribute('role','dialog');this.dom.setAttribute('aria-label',label('Git change','Git 更改'));
     this.dom.addEventListener('keydown',event=>{
      if(!enabled(this.view)){this.close(false);return;}
      if(event.key==='Escape') {event.preventDefault();event.stopPropagation();this.close();return;}
@@ -58,15 +58,18 @@ export function gitHunkPopup(snapshot:(view:EditorView)=>GitHunkSnapshot|undefin
    const focused=dom.contains(document.activeElement)?(document.activeElement as HTMLElement).dataset.action:undefined;
    dom.replaceChildren();
    const header=document.createElement('div');header.className='cm-git-hunk-header';
-   const title=document.createElement('strong');title.textContent=zh?`更改 ${this.index+1} / ${state.chunks.length}`:`Change ${this.index+1} of ${state.chunks.length}`;header.append(title);dom.append(header);
+   const title=document.createElement('strong');title.textContent=zh?`Agent 改动 ${this.index+1}/${state.chunks.length}`:`Agent change ${this.index+1}/${state.chunks.length}`;header.append(title);
+   const content=hunkPreview(state.base,state.doc.toString(),chunk);
+   const added=content.lines.filter(line=>line.kind==='added').length,removed=content.lines.filter(line=>line.kind==='removed').length;
+   if(added||removed) {const stat=document.createElement('span');stat.className='cg-stat';const add=document.createElement('span');add.className='cg-add';add.textContent=`+${added}`;const del=document.createElement('span');del.className='cg-del';del.textContent=`−${removed}`;stat.append(add,del);header.append(stat);}
+   dom.append(header);
    const button=(parent:HTMLElement,key:string,text:string,run:()=>void,shortcut?:string,disabled=false,reason?:string)=>{
-    const node=document.createElement('button');node.type='button';node.className='btn btn-sm';node.dataset.action=key;node.textContent=text;node.disabled=disabled;node.title=reason??`${text}${shortcut?` (${shortcut})`:''}`;if(shortcut)node.setAttribute('aria-keyshortcuts',shortcut);node.addEventListener('click',run);parent.append(node);return node;
+    const node=document.createElement('button');node.type='button';node.className='cg-ghost cg-sm';node.dataset.action=key;node.textContent=text;node.disabled=disabled;node.title=reason??`${text}${shortcut?` (${shortcut})`:''}`;if(shortcut)node.setAttribute('aria-keyshortcuts',shortcut);node.addEventListener('click',run);parent.append(node);return node;
    };
    button(header,'previous',label('Previous change','上一处更改'),()=>this.move(-1),'Shift+F7',this.index===0);
    button(header,'next',label('Next change','下一处更改'),()=>this.move(1),'F7',this.index===state.chunks.length-1);
    button(header,'close',label('Close','关闭'),()=>this.close(),'Escape');
    const preview=document.createElement('div');preview.className='cm-git-hunk-lines';
-   const content=hunkPreview(state.base,state.doc.toString(),chunk);
    for(const line of content.lines) {const row=document.createElement('pre');row.className=`cm-git-hunk-${line.kind}`;row.textContent=`${line.kind==='removed'?'-':'+'} ${line.text}`;preview.append(row);}
    if(content.remaining) {const more=document.createElement('div');more.textContent=zh?`还有 ${content.remaining} 行`:`and ${content.remaining} more lines`;preview.append(more);}
    dom.append(preview);
