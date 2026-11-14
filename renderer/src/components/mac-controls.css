@@ -67,7 +67,9 @@ body .dialog .create-type-grid .create-type.is-on { background:var(--primary-tin
 body .dialog .create-type-grid .create-type [data-agent-tile] { width:40px; height:40px; }
 body .dialog .create-type-grid .create-hint { color:var(--faint); font-size:11px; }
 body .chat-view.v3-session-chat.v3-session-chat .chat-compose-shell:focus-within { box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 45%,transparent),var(--composer-shadow); }
-body .workspace-tab:has(> :focus-visible) > .workspace-tab-select::after { border-width:3px; border-color:color-mix(in srgb,var(--primary) 45%,transparent); }
+/* Tabs keep their original inset focus ring (workspace-parity.css); the generic control outline above would cross
+   the seam where the selected tab joins its pane. */
+body .workspace-tab :is(.workspace-tab-select,.workspace-tab-close):focus-visible { outline:none; }
 /* Context-specific toolbar controls retain their prototype metrics. */
 body .workspace-tabbar.ws-strip .icon-btn { width:28px; height:28px; }
 body .wb-panel-head :is(.btn,.icon-btn), body .wb-tools-head :is(.btn,.icon-btn), body .wb-history-title :is(.btn,.icon-btn), body .worktree-manager :is(.wtm-list,.wtm-detail) > header :is(.btn,.icon-btn), body .task-graph-details > header :is(.btn,.icon-btn) { height:24px; min-height:24px; }

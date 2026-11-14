@@ -80,7 +80,8 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
           const strip = tab!.closest('.workspace-tabs');
           if (strip) { const clip = rect(strip); const right = Math.min(tabBox.x + tabBox.w, clip.x + clip.w); tabBox = { ...tabBox, x: Math.max(tabBox.x, clip.x), w: right - Math.max(tabBox.x, clip.x) }; }
         }
-        const shape = backgroundShape(panelBox, tabBox, radius);
+        // Flush cards keep square corners (radius); the selected Chrome-style tab keeps its 8 px shoulders and feet.
+        const shape = backgroundShape(panelBox, tabBox, tabBox ? 8 : radius);
         regions.push({ key: element.dataset.paneId ?? region, region, shape, radius });
       };
       const sidebar = shell.querySelector<HTMLElement>(':scope > .sidebar');
