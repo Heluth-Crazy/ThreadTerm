@@ -34,6 +34,14 @@ const glyphs: Record<string, string> = {
  // Run view: the approved play triangle and a stop square, drawn on the same grid as the prototype set.
  play: '<path d="m8 5 11 7-11 7z" fill="none"/>',
  stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+ // Toolbar view switcher: copied verbatim from prototypes/mac-style (doc, search, branch, globe, info), drawn at its
+ // 1.6 stroke by .wb-toolbar-views.
+ 'view-files': '<path d="M7 3.5h6.5L18.5 8.5v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2z"/><path d="M13.5 3.5v5h5"/>',
+ 'view-search': '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>',
+ 'view-scm': '<circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 3.5-2.5 5-6 5.5L8.5 16"/>',
+ 'view-browser': '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.3 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.3-3.5-8.5s1.1-6.1 3.5-8.5z"/>',
+ 'view-details': '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.9v.1"/>',
+ 'view-changes': '<path d="M12 4v11M6.5 9.5h11M6.5 20h11"/>',
 };
 const glyphHtml=Object.fromEntries(Object.entries(glyphs).map(([name,__html])=>[name,Object.freeze({__html})]));
 
