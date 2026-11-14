@@ -193,7 +193,7 @@ function ReviewFilePane({projectId,worktreePath,path,sessionId,checkpointId,toCh
    <span className="dim">{live ? copy('Checkpoint → current file', '检查点 → 当前文件') : copy('Checkpoint → next checkpoint (read-only)', '检查点 → 下一个检查点（只读）')}</span>
    <DiffFileNavigation paths={navigationPaths} path={path} zh={zh} disabled={busy||Boolean(navigationDisabled)} onNavigate={onNavigate}/>
   </div>}
-  <div className={`wb-rs-actions${dirty ? ' is-dirty' : ''}${selection ? ' is-active' : ''}`}>
+  <div className={`wb-rs-actions${dirty ? ' is-dirty' : ''}`}>
    {scope && diff && !diff.binary && <button type="button" className="cg-ghost cg-sm" disabled={busy || dirty || !selection || Boolean(draft)}
     title={dirty ? copy('Save or discard your edits first: they move the lines.', '请先保存或放弃修改：修改会让行号变化。') : selection ? copy(`Comment on ${place(selection)}`, `评论 ${place(selection)}`) : copy('Select lines (or put the cursor on a line) on either side first', '请先在任一侧选中行（或将光标放在某行）')}
     onClick={() => selection && setDraft(selection)}><WbIcon name="to-chat"/>{copy('Comment', '评论')}</button>}
