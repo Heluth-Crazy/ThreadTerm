@@ -255,8 +255,8 @@ try {
  const reviewRow=page.locator('.wb-review .wb-change-open',{hasText:'todo.md'}).first();
  await until(()=>reviewRow.isVisible(),'review list did not pick up the edit',20000);
  await reviewRow.click();
- await page.locator('.wb-review-diff .cm-mergeView .cm-merge-revert button').first().waitFor();
- const merge=await page.locator('.wb-review-diff .merge-editor').evaluate(host=>{const view=host.querySelector('.cm-mergeView').getBoundingClientRect();const revert=host.querySelector('.cm-merge-revert button');return{host:host.getBoundingClientRect().width,view:view.width,revertText:revert.textContent,revertSvg:!!revert.querySelector('svg'),font:getComputedStyle(host.querySelector('.cm-scroller')).fontFamily};});
+ await page.locator('.wb-review-diff .merge-editor .cm-editor').first().waitFor();
+ const merge=await page.locator('.wb-review-diff .merge-editor').evaluate(host=>{const view=host.querySelector('.cm-editor').getBoundingClientRect();return{host:host.getBoundingClientRect().width,view:view.width,revertText:'',revertSvg:Boolean(host.querySelector('.cm-merge-reject svg')||host.querySelector('.cm-merge-revert button svg')),font:getComputedStyle(host.querySelector('.cm-scroller')).fontFamily};});
  assert.ok(merge.view>=merge.host-1,`merge view must fill the diff pane: ${JSON.stringify(merge)}`);
  assert.ok(merge.revertSvg&&!merge.revertText.trim(),`merge revert control must be an SVG icon: ${JSON.stringify(merge)}`);
  // CodeMirror's base theme sets .cm-scroller to generic monospace (NSimSun on Chinese Windows); diffs use the app mono font.

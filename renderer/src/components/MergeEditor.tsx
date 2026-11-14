@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { goToNextChunk, goToPreviousChunk, MergeView } from '@codemirror/merge';
+import { goToNextChunk, goToPreviousChunk, MergeView, getChunks, getOriginalDoc, rejectChunk, unifiedMergeView } from '@codemirror/merge';
 import { Compartment, EditorSelection, EditorState, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { history, historyKeymap } from '@codemirror/commands';
@@ -13,50 +13,267 @@ import { installEditorCaretPresentation } from './editorCaret';
 import './editor-caret.css';
 import './editor-selection-actions.css';
 
-export type MergeEditorHandle={
- revertLine:()=>boolean;revertHunk:()=>boolean;
- /** Current chunks with the CodeMirror documents they index into. */
- snapshot:()=>{chunks:ChunkRange[];a:string;b:string};
- /** Chunk under the editable side's cursor, or -1. */
- cursorChunk:()=>number;
- focusChunk:(index:number)=>void;
+export type MergeEditorHandle = {
+  revertLine: () => boolean; revertHunk: () => boolean;
+  /** Current chunks with the CodeMirror documents they index into. */
+  snapshot: () => { chunks: ChunkRange[]; a: string; b: string };
+  /** Chunk under the editable side's cursor, or -1. */
+  cursorChunk: () => number;
+  focusChunk: (index: number) => void;
 };
 /** Lines the user selected (or the cursor's line) in one document: "old" = the left, read-only side. */
-export type MergeSelection={side:'old'|'new';startLine:number;endLine:number;text:string};
-export type MergeLineMark={side:'old'|'new';startLine:number;endLine:number};
-export type MergeSelectionActions=SelectionActions<MergeSelection>;
-type Props={path:string;oldText:string;newText:string;readOnly:boolean;onChange:(value:string)=>void;onSave:()=>void;onChunks?:(count:number)=>void;
- /** Review comments only (added when present at mount): the focused side's selected lines, and lines to mark.
-  * Read-only sides then stay focusable (CodeMirror cannot focus a non-editable view), still without edits. */
- onSelection?:(selection:MergeSelection)=>void;selectionActions?:MergeSelectionActions;onStageHunk?:()=>void;stageHunkLabel?:string;stageHunkDisabled?:boolean;onContextMenu?:(menu:{x:number;y:number;selection:MergeSelection;hasSelection:boolean;target:HTMLElement;copy:()=>Promise<void>})=>void;marks?:readonly MergeLineMark[]};
-const setMarks=StateEffect.define<DecorationSet>();
-const markField=StateField.define<DecorationSet>({create:()=>Decoration.none,update:(value,tr)=>{for(const effect of tr.effects)if(effect.is(setMarks))return effect.value;return value.map(tr.changes);},provide:field=>EditorView.decorations.from(field)});
-const markedLine=Decoration.line({class:'cm-review-commented'});
-export const MergeEditor=forwardRef<MergeEditorHandle,Props>(function MergeEditor({path,oldText,newText,readOnly,onChange,onSave,onChunks,onSelection,selectionActions,onStageHunk,stageHunkLabel,stageHunkDisabled,onContextMenu,marks},ref) {
- const host=useRef<HTMLDivElement>(null),view=useRef<MergeView|undefined>(undefined); const changed=useRef(onChange),save=useRef(onSave),chunksChanged=useRef(onChunks);changed.current=onChange;save.current=onSave;chunksChanged.current=onChunks;
- const selected=useRef(onSelection);selected.current=onSelection;
- const actions=useRef(selectionActions);actions.current=selectionActions;
- const stage=useRef(onStageHunk);stage.current=onStageHunk;
- const stageAvailable=Boolean(onStageHunk),controlsRenderer=useRef<(()=>HTMLElement)|undefined>(undefined);
- const stageDisabled=useRef(stageHunkDisabled);stageDisabled.current=stageHunkDisabled;
- const stageLabel=useRef(stageHunkLabel);stageLabel.current=stageHunkLabel;
- const [selectionAction,setSelectionAction]=useState<{selection:MergeSelection;position:SelectionActionPosition}>();
- const contextMenu=useRef(onContextMenu);contextMenu.current=onContextMenu;
- const captureSelection=(side:MergeSelection['side'],editor:EditorView)=>{const range=editor.state.selection.main,first=editor.state.doc.lineAt(range.from);let last=editor.state.doc.lineAt(range.to);if(range.to>range.from&&range.to===last.from&&last.number>first.number)last=editor.state.doc.line(last.number-1);const selection={side,startLine:first.number,endLine:last.number,text:editor.state.sliceDoc(first.from,last.to)};selected.current?.(selection);if(!actions.current||range.from===range.to||!host.current){setSelectionAction(undefined);return;}const coords=editor.coordsAtPos(range.to),bounds=host.current.getBoundingClientRect();if(!coords){setSelectionAction(undefined);return;}const below=coords.bottom-bounds.top,top=below+36<=bounds.height?below:coords.top-bounds.top-36;setSelectionAction({selection,position:{left:Math.max(8,Math.min(coords.left-bounds.left,bounds.width-230)),top:Math.max(4,top)}});};
- const revertHunk=()=>{const merge=view.current;if(!merge||readOnly)return false;const head=merge.b.state.selection.main.head,chunk=merge.chunks.find(c=>c.fromB<=head&&head<=c.toB);if(!chunk)return false;const a=merge.a.state.doc.toString(),b=merge.b.state.doc.toString(),spec=revertChunk(chunk.fromA,chunk.toA,chunk.fromB,chunk.toB,a,b);merge.b.dispatch({changes:spec,userEvent:'revert'});return true;};
- const revertLine=()=>{const merge=view.current;if(!merge||readOnly)return false;const head=merge.b.state.selection.main.head,chunk=merge.chunks.find(c=>c.fromB<=head&&head<=c.toB);if(!chunk)return false;const a=merge.a.state.doc.toString(),line=merge.b.state.doc.lineAt(head),specs=revertLineChanges(chunk.changes,chunk.fromA,chunk.fromB,line.from,line.to,a);if(!specs.length)return false;merge.b.dispatch({changes:specs,userEvent:'revert'});return true;};
- const snapshot=()=>{const merge=view.current;if(!merge)return {chunks:[],a:'',b:''};return {chunks:merge.chunks.map(({fromA,toA,fromB,toB})=>({fromA,toA,fromB,toB})),a:merge.a.state.doc.toString(),b:merge.b.state.doc.toString()};};
- const cursorChunk=()=>{const merge=view.current;if(!merge)return -1;const head=merge.b.state.selection.main.head;return merge.chunks.findIndex(c=>c.fromB<=head&&head<=c.toB);};
- const focusChunk=(index:number)=>{const merge=view.current,chunk=merge?.chunks[index];if(!merge||!chunk)return;const at=Math.min(chunk.fromB,merge.b.state.doc.length);merge.b.dispatch({selection:readOnly?undefined:EditorSelection.single(at),effects:EditorView.scrollIntoView(at,{y:'center'})});merge.a.dispatch({effects:EditorView.scrollIntoView(Math.min(chunk.fromA,merge.a.state.doc.length),{y:'center'})});};
- useEffect(()=>{const element=host.current;return element?installEditorCaretPresentation(element):undefined;},[]);
- useImperativeHandle(ref,()=>({revertLine,revertHunk,snapshot,cursorChunk,focusChunk}),[readOnly]);
- useEffect(()=>{if(!host.current)return;setSelectionAction(undefined);const languageA=new Compartment(),languageB=new Compartment();const comments=Boolean(selected.current||actions.current);const shared=[lineNumbers(),editorHighlight,EditorView.theme({'&':{background:'transparent',color:'inherit'},'.cm-gutters':{background:'transparent',color:'inherit',borderColor:'var(--border)'},'.cm-cursor':{borderLeftColor:'currentColor'},'.cm-scroller':{fontFamily:'inherit'}})];let merge:MergeView;const report=()=>queueMicrotask(()=>{if(view.current===merge)chunksChanged.current?.(merge.chunks.length);});const context=(side:MergeSelection['side'])=>EditorView.domEventHandlers({contextmenu(event,editor){const at=editor.posAtCoords({x:event.clientX,y:event.clientY});if(at==null)return false;const range=editor.state.selection.main;if(at<range.from||at>range.to)editor.dispatch({selection:EditorSelection.single(at)});const current=editor.state.selection.main,first=editor.state.doc.lineAt(current.from);let last=editor.state.doc.lineAt(current.to);if(current.to>current.from&&current.to===last.from&&last.number>first.number)last=editor.state.doc.line(last.number-1);const selection={side,startLine:first.number,endLine:last.number,text:editor.state.sliceDoc(first.from,last.to)};selected.current?.(selection);contextMenu.current?.({x:event.clientX,y:event.clientY,selection,hasSelection:current.from!==current.to,target:editor.contentDOM,copy:()=>navigator.clipboard.writeText(editor.state.sliceDoc(current.from,current.to))});return Boolean(contextMenu.current);}});const chunkKeys=keymap.of([{key:'F7',run:goToNextChunk,preventDefault:true},{key:'Shift-F7',run:goToPreviousChunk,preventDefault:true},{key:'Mod-l',preventDefault:true,run:editor=>{if(editor===merge.a||!actions.current?.onSend)return false;const {from,to}=editor.state.selection.main,startLine=editor.state.doc.lineAt(from).number,endPosition=to>from&&editor.state.doc.lineAt(to).from===to?to-1:to;actions.current.onSend({startLine,endLine:editor.state.doc.lineAt(endPosition).number});return true;}}]),readonlyFocus=EditorView.contentAttributes.of({tabindex:'0'});const selectionListener=(side:MergeSelection['side'])=>EditorView.updateListener.of(update=>{if((update.selectionSet||update.focusChanged||update.docChanged)&&update.view.hasFocus)captureSelection(side,update.view);});const renderRevertControl=()=>{const controls=document.createElement('span');controls.className='cm-merge-actions';if(!readOnly){const revert=document.createElement('button');revert.type='button';revert.innerHTML=wbIconMarkup('undo');revert.title=document.documentElement.lang==='zh-CN'?'还原此处更改':'Revert this change';revert.setAttribute('aria-label',revert.title);controls.append(revert);}if(stage.current){const stageButton=document.createElement('button');stageButton.type='button';stageButton.className='icon-btn icon-btn-sm cm-merge-stage';stageButton.hidden=Boolean(stageDisabled.current);const label=stageLabel.current??(document.documentElement.lang==='zh-CN'?'暂存此块':'Stage hunk');stageButton.innerHTML=/unstage|取消暂存/i.test(label)?wbIconMarkup('minus'):'<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';stageButton.title=label;stageButton.setAttribute('aria-label',label);stageButton.addEventListener('mousedown',event=>{event.preventDefault();event.stopPropagation();});stageButton.addEventListener('click',()=>{const index=Number(controls.dataset.chunk),chunk=merge?.chunks[index];if(!chunk||stageDisabled.current)return;const at=Math.min(chunk.fromB,merge.b.state.doc.length);merge.b.dispatch({selection:EditorSelection.single(at),effects:EditorView.scrollIntoView(at,{y:'center'})});stage.current?.();});controls.append(stageButton);}return controls;};controlsRenderer.current=renderRevertControl;merge=new MergeView({parent:host.current,a:{doc:oldText,extensions:[...shared,languageA.of([]),chunkKeys,readonlyFocus,EditorState.readOnly.of(true),EditorView.editable.of(comments),context('old'),...(comments?[markField,selectionListener('old')]:[])]},b:{doc:newText,extensions:[...shared,languageB.of([]),chunkKeys,...(readOnly?[readonlyFocus]:[]),history(),context('new'),...(comments?[markField,selectionListener('new')]:[]),EditorState.readOnly.of(readOnly),EditorView.editable.of(comments||!readOnly),keymap.of([...historyKeymap,{key:'Mod-s',run:()=>{save.current();return true;}}]),EditorView.updateListener.of(update=>{if(update.docChanged){changed.current(update.state.doc.toString());report();}})]},highlightChanges:true,gutter:true,revertControls:!readOnly||Boolean(stage.current)?'a-to-b':undefined,collapseUnchanged:{margin:4,minSize:12},renderRevertControl});view.current=merge;report();const detachA=attachLanguage(merge.a,languageA,path),detachB=attachLanguage(merge.b,languageB,path);return()=>{detachA();detachB();merge.destroy();if(view.current===merge)view.current=undefined;};},[path,readOnly]);
- useEffect(()=>{const merge=view.current,render=controlsRenderer.current;if(!merge||!render)return;merge.reconfigure({revertControls:!readOnly||stageAvailable?'a-to-b':undefined,renderRevertControl:()=>render()});},[readOnly,stageAvailable]);
- useEffect(()=>{for(const button of host.current?.querySelectorAll<HTMLButtonElement>('.cm-merge-stage')??[]){button.hidden=Boolean(stageHunkDisabled)||!onStageHunk;const label=stageHunkLabel??(document.documentElement.lang==='zh-CN'?'暂存此块':'Stage hunk');button.innerHTML=/unstage|取消暂存/i.test(label)?wbIconMarkup('minus'):'<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';button.title=label;button.setAttribute('aria-label',label);}},[onStageHunk,stageHunkDisabled,stageHunkLabel]);
- useEffect(()=>{const element=host.current;if(!element)return;const key=(event:KeyboardEvent)=>{if(event.key!=='ContextMenu'&&!(event.key==='F10'&&event.shiftKey))return;const merge=view.current;if(!merge)return;const target=event.target as Node;const editor=merge.a.contentDOM.contains(target)?merge.a:merge.b.contentDOM.contains(target)?merge.b:undefined;if(!editor)return;const side:MergeSelection['side']=editor===merge.a?'old':'new',range=editor.state.selection.main,first=editor.state.doc.lineAt(range.from);let last=editor.state.doc.lineAt(range.to);if(range.to>range.from&&range.to===last.from&&last.number>first.number)last=editor.state.doc.line(last.number-1);const selection={side,startLine:first.number,endLine:last.number,text:editor.state.sliceDoc(first.from,last.to)};const point=editor.coordsAtPos(range.head)??editor.contentDOM.getBoundingClientRect();event.preventDefault();contextMenu.current?.({x:point.left,y:point.bottom,selection,hasSelection:range.from!==range.to,target:editor.contentDOM,copy:()=>navigator.clipboard.writeText(editor.state.sliceDoc(range.from,range.to))});};element.addEventListener('keydown',key);return()=>element.removeEventListener('keydown',key);},[path,readOnly]);
- useEffect(()=>{const merge=view.current;if(!merge)return;for(const [editor,text] of [[merge.a,oldText],[merge.b,newText]] as const)if(editor.state.doc.toString()!==text)editor.dispatch({changes:{from:0,to:editor.state.doc.length,insert:text}});chunksChanged.current?.(merge.chunks.length);},[oldText,newText]);
- useEffect(()=>{const element=host.current;if(!element)return;const clear=()=>setSelectionAction(undefined),blur=(event:FocusEvent)=>{if(event.relatedTarget instanceof Node&&element.contains(event.relatedTarget))return;clear();};element.addEventListener('scroll',clear,true);element.addEventListener('focusout',blur);return()=>{element.removeEventListener('scroll',clear,true);element.removeEventListener('focusout',blur);};},[]);
- // Commented lines, re-marked after the documents are created or replaced (after the effects above).
- useEffect(()=>{const merge=view.current;if(!merge||!marks)return;for(const [editor,side] of [[merge.a,'old'],[merge.b,'new']] as const){if(!editor.state.field(markField,false))continue;const lines=new Set<number>();for(const mark of marks)if(mark.side===side)for(let line=mark.startLine;line<=Math.min(mark.endLine,editor.state.doc.lines);line++)lines.add(line);const builder=new RangeSetBuilder<Decoration>();for(const line of [...lines].sort((left,right)=>left-right)){const at=editor.state.doc.line(line).from;builder.add(at,at,markedLine);}editor.dispatch({effects:setMarks.of(builder.finish())});}},[marks,oldText,newText,path,readOnly]);
- return <div className="merge-editor tt-diff-host" ref={host}>{selectionAction&&selectionActions&&<EditorSelectionActions selection={selectionAction.selection} position={selectionAction.position} actions={selectionAction.selection.side==='old'?{...selectionActions,onSend:undefined}:selectionActions}/>}</div>;
+export type MergeSelection = { side: 'old' | 'new'; startLine: number; endLine: number; text: string };
+export type MergeLineMark = { side: 'old' | 'new'; startLine: number; endLine: number };
+export type MergeSelectionActions = SelectionActions<MergeSelection>;
+type Props = {
+  path: string; oldText: string; newText: string; readOnly: boolean; onChange: (value: string) => void; onSave: () => void; onChunks?: (count: number) => void;
+  /** Review comments only (added when present at mount): the focused side's selected lines, and lines to mark.
+   * Read-only sides then stay focusable (CodeMirror cannot focus a non-editable view), still without edits. */
+  onSelection?: (selection: MergeSelection) => void; selectionActions?: MergeSelectionActions; onStageHunk?: () => void; stageHunkLabel?: string; stageHunkDisabled?: boolean; onContextMenu?: (menu: { x: number; y: number; selection: MergeSelection; hasSelection: boolean; target: HTMLElement; copy: () => Promise<void> }) => void; marks?: readonly MergeLineMark[];
+  /** One column with deleted lines inline (Cursor's Git review default) instead of the two-pane merge view.
+   * The unified view still edits the current text, keeps comments and the per-chunk Discard control. */
+  unified?: boolean;
+};
+const setMarks = StateEffect.define<DecorationSet>();
+const markField = StateField.define<DecorationSet>({ create: () => Decoration.none, update: (value, tr) => { for (const effect of tr.effects) if (effect.is(setMarks)) return effect.value; return value.map(tr.changes); }, provide: field => EditorView.decorations.from(field) });
+const markedLine = Decoration.line({ class: 'cm-review-commented' });
+
+export const MergeEditor = forwardRef<MergeEditorHandle, Props>(function MergeEditor({ path, oldText, newText, readOnly, onChange, onSave, onChunks, onSelection, selectionActions, onStageHunk, stageHunkLabel, stageHunkDisabled, onContextMenu, marks, unified = false }, ref) {
+  const host = useRef<HTMLDivElement>(null), view = useRef<MergeView | undefined>(undefined), single = useRef<EditorView | undefined>(undefined);
+  const changed = useRef(onChange), save = useRef(onSave), chunksChanged = useRef(onChunks); changed.current = onChange; save.current = onSave; chunksChanged.current = onChunks;
+  const selected = useRef(onSelection); selected.current = onSelection;
+  const actions = useRef(selectionActions); actions.current = selectionActions;
+  const stage = useRef(onStageHunk); stage.current = onStageHunk;
+  const stageAvailable = Boolean(onStageHunk), controlsRenderer = useRef<(() => HTMLElement) | undefined>(undefined);
+  const stageDisabled = useRef(stageHunkDisabled); stageDisabled.current = stageHunkDisabled;
+  const stageLabel = useRef(stageHunkLabel); stageLabel.current = stageHunkLabel;
+  const [selectionAction, setSelectionAction] = useState<{ selection: MergeSelection; position: SelectionActionPosition }>();
+  const contextMenu = useRef(onContextMenu); contextMenu.current = onContextMenu;
+  const editableSide = () => unified ? single.current : view.current?.b;
+  const captureSelection = (side: MergeSelection['side'], editor: EditorView) => {
+    const range = editor.state.selection.main, first = editor.state.doc.lineAt(range.from);
+    let last = editor.state.doc.lineAt(range.to);
+    if (range.to > range.from && range.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1);
+    const selection = { side, startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) };
+    selected.current?.(selection);
+    if (!actions.current || range.from === range.to || !host.current) { setSelectionAction(undefined); return; }
+    const coords = editor.coordsAtPos(range.to), bounds = host.current.getBoundingClientRect();
+    if (!coords) { setSelectionAction(undefined); return; }
+    const below = coords.bottom - bounds.top, top = below + 36 <= bounds.height ? below : coords.top - bounds.top - 36;
+    setSelectionAction({ selection, position: { left: Math.max(8, Math.min(coords.left - bounds.left, bounds.width - 230)), top: Math.max(4, top) } });
+  };
+  const chunksOf = () => {
+    const one = single.current;
+    if (one) return getChunks(one.state)?.chunks ?? [];
+    return view.current?.chunks ?? [];
+  };
+  const revertHunk = () => {
+    if (readOnly) return false;
+    const one = single.current;
+    if (one) return rejectChunk(one);
+    const merge = view.current; if (!merge) return false;
+    const head = merge.b.state.selection.main.head, chunk = merge.chunks.find(c => c.fromB <= head && head <= c.toB);
+    if (!chunk) return false;
+    const a = merge.a.state.doc.toString(), b = merge.b.state.doc.toString(), spec = revertChunk(chunk.fromA, chunk.toA, chunk.fromB, chunk.toB, a, b);
+    merge.b.dispatch({ changes: spec, userEvent: 'revert' });
+    return true;
+  };
+  const revertLine = () => {
+    if (readOnly) return false;
+    const merge = view.current; if (!merge) return false;
+    const head = merge.b.state.selection.main.head, chunk = merge.chunks.find(c => c.fromB <= head && head <= c.toB);
+    if (!chunk) return false;
+    const a = merge.a.state.doc.toString(), line = merge.b.state.doc.lineAt(head), specs = revertLineChanges(chunk.changes, chunk.fromA, chunk.fromB, line.from, line.to, a);
+    if (!specs.length) return false;
+    merge.b.dispatch({ changes: specs, userEvent: 'revert' });
+    return true;
+  };
+  const snapshot = () => {
+    const one = single.current;
+    if (one) return { chunks: chunksOf().map(({ fromA, toA, fromB, toB }) => ({ fromA, toA, fromB, toB })), a: getOriginalDoc(one.state).toString(), b: one.state.doc.toString() };
+    const merge = view.current; if (!merge) return { chunks: [], a: '', b: '' };
+    return { chunks: merge.chunks.map(({ fromA, toA, fromB, toB }) => ({ fromA, toA, fromB, toB })), a: merge.a.state.doc.toString(), b: merge.b.state.doc.toString() };
+  };
+  const cursorChunk = () => {
+    const one = single.current;
+    if (one) { const head = one.state.selection.main.head; return chunksOf().findIndex(c => c.fromB <= head && head <= c.toB); }
+    const merge = view.current; if (!merge) return -1;
+    const head = merge.b.state.selection.main.head;
+    return merge.chunks.findIndex(c => c.fromB <= head && head <= c.toB);
+  };
+  const focusChunk = (index: number) => {
+    const chunk = chunksOf()[index];
+    if (!chunk) return;
+    const editor = editableSide();
+    if (!editor) return;
+    const at = Math.min(chunk.fromB, editor.state.doc.length);
+    editor.dispatch({ selection: readOnly ? undefined : EditorSelection.single(at), effects: EditorView.scrollIntoView(at, { y: 'center' }) });
+    if (view.current) view.current.a.dispatch({ effects: EditorView.scrollIntoView(Math.min(chunk.fromA, view.current.a.state.doc.length), { y: 'center' }) });
+  };
+  useEffect(() => { const element = host.current; return element ? installEditorCaretPresentation(element) : undefined; }, []);
+  useImperativeHandle(ref, () => ({ revertLine, revertHunk, snapshot, cursorChunk, focusChunk }), [readOnly, unified]);
+
+  useEffect(() => {
+    if (!host.current) return;
+    setSelectionAction(undefined);
+    const languageA = new Compartment(), languageB = new Compartment();
+    const comments = Boolean(selected.current || actions.current);
+    const shared = [lineNumbers(), editorHighlight, EditorView.theme({ '&': { background: 'transparent', color: 'inherit' }, '.cm-gutters': { background: 'transparent', color: 'inherit', borderColor: 'var(--border)' }, '.cm-cursor': { borderLeftColor: 'currentColor' }, '.cm-scroller': { fontFamily: 'inherit' } })];
+    const report = (editor: EditorView) => queueMicrotask(() => { if ((unified ? single.current : view.current?.b) === editor) chunksChanged.current?.(chunksOf().length); });
+    const context = (side: MergeSelection['side']) => EditorView.domEventHandlers({
+      contextmenu(event, editor) {
+        const at = editor.posAtCoords({ x: event.clientX, y: event.clientY });
+        if (at == null) return false;
+        const range = editor.state.selection.main;
+        if (at < range.from || at > range.to) editor.dispatch({ selection: EditorSelection.single(at) });
+        const current = editor.state.selection.main, first = editor.state.doc.lineAt(current.from);
+        let last = editor.state.doc.lineAt(current.to);
+        if (current.to > current.from && current.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1);
+        const selection = { side, startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) };
+        selected.current?.(selection);
+        contextMenu.current?.({ x: event.clientX, y: event.clientY, selection, hasSelection: current.from !== current.to, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(editor.state.sliceDoc(current.from, current.to)) });
+        return Boolean(contextMenu.current);
+      },
+    });
+    const chunkKeys = keymap.of([
+      { key: 'F7', run: goToNextChunk, preventDefault: true },
+      { key: 'Shift-F7', run: goToPreviousChunk, preventDefault: true },
+      { key: 'Mod-l', preventDefault: true, run: editor => { if (unified || editor === view.current?.b) { const { from, to } = editor.state.selection.main, startLine = editor.state.doc.lineAt(from).number, endPosition = to > from && editor.state.doc.lineAt(to).from === to ? to - 1 : to; actions.current?.onSend?.({ startLine, endLine: editor.state.doc.lineAt(endPosition).number }); return Boolean(actions.current?.onSend); } return false; } },
+    ]);
+    const readonlyFocus = EditorView.contentAttributes.of({ tabindex: '0' });
+    const selectionListener = (side: MergeSelection['side']) => EditorView.updateListener.of(update => { if ((update.selectionSet || update.focusChanged || update.docChanged) && update.view.hasFocus) captureSelection(side, update.view); });
+    const editorExtensions = (side: 'old' | 'new', language: Compartment, readOnlySide: boolean) => [
+      ...shared, language.of([]), chunkKeys, ...(readOnlySide ? [readonlyFocus] : []), history(), context(side),
+      ...(comments ? [markField, selectionListener(side)] : []),
+      EditorState.readOnly.of(readOnlySide), EditorView.editable.of(comments || !readOnlySide),
+      keymap.of([...historyKeymap, { key: 'Mod-s', run: () => { save.current(); return true; } }]),
+      EditorView.updateListener.of(update => { if (update.docChanged) { changed.current(update.state.doc.toString()); report(update.view); } }),
+    ];
+    if (unified) {
+      const merged = new EditorView({
+        parent: host.current,
+        doc: newText,
+        extensions: [...editorExtensions('new', languageB, readOnly), unifiedMergeView({
+          original: oldText, highlightChanges: true, gutter: true, collapseUnchanged: { margin: 4, minSize: 12 },
+          // The per-chunk control is Cursor's hunk Discard; the review keeps its file-level Save and Revert as well.
+          mergeControls: readOnly ? false : (type, action) => {
+            if (type !== 'reject') return document.createElement('span');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'cm-merge-stage cm-merge-reject';
+            button.innerHTML = wbIconMarkup('undo');
+            const label = document.documentElement.lang === 'zh-CN' ? '还原此处更改' : 'Discard this change';
+            button.title = label;
+            button.setAttribute('aria-label', label);
+            button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); });
+            button.addEventListener('click', action);
+            return button;
+          },
+        })],
+      });
+      single.current = merged;
+      report(merged);
+      const detach = attachLanguage(merged, languageB, path);
+      return () => { detach(); merged.destroy(); if (single.current === merged) single.current = undefined; };
+    }
+    const renderRevertControl = () => {
+      const controls = document.createElement('span'); controls.className = 'cm-merge-actions';
+      if (!readOnly) {
+        const revert = document.createElement('button');
+        revert.type = 'button'; revert.innerHTML = wbIconMarkup('undo');
+        revert.title = document.documentElement.lang === 'zh-CN' ? '还原此处更改' : 'Revert this change';
+        revert.setAttribute('aria-label', revert.title); controls.append(revert);
+      }
+      if (stage.current) {
+        const stageButton = document.createElement('button');
+        stageButton.type = 'button'; stageButton.className = 'icon-btn icon-btn-sm cm-merge-stage'; stageButton.hidden = Boolean(stageDisabled.current);
+        const label = stageLabel.current ?? (document.documentElement.lang === 'zh-CN' ? '暂存此块' : 'Stage hunk');
+        stageButton.innerHTML = /unstage|取消暂存/i.test(label) ? wbIconMarkup('minus') : '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+        stageButton.title = label; stageButton.setAttribute('aria-label', label);
+        stageButton.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); });
+        stageButton.addEventListener('click', () => {
+          const index = Number(controls.dataset.chunk), chunk = view.current?.chunks[index];
+          if (!chunk || stageDisabled.current) return;
+          const editor = view.current; if (!editor) return;
+          const at = Math.min(chunk.fromB, editor.b.state.doc.length);
+          editor.b.dispatch({ selection: EditorSelection.single(at), effects: EditorView.scrollIntoView(at, { y: 'center' }) });
+          stage.current?.();
+        });
+        controls.append(stageButton);
+      }
+      return controls;
+    };
+    controlsRenderer.current = renderRevertControl;
+    const merge = new MergeView({
+      parent: host.current,
+      a: { doc: oldText, extensions: [...shared, languageA.of([]), chunkKeys, readonlyFocus, EditorState.readOnly.of(true), EditorView.editable.of(comments), context('old'), ...(comments ? [markField, selectionListener('old')] : [])] },
+      b: { doc: newText, extensions: editorExtensions('new', languageB, readOnly) },
+      highlightChanges: true, gutter: true, revertControls: !readOnly || Boolean(stage.current) ? 'a-to-b' : undefined, collapseUnchanged: { margin: 4, minSize: 12 }, renderRevertControl,
+    });
+    view.current = merge;
+    report(merge.b);
+    const detachA = attachLanguage(merge.a, languageA, path), detachB = attachLanguage(merge.b, languageB, path);
+    return () => { detachA(); detachB(); merge.destroy(); if (view.current === merge) view.current = undefined; };
+  }, [path, readOnly, unified]);
+
+  useEffect(() => {
+    const merge = view.current, render = controlsRenderer.current;
+    if (!merge || !render || unified) return;
+    merge.reconfigure({ revertControls: !readOnly || stageAvailable ? 'a-to-b' : undefined, renderRevertControl: () => render() });
+  }, [readOnly, stageAvailable, unified]);
+  useEffect(() => {
+    if (unified) return;
+    for (const button of host.current?.querySelectorAll<HTMLButtonElement>('.cm-merge-stage') ?? []) {
+      button.hidden = Boolean(stageHunkDisabled) || !onStageHunk;
+      const label = stageHunkLabel ?? (document.documentElement.lang === 'zh-CN' ? '暂存此块' : 'Stage hunk');
+      button.innerHTML = /unstage|取消暂存/i.test(label) ? wbIconMarkup('minus') : '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+      button.title = label; button.setAttribute('aria-label', label);
+    }
+  }, [onStageHunk, stageHunkDisabled, stageHunkLabel, unified]);
+  useEffect(() => {
+    const element = host.current; if (!element) return;
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+      const editor = editableSide(); if (!editor) return;
+      const target = event.target as Node;
+      if (!editor.contentDOM.contains(target)) return;
+      const range = editor.state.selection.main, first = editor.state.doc.lineAt(range.from);
+      let last = editor.state.doc.lineAt(range.to);
+      if (range.to > range.from && range.to === last.from && last.number > first.number) last = editor.state.doc.line(last.number - 1);
+      const selection = { side: 'new' as const, startLine: first.number, endLine: last.number, text: editor.state.sliceDoc(first.from, last.to) };
+      const point = editor.coordsAtPos(range.head) ?? editor.contentDOM.getBoundingClientRect();
+      event.preventDefault();
+      contextMenu.current?.({ x: point.left, y: point.bottom, selection, hasSelection: range.from !== range.to, target: editor.contentDOM, copy: () => navigator.clipboard.writeText(editor.state.sliceDoc(range.from, range.to)) });
+    };
+    element.addEventListener('keydown', key);
+    return () => element.removeEventListener('keydown', key);
+  }, [path, readOnly, unified]);
+  useEffect(() => {
+    const one = single.current;
+    if (one) { if (one.state.doc.toString() !== newText) one.dispatch({ changes: { from: 0, to: one.state.doc.length, insert: newText } }); chunksChanged.current?.(chunksOf().length); return; }
+    const merge = view.current; if (!merge) return;
+    for (const [editor, text] of [[merge.a, oldText], [merge.b, newText]] as const) if (editor.state.doc.toString() !== text) editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: text } });
+    chunksChanged.current?.(merge.chunks.length);
+  }, [oldText, newText, unified]);
+  useEffect(() => {
+    const element = host.current; if (!element) return;
+    const clear = () => setSelectionAction(undefined), blur = (event: FocusEvent) => { if (event.relatedTarget instanceof Node && element.contains(event.relatedTarget)) return; clear(); };
+    element.addEventListener('scroll', clear, true);
+    element.addEventListener('focusout', blur);
+    return () => { element.removeEventListener('scroll', clear, true); element.removeEventListener('focusout', blur); };
+  }, []);
+  // Commented lines, re-marked after the documents are created or replaced (after the effects above).
+  useEffect(() => {
+    const editors: [EditorView, MergeSelection['side']][] = single.current ? [[single.current, 'new']] : view.current ? [[view.current.a, 'old'], [view.current.b, 'new']] : [];
+    if (!editors.length || !marks) return;
+    for (const [editor, side] of editors) {
+      if (!editor.state.field(markField, false)) continue;
+      const lines = new Set<number>();
+      for (const mark of marks) if (mark.side === side) for (let line = mark.startLine; line <= Math.min(mark.endLine, editor.state.doc.lines); line++) lines.add(line);
+      const builder = new RangeSetBuilder<Decoration>();
+      for (const line of [...lines].sort((left, right) => left - right)) { const at = editor.state.doc.line(line).from; builder.add(at, at, markedLine); }
+      editor.dispatch({ effects: setMarks.of(builder.finish()) });
+    }
+  }, [marks, oldText, newText, path, readOnly, unified]);
+  return <div className="merge-editor tt-diff-host" ref={host}>{selectionAction && selectionActions && <EditorSelectionActions selection={selectionAction.selection} position={selectionAction.position} actions={selectionAction.selection.side === 'old' ? { ...selectionActions, onSend: undefined } : selectionActions} />}</div>;
 });

@@ -102,7 +102,9 @@ const strip = () => visible('.wb-review-comments').first();
 const userMessages = async id => (await request('chat.read', { sessionId: id })).filter(item => item.role === 'user').length;
 /** Comment on the line containing `text` (in `side` 'a'/'b' of a diff, or the editor), then add `body`. */
 async function comment(host, text, body, { side, expectPlace } = {}) {
-  const line = host.locator(side ? `.cm-merge-${side} .cm-line` : '.cm-line', { hasText: text }).first();
+  // Cursor's review is one unified column, so a side only applies when the diff has two panes.
+  const splitSide = side && await host.locator(`.cm-merge-${side}`).count();
+  const line = host.locator(splitSide ? `.cm-merge-${side} .cm-line` : '.cm-line', { hasText: text }).first();
   await line.click();
   const fileWorkspace = await host.evaluate(node => node.classList.contains('file-workspace') || Boolean(node.querySelector('.file-workspace')));
   const button = fileWorkspace ? host.locator('.file-selection-actions').getByRole('button', { name: /^(Comment|评论)$/ }).first() : host.getByRole('button', { name: /^(Comment|评论)$/ }).first();
@@ -200,7 +202,7 @@ try {
   await until(() => change.isVisible(), 'the edit did not show in Agent changes', 20000);
   await change.click();
   const review = visible('.wb-review-diff').first();
-  await review.locator('.cm-mergeView').waitFor();
+  await review.locator('.cm-mergeView, .merge-editor .cm-editor').first().waitFor();
   const reviewPlace = await comment(review, 'cartTotal', 'Rename the callers too.', { side: 'b', expectPlace: /^src\/cart\.ts:1$/ });
   check(`agent review: comment on ${reviewPlace}`);
 
