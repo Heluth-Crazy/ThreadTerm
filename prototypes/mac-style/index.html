@@ -649,13 +649,166 @@ html[data-theme="dark"] .win[data-style="cursor"] .composer { background: var(--
 .start-recent .where { flex: none; color: var(--text-3); font-size: 12px; }
 .win[data-style="cursor"] .start-q { display: none; }
 .win[data-style="cursor"] .start-col { padding-top: 18vh; }
+/* ───────────────────────── Cursor-referenced surfaces (owner 2026-11-14) ─────────────────────────
+   "项目列表的设计不要动…start部分可以参考，git和文件代码编辑等部分的设计参考cursor，其他暂时维持不变", plus Cursor's
+   Design Mode notes. Git, file editing, Start and Design Mode take Cursor's structure; colours stay on the app tokens,
+   and the project list, tabs, chat and terminals stay as they are. One grammar for all four, so parallel ports agree:
+   - hairline boxes: 8 px radius, inset 1 px --sep, no fill or --raised for headers;
+   - ghost controls: 24 px high, transparent, --fill-1 on hover, --fill-2 when on, 6 px radius, 12 px text;
+   - one primary action per surface (accent fill), everything else ghost;
+   - counts are muted tabular numbers; change stats are "+n −n" in 11 px mono, green/red;
+   - section heads are 12 px semibold --text-2 with the count in --text-3. */
+.stat { flex: none; font: 11px var(--mono); white-space: nowrap; }
+.stat .a { color: var(--st-run-text); } .stat .d { color: var(--st-fail); margin-left: 4px; }
+.ghost { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 24px; padding: 0 7px; border-radius: 6px; color: var(--text-2); font-size: 12px; white-space: nowrap; flex: none; }
+.ghost:hover { background: var(--fill-1); color: var(--text); }
+.ghost.on { background: var(--fill-2); color: var(--text); }
+.ghost .ic { width: 14px; height: 14px; }
+.ghost .ud { width: 10px; height: 10px; color: var(--text-3); }
+.ghost.icon { width: 24px; padding: 0; }
+.ghost.primary { background: var(--accent); color: var(--on-accent); font-weight: 500; }
+.ghost.primary:hover { background: var(--accent-hi); color: var(--on-accent); }
+.ghost .cnt { color: inherit; opacity: .75; font-variant-numeric: tabular-nums; }
+.gseg { display: inline-flex; gap: 1px; padding: 2px; border-radius: 7px; background: var(--fill-1); flex: none; }
+.gseg > button { height: 20px; padding: 0 7px; border-radius: 5px; color: var(--text-2); font-size: 11.5px; }
+.gseg > button.on { background: var(--control); color: var(--text); box-shadow: 0 0 0 .5px var(--control-edge), 0 1px 2px var(--control-drop); }
+.gseg > button .ic { width: 13px; height: 13px; }
+.sec2 { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 2px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.sec2 .cnt { font-weight: 400; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sec2 > :last-child:not(.cnt) { margin-left: auto; }
+
+/* Source Control panel: branch and sync as ghost chips, the commit box is one hairline field with Commit inside. */
+.scm2 { padding: 2px 12px 14px; }
+.scm2-top { display: flex; align-items: center; gap: 2px; margin: 0 -6px 8px; }
+.scm2-top .sp { flex: 1; }
+.scm2-commit { display: grid; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--sep); background: var(--content); }
+.scm2-commit:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
+.scm2-commit textarea { min-height: 52px; padding: 8px 10px 2px; border: 0; background: transparent; resize: none; font: 12.5px/1.45 var(--font); outline: none; }
+.scm2-commit .row { display: flex; align-items: center; gap: 2px; padding: 4px 5px 5px; }
+.scm2-commit .row .sp { flex: 1; }
+.scm2 .sec2 { margin-top: 10px; }
+.frow .stat { margin-left: 4px; }
+.frow .hacts { display: none; gap: 1px; margin-left: auto; }
+.frow .hacts .ghost { height: 20px; }
+.frow .hacts .ghost.icon { width: 20px; }
+.frow:hover .hacts { display: flex; }
+.frow:hover > .stat, .frow:hover > .fst { display: none; }
+
+/* Review: every changed file stacked in one scroll, as Cursor's review; unified by default, split on demand. */
+.rv { flex: 1; overflow: auto; min-height: 0; background: var(--content); }
+.rv-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 12px 0 16px; background: var(--content); border-bottom: 1px solid var(--sep); font-size: 12.5px; }
+.rv-bar b { font-weight: 600; }
+.rv-bar .sp { flex: 1; }
+.rv-files { display: grid; gap: 10px; padding: 12px 16px 28px; }
+.rv-file { border-radius: 8px; box-shadow: inset 0 0 0 1px var(--sep); overflow: hidden; }
+.rv-head { display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 6px 0 8px; background: var(--raised); box-shadow: inset 0 -1px 0 var(--sep); font-size: 12.5px; }
+.rv-file.closed .rv-head { box-shadow: none; }
+.rv-head .disc { margin: 0; }
+.rv-head .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: 11.5px; }
+.rv-head .acts { display: flex; gap: 1px; margin-left: auto; }
+.rv-hunk { display: flex; align-items: center; height: 26px; padding: 0 6px 0 12px; background: var(--fill-1); color: var(--text-3); font: 11.5px var(--mono); }
+.rv-hunk .acts { display: flex; gap: 1px; margin-left: auto; opacity: 0; transition: opacity .12s; }
+.rv-file:hover .rv-hunk .acts { opacity: 1; }
+.rv-hunk .acts .ghost { height: 20px; font-family: var(--font); }
+.dl { display: grid; grid-template-columns: 38px 38px 18px minmax(0, 1fr); font: 12px/20px var(--mono); white-space: pre; }
+.dl .ln { padding-right: 8px; color: var(--text-3); text-align: right; font-size: 11px; }
+.dl .sg { color: var(--text-3); text-align: center; }
+.dl.add { background: color-mix(in srgb, var(--st-run) 10%, transparent); } .dl.add .sg { color: var(--st-run-text); }
+.dl.del { background: color-mix(in srgb, var(--st-fail) 9%, transparent); } .dl.del .sg { color: var(--st-fail); }
+.dl.add .w { background: color-mix(in srgb, var(--st-run) 22%, transparent); border-radius: 2px; }
+.dl.del .w { background: color-mix(in srgb, var(--st-fail) 20%, transparent); border-radius: 2px; }
+
+/* Editor: breadcrumbs instead of a path label, ghost actions, a quiet gutter with change bars. */
+.ed { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--content); }
+.crumbs { display: flex; align-items: center; gap: 1px; height: 30px; padding: 0 6px 0 10px; border-bottom: 1px solid var(--sep); color: var(--text-2); font-size: 12px; flex: none; }
+.crumbs .c { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 5px; border-radius: 5px; white-space: nowrap; }
+.crumbs .c:hover { background: var(--fill-1); color: var(--text); }
+.crumbs .c .ic { width: 13px; height: 13px; }
+.crumbs .c.here { color: var(--text); }
+.crumbs .gt { width: 10px; height: 10px; color: var(--text-3); flex: none; }
+.crumbs .sp { flex: 1; }
+.code-ed { flex: 1; overflow: auto; padding: 6px 0 24px; font: 12.5px/20px var(--mono); }
+.cl { display: grid; grid-template-columns: 4px 46px minmax(0, 1fr); white-space: pre; }
+.cl .ln { padding-right: 16px; color: var(--text-3); text-align: right; font-size: 11.5px; }
+.cl.here { background: var(--fill-1); } .cl.here .ln { color: var(--text); }
+.cl.g-add > i { background: var(--st-run); } .cl.g-mod > i { background: var(--accent); }
+.cl.g-del > i { background: linear-gradient(135deg, var(--st-fail) 50%, transparent 50%); }
+.cl > i { display: block; border-radius: 1px; }
+.hunk-pop { display: flex; align-items: center; gap: 2px; width: max-content; margin: 2px 0 4px 50px; padding: 3px; border-radius: 8px; background: var(--menu); box-shadow: 0 0 0 .5px var(--menu-edge), 0 6px 18px -6px rgba(0,0,0,.24); font-size: 12px; }
+.hunk-pop .lbl { padding: 0 6px; color: var(--text-2); }
+.hunk-pop .stat { padding-right: 4px; }
+
+/* Design Mode: Annotate in the browser toolbar, a hint row with the tools, pins on the page, a note card. */
+.mb2 { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.mb2-bar { display: flex; align-items: center; gap: 2px; height: 38px; padding: 0 6px; border-bottom: 1px solid var(--sep); flex: none; }
+.mb2-addr { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 26px; margin: 0 4px; padding: 0 9px; border-radius: 7px; background: var(--fill-1); color: var(--text-2); font-size: 12px; white-space: nowrap; overflow: hidden; }
+.mb2-addr .ic { width: 12px; height: 12px; }
+.ghost.annot.on { background: var(--accent-tint); color: var(--accent); }
+.ghost .badge2 { min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px; background: var(--st-needs); color: #fff; font-size: 10px; font-weight: 600; line-height: 15px; text-align: center; }
+.hint { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 10px; border-bottom: 1px solid var(--sep); background: var(--raised); color: var(--text-2); font-size: 12px; flex: none; white-space: nowrap; }
+.hint .msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.hint .msg kbd { font-size: 11px; }
+.hint .sp { flex: 1; }
+.hint .vr { width: 1px; height: 16px; background: var(--sep-strong); }
+.mini-sw { position: relative; width: 26px; height: 15px; border-radius: 999px; background: var(--accent); flex: none; }
+.mini-sw::after { content: ""; position: absolute; top: 2px; right: 2px; width: 11px; height: 11px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.pg { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #fbfbfd; color: #1d1d1f; font-size: 12.5px; }
+html[data-theme="dark"] .pg { background: #fbfbfd; }
+.pg-top { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 16px; border-bottom: 1px solid #e5e5ea; background: #fff; }
+.pg-top b { font-size: 14px; }
+.pg-top .sp { flex: 1; }
+.pg-btn { height: 28px; padding: 0 12px; border-radius: 7px; border: 1px solid #d2d2d7; background: #fff; font-size: 12px; }
+.pg-btn.pri { border-color: #0071e3; background: #0071e3; color: #fff; }
+.pg-body { padding: 14px 16px; }
+.pg-card { border-radius: 10px; border: 1px solid #e5e5ea; background: #fff; overflow: hidden; }
+.pg-card .sheet { font-size: 11.5px; }
+.pg-total { display: flex; justify-content: space-between; margin-top: 12px; padding: 10px 14px; border-radius: 10px; background: #f2f2f7; font-weight: 600; }
+.hl { position: absolute; border-radius: 4px; outline: 1.5px solid var(--accent); outline-offset: 1px; background: color-mix(in srgb, var(--accent) 7%, transparent); pointer-events: none; }
+.hl.hover { outline-style: dashed; background: transparent; }
+.hl-tag { position: absolute; left: -2px; top: -22px; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: var(--on-accent); font: 10.5px/16px var(--mono); white-space: nowrap; }
+.pin { position: absolute; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50% 50% 50% 3px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 600; box-shadow: 0 0 0 2px #fff, 0 3px 8px rgba(0,0,0,.25); }
+.note { position: absolute; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 304px; padding: 10px; border-radius: 12px; background: var(--menu); backdrop-filter: blur(20px); box-shadow: 0 0 0 .5px var(--menu-edge), 0 14px 36px -10px rgba(0,0,0,.32); color: var(--text); font-size: 12.5px; }
+.note-tgt { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); font: 11.5px var(--mono); }
+.note-tgt .t { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-tgt .cmp { margin-left: auto; padding: 0 5px; border-radius: 4px; background: var(--fill-1); font: 11px var(--font); white-space: nowrap; }
+.note textarea { min-height: 54px; padding: 7px 9px; border: 0; border-radius: 7px; box-shadow: inset 0 0 0 1px var(--sep); background: var(--content); resize: none; font: 12.5px/1.45 var(--font); outline: none; }
+.note textarea:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+.css-list { display: grid; border-radius: 7px; box-shadow: inset 0 0 0 1px var(--sep); overflow: hidden; font: 11.5px var(--mono); }
+.css-list .flt { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-bottom: 1px solid var(--sep); color: var(--text-3); font-family: var(--font); }
+.css-list .flt .ic { width: 12px; height: 12px; }
+.css-list .r { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; }
+.css-list .r .p { color: var(--text-2); }
+.css-list .r .v { margin-left: auto; color: var(--text); }
+.css-list .r > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.css-list .r .p { flex: none; }
+.css-list .r.chg { background: var(--accent-tint); } .css-list .r.chg .v { color: var(--accent); }
+.css-list .r.chg .was { color: var(--text-3); text-decoration: line-through; }
+.note-foot { display: flex; align-items: center; gap: 2px; }
+.note-foot .sp { flex: 1; }
+.note-foot kbd { margin-left: 4px; color: inherit; opacity: .7; }
+.pend { position: absolute; top: 40px; right: 8px; z-index: 3; width: 280px; padding: 5px; border-radius: 10px; background: var(--menu); backdrop-filter: blur(20px); box-shadow: 0 0 0 .5px var(--menu-edge), 0 12px 30px -10px rgba(0,0,0,.3); font-size: 12.5px; }
+.pend .it { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 6px; border-radius: 6px; }
+.pend .it:hover { background: var(--fill-1); }
+.pend .it .pin { position: static; width: 18px; height: 18px; font-size: 10px; box-shadow: none; }
+.pend .it .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pend .it .tgt { margin-left: auto; color: var(--text-3); font: 11px var(--mono); white-space: nowrap; }
+.pend .foot { display: flex; gap: 2px; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--sep); }
+.pend .foot .sp { flex: 1; }
+/* Notes in the chat: one chip per note with its pin number and target. */
+.note-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.note-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 4px; border-radius: 7px; box-shadow: inset 0 0 0 1px var(--sep); background: var(--content); font-size: 12px; color: var(--text-2); }
+.note-chip .pin { position: static; width: 18px; height: 18px; font-size: 10px; box-shadow: none; }
+.note-chip code { font: 11px var(--mono); color: var(--text); background: none; padding: 0; }
+/* Start (all looks): Cursor's structure on the app tokens. */
+.start-q { display: none; }
+.start-col { padding-top: 16vh; }
 </style>
 </head>
 <body>
 <header class="board-bar">
   <div class="board-title"><img src="../../renderer/public/brand-mark.png" alt=""><b>ThreadTerm · Mac-style redesign</b><span>Prototype · still a Windows app · click around, right-click sessions, Ctrl+K</span></div>
   <div class="board-controls">
-    <div class="bctl">Screen <div class="bseg" data-k="screen"><button data-v="start">Start</button><button data-v="session">Session</button><button data-v="split">Split panes</button><button data-v="inbox">Inbox</button><button data-v="terminals">All terminals</button><button data-v="settings">Settings</button></div></div>
+    <div class="bctl">Screen <div class="bseg" data-k="screen"><button data-v="start">Start</button><button data-v="session">Session</button><button data-v="review">Git review</button><button data-v="editor">Editor</button><button data-v="annotate">Design mode</button><button data-v="split">Split panes</button><button data-v="inbox">Inbox</button><button data-v="terminals">All terminals</button><button data-v="settings">Settings</button></div></div>
     <div class="bctl">Look <div class="bseg" data-k="style"><button data-v="flush">Flush · macOS 15</button><button data-v="floating">Floating · macOS 26</button><button data-v="cursor">Cursor · Agents</button></div></div>
     <div class="bctl">Palette <div class="bseg" data-k="palette"><button data-v="mac">Mac neutral</button><button data-v="warm">Current warm</button><button data-v="cursor">Cursor mono</button></div></div>
     <div class="bctl"><div class="bseg" data-k="theme"><button data-v="light">Light</button><button data-v="dark">Dark</button></div></div>
@@ -680,6 +833,7 @@ html[data-theme="dark"] .win[data-style="cursor"] .composer { background: var(--
   <p><b>Two looks, one token set.</b> Flush (macOS 15) is denser and suits terminals. Floating (macOS 26) puts the sidebar, inspector and toolbar groups on glass panels. Both are geometry only: the palette switch shows that the current warm palette and the theme packs still recolor everything.</p>
   <p><b>Windows-specific choices.</b> Segoe UI Variable stands in for SF Pro, which can't ship on Windows. Shortcuts say Ctrl, not ⌘, and "Show in Explorer" replaces "Reveal in Finder". The sidebar can use real Mica through Electron's <code>backgroundMaterial</code> on Windows 11. Windows 10 falls back to the solid tint shown here.</p>
   <p><b>Cursor · Agents (exploration, 2026-11-14).</b> Cursor 3's Agents Window translated to ThreadTerm: a monochrome palette (Cursor mono), hairlines instead of filled tracks, ghost controls, New session on top of a flat sidebar with sessions grouped by project and their change stats, a one-line toolbar title, the prompt as a full-width card, and a bordered composer whose agent and model pickers lead, with a round monochrome Send. Tabs, the panel and every feature stay as agreed. The Start screen shows the new-session composer in both looks.</p>
+  <p><b>Cursor-referenced surfaces (2026-11-14).</b> The owner kept the project list, tabs and the rest, and asked for Cursor's design in Start, Git and file editing, plus Cursor's Design Mode notes. Start: agent and model lead, then project, branch and computer, recent sessions below. Git review: every changed file stacked in one scroll with per-file and per-hunk Discard / Stage / Comment; Source Control: branch and push as ghost chips, Commit inside the message field. Editor: breadcrumbs, ghost actions, change bars and an agent-change bar in the gutter. Design mode: Annotate in the browser toolbar, a tool row, pins, a note card with the element, a CSS list and Save / To chat, and Send with a count.</p>
   <p><b>Kept from earlier decisions.</b> One right-side panel with Files · Search · Source Control · Agent changes · Browser | Session details; agent icons are the session-list AgentTile; rows stay one line; empty sections stay hidden (no "Staged 0").</p>
 </section>
 
@@ -702,6 +856,18 @@ const I = {
   doc:'<path d="M7 3.5h6.5L18.5 8.5v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2z"/><path d="M13.5 3.5v5h5"/>',
   branch:'<circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 3.5-2.5 5-6 5.5L8.5 16"/>',
   diff:'<path d="M12 4v11M6.5 9.5h11M6.5 20h11"/>',
+  annotate:'<path d="M5 19.5h3.6L19 9.1a2.5 2.5 0 0 0-3.6-3.6L5 15.9z"/><path d="m13.8 7.1 3.6 3.6"/>',
+  pointer:'<path d="M6.5 4.5 18 10.6l-5.1 1.5-2.1 5.4z"/>',
+  areaSel:'<path d="M4.5 8V5.5a1 1 0 0 1 1-1H8M16 4.5h2.5a1 1 0 0 1 1 1V8M19.5 16v2.5a1 1 0 0 1-1 1H16M8 19.5H5.5a1 1 0 0 1-1-1V16"/>',
+  draw:'<path d="M4.5 16.5c2.4-5.6 4.8-7.6 6.9-4.6s4.1 2 7.6-4.4"/>',
+  ellipse:'<ellipse cx="12" cy="12" rx="8" ry="5.5"/>',
+  rect:'<rect x="4.5" y="6.5" width="15" height="11" rx="1.5"/>',
+  arrowNE:'<path d="M5.5 18.5 18 6M9.5 6H18v8.5"/>',
+  chat:'<path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V16h0A2.5 2.5 0 0 1 4 13.5"/>',
+  slider:'<path d="M5 7h8M17 7h2M5 17h2M11 17h8"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  terminal2:'<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m7.5 10 2.5 2-2.5 2M12.5 14h4"/>',
+  camera:'<rect x="3.5" y="7" width="17" height="12" rx="2.5"/><circle cx="12" cy="13" r="3.2"/><path d="M8.5 7 10 4.5h4L15.5 7"/>',
+  code2:'<path d="m9 8-4 4 4 4M15 8l4 4-4 4"/>',
   sparkles:'<path d="M10 3.5l1.7 4.6 4.6 1.7-4.6 1.7L10 16.1l-1.7-4.6-4.6-1.7 4.6-1.7z"/><path d="M17.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
   globe:'<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.3 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.3-3.5-8.5s1.1-6.1 3.5-8.5z"/>',
   info:'<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.9v.1"/>',
@@ -799,7 +965,7 @@ function renderSidebar() {
       h += `<div class="sb-row proj" data-act="toggle-proj" data-v="${p.id}">${ic('chevR', 'disc' + (p.open ? ' open' : ''))}${ic('folder')}<span class="lbl">${p.name}</span><span class="hover-act" data-act="new" title="New session in ${p.name}">${ic('plus')}</span><span class="trail">${p.open ? '' : p.sessions.length}</span></div>`;
       if (p.open) for (const id of p.sessions) {
         const s = SESS[id];
-        const sel = (S.screen === 'session' || S.screen === 'split' || S.screen === 'settings') && S.session === id;
+        const sel = ['session', 'split', 'settings', 'review', 'editor', 'annotate'].includes(S.screen) && S.session === id;
         h += `<button class="sb-row lvl2 ${sel ? 'is-sel' : ''} ${s.state === 'ended' ? 'ended' : ''}" data-act="go-session" data-v="${id}" data-ctx="session">${tile(s.agent, 16)}<span class="lbl">${s.title}</span>${trailFor(s)}</button>`;
       }
     }
@@ -823,7 +989,7 @@ function cursorSidebar() {
   for (const m of MACHINES) for (const p of m.projects) {
     h += `<div class="cur-group"><div class="cur-group-head">${m.id !== 'local' ? `<span class="online" title="${m.name} online"></span>${m.name} ·` : ''} ${p.name}<span class="cnt">${p.sessions.length}</span></div>`;
     for (const id of p.sessions) {
-      const s = SESS[id], sel = ['session', 'split', 'settings'].includes(S.screen) && S.session === id;
+      const s = SESS[id], sel = ['session', 'split', 'settings', 'review', 'editor', 'annotate'].includes(S.screen) && S.session === id;
       h += `<button class="sb-row ${sel ? 'is-sel' : ''} ${s.state === 'ended' ? 'ended' : ''}" data-act="go-session" data-v="${id}" data-ctx="session">${tile(s.agent, 14)}<span class="lbl">${s.title}</span>${agentTrail(id)}</button>`;
     }
     h += `</div>`;
@@ -834,7 +1000,7 @@ function cursorSidebar() {
 /* ───────────────────────── Toolbar ───────────────────────── */
 function renderToolbar() {
   const s = SESS[S.session];
-  const sessionScreen = ['session', 'split', 'settings'].includes(S.screen);
+  const sessionScreen = ['session', 'split', 'settings', 'review', 'editor', 'annotate'].includes(S.screen);
   let h = '';
   if (!S.sidebar) h += `${TRAFFIC}<span class="tb-group"><button class="tb-icon" data-act="sidebar" title="Show sidebar (Ctrl+B)" aria-label="Show sidebar">${ic('sidebarL')}</button><button class="tb-icon" data-act="new" title="New session (Ctrl+N)" aria-label="New session">${ic('compose')}</button></span>`;
   if (sessionScreen) {
@@ -870,7 +1036,7 @@ function tabsFor(id) {
 }
 function tabbarHTML(tabs, active, pane) {
   return `<div class="tabbar" role="tablist">${tabs.map(t => `<div class="tab ${t.id === active ? 'is-active' : ''}" role="tab" aria-selected="${t.id === active}" data-act="tab" data-pane="${pane}" data-v="${t.id}">
-      <button class="x" aria-label="Close tab" title="Close tab (Ctrl+W)">${ic('xmark')}</button>${t.kind === 'web' ? WEB_TILE : tile(t.agent, 14)}<span class="t">${t.title}</span>${t.state === 'running' ? '<span class="spin"></span>' : ''}</div>`).join('')}
+      <button class="x" aria-label="Close tab" title="Close tab (Ctrl+W)">${ic('xmark')}</button>${t.id === 'rv' ? ic('diff') : t.id === 'ed' ? fileIcon('a.tsx') : t.kind === 'web' ? WEB_TILE : tile(t.agent, 14)}<span class="t">${t.title}</span>${t.state === 'running' ? '<span class="spin"></span>' : ''}</div>`).join('')}
     <button class="tab-add" title="New tab (Ctrl+T)" aria-label="New tab">${ic('plus')}</button></div>`;
 }
 function chatHTML(id) {
@@ -878,7 +1044,7 @@ function chatHTML(id) {
   let body = '';
   if (id === 's1') body = `
     <div class="day">Today 13:48</div>
-    <div class="msg-user"><div>The Excel preview breaks when merged cells cross the frozen columns. Fix the layout, and have someone check Word preview in parallel.</div></div>
+    <div class="msg-user"><div>The Excel preview breaks when merged cells cross the frozen columns. Fix the layout, and have someone check Word preview in parallel.${S.screen === 'annotate' ? `<div class="note-chips"><span class="note-chip"><span class="pin">1</span><code>div.pg-total</code> Total row is misaligned</span></div>` : ''}</div></div>
     <div class="msg-ai">
       <p>I'll keep the sheet layout here and hand Word preview and the export check to sub-agents.</p>
       <button class="tool">${ic('chevR', 'chev')}${ic('doc')}<span>Read 4 files</span><span class="meta">SheetView.tsx, sheet-view.css +2</span></button>
@@ -927,7 +1093,7 @@ function composerHTML(s, start = false) {
   const conn = start ? '' : '<span class="conn" title="Connected"></span>';
   const send = s.state === 'running' && !start ? `<button class="send stop" title="Stop (Esc)" aria-label="Stop">${ic('stop')}</button>` : `<button class="send" title="${start ? 'Start (Enter)' : 'Send (Enter)'}" aria-label="${start ? 'Start' : 'Send'}">${ic('arrowUp')}</button>`;
   const flex = '<span class="tb-flex"></span>';
-  const row = cursor ? agent + model + (start ? where : perm) + flex + attach + conn + send
+  const row = cursor || start ? agent + model + (start ? where : perm) + flex + attach + conn + send
     : (start ? where : attach + perm + model) + flex + agent + conn + send;
   const hint = start ? (cursor ? 'Describe a task, @ to add files, / for commands' : 'Describe what you want to do, or leave it empty for a terminal') : `Message ${AGENT[s.agent]}, or type / for commands`;
   return `<div class="composer-wrap"><div class="composer"><textarea rows="${start ? 3 : 2}" placeholder="${hint}"></textarea><div class="comp-row">${row}</div></div></div>`;
@@ -1032,6 +1198,7 @@ function paneHTML(sid, active, pane, dim) {
 function renderBody() {
   let h = '';
   if (S.screen === 'start') h = startHTML();
+  else if (['review', 'editor', 'annotate'].includes(S.screen)) h = surfaceHTML(S.screen);
   else if (S.screen === 'inbox') h = inboxHTML();
   else if (S.screen === 'terminals') h = tableHTML();
   else {
@@ -1045,6 +1212,122 @@ function renderBody() {
     if (S.panel) h += `<aside class="inspector" aria-label="Workbench panel">${inspectorHTML()}</aside>`;
   }
   $('#body').innerHTML = h;
+}
+
+/* ───────────────────────── Cursor-referenced surfaces ───────────────────────── */
+const stat = (a, d) => `<span class="stat"><span class="a">+${a}</span>${d ? `<span class="d">−${d}</span>` : ''}</span>`;
+const ghost = (label, icon = '', cls = '', extra = '') => `<button class="ghost ${cls}" ${extra}>${icon ? ic(icon) : ''}${label}</button>`;
+const gicon = (icon, title, cls = '') => `<button class="ghost icon ${cls}" title="${title}" aria-label="${title}">${ic(icon)}</button>`;
+const CHANGES = [
+  { name:'SheetView.tsx', dir:'renderer/src/components', st:'M', a:42, d:9 },
+  { name:'sheet-view.css', dir:'renderer/src/components', st:'M', a:18, d:3 },
+  { name:'sheetMerge.test.ts', dir:'renderer/src', st:'A', a:26, d:0 },
+];
+function scmPanel() {
+  const rows = CHANGES.map((f, i) => `<div class="frow ${i === 0 ? 'is-sel' : ''}" role="button" tabindex="0">${fileIcon(f.name)}<span class="fname">${f.name}</span><span class="fdir">${f.dir}</span>${stat(f.a, f.d)}<span class="fst ${f.st}">${f.st}</span>
+      <span class="hacts">${gicon('popout', 'Open file')}${gicon('undo', 'Discard changes')}${gicon('plus', 'Stage')}</span></div>`).join('');
+  return `<div class="ins-head"><h2>Source Control</h2>${gicon('clock', 'History')}${gicon('refresh', 'Refresh')}${gicon('more', 'More')}</div>
+    <div class="ins-body scm2">
+      <div class="scm2-top">${ghost(`office-preview${ic('updown', 'ud')}`, 'branch', '', 'data-act="branch-menu"')}<span class="sp"></span>${ghost('<span class="cnt">2</span>', 'arrowUp', '', 'title="Push 2 commits"')}</div>
+      <div class="scm2-commit"><textarea rows="2" placeholder="Commit message">Align merged cells across frozen columns</textarea>
+        <div class="row"><span class="sp"></span>${ghost(`Commit${ic('chevD', 'ud')}`, 'check', 'primary')}</div></div>
+      <div class="sec2">Changes <span class="cnt">3</span>${stat(86, 12)}${ghost('Review', 'diff', '', 'data-act="go-screen" data-v="review"')}</div>
+      ${rows}
+      <div class="sec2">${ic('chevR', 'disc')}Recent commits <span class="cnt">12</span></div>
+    </div>`;
+}
+function reviewHTML() {
+  const L = (k, a, b, sg, code) => `<div class="dl ${k}"><span class="ln">${a}</span><span class="ln">${b}</span><span class="sg">${sg}</span><span>${code}</span></div>`;
+  const file = (f, open, body) => `<section class="rv-file ${open ? '' : 'closed'}"><div class="rv-head">${ic(open ? 'chevD' : 'chevR', 'disc')}${fileIcon(f.name)}<b>${f.name}</b><span class="path">${f.dir}</span>${stat(f.a, f.d)}
+      <span class="acts">${gicon('popout', 'Open file')}${gicon('undo', 'Discard file…')}${ghost('Stage', 'plus')}</span></div>${open ? body : ''}</section>`;
+  const hunk = (h) => `<div class="rv-hunk">${h}<span class="acts">${ghost('Discard', 'undo')}${ghost('Stage', 'plus')}${ghost('Comment', 'chat')}</span></div>`;
+  const a = hunk('@@ -38,9 +38,14 @@ function SheetView') +
+    L('', 38, 38, '', '  const frozen = useFrozenColumns(sheet);') +
+    L('', 39, 39, '', '  return cells.map(cell => {') +
+    L('del', 40, '', '−', '    const style = { gridColumn: <span class="w">`span ${cell.span}`</span> };') +
+    L('add', '', 40, '+', '    const style = { gridColumn: <span class="w">`span ${cell.span}`, left: freezeX(cell, frozen)</span> };') +
+    L('add', '', 41, '+', '    if (cell.merged && crossesFreeze(cell, frozen)) style.clipPath = clipAtFreeze(cell, frozen);') +
+    L('', 41, 42, '', '    return &lt;Cell key={cell.id} style={style} /&gt;;') +
+    L('', 42, 43, '', '  });');
+  const b = hunk('@@ -12,6 +12,9 @@ .sheet-cell') +
+    L('', 12, 12, '', '.sheet-cell[data-merged] {') +
+    L('del', 13, '', '−', '  position: <span class="w">relative</span>;') +
+    L('add', '', 13, '+', '  position: <span class="w">sticky</span>;') +
+    L('add', '', 14, '+', '  left: var(--freeze-x, 0);') +
+    L('', 14, 15, '', '}');
+  return `<div class="rv"><div class="rv-bar"><b>3 files changed</b>${stat(86, 12)}<span class="sp"></span>
+      <div class="gseg"><button class="on">Unified</button><button>Split</button></div>
+      ${ghost('Discard all…', 'undo')}${ghost('Stage all', 'plus')}</div>
+    <div class="rv-files">${file(CHANGES[0], true, a)}${file(CHANGES[1], true, b)}${file(CHANGES[2], false, '')}</div></div>`;
+}
+function editorHTML() {
+  const rows = [
+    ['', 'import { useFrozenColumns } from "./sheetFreeze";'],
+    ['', 'import { crossesFreeze, clipAtFreeze } from "../sheetMerge";'],
+    ['', ''],
+    ['', '<span class="k">export function</span> <span class="ty">SheetView</span>({ sheet }: Props) {'],
+    ['', '  <span class="k">const</span> cells = layoutCells(sheet);'],
+    ['', '  <span class="k">const</span> frozen = useFrozenColumns(sheet);'],
+    ['', '  <span class="k">return</span> cells.map(cell =&gt; {'],
+    ['g-mod here', '    <span class="k">const</span> style = { gridColumn: <span class="s">`span ${cell.span}`</span>, left: freezeX(cell, frozen) };'],
+    ['g-add', '    <span class="k">if</span> (cell.merged &amp;&amp; crossesFreeze(cell, frozen)) style.clipPath = clipAtFreeze(cell, frozen);'],
+    ['', '    <span class="k">return</span> &lt;<span class="ty">Cell</span> key={cell.id} style={style} /&gt;;'],
+    ['', '  });'],
+    ['', '}'],
+    ['g-del', ''],
+    ['', '<span class="k">function</span> <span class="ty">freezeX</span>(cell: Cell, frozen: Frozen) {'],
+    ['', '  <span class="k">return</span> cell.column &lt; frozen.count ? <span class="s">`var(--freeze-x, 0)`</span> : <span class="s">"auto"</span>;'],
+    ['', '}'],
+  ];
+  const code = rows.map(([cls, text], i) => `<div class="cl ${cls}"><i></i><span class="ln">${36 + i}</span><span>${text}</span></div>${i === 8 ? `<div class="hunk-pop"><span class="lbl">Agent change</span>${stat(2, 1)}${ghost('Discard', 'undo')}${ghost('Stage', 'plus')}${ghost('Comment', 'chat')}</div>` : ''}`).join('');
+  return `<div class="ed"><div class="crumbs">
+      <span class="c">renderer</span>${ic('chevR', 'gt')}<span class="c">src</span>${ic('chevR', 'gt')}<span class="c">components</span>${ic('chevR', 'gt')}<span class="c here">${fileIcon('a.tsx')}SheetView.tsx</span>${ic('chevR', 'gt')}<span class="c">SheetView</span>
+      <span class="sp"></span>${gicon('clock', 'Local history')}${gicon('diff', 'Compare with HEAD')}${gicon('chat', 'Comment on selection')}${gicon('more', 'More')}</div>
+    <div class="code-ed">${code}</div></div>`;
+}
+function annotateHTML() {
+  return `<div class="mb2"><div class="mb2-bar">${gicon('chevL', 'Back')}${gicon('refresh', 'Reload')}
+      <span class="mb2-addr">${ic('lock')}localhost:5173/budget</span>
+      ${ghost('Annotate', 'annotate', 'annot on', 'title="Annotate (Ctrl+Shift+D)"')}${ghost('Send <span class="cnt">1</span>', 'arrowUp', 'primary', 'data-act="pend"')}
+      ${ghost(`Agent: Read${ic('updown', 'ud')}`, '', '', 'title="What the session agent may do on this page"')}
+      <button class="ghost" title="Console · 1 error" aria-label="Console, 1 error">${ic('terminal2')}<span class="badge2">1</span></button>${gicon('more', 'Screenshot, find, developer tools, open in browser')}</div>
+    <div class="hint"><div class="gseg">${['pointer', 'areaSel'].map((t, i) => `<button class="${i === 0 ? 'on' : ''}" title="${i ? 'Mark an area (drag)' : 'Select element'}">${ic(t)}</button>`).join('')}</div>
+      <div class="gseg">${['draw', 'ellipse', 'rect', 'arrowNE'].map(t => `<button title="${t}">${ic(t)}</button>`).join('')}</div>
+      <span class="msg">Click an element · <kbd>Shift</kbd>+click to add · <kbd>↑</kbd><kbd>↓</kbd> parent / child · double-click text to edit</span><span class="sp"></span>
+      <span>Batch edits</span><span class="mini-sw" role="switch" aria-checked="true"></span><span class="vr"></span>${ghost('Done <kbd>Esc</kbd>')}</div>
+    <div class="pg">
+      <div class="pg-top"><b>Budget</b><span style="color:#86868b">Q3 · Sheet1</span><span class="sp"></span><button class="pg-btn">Share</button><span style="position:relative;display:inline-flex"><button class="pg-btn pri">Export</button><span class="hl" style="inset:-3px"></span><span class="pin" style="left:-11px;top:-11px">2</span></span></div>
+      <div class="pg-body"><div class="pg-card"><div class="sheet">
+        <div class="h"></div><div class="h">A</div><div class="h">B</div><div class="h">C</div><div class="h">D</div><div class="h">E</div>
+        <div class="h">1</div><div class="m fz">Q3 budget (merged A1:B1)</div><div>Plan</div><div>Actual</div><div>Δ</div>
+        <div class="h">2</div><div class="fz">Design</div><div class="fz">12,400</div><div>12,000</div><div>11,860</div><div>−140</div>
+        <div class="h">3</div><div class="fz">Build</div><div class="fz">48,000</div><div>46,500</div><div>49,120</div><div>+2,620</div>
+        <div class="h">4</div><div class="fz">QA</div><div class="fz">9,800</div><div>10,000</div><div>9,410</div><div>−590</div></div></div>
+        <div class="pg-total" style="position:relative"><span>Total</span><span>+2,230</span><span class="hl" style="inset:-3px"></span><span class="pin" style="left:-11px;top:-11px">1</span></div>
+        <div style="position:relative;display:inline-block;margin-top:12px;padding:6px 10px;border-radius:7px;color:#6e6e73">Last synced 2 min ago<span class="hl hover" style="inset:-2px"><span class="hl-tag" style="top:auto;bottom:-20px">p.sync-note</span></span></div></div>
+      <div class="note" style="right:16px;top:48px">
+        <div class="note-tgt">${ic('code2')}<span class="t">button "Export"</span><span class="cmp">ExportButton</span></div>
+        <textarea placeholder="What should change?">Make Export secondary; the primary action here is Share.</textarea>
+        <div class="css-list"><div class="flt">${ic('search')}Filter properties</div>
+          <div class="r chg"><span class="p">background-color</span><span class="was">#0071e3</span><span class="v">#ffffff</span></div>
+          <div class="r chg"><span class="p">color</span><span class="was">#ffffff</span><span class="v">#1d1d1f</span></div>
+          <div class="r"><span class="p">font-size</span><span class="v">12px</span></div>
+          <div class="r"><span class="p">display</span><span class="v">inline-flex</span></div></div>
+        <div class="note-foot">${ghost('CSS', 'slider', 'on')}${ghost('To chat <kbd>Ctrl L</kbd>', 'chat')}<span class="sp"></span>${ghost('Cancel')}${ghost('Save note <kbd>↵</kbd>', '', 'primary')}</div></div>
+    </div></div>`;
+}
+function surfaceHTML(kind) {
+  const s = SESS[S.session];
+  const chatTab = { id:'chat', title:s.title, agent:s.agent, kind:'chat', state:s.state };
+  if (kind === 'annotate') {
+    const left = `<div class="pane" style="flex:44 1 0">${tabbarHTML([chatTab], 'chat', 'L')}<div class="pane-body">${chatHTML(S.session)}</div></div>`;
+    const right = `<div class="pane" style="flex:56 1 0">${tabbarHTML([{ id:'web', title:'localhost:5173', agent:'shell', kind:'web' }], 'web', 'R')}<div class="pane-body">${annotateHTML()}</div></div>`;
+    return `<div class="panes">${left}<div class="divider"></div>${right}</div>`;
+  }
+  const tab = kind === 'review' ? { id:'rv', title:'Review · 3 files', agent:'shell', kind:'web' } : { id:'ed', title:'SheetView.tsx', agent:'shell', kind:'web' };
+  const body = kind === 'review' ? reviewHTML() : editorHTML();
+  const panel = kind === 'review' ? scmPanel() : (S.panel = 'files', inspectorHTML());
+  return `<div class="panes"><div class="pane">${tabbarHTML([chatTab, tab], tab.id, 'L')}<div class="pane-body">${body}</div></div></div><aside class="inspector" aria-label="Workbench panel">${panel}</aside>`;
 }
 function inboxHTML() {
   const row = (a, who, what, where, acts) => `<div class="irow">${tile(a, 20)}<span class="who">${who}</span><span class="what">${what}</span><span class="where">${where}</span><span class="acts">${acts}</span></div>`;
@@ -1240,6 +1523,9 @@ win.addEventListener('click', e => {
     case 'more-menu': openMenu(el, [{ ic:'refresh', t:'Refresh' }, { ic:'popout', t:'Open in new pane' }, '-', { ic:'copy', t:'Copy path' }, { ic:'folder', t:'Show in Explorer' }], { alignRight:true }); break;
     case 'project-menu': openMenu(el, MACHINES.flatMap(m => m.projects.map(p => ({ check:p.id === 'tt', t:p.name, k:m.id === 'local' ? '' : m.name })))); break;
     case 'machine-menu': openMenu(el, [{ check:true, t:'This PC' }, { check:false, t:'studio-pc', k:'32 ms' }]); break;
+    case 'pend': { const pg = el.closest('.mb2'); const old = pg.querySelector('.pend'); if (old) { old.remove(); break; }
+      pg.insertAdjacentHTML('beforeend', `<div class="pend"><div class="it"><span class="pin">1</span><span class="tx">Total row is misaligned</span><span class="tgt">div.pg-total</span></div>
+        <div class="foot">${ghost('Clear all', 'trash')}<span class="sp"></span>${ghost('Send 1 note', 'arrowUp', 'primary')}</div></div>`); break; }
     case 'close-layer': closeLayer(); break;
     case 'caption-close': break;
     case 'pick': pick = v; if (e.detail === 2) { closeLayer(); break; } openSheet(); break;
