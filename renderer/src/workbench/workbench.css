@@ -450,3 +450,39 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-hunk-nav .btn { margin-left:6px; }
 
 @media (prefers-reduced-motion:reduce) { .wb-chevron { transition:none; } }
+
+/* ---- Track G — Cursor-referenced Git surfaces (owner 2026-11-14) ----
+   The Source Control panel, the stacked review and the history rows use the one grammar from
+   components/cursor-grammar.css (ghost controls, segmented control, hairline box and head, change stats, section
+   head, field, popover). These rules only place those primitives; they never restyle them.
+   Prototype: prototypes/mac-style/index.html, screens Git review / Source Control (Look: Flush). */
+.wb-scm-bar { gap:2px; padding:8px 10px 4px; }
+/* Branch and sync are ghost chips: the chip is only as wide as its label, the sync glyphs sit at the end. */
+.wb-branch-chip { flex:0 1 auto; min-width:0; max-width:100%; height:24px; padding:0 5px; font-family:var(--font); font-size:12px; }
+.wb-branch-chip .wb-name { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.wb-branch-chip .cg-caret { flex:none; }
+.wb-sync-actions { margin-left:auto; gap:1px; }
+.wb-sync-actions .wb-count-btn { gap:3px; }
+.wb-count-btn .cg-count { font-size:11px; }
+/* The commit message and its Commit action are one hairline field; Commit is the surface's one primary action. */
+.wb-commit.cg-field { margin:0 10px 8px; padding:0; display:grid; grid-template-columns:minmax(0,1fr); gap:0; border-radius:8px; background:var(--surface); }
+.wb-commit textarea { min-height:52px; max-height:180px; padding:8px 10px 2px; border:0; border-radius:8px 8px 0 0; background:transparent; box-shadow:none; resize:none; }
+.wb-commit textarea:focus { border:0; box-shadow:none; outline:none; }
+.wb-commit-actions { justify-content:flex-end; gap:2px; padding:4px 5px 5px; }
+.wb-commit .wb-commit-main { flex:0 0 auto; min-width:0; height:24px; }
+.wb-commit .wb-commit-more { width:24px; height:24px; }
+/* Sections are Cursor's section heads: sentence case, count in faint, trailing actions pushed to the end. */
+.wb-group-head.cg-sec { height:28px; min-height:28px; padding:0 2px; }
+.wb-group-head .wb-group-toggle { gap:5px; padding:0 3px; color:inherit; font-size:12px; font-weight:600; letter-spacing:0; text-transform:none; }
+.wb-group-toggle .cg-count { margin-left:1px; }
+.wb-change-row .wb-row-actions.cg-end { margin-left:auto; gap:1px; }
+/* File rows: on hover the ghost actions take the place of the trailing stats and status letter. */
+.wb-change-row .wb-row-actions { gap:1px; }
+.wb-change-row:hover > .wb-deco, .wb-change-row:hover .wb-change-counts, .wb-change-row:hover .wb-branch-counts { display:none; }
+.wb-change-row { padding-left:6px; }
+.wb-changes { padding:4px 8px 16px; border-top:1px solid var(--border); }
+
+
+/* Hover actions take no width until they are shown: the file rows keep their folder and status. */
+.wb-change-row .wb-row-actions, .wb-group-head .wb-row-actions { display:none; }
+.wb-change-row:hover .wb-row-actions, .wb-change-row:focus-within .wb-row-actions, .wb-group-head:hover .wb-row-actions, .wb-group-head:focus-within .wb-row-actions { display:flex; }

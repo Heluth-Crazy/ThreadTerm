@@ -44,7 +44,7 @@ function GroupSelectionToggle({checked,mixed,label,onChange}:{checked:boolean;mi
  return <input ref={input} type="checkbox" className="wb-change-select" aria-label={label} checked={checked} onChange={onChange}/>;
 }
 
-export function SourceControlView({scope, actions, git, zh, compact = false, toolbarHost, command, onCommandHandled, visible=true}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;compact?:boolean;toolbarHost?:HTMLElement|null;command?:GitWorkbenchCommand;onCommandHandled?:(key:string)=>void;visible?:boolean}) {
+export function SourceControlView({scope, actions, git, zh, compact = false, toolbarHost, command, onCommandHandled, visible=true, onReview}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;compact?:boolean;toolbarHost?:HTMLElement|null;command?:GitWorkbenchCommand;onCommandHandled?:(key:string)=>void;visible?:boolean;onReview?:()=>void}) {
  const [message, setMessage] = useState('');
  const [diverged, setDiverged] = useState<{ahead:number;behind:number;branch:string;upstream:string}>();
  const prefilledMerge=useRef<string|undefined>(undefined);
@@ -593,11 +593,12 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   else if(command.action==='push'&&status.branch)void openPushPreview();
  },[command,scopeKey,status,git.loading,busy,visible]);
 
+/* Cursor's panel head: one row of ghost icons, the same 20 px controls the other Cursor surfaces use. */
  const tools = <>
-  {actions.openHistory && <button type="button" className="icon-btn" title={text('History', '提交历史')} aria-label={text('History', '提交历史')} onClick={() => actions.openHistory?.()}><Icon name="clock"/></button>}
-  <button type="button" className="icon-btn" title={text('Stash changes…', '暂存更改…')} aria-label={text('Stash changes…', '暂存更改…')} disabled={!!busy} onClick={() => setStashDialog(true)}><Icon name="archive"/></button>
-  <button type="button" className="icon-btn" title={text('More actions', '更多操作')} aria-label={text('More actions', '更多操作')} aria-haspopup="menu" disabled={!!busy} onClick={openMoreActions}><Icon name="more"/></button>
-  <button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} onClick={() => void git.refresh()}><WbIcon name="refresh"/></button>
+  {actions.openHistory && <button type="button" className="cg-ghost cg-icon cg-sm" title={text('History', '提交历史')} aria-label={text('History', '提交历史')} onClick={() => actions.openHistory?.()}><WbIcon name="clock"/></button>}
+  <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} onClick={() => void git.refresh()}><WbIcon name="refresh"/></button>
+  <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Stash changes…', '暂存更改…')} aria-label={text('Stash changes…', '暂存更改…')} disabled={!!busy} onClick={() => setStashDialog(true)}><WbIcon name="archive"/></button>
+  <button type="button" className="cg-ghost cg-icon cg-sm" title={text('More actions', '更多操作')} aria-label={text('More actions', '更多操作')} aria-haspopup="menu" disabled={!!busy} onClick={openMoreActions}><WbIcon name="more"/></button>
  </>;
  const toolbar = toolbarHost ? createPortal(tools, toolbarHost) : null;
  if(git.error && !status) return <div className="wb-scm">{toolbar}<div className="wb-empty-state"><Icon name="branch"/><strong>{text('No Git repository', '没有 Git 仓库')}</strong><p>{git.error}</p><p className="wb-muted">{text('Files, search and editing still work in this folder.', '此文件夹仍可使用文件、搜索和编辑功能。')}</p></div></div>;
@@ -615,29 +616,30 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     <Icon name="file"/><span className="wb-name">{baseName(change.path)}</span><span className="wb-dir">{parentPath(change.path)}</span>
    </button>
    <span className="wb-row-actions" ref={element=>{element?.querySelectorAll('button').forEach(button=>{button.tabIndex=-1;});}}>
-    <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Shift+Enter" title={text('Open file (Shift+Enter)', '打开文件（Shift+Enter）')} aria-label={text('Open file', '打开文件')} onClick={() => actions.openFile(change.path)}><Icon name="file"/></button>
+    <button tabIndex={-1} type="button" className="cg-ghost cg-icon cg-sm" aria-keyshortcuts="Shift+Enter" title={text('Open file (Shift+Enter)', '打开文件（Shift+Enter）')} aria-label={text('Open file', '打开文件')} onClick={() => actions.openFile(change.path)}><WbIcon name="file"/></button>
     {actions.comments?.attachContext && <ContextSendAction host={actions.comments} item={() => changedFileContext(params, change.path, staged, zh)} sourceRoot={scope.rootPath} zh={zh} label={text('Send diff to agent', '将差异发送给 Agent')} iconOnly testId="source-control-send-diff"/>}
-    {(group === 'changes' || group === 'untracked') && <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Delete" title={text('Discard changes (Delete)', '丢弃更改（Delete）')} aria-label={text('Discard changes', '丢弃更改')} disabled={!!busy} onClick={() => discard([change])}><WbIcon name="undo"/></button>}
+    {(group === 'changes' || group === 'untracked') && <button tabIndex={-1} type="button" className="cg-ghost cg-icon cg-sm" aria-keyshortcuts="Delete" title={text('Discard changes (Delete)', '丢弃更改（Delete）')} aria-label={text('Discard changes', '丢弃更改')} disabled={!!busy} onClick={() => discard([change])}><WbIcon name="undo"/></button>}
     {staged
-     ? <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Space" title={text('Unstage (Space)', '取消暂存（Space）')} aria-label={text('Unstage', '取消暂存')} disabled={!!busy} onClick={() => void unstage([change.path])}><WbIcon name="minus"/></button>
-     : <button tabIndex={-1} type="button" className="icon-btn" aria-keyshortcuts="Space" title={group === 'conflicts' ? conflictStageReason(conflictStates[change.path],zh) ?? text('Mark resolved (stage) (Space)', '标记已解决（暂存）（Space）') : text('Stage (Space)', '暂存（Space）')} aria-label={group==='conflicts'?text('Mark resolved (stage)','标记已解决（暂存）'):text('Stage', '暂存')} disabled={!!busy || (group==='conflicts' && !!conflictStageReason(conflictStates[change.path],zh))} onClick={() => void stage([change.path])}><Icon name="plus"/></button>}
+     ? <button tabIndex={-1} type="button" className="cg-ghost cg-icon cg-sm" aria-keyshortcuts="Space" title={text('Unstage (Space)', '取消暂存（Space）')} aria-label={text('Unstage', '取消暂存')} disabled={!!busy} onClick={() => void unstage([change.path])}><WbIcon name="minus"/></button>
+     : <button tabIndex={-1} type="button" className="cg-ghost cg-icon cg-sm" aria-keyshortcuts="Space" title={group === 'conflicts' ? conflictStageReason(conflictStates[change.path],zh) ?? text('Mark resolved (stage) (Space)', '标记已解决（暂存）（Space）') : text('Stage (Space)', '暂存（Space）')} aria-label={group==='conflicts'?text('Mark resolved (stage)','标记已解决（暂存）'):text('Stage', '暂存')} disabled={!!busy || (group==='conflicts' && !!conflictStageReason(conflictStates[change.path],zh))} onClick={() => void stage([change.path])}><WbIcon name="plus"/></button>}
    </span>
    <span className="wb-deco" aria-label={decoration.tone}>{decoration.letter}</span>
   </div>;
  };
- const section = (group:ChangeGroup, title:string, actionsNode:ReactNode) => {
+ const section = (group:ChangeGroup, title:string, actionsNode:ReactNode, headAction?:ReactNode) => {
   const items = groups[group];
   if(!items.length) return null;
   const closed = collapsed.has(group);
   const selectionGroup=group === 'conflicts' ? undefined : group as SelectedCommitGroup;
   const selectedCount=selectionGroup?selectedIn(selectionGroup).length:0;
   return <section className="wb-change-group" aria-label={title}>
-   <div className="wb-group-head">
+   <div className="wb-group-head cg-sec">
     {selectionGroup && <GroupSelectionToggle checked={selectedCount===items.length} mixed={selectedCount>0&&selectedCount<items.length} label={text(`Select all ${title}`, `全选${title}`)} onChange={()=>toggleGroupSelection(selectionGroup)}/>}
     <button type="button" className="wb-group-toggle" aria-expanded={!closed} onClick={() => setCollapsed(current => { const next = new Set(current); if(next.has(group)) next.delete(group); else next.add(group); return next; })}>
-     <span className={`wb-chevron${closed ? '' : ' open'}`} aria-hidden="true"><Icon name="chevR"/></span>{title}<span className="wb-count">{items.length}</span>
+     <span className={`wb-chevron${closed ? '' : ' open'}`} aria-hidden="true"><Icon name="chevR"/></span>{title}<span className="cg-count">{items.length}</span>
     </button>
-    <span className="wb-row-actions">{actionsNode}</span>
+    {headAction}
+    <span className="wb-row-actions cg-end">{actionsNode}</span>
    </div>
    {!closed && <div role="list">{items.map(change => row(change, group))}</div>}
   </section>;
@@ -672,28 +674,28 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    </div>}
   </div>}
   <div className="wb-scm-bar">
-   <button ref={branchButton} type="button" className="wb-branch-chip" title={status.upstream ? text(`Switch branch · tracking ${status.upstream}`, `切换分支 · 跟踪 ${status.upstream}`) : text('Switch branch · no upstream yet', '切换分支 · 尚无上游')} onClick={event => openBranches(event.currentTarget)}>
-    <Icon name="branch"/><span className="wb-name">{status.branch ?? text('Detached HEAD', '分离的 HEAD')}</span><Icon name="chevron" className="wb-chip-caret"/>
+   <button ref={branchButton} type="button" className="cg-ghost wb-branch-chip" title={status.upstream ? text(`Switch branch · tracking ${status.upstream}`, `切换分支 · 跟踪 ${status.upstream}`) : text('Switch branch · no upstream yet', '切换分支 · 尚无上游')} onClick={event => openBranches(event.currentTarget)}>
+    <WbIcon name="branch"/><span className="wb-name">{status.branch ?? text('Detached HEAD', '分离的 HEAD')}</span><WbIcon name="chevD" className="cg-caret"/>
    </button>
    <span className="wb-sync-actions">
     {!toolbarHost && tools}
-    <button type="button" className="icon-btn" title={text('Fetch', '获取')} aria-label={text('Fetch', '获取')} disabled={!!busy} onClick={() => void run('fetch', () => request('git.fetch', {...params, operationId:operationId()}), text('Fetched.', '已获取。'))}><WbIcon name="fetch"/></button>
-    <button type="button" className="icon-btn wb-count-btn" title={status.upstream ? text(`Pull (fast-forward only) · ${status.behind} behind`, `拉取（仅快进）· 落后 ${status.behind}`) : text('Pull · no upstream yet', '拉取 · 尚无上游')} aria-label={text('Pull', '拉取')} disabled={!!busy || !status.upstream} onClick={() => void run('pull', () => request('git.pull', {...params, operationId:operationId()}), text('Pulled.', '已拉取。'))}><WbIcon name="pull"/>{status.upstream && status.behind > 0 && <span className="wb-btn-count">{status.behind}</span>}</button>
-     <button type="button" className="icon-btn wb-count-btn" title={status.upstream ? text(`Push · ${status.ahead} ahead`, `推送 · 领先 ${status.ahead}`) : text('Publish branch', '发布分支')} aria-label={status.upstream ? text('Push', '推送') : text('Publish branch', '发布分支')} disabled={!!busy || !status.branch} onClick={() => void openPushPreview()}><WbIcon name="push"/>{status.upstream && status.ahead > 0 && <span className="wb-btn-count">{status.ahead}</span>}</button>
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Fetch', '获取')} aria-label={text('Fetch', '获取')} disabled={!!busy} onClick={() => void run('fetch', () => request('git.fetch', {...params, operationId:operationId()}), text('Fetched.', '已获取。'))}><WbIcon name="fetch"/></button>
+    <button type="button" className="cg-ghost cg-sm wb-count-btn" title={status.upstream ? text(`Pull (fast-forward only) · ${status.behind} behind`, `拉取（仅快进）· 落后 ${status.behind}`) : text('Pull · no upstream yet', '拉取 · 尚无上游')} aria-label={text('Pull', '拉取')} disabled={!!busy || !status.upstream} onClick={() => void run('pull', () => request('git.pull', {...params, operationId:operationId()}), text('Pulled.', '已拉取。'))}><WbIcon name="pull"/>{status.upstream && status.behind > 0 && <span className="cg-count">{status.behind}</span>}</button>
+     <button type="button" className="cg-ghost cg-sm wb-count-btn" title={status.upstream ? text(`Push · ${status.ahead} ahead`, `推送 · 领先 ${status.ahead}`) : text('Publish branch', '发布分支')} aria-label={status.upstream ? text('Push', '推送') : text('Publish branch', '发布分支')} disabled={!!busy || !status.branch} onClick={() => void openPushPreview()}><WbIcon name="push"/>{status.upstream && status.ahead > 0 && <span className="cg-count">{status.ahead}</span>}</button>
    </span>
   </div>
-  <div className="wb-commit">
+  <div className="wb-commit cg-field">
    <textarea ref={messageRef} value={message} onChange={event => setMessage(event.target.value)} rows={2} placeholder={text('Message (Ctrl+Enter to commit)', '提交说明（Ctrl+Enter 提交）')} aria-label={text('Commit message', '提交说明')}
     onKeyDown={event => { if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if(!busy) void (commitSelectedActive ? commitSelected() : commit('commit')); } }}/>
    <div className="wb-commit-actions">
-   <button type="button" className="btn btn-primary wb-commit-main" disabled={!!busy || (commitSelectedActive ? !selectedCommit?.supported : !groups.staged.length)} title={commitSelectedActive&&!selectedCommit?.supported ? `${selectedCommitReason}${selectedCommit?.unsupportedReason ? ` (${selectedCommit.unsupportedReason})` : ''}` : !commitSelectedActive&&!groups.staged.length ? text('Stage changes first', '请先暂存更改') : undefined} onClick={() => void (commitSelectedActive ? commitSelected() : commit('commit'))}>
+   <button type="button" className="cg-ghost cg-primary wb-commit-main" disabled={!!busy || (commitSelectedActive ? !selectedCommit?.supported : !groups.staged.length)} title={commitSelectedActive&&!selectedCommit?.supported ? `${selectedCommitReason}${selectedCommit?.unsupportedReason ? ` (${selectedCommit.unsupportedReason})` : ''}` : !commitSelectedActive&&!groups.staged.length ? text('Stage changes first', '请先暂存更改') : undefined} onClick={() => void (commitSelectedActive ? commitSelected() : commit('commit'))}>
      {busy === 'commit-selected' ? text('Committing selected…', '正在提交所选文件…') : busy === 'commit' ? text('Committing all…', '正在提交全部…') : commitSelectedActive ? text('Commit selected', '提交所选') : text('Commit all staged', '提交全部暂存')}
     </button>
-    <button type="button" className="btn wb-commit-more" aria-label={text('More commit actions', '更多提交操作')} disabled={!!busy} onClick={event => setCommitMenu(event.currentTarget)}><Icon name="chevron"/></button>
+    <button type="button" className="cg-ghost cg-primary wb-commit-more" aria-label={text('More commit actions', '更多提交操作')} aria-haspopup="menu" disabled={!!busy} onClick={event => setCommitMenu(event.currentTarget)}><Icon name="chevron"/></button>
    </div>
-   {commitSelectedActive&&!selectedCommit?.supported && <p className="wb-selected-summary" title={selectedCommit?.unsupportedReason}>{selectedCommitReason}</p>}
-   {(commitSelectedActive||selectedForStage>0) && <p className="wb-selected-summary" aria-live="polite">{commitSelectedActive ? text(`${selectedStaged.length} staged file(s) selected for this commit.`, `已选择 ${selectedStaged.length} 个暂存文件用于此次提交。`) : ''}{commitSelectedActive&&selectedForStage>0?' ':''}{selectedForStage>0 ? text(`${selectedForStage} change(s) selected to stage; they are not included until staged.`, `已选择 ${selectedForStage} 个更改待暂存；暂存前不会包含在提交中。`) : ''}</p>}
   </div>
+  {commitSelectedActive&&!selectedCommit?.supported && <p className="wb-selected-summary" title={selectedCommit?.unsupportedReason}>{selectedCommitReason}</p>}
+  {(commitSelectedActive||selectedForStage>0) && <p className="wb-selected-summary" aria-live="polite">{commitSelectedActive ? text(`${selectedStaged.length} staged file(s) selected for this commit.`, `已选择 ${selectedStaged.length} 个暂存文件用于此次提交。`) : ''}{commitSelectedActive&&selectedForStage>0?' ':''}{selectedForStage>0 ? text(`${selectedForStage} change(s) selected to stage; they are not included until staged.`, `已选择 ${selectedForStage} 个更改待暂存；暂存前不会包含在提交中。`) : ''}</p>}
   {busy && busy !== 'commit' && <p className="wb-summary" aria-live="polite">{text('Working…', '正在执行…')}</p>}
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
   {notice && !issue && <p className="wb-notice" aria-live="polite"><span>{notice.message}</span>{noticeUndoId(notice,undoNotice)&&<button type="button" className="btn btn-sm" disabled={!!busy} onClick={()=>{const id=noticeUndoId(notice,undoNotice);if(id)void undo(id);}}>{text('Undo','撤销')}</button>}</p>}
@@ -721,7 +723,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
     <div role="list">{group.files.map(file=>{ const focus={group:'changes' as const,path:file.path},key=changeFocusKey(focus); return <div key={file.path} className="wb-change-row" role="listitem" data-branch-path={file.path} data-branch-status={file.status}>
      <button type="button" className="wb-change-open wb-branch-open" tabIndex={branchTabRow&&changeFocusKey(branchTabRow)===key?0:-1} ref={button=>{if(button)branchButtons.current.set(key,button);else branchButtons.current.delete(key);}} onFocus={()=>{branchListOwnsFocus.current=true;setCompareFocused(value=>value?.path===file.path?value:focus);}} aria-keyshortcuts="Enter" title={`${file.originalPath ? `${file.originalPath} → ${file.path}` : file.path} · ${compareStatusLabel(file.status,zh)} · ${text('Open diff (Enter)','打开差异（Enter）')}`} onClick={()=>openCompareFile(file)}>
       <span className="wb-deco" aria-label={compareStatusLabel(file.status,zh)}>{compareStatusLetter(file.status)}</span><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span>
-      <span className="wb-branch-counts">{file.binary ? <span className="wb-dir">{text('binary','二进制')}</span> : file.countsUnknown ? <span className="wb-dir">{text('unknown','未知')}</span> : <><span className="wb-add">+{file.additions}</span><span className="wb-del">−{file.deletions}</span></>}</span>
+      <span className="cg-stat">{file.binary ? <span className="wb-dir">{text('binary','二进制')}</span> : file.countsUnknown ? <span className="wb-dir">{text('unknown','未知')}</span> : <><span className="cg-add">+{file.additions}</span><span className="cg-del">−{file.deletions}</span></>}</span>
      </button>
     </div>; })}
     </div>
@@ -730,20 +732,20 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   {scopeMode==='changes' && <div ref={changesRef} tabIndex={-1} className="wb-changes" aria-keyshortcuts="Control+Z Meta+Z" onBlur={event=>{listOwnsFocus.current=event.relatedTarget instanceof Element&&event.relatedTarget.matches('.wb-change-open')&&event.currentTarget.contains(event.relatedTarget);}} onContextMenu={onChangeContext} onKeyDown={onChangeKey}>
    {section('conflicts', text('Merge conflicts', '合并冲突'), null)}
    {section('staged', text('Staged changes', '已暂存的更改'), <>
-    <button type="button" className="icon-btn" title={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} aria-label={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} disabled={!!busy || !selectedStaged.length} onClick={() => void unstageSelected()}><WbIcon name="minus"/></button>
-    <button type="button" className="icon-btn" title={text('Unstage all', '全部取消暂存')} aria-label={text('Unstage all', '全部取消暂存')} disabled={!!busy} onClick={() => void unstage(groups.staged.map(change => change.path))}><WbIcon name="minus"/></button>
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} aria-label={text('Unstage selected files (whole file)', '取消暂存所选文件（整个文件）')} disabled={!!busy || !selectedStaged.length} onClick={() => void unstageSelected()}><WbIcon name="minus"/></button>
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Unstage all', '全部取消暂存')} aria-label={text('Unstage all', '全部取消暂存')} disabled={!!busy} onClick={() => void unstage(groups.staged.map(change => change.path))}><WbIcon name="minus"/></button>
    </>)}
    {section('changes', text('Changes', '更改'), <>
-    <button type="button" className="icon-btn" title={text('Discard all changes', '丢弃全部更改')} aria-label={text('Discard all changes', '丢弃全部更改')} disabled={!!busy} onClick={() => discard(groups.changes)}><WbIcon name="undo"/></button>
-    <button type="button" className="icon-btn" title={text('Stage selected files', '暂存所选文件')} aria-label={text('Stage selected files', '暂存所选文件')} disabled={!!busy || !selectedIn('changes').length} onClick={() => void stageSelected('changes')}><Icon name="plus"/></button>
-    <button type="button" className="icon-btn" title={text('Stage all changes', '暂存全部更改')} aria-label={text('Stage all changes', '暂存全部更改')} disabled={!!busy} onClick={() => void stage(groups.changes.map(change => change.path))}><Icon name="plus"/></button>
-   </>)}
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Discard all changes', '丢弃全部更改')} aria-label={text('Discard all changes', '丢弃全部更改')} disabled={!!busy} onClick={() => discard(groups.changes)}><WbIcon name="undo"/></button>
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Stage selected files', '暂存所选文件')} aria-label={text('Stage selected files', '暂存所选文件')} disabled={!!busy || !selectedIn('changes').length} onClick={() => void stageSelected('changes')}><WbIcon name="plus"/></button>
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Stage all changes', '暂存全部更改')} aria-label={text('Stage all changes', '暂存全部更改')} disabled={!!busy} onClick={() => void stage(groups.changes.map(change => change.path))}><WbIcon name="plus"/></button>
+   </>, onReview ? <button type="button" className="cg-ghost cg-sm wb-review-open" onClick={onReview}><WbIcon name="diff"/>{text('Review', '评审')}</button> : null)}
    {section('untracked', text('Untracked', '未跟踪'), <>
-    <button type="button" className="icon-btn" title={text('Stage selected files', '暂存所选文件')} aria-label={text('Stage selected files', '暂存所选文件')} disabled={!!busy || !selectedIn('untracked').length} onClick={() => void stageSelected('untracked')}><Icon name="plus"/></button>
-    <button type="button" className="icon-btn" title={text('Stage all untracked', '暂存全部未跟踪文件')} aria-label={text('Stage all untracked', '暂存全部未跟踪文件')} disabled={!!busy} onClick={() => void stage(groups.untracked.map(change => change.path))}><Icon name="plus"/></button>
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Stage selected files', '暂存所选文件')} aria-label={text('Stage selected files', '暂存所选文件')} disabled={!!busy || !selectedIn('untracked').length} onClick={() => void stageSelected('untracked')}><WbIcon name="plus"/></button>
+    <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Stage all untracked', '暂存全部未跟踪文件')} aria-label={text('Stage all untracked', '暂存全部未跟踪文件')} disabled={!!busy} onClick={() => void stage(groups.untracked.map(change => change.path))}><WbIcon name="plus"/></button>
    </>)}
    {!!stashes?.length && <section className="wb-change-group wb-stashes" aria-label={text('Stashes', '暂存')}>
-    <div className="wb-group-head"><button type="button" className="wb-group-toggle" aria-expanded={!stashesCollapsed} onClick={()=>setStashesCollapsed(current=>!current)}><span className={`wb-chevron${stashesCollapsed?'':' open'}`} aria-hidden="true"><Icon name="chevR"/></span>{text('Stashes', '暂存')}<span className="wb-count">{stashes.length}</span></button></div>
+    <div className="wb-group-head cg-sec"><button type="button" className="wb-group-toggle" aria-expanded={!stashesCollapsed} onClick={()=>setStashesCollapsed(current=>!current)}><span className={`wb-chevron${stashesCollapsed?'':' open'}`} aria-hidden="true"><Icon name="chevR"/></span>{text('Stashes', '暂存')}<span className="cg-count">{stashes.length}</span></button></div>
     {!stashesCollapsed&&<div role="list">{stashes.map(entry=><div key={entry.oid} className="wb-stash-row" role="listitem">
      <div className="wb-stash-summary"><span className="wb-name" title={entry.message}>{entry.message || text('WIP on stash', '暂存中的进行中更改')}</span>{entry.branch&&<span className="wb-stash-branch">{entry.branch}</span>}<span className="wb-time">{stashAge(entry.createdAt)}</span>{entry.untracked&&<span className="wb-stash-untracked">{text('untracked', '未跟踪')}</span>}</div>
      <span className="wb-row-actions"><button type="button" className="icon-btn" aria-label={text(`Show files in ${entry.message}`, `显示 ${entry.message} 中的文件`)} title={text('Show files', '显示文件')} disabled={!!busy||stashLoading===entry.oid} onClick={()=>void showStashFiles(entry)}><Icon name="file"/></button><button type="button" className="icon-btn" aria-label={text(`Apply ${entry.message}`, `应用 ${entry.message}`)} title={text('Apply', '应用')} disabled={!!busy} onClick={()=>void applyStash(entry,false)}><Icon name="check"/></button><button type="button" className="icon-btn" aria-label={text(`Pop ${entry.message}`, `弹出 ${entry.message}`)} title={text('Pop', '弹出')} disabled={!!busy} onClick={()=>void applyStash(entry,true)}><Icon name="export"/></button><button type="button" className="icon-btn" aria-label={text(`Drop ${entry.message}`, `删除 ${entry.message}`)} title={text('Drop', '删除')} disabled={!!busy} onClick={()=>setConfirm({kind:'stash-drop',entry})}><Icon name="trash"/></button></span>
