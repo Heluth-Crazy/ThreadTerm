@@ -42,6 +42,17 @@ const glyphs: Record<string, string> = {
  'view-browser': '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.3 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.3-3.5-8.5s1.1-6.1 3.5-8.5z"/>',
  'view-details': '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.9v.1"/>',
  'view-changes': '<path d="M12 4v11M6.5 9.5h11M6.5 20h11"/>',
+ // Cursor-referenced surfaces (cursor-grammar.css): Design Mode tools and note actions, from prototypes/mac-style.
+ annotate: '<path d="M5 19.5h3.6L19 9.1a2.5 2.5 0 0 0-3.6-3.6L5 15.9z"/><path d="m13.8 7.1 3.6 3.6"/>',
+ 'pick-element': '<path d="M6.5 4.5 18 10.6l-5.1 1.5-2.1 5.4z"/>',
+ 'pick-area': '<path d="M4.5 8V5.5a1 1 0 0 1 1-1H8M16 4.5h2.5a1 1 0 0 1 1 1V8M19.5 16v2.5a1 1 0 0 1-1 1H16M8 19.5H5.5a1 1 0 0 1-1-1V16"/>',
+ 'mark-draw': '<path d="M4.5 16.5c2.4-5.6 4.8-7.6 6.9-4.6s4.1 2 7.6-4.4"/>',
+ 'mark-ellipse': '<ellipse cx="12" cy="12" rx="8" ry="5.5"/>',
+ 'mark-rect': '<rect x="4.5" y="6.5" width="15" height="11" rx="1.5"/>',
+ 'mark-arrow': '<path d="M5.5 18.5 18 6M9.5 6H18v8.5"/>',
+ 'css-props': '<path d="M5 7h8M17 7h2M5 17h2M11 17h8"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+ 'to-chat': '<path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V16A2.5 2.5 0 0 1 4 13.5z"/>',
+ 'element-code': '<path d="m9 8-4 4 4 4M15 8l4 4-4 4"/>',
 };
 const glyphHtml=Object.fromEntries(Object.entries(glyphs).map(([name,__html])=>[name,Object.freeze({__html})]));
 

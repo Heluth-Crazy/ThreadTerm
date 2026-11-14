@@ -9,6 +9,7 @@
 @import url("./components/mac-panels.css");
 @import url("./components/mac-controls.css");
 @import url("./components/mac-settings.css");
+@import url("./components/cursor-grammar.css");
 
 /* The navigation mark is the generated product tile, not the terminal glyph. */
 .brand-mark:has(img) { background: transparent; }
