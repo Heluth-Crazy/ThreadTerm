@@ -80,6 +80,11 @@ async function show(sessionId) {
 }
 async function resize(width, height) { await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(size.width, size.height), { width, height }); await page.setViewportSize({ width, height }); await pause(150); }
 const rgba = value => {
+ const srgb = String(value).match(/^color\(srgb\s+([^)]+)\)$/i);
+ if (srgb) {
+  const [channels, alpha = '1'] = srgb[1].split(/\s*\/\s*/);
+  return [...channels.trim().split(/\s+/).map(channel => Math.round(Number(channel) * 255)), Number(alpha)];
+ }
  const match = String(value).match(/rgba?\(([^)]+)/i);
  if (match) {
   const parts = match[1].split(',').map(part => Number(part.trim()));
@@ -119,18 +124,18 @@ async function panePixelGeometry() {
     const strip = pane.querySelector(':scope > .workspace-tabbar.ws-strip'), card = pane.querySelector(':scope > .pane-card'), tabs = strip?.querySelector('.workspace-tabs'), selected = tabs?.querySelector('.workspace-tab.active');
     if (!strip || !card || !tabs || !selected) return [];
     const title = selected.querySelector('.workspace-tab-label'), close = selected.querySelector('.workspace-tab-close'), prefix = strip.querySelector('.workspace-tab-prefix'), add = strip.querySelector('.workspace-tab-add-slot'), actions = strip.querySelector('.workspace-tab-actions');
-    const style = getComputedStyle(card), selectedStyle = getComputedStyle(selected), focused = document.activeElement?.closest?.('.workspace-tab');
+    const style = getComputedStyle(card), focused = document.activeElement?.closest?.('.workspace-tab');
     const titleStyle = title && getComputedStyle(title), measure = document.createElement('canvas').getContext('2d');
     if (measure && titleStyle) measure.font = titleStyle.font;
-    const titleMetrics = title ? { ...rect(title), text: title.textContent?.trim() ?? '', color: titleStyle?.color, scrollWidth: title.scrollWidth, clientWidth: title.clientWidth, overflow:titleStyle?.overflow, textOverflow:titleStyle?.textOverflow } : undefined;
+    const titleMetrics = title ? { ...rect(title), text: title.textContent?.trim() ?? '', color: titleStyle?.color, scrollWidth: title.scrollWidth, clientWidth: title.clientWidth, sixCharacterWidth: measure?.measureText((title.textContent?.trim() ?? '').slice(0, 6)).width ?? 0 } : undefined;
     // Pane content (e.g. a chat's clipped empty state in a short stacked pane) can sit right under the card's top edge.
     const textAt = (x, y) => { const hit = document.elementFromPoint(x, y); if (!hit || hit === card || !card.contains(hit)) return false; const walker = document.createTreeWalker(hit, NodeFilter.SHOW_TEXT); for (let node = walker.nextNode(); node; node = walker.nextNode()) { const range = document.createRange(); range.selectNodeContents(node); if ([...range.getClientRects()].some(box => x >= box.left - 1 && x <= box.right + 1 && y >= box.top - 1 && y <= box.bottom + 1)) return true; } return false; };
     const footText = [selected.getBoundingClientRect().left - 10, selected.getBoundingClientRect().right + 10].map(x => textAt(x, card.getBoundingClientRect().top + 1));
     const addButton=add?.querySelector('.workspace-tab-add');
-    return [{ id: pane.dataset.paneId ?? 'pane', footText, strip: rect(strip), card: rect(card), tabs: {...rect(tabs),scrollWidth:tabs.scrollWidth}, selected: { ...rect(selected), offsetWidth: selected.offsetWidth, radius: selectedStyle.borderTopLeftRadius }, tabMetrics:[...tabs.querySelectorAll('.workspace-tab')].map(tab=>({ ...rect(tab), radius:getComputedStyle(tab).borderTopLeftRadius })), isFirstTab: selected === tabs.querySelector(':scope > .workspace-tab'), title: titleMetrics, close: close ? rect(close) : undefined, prefix: prefix ? rect(prefix) : undefined, add: add ? rect(add) : undefined, addButton: addButton ? rect(addButton) : undefined, actions: actions ? rect(actions) : undefined, expectedSurface: style.backgroundColor, expectedBorder: getComputedStyle(strip).borderBottomColor, stripColor:getComputedStyle(strip).backgroundColor, focusColor:getComputedStyle(selected.querySelector('.workspace-tab-select'),'::after').borderTopColor, cardBorders:[style.borderTopWidth,style.borderRightWidth,style.borderBottomWidth,style.borderLeftWidth].map(value=>parseFloat(value)||0), cardRadii:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0), focused: focused === selected, overflow: [strip, ...strip.querySelectorAll('*')].filter(visible).map(element => ({ tag: element.tagName, className: String(element.className), scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, overflowY: getComputedStyle(element).overflowY })) }];
+    return [{ id: pane.dataset.paneId ?? 'pane', topControls: [...card.querySelectorAll('button,input,select,textarea,[role=button],.wb-browser-address')].filter(visible).map(rect).filter(bounds => bounds.top < card.getBoundingClientRect().top + 12 && bounds.bottom > card.getBoundingClientRect().top), footText, strip: rect(strip), card: rect(card), tabs: {...rect(tabs),scrollWidth:tabs.scrollWidth}, selected: { ...rect(selected), offsetWidth: selected.offsetWidth }, tabMetrics: [...tabs.querySelectorAll('.workspace-tab')].map(tab => { const style = getComputedStyle(tab); return { ...rect(tab), active: tab.classList.contains('active'), radii: [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomLeftRadius, style.borderBottomRightRadius].map(parseFloat) }; }), isFirstTab: selected === tabs.querySelector(':scope > .workspace-tab'), title: titleMetrics, close: close ? rect(close) : undefined, prefix: prefix ? rect(prefix) : undefined, add: add ? rect(add) : undefined, addButton: addButton ? rect(addButton) : undefined, actions: actions ? rect(actions) : undefined, expectedSurface: style.backgroundColor, stripColor:(()=>{const own=getComputedStyle(strip);if(own.backgroundImage==='none')return own.backgroundColor;/* The strip paints --tabbar as an image that stops 1 px short of its bottom edge; resolve the token itself. */const swatch=document.createElement('i');swatch.style.background='var(--tabbar)';strip.append(swatch);const value=getComputedStyle(swatch).backgroundColor;swatch.remove();return value;})(), focusColor:getComputedStyle(selected.querySelector('.workspace-tab-select'),'::after').borderTopColor, cardBorders:[style.borderTopWidth,style.borderRightWidth,style.borderBottomWidth,style.borderLeftWidth].map(value=>parseFloat(value)||0), cardRadii:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0), focused: focused === selected, overflow: [strip, ...strip.querySelectorAll('*')].filter(visible).map(element => ({ tag: element.tagName, className: String(element.className), scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, overflowY: getComputedStyle(element).overflowY })) }];
    }),
     border: getComputedStyle(document.documentElement).getPropertyValue('--border'),
-    panels: [...document.querySelectorAll('.workspace-pane[data-pane-id]:not([hidden]) > .pane-card, .wb-sidebar, .inspector')].filter(visible).filter(panel => !(panel.matches('.inspector') && panel.closest('.wb-sidebar'))).map(panel => ({ className: String(panel.className), surface:getComputedStyle(panel).backgroundColor, ...rect(panel) }))
+    panels: [...document.querySelectorAll('.workspace-pane[data-pane-id]:not([hidden]) > .pane-card, .wb-sidebar > .wb-panel, .inspector')].filter(visible).filter(panel => !(panel.matches('.inspector') && panel.closest('.wb-sidebar'))).map(panel => ({ className: String(panel.className), surface:getComputedStyle(panel).backgroundColor, ...rect(panel) }))
   };
  });
 }
@@ -183,51 +188,135 @@ async function assertPanelBottomGap(name, image, geometry, scale) {
   const gap=lowerStrip?lowerStrip.strip.top-panel.bottom:content.bottom-panel.bottom,expectedGap=lowerStrip?1:0;
   assert.ok(Math.abs(gap-expectedGap)<=1,`${panel.className}: ${lowerStrip?'flush divider':'content edge'} is ${expectedGap}px ±1 (${gap})`);
   const surface=rgba(panel.surface)?.slice(0,3);assert.ok(surface,`${panel.className}: pane surface is RGB`);
-  const x=device(Math.max(panel.left+2,Math.min(panel.right-2,panel.left+panel.width/2)),scale.x,image.width),y=device(Math.max(panel.top+2,panel.bottom-1),scale.y,image.height);
-  const edge=pixel(image,x,y);assert.ok(distance(edge,surface)<=4,`${panel.className}: bottom flush edge retains pane surface pixels`);
-  if(!lowerStrip&&Math.abs(content.right-panel.right)<=1){const right=pixel(image,device(panel.right-1,scale.x,image.width),device(panel.top+panel.height/2,scale.y,image.height));assert.ok(distance(right,surface)<=4,`${panel.className}: right flush edge retains pane surface pixels`);}
+  const x=device(Math.max(panel.left+2,Math.min(panel.right-2,panel.left+panel.width/2)),scale.x,image.width),y=Math.max(0,Math.floor(panel.bottom*scale.y)-1);
+  // Child controls can reach the bottom midpoint (e.g. a clipped inspector form).
+  // Find exposed panel paint along that same edge without accepting a border band.
+  const edgeCandidates=[];
+  for(let px=device(panel.left+2,scale.x,image.width);px<Math.floor(panel.right*scale.x)-2;px+=7)edgeCandidates.push([px,y]);
+  const edgeReference=referencePixel(image,surface,edgeCandidates),edge=edgeReference.value;
+  assert.ok(distance(edge,surface)<=4,`${panel.className}: bottom flush edge retains pane surface pixels`);
+  if(!lowerStrip&&Math.abs(content.right-panel.right)<=1){const right=pixel(image,Math.max(0,Math.floor(panel.right*scale.x)-1),device(panel.top+panel.height/2,scale.y,image.height));assert.ok(distance(right,surface)<=4,`${panel.className}: right flush edge retains pane surface pixels`);}
   let divider;
-  if(lowerStrip&&border){divider=pixel(image,x,device(panel.bottom+.5,scale.y,image.height));assert.ok(distance(divider,composite(border,surface))<=8,`${panel.className}: internal divider is a one-pixel border`);}
-  evidence.push({className:panel.className,gap,edge,divider});
+  if(lowerStrip&&border){
+   // A divider at a fractional CSS coordinate covers only part of its first raster row.
+   const dividerY=Math.floor(panel.bottom*scale.y),coverage=Math.min(1,lowerStrip.strip.top*scale.y-dividerY)-(panel.bottom*scale.y-dividerY);
+   divider=pixel(image,x,dividerY);
+   const expected=composite([border[0],border[1],border[2],border[3]*coverage],surface);
+   assert.ok(distance(divider,expected)<=8,`${panel.className}: internal divider is a one-pixel border`);
+  }
+  evidence.push({className:panel.className,gap,edge,edgeReference,divider});
  }
  const filename=`${name}-flush-edges.png`,target=panels[0],left=device(target.left,scale.x,image.width),top=device(Math.max(content.top,target.bottom-4),scale.y,image.height),right=device(target.right,scale.x,image.width),bottom=device(Math.min(content.bottom,target.bottom+4),scale.y,image.height);
  await writeFile(join(pixelEvidenceDir,filename),PNG.sync.write(crop(image,left,top,right-left+1,bottom-top+1)));
  return {panels:evidence,flush:true,crop:`pixel-evidence/${filename}`};
 }
 async function assertScreenshotPixels(name, screenshot, keyboardFocus = false) {
- const geometry=await panePixelGeometry(),image=PNG.sync.read(screenshot),scale={x:image.width/geometry.viewport.width,y:image.height/geometry.viewport.height};
- await writeFile(join(pixelEvidenceDir,`${name}-geometry.json`),JSON.stringify({geometry,image:{width:image.width,height:image.height},scale},null,2));
- const evidence={screenshot:`${name}.png`,image:{width:image.width,height:image.height},viewport:geometry.viewport,scale,panes:[]};
- for(const pane of geometry.panes){
-  assert.ok(Math.abs(pane.strip.height-30)<=1&&Math.abs(pane.selected.height-30)<=1,`30px flush strip/tab for ${pane.id}`);
-  assert.ok(pane.tabMetrics.every(tab=>(parseFloat(tab.radius)||0)===0),`square tab corners for ${pane.id}`);
-  assert.ok(pane.cardBorders.every(value=>value===0)&&pane.cardRadii.every(value=>value===0),`flat borderless pane for ${pane.id}`);
-  if(pane.close)assert.ok(Math.abs(pane.close.width-18)<=1&&Math.abs(pane.close.height-18)<=1&&pane.close.left<pane.selected.left+8,`18px left close for ${pane.id}`);
-  if(pane.addButton)assert.ok(Math.abs(pane.addButton.width-28)<=1&&Math.abs(pane.addButton.height-28)<=1,`28px add target for ${pane.id}`);
-  const surfaceRaw=rgba(pane.expectedSurface),stripRaw=rgba(pane.stripColor),borderRaw=rgba(pane.expectedBorder);assert.ok(surfaceRaw&&stripRaw&&borderRaw,`resolved RGB surfaces for ${pane.id}`);
-  const surfaceTarget=surfaceRaw.slice(0,3),stripTarget=stripRaw.slice(0,3),borderTarget=composite(borderRaw,stripTarget);
-  const surface=referencePixel(image,surfaceTarget,candidateGrid(pane.card,scale,image,14,pane.card.top+2,Math.min(pane.card.top+26,pane.card.bottom-2)));
-  const seamY=device(pane.card.top+.5,scale.y,image.height),seamSamples=[];
-  const start=Math.max(pane.selected.left+4,pane.tabs.left+1),end=Math.min(pane.selected.right-4,pane.tabs.right-1);
-  for(let x=start;x<=end;x+=Math.max(1,(end-start)/12)){const px=device(x,scale.x,image.width),value=pixel(image,px,seamY);seamSamples.push({x:px,y:seamY,value,delta:distance(value,surface.value)});}
-  assert.ok(seamSamples.length&&seamSamples.every(sample=>sample.delta<=4),`active tab merges into pane without a seam band for ${pane.id}`);
-  // Outside the active tab, a flat join may contain only tabbar/surface/hairline paint.
-  const outsideSamples=[];
-  for(const x of [pane.selected.left-6,pane.selected.right+6])if(x>pane.strip.left+1&&x<pane.strip.right-1){for(const y of [pane.card.top-1,pane.card.top]){const value=pixel(image,device(x,scale.x,image.width),device(y,scale.y,image.height));const allowed=value.every((channel,index)=>channel>=Math.min(surfaceTarget[index],stripTarget[index],borderTarget[index])-4&&channel<=Math.max(surfaceTarget[index],stripTarget[index],borderTarget[index])+4);assert.ok(allowed,`flat join has no third-colour band for ${pane.id}`);outsideSamples.push({x,y,value});}}
-  const seams=[];
-  for(const [side,x] of [['left',pane.selected.left],['right',pane.selected.right]]){const left=device(Math.max(pane.strip.left,x-8),scale.x,image.width),right=device(Math.min(pane.strip.right-1,x+8),scale.x,image.width),top=device(pane.card.top-8,scale.y,image.height),bottom=device(pane.card.top+7,scale.y,image.height),filename=`${name}-${pane.id}-${side}-join.png`;await writeFile(join(pixelEvidenceDir,filename),PNG.sync.write(crop(image,left,top,Math.max(1,right-left+1),Math.max(1,bottom-top+1))));seams.push({side,crop:`pixel-evidence/${filename}`});}
-  const overflowFailures=pane.overflow.filter(item=>item.scrollHeight>item.clientHeight&&!['hidden','clip'].includes(item.overflowY));assert.deepEqual(overflowFailures,[],`no vertical strip overflow for ${pane.id}`);
-  const scrollThumbs=thumbRuns(image,pane.strip,scale);assert.deepEqual(scrollThumbs,[],`no vertical strip scrollbar for ${pane.id}`);
-  const equalWidth=pane.tabMetrics.length<2||pane.tabs.scrollWidth>pane.tabs.width+1||pane.tabMetrics.every(tab=>Math.abs(tab.width-pane.tabMetrics[0].width)<=1);assert.ok(equalWidth,`equal width tabs for ${pane.id}`);
-  const zoom=pane.selected.offsetWidth?pane.selected.width/pane.selected.offsetWidth:1;
-  if(pane.title){assert.ok(pane.title.text.length>0&&pane.title.width>0&&pane.selected.width>=72*zoom-1,`visible nonblank active label for ${pane.id}`);if(pane.title.scrollWidth>pane.title.clientWidth+1)assert.equal(pane.title.textOverflow,'ellipsis',`clipped title ellipsizes for ${pane.id}`);}
-  const paneEvidence={id:pane.id,seamY,expected:{surface:surfaceTarget,strip:stripTarget,border:borderTarget},references:{surface},seamSamples,outsideSamples,footCrops:seams,verticalOverflow:overflowFailures,scrollThumbs,active:{width:pane.selected.width,equalWidth,title:pane.title}};
+ const geometry = await panePixelGeometry(), image = PNG.sync.read(screenshot), scale = { x: image.width / geometry.viewport.width, y: image.height / geometry.viewport.height };
+ await writeFile(join(pixelEvidenceDir, `${name}-geometry.json`), JSON.stringify({ geometry, image: { width: image.width, height: image.height }, scale }, null, 2));
+ const evidence = { screenshot: `${name}.png`, image: { width: image.width, height: image.height }, viewport: geometry.viewport, scale, panes: [] };
+ for (const pane of geometry.panes) {
+  assert.ok(Math.abs(pane.strip.height - 43) <= 1, `43px strip for ${pane.id}`);
+  for (const tab of pane.tabMetrics) {
+   assert.ok(Math.abs(tab.height - (tab.active ? 33 : 32)) <= 1, `${tab.active ? 'selected' : 'idle'} tab height for ${pane.id}`);
+   assert.deepEqual(tab.radii, [8, 8, 0, 0], `rounded tab shoulders for ${pane.id}`);
+  }
+  assert.ok(pane.cardBorders.every(value => value === 0) && pane.cardRadii.every(value => value === 0), `flat borderless pane for ${pane.id}`);
+  if (pane.close) {
+   assert.ok(Math.abs(pane.close.width - 28) <= 1 && Math.abs(pane.close.height - 28) <= 1, `28px close target for ${pane.id}`);
+   assert.ok(pane.close.left >= pane.selected.left + pane.selected.width / 2 && Math.abs(pane.selected.right - pane.close.right - 3) <= 1, `close sits on the right for ${pane.id}`);
+  }
+  if (pane.addButton) assert.ok(Math.abs(pane.addButton.width - 28) <= 1 && Math.abs(pane.addButton.height - 28) <= 1, `28px add target for ${pane.id}`);
+  const surfaceRaw = rgba(pane.expectedSurface), stripRaw = rgba(pane.stripColor);
+  assert.ok(surfaceRaw && stripRaw, `CSS colors are RGB/RGBA for pane ${pane.id}`);
+  const surfaceTarget = surfaceRaw.slice(0, 3), stripTarget = stripRaw.slice(0, 3);
+  const referenceTop = Math.max(pane.card.top + 2, Math.min(pane.card.top + 7, pane.card.bottom - 6)), referenceBottom = Math.max(referenceTop + 1, Math.min(pane.card.top + 26, pane.card.bottom - 2));
+  const surface = referencePixel(image, surfaceTarget, candidateGrid(pane.card, scale, image, 14, referenceTop, referenceBottom));
+  const seamY = device(pane.card.top, scale.y, image.height), insideLeft = device(pane.selected.left + 10, scale.x, image.width), insideRight = device(pane.selected.right - 10, scale.x, image.width);
+  const horizontalLeft = device(pane.card.left + 8, scale.x, image.width), horizontalRight = device(pane.card.right - 8, scale.x, image.width);
+  const referenceXs = [
+   ...Array.from({ length: Math.max(0, device(pane.selected.left - 12, scale.x, image.width) - horizontalLeft + 1) }, (_, index) => horizontalLeft + index),
+   ...Array.from({ length: Math.max(0, horizontalRight - device(pane.selected.right + 12, scale.x, image.width) + 1) }, (_, index) => device(pane.selected.right + 12, scale.x, image.width) + index)
+  ];
+  const strip = horizontalBorderReference(image, referenceXs.map(x => [x, seamY - 2]), surface.value);
+  assert.ok(distance(strip.value, stripTarget) <= 3, `outside-tab reference matches --tabbar fill for ${pane.id}`);
+  assert.ok(insideRight - insideLeft >= 16, `selected tab has room for a continuous seam column for pane ${pane.id}`);
+  const seamX = device(pane.selected.left + 10, scale.x, image.width), seamValue = pixel(image, seamX, seamY), seamSamples = [{ x: seamX, y: seamY, value: seamValue, delta: distance(seamValue, surface.value) }];
+  assert.ok(distance(seamValue, surface.value) <= 3, `selected tab surface continues into the borderless pane at x=${seamX}, y=${seamY} for ${pane.id}`);
+  // The card has no top border; begin immediately below the fractional join row.
+  const panelRows = Array.from({ length: 8 }, (_, offset) => seamY + offset + 1), centerX = Math.round((insideLeft + insideRight) / 2);
+  const columnCandidates = Array.from({ length: Math.max(0, insideRight - insideLeft + 1) }, (_, offset) => insideLeft + offset).sort((left, right) => Math.abs(left - centerX) - Math.abs(right - centerX));
+  // At narrow browser widths the address input can occupy every eight-row column.
+  // Keep the longest DOM-unobscured continuation, and never accept a shorter column
+  // merely because its pixels happen to pass.
+  const columns = columnCandidates.map(x => {
+   const controlTop = Math.min(Infinity, ...pane.topControls.filter(control => x + 1 > control.left * scale.x && x < control.right * scale.x).map(control => control.top * scale.y));
+   const rows = panelRows.filter(y => y + 1 <= controlTop);
+   return { x, seam: pixel(image, x, seamY), samples: rows.map(y => { const value = pixel(image, x, y); return { x, y, value, delta: distance(value, surface.value) }; }) };
+  });
+  const continuationRows = Math.max(0, ...columns.map(column => column.samples.length));
+  const blankColumn = columns.find(candidate => candidate.samples.length === continuationRows && continuationRows > 0 && distance(candidate.seam, surface.value) <= 3 && candidate.samples.every(sample => sample.delta <= 3));
+  if (continuationRows < 8) report.limitations.push(`Interior continuation checked for ${continuationRows} rows for ${name} / ${pane.id}: DOM controls occupy the remaining rows; the seam and both feet remain pixel-checked.`);
+  const panelSurfaceSkip = pane.card.height < 90;
+  if (!keyboardFocus && !panelSurfaceSkip) assert.ok(blankColumn, `an empty selected-tab column continues from its seam into the panel for ${continuationRows} unobscured pixels for ${pane.id}`);
+  if (panelSurfaceSkip) report.limitations.push(`Eight-pixel interior column omitted for ${name} / ${pane.id}: the existing 960px four-pane compact projection leaves less than 90px of card height, so child controls overlap every candidate column. The seam row and outside feet remain pixel-checked.`);
+  const outside = [{ side: 'left', x: device(pane.selected.left - 10, scale.x, image.width) }, { side: 'right', x: device(pane.selected.right + 10, scale.x, image.width) }];
+  const outsideSamples = outside.map(sample => ({ ...sample, y: seamY, value: pixel(image, sample.x, seamY), below: pixel(image, sample.x, seamY + 1), above: pixel(image, sample.x, seamY - 2), delta: distance(pixel(image, sample.x, seamY + 1), surface.value), aboveDelta: distance(pixel(image, sample.x, seamY - 2), strip.value) }));
+  assert.ok(outsideSamples.every(sample => sample.x >= horizontalLeft && sample.x <= horizontalRight), `both tab feet have horizontal strip paint room for ${pane.id}: ${JSON.stringify({ outsideSamples, horizontalLeft, horizontalRight })}`);
+  const checkedFeet = outsideSamples.filter((sample, index) => !pane.footText?.[index]);
+  if (checkedFeet.length < outsideSamples.length) report.limitations.push(`Outside-foot band check omitted for ${name} / ${pane.id} on the ${outsideSamples.filter((sample, index) => pane.footText?.[index]).map(sample => sample.side).join(' and ')} side: pane text sits under the card's top edge there.`);
+  assert.ok(checkedFeet.every(sample => sample.delta <= 3 && sample.aboveDelta <= 3), `panel surface meets the strip without a third-colour band outside both feet for ${pane.id}: ${JSON.stringify(outsideSamples)}`);
+  for (const sample of checkedFeet) {
+   const delta = strip.value.map((channel, index) => surface.value[index] - channel), denominator = delta.reduce((sum, channel) => sum + channel * channel, 0);
+   const alpha = denominator ? Math.max(0, Math.min(1, delta.reduce((sum, channel, index) => sum + channel * (sample.value[index] - strip.value[index]), 0) / denominator)) : 0;
+   assert.ok(distance(sample.value, strip.value.map((channel, index) => Math.round(channel + alpha * delta[index]))) <= 3, `fractional top row contains only the strip/surface transition for ${pane.id}`);
+  }
+  const seams = [];
+  for (const [side, x] of [['left', pane.selected.left - 10], ['right', pane.selected.right - 10]]) {
+   const left = device(x, scale.x, image.width), top = device(pane.card.top - 9, scale.y, image.height), filename = `${name}-${pane.id}-${side}-foot.png`;
+   const arc = crop(image, left, top, 20, 18), values = [];
+   for (let row = 0; row < arc.height; row++) for (let column = 0; column < arc.width; column++) values.push(pixel(arc, column, row));
+   const surfacePixels = values.filter(value => distance(value, surface.value) <= 3).length, stripPixels = values.filter(value => distance(value, strip.value) <= 3).length;
+   assert.ok(surfacePixels > 0 && stripPixels > 0, `${side} foot crop has both panel surface and strip pixels for ${pane.id}`);
+   const footLeft = side === 'left' ? pane.selected.left - 7 : pane.selected.right;
+   const mixed = [];
+   for (let y = device(pane.card.top - 8, scale.y, image.height); y < seamY; y++) for (let px = device(footLeft, scale.x, image.width); px < device(footLeft + 7, scale.x, image.width); px++) {
+    const value = pixel(image, px, y), delta = strip.value.map((channel, index) => surface.value[index] - channel);
+    const denominator = delta.reduce((sum, channel) => sum + channel * channel, 0);
+    const alpha = denominator ? Math.max(0, Math.min(1, delta.reduce((sum, channel, index) => sum + channel * (value[index] - strip.value[index]), 0) / denominator)) : 0;
+    const expected = strip.value.map((channel, index) => Math.round(channel + alpha * delta[index]));
+    if (distance(value, expected) > 6) mixed.push({ x: px, y, value, expected });
+   }
+   assert.deepEqual(mixed, [], `${side} foot contains only surface/strip blends, with no differently coloured border band for ${pane.id}`);
+   await writeFile(join(pixelEvidenceDir, filename), PNG.sync.write(arc)); seams.push({ side, crop: `pixel-evidence/${filename}`, surfacePixels, stripPixels });
+  }
+  const joinCropName = name === 'chat-sidebar-closed-en-light-1440' ? 'selected-tab-join-light.png' : name === 'chat-sidebar-closed-en-dark-1440' ? 'selected-tab-join-dark.png' : name === 'chat-custom-theme-en' ? 'selected-tab-join-custom.png' : name === 'chat-125-en-light' ? 'selected-tab-join-125.png' : name === 'chat-125-en-dark' ? 'selected-tab-join-125-dark.png' : undefined;
+  let joinCrop;
+  if (joinCropName && pane === geometry.panes[0]) {
+   const left = device(pane.selected.left - 14, scale.x, image.width), top = device(pane.selected.top - 3, scale.y, image.height), right = device(pane.selected.right + 14, scale.x, image.width), bottom = device(pane.card.top + 8, scale.y, image.height);
+   await writeFile(join(pixelEvidenceDir, joinCropName), PNG.sync.write(crop(image, left, top, right - left + 1, bottom - top + 1)));
+   joinCrop = `pixel-evidence/${joinCropName}`;
+  }
+  const overflowFailures = pane.overflow.filter(item => item.scrollHeight > item.clientHeight && !['hidden', 'clip'].includes(item.overflowY));
+  assert.deepEqual(overflowFailures, [], `strip has no vertical overflow: ${pane.id} ${JSON.stringify(overflowFailures)}`);
+  // The old regression was the inherited .ws-strip scrollbar at the strip's
+  // outer right edge. The tab viewport's right edge may coincide with an
+  // active-tab border or keyboard focus outline, so scanning it creates a
+  // false scrollbar positive without improving coverage of that defect.
+  const scrollThumbs = thumbRuns(image, pane.strip, scale);
+  assert.deepEqual(scrollThumbs, [], `no vertical scrollbar thumb at strip outer edge: ${pane.id} ${JSON.stringify(scrollThumbs)}`);
+  const available = pane.strip.width - (pane.prefix?.width ?? 0) - (pane.add?.width ?? 0) - (pane.actions?.width ?? 0) - 8;
+  const effectiveZoom = pane.selected.offsetWidth ? pane.selected.width / pane.selected.offsetWidth : 1, minimumWidth = 120 * effectiveZoom;
+  if (available >= minimumWidth) {
+   assert.ok(pane.selected.width >= minimumWidth - 1, `selected tab remains at its 120 CSS-pixel readable width (${Math.round(minimumWidth)} rendered px) when available (${Math.round(available)}px) in ${pane.id}`);
+   if (pane.title) assert.ok(pane.title.width + 1 >= Math.min(pane.title.sixCharacterWidth, pane.title.scrollWidth), `selected tab shows six readable title characters in ${pane.id}: ${JSON.stringify(pane.title)}`);
+  }
+  const paneEvidence = { id: pane.id, seamY, expected: { surfaceRaw, stripRaw, surface: surfaceTarget, strip: stripTarget }, references: { surface, strip }, seamSamples, panelSurfaceColumn: blankColumn, continuationRows, panelSurfaceSkip, blankColumnFocusException: keyboardFocus, outsideSamples, footCrops: seams, joinCrop, verticalOverflow: overflowFailures, scrollThumbs, active: { width: pane.selected.width, offsetWidth: pane.selected.offsetWidth, effectiveZoom, minimumWidth, available, title: pane.title } };
   if (keyboardFocus && pane.focused) {
    const primary = composite(rgba(pane.focusColor), surface.value);
    assert.ok(primary, `primary is RGB for focused pane ${pane.id}`);
    const focusPixels = [];
    for (let y = device(pane.selected.top, scale.y, image.height); y <= device(pane.selected.top + 5, scale.y, image.height); y++) for (let x = device(pane.selected.left + 3, scale.x, image.width); x <= device(pane.selected.right - 3, scale.x, image.width); x++) if (distance(pixel(image, x, y), primary) <= 36) focusPixels.push({ x, y });
-   const closeStart = device((pane.close?.left ?? pane.selected.right) - 3, scale.x, image.width), closePixels = focusPixels.filter(sample => sample.x >= closeStart && sample.x <= device((pane.close?.right ?? pane.selected.right)+3,scale.x,image.width));
+   const closeStart = device((pane.close?.left ?? pane.selected.right) - 3, scale.x, image.width), closePixels = focusPixels.filter(sample => sample.x >= closeStart);
    const seamFocusPixels = seamSamples.filter(sample => distance(sample.value, primary) <= 36);
    assert.ok(focusPixels.length >= 6 && closePixels.length >= 1, `keyboard focus ring reaches the tab close region for ${pane.id}`);
    assert.equal(seamFocusPixels.length, 0, `keyboard focus ring does not cross the merged seam for ${pane.id}`);
@@ -239,12 +328,16 @@ async function assertScreenshotPixels(name, screenshot, keyboardFocus = false) {
    const filename = `${name}-${pane.id}-title.png`, title = pane.title ?? pane.selected;
    await writeFile(join(pixelEvidenceDir, filename), PNG.sync.write(crop(image, device(title.left - 3, scale.x, image.width), device(title.top - 3, scale.y, image.height), device(title.width + 6, scale.x, image.width), device(title.height + 6, scale.y, image.height))));
    const titleColor = pane.title && rgba(pane.title.color)?.slice(0, 3), glyphPixels = titleColor ? (() => { let count = 0; for (let y = device(title.top, scale.y, image.height); y <= device(title.bottom, scale.y, image.height); y++) for (let x = device(title.left, scale.x, image.width); x <= device(title.right, scale.x, image.width); x++) if (distance(pixel(image, x, y), titleColor) <= 48) count++; return count; })() : undefined;
-   assert.ok(glyphPixels === undefined || glyphPixels >= 3, `title crop has visible glyph pixels for ${pane.id}`);
-   paneEvidence.titleCrop = { path: `pixel-evidence/${filename}`, glyphPixels };
+   const readable = available >= minimumWidth;
+   assert.ok(!readable || glyphPixels === undefined || glyphPixels >= 3, `title crop has visible glyph pixels for ${pane.id}`);
+   if (!readable) report.limitations.push(`Title glyph check omitted for ${name} / ${pane.id}: ${Math.round(available)}px available is below the original ${Math.round(minimumWidth)}px readable-tab minimum; the crop and tab geometry remain checked.`);
+   paneEvidence.titleCrop = { path: `pixel-evidence/${filename}`, glyphPixels, readable };
   }
  evidence.panes.push(paneEvidence);
  }
- evidence.bottomGaps=await assertPanelBottomGap(name,image,geometry,scale);report.pixelEvidence.push(evidence);await writeFile(join(pixelEvidenceDir,`${name}.json`),JSON.stringify(evidence,null,2));
+ evidence.bottomGaps = await assertPanelBottomGap(name, image, geometry, scale);
+ report.pixelEvidence.push(evidence);
+ await writeFile(join(pixelEvidenceDir, `${name}.json`), JSON.stringify(evidence, null, 2));
 }
 async function capture(name, metadata) {
  if (phase === 'after') await assertPaneTabContract();
@@ -262,7 +355,7 @@ async function captureAuxiliary(name, metadata) {
  const filename=`${name}.png`, screenshot=await page.screenshot({path:join(out,filename),animations:'disabled'}); if (phase === 'after') await assertScreenshotPixels(name,screenshot,Boolean(metadata.keyboardFocus)); report.auxiliary.push({filename,...metadata});
 }
 async function captureNativePainted(name, metadata) {
- const box=await page.locator('.workspace-pane.selected').boundingBox(), scale=await page.evaluate(()=>devicePixelRatio), native=(await attachedNativeBrowserPages(app,page)).filter(item=>item.url.includes('/second'))[0]; assert.ok(box&&native,`loaded attached native page for ${name}`); const bounds=await app.evaluate(({BrowserWindow,webContents},id)=>{const window=BrowserWindow.getAllWindows().find(item=>item.contentView.children.some(view=>view.webContents?.id===id));return window?.contentView.children.find(view=>view.webContents?.id===id)?.getBounds();},native.id); assert.ok(bounds,`native view bounds for ${name}`);
+ const box=await page.locator('.workspace-pane.selected').boundingBox(), scale=await page.evaluate(()=>devicePixelRatio), native=(await attachedNativeBrowserPages(app,page)).filter(item=>item.url.includes('/second'))[0]; assert.ok(box&&native,`loaded attached native page for ${name}`); const bounds=await app.evaluate(({BrowserWindow,webContents},id)=>{/* Browser pages sit in container views (main.ts keeps app, pages and DevTools as siblings), so walk the tree and add each parent's offset. */const walk=(view,x,y)=>{for(const child of view.children??[]){const b=child.getBounds();if(child.webContents?.id===id)return {x:x+b.x,y:y+b.y,width:b.width,height:b.height};const found=walk(child,x+b.x,y+b.y);if(found)return found;}};for(const window of BrowserWindow.getAllWindows()){const found=walk(window.contentView,0,0);if(found)return found;}return undefined;},native.id); assert.ok(bounds,`native view bounds for ${name}`);
  const base=PNG.sync.read(await page.screenshot({clip:box,animations:'disabled'})); const encoded=await app.evaluate(async({webContents},id)=>(await webContents.fromId(id).capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG().toString('base64'),native.id); const image=PNG.sync.read(Buffer.from(encoded,'base64'));
  const left=Math.round((bounds.x-box.x)*scale),top=Math.round((bounds.y-box.y)*scale); for(let y=0;y<image.height;y++)for(let x=0;x<image.width;x++){const tx=left+x,ty=top+y;if(tx<0||ty<0||tx>=base.width||ty>=base.height)continue;const from=(y*image.width+x)*4,to=(ty*base.width+tx)*4;base.data[to]=image.data[from];base.data[to+1]=image.data[from+1];base.data[to+2]=image.data[from+2];base.data[to+3]=255}
  const filename=`${name}.png`; await writeFile(join(out,filename),PNG.sync.write(base)); report.auxiliary.push({filename,nativePainted:true,...metadata});
@@ -321,7 +414,7 @@ async function afterAcceptance(chat, browser) {
   const pane=document.querySelector('.workspace-pane.selected'), strip=pane?.querySelector(':scope > .workspace-tabbar.ws-strip'),card=pane?.querySelector(':scope > .pane-card'),switcher=document.querySelector('.ws-top .wb-switcher');
   const switcherButton=switcher?.querySelector('button'); if(!pane||!strip||!card||!switcherButton) return {ok:false,found:{pane:Boolean(pane),strip:Boolean(strip),card:Boolean(card),headerSwitcher:Boolean(switcher),switcherButton:Boolean(switcherButton)}}; const sr=strip.getBoundingClientRect(),cr=card.getBoundingClientRect(),wr=switcherButton.getBoundingClientRect();
   const controls=[...strip.querySelectorAll('button:not(.workspace-tab-select)')].filter(button=>button.offsetParent!==null).map(button=>button.getBoundingClientRect().height);
-  return {ok:Math.abs(sr.bottom-cr.top)<=1&&!pane.querySelector('.wb-switcher')&&wr.width>=28&&wr.height>=28&&controls.every(height=>Math.abs(height-28)<=1),controls,seam:sr.bottom-cr.top,switcher:{inHeader:!pane.contains(switcher),width:wr.width,height:wr.height}};
+  return {ok:Math.abs(sr.bottom-cr.top)<=1&&!pane.querySelector('.wb-switcher')&&wr.width>=30&&Math.abs(wr.height-24)<=1&&controls.every(height=>Math.abs(height-28)<=1),controls,seam:sr.bottom-cr.top,switcher:{inHeader:!pane.contains(switcher),width:wr.width,height:wr.height}};
  });
  assert.ok(placement.ok,`strip/card/switcher/control geometry ${JSON.stringify(placement)}`);
  await page.locator('.ws-top .wb-switcher button').last().focus(); /* the header tools come right before the pane strips in Tab order */ for(let step=0;step<8&&await page.evaluate(()=>document.activeElement?.getAttribute('role')!=='tab');step++) await page.keyboard.press('Tab'); const entered=await page.evaluate(()=>({role:document.activeElement?.getAttribute('role'),id:document.activeElement?.id})); assert.equal(entered.role,'tab','Tab enters the pane tab strip');
@@ -335,7 +428,7 @@ async function afterAcceptance(chat, browser) {
  const overflow=await page.evaluate(()=>{const pane=document.querySelector('.workspace-pane.selected'),strip=pane?.querySelector('.workspace-tabs'),row=pane?.querySelector('.workspace-tabbar'),add=pane?.querySelector('.workspace-tab-add'),tabs=strip?.querySelectorAll('.workspace-tab')??[];if(!strip||!row||!add)return {ok:false};const active=strip.querySelector('.workspace-tab.active')?.getBoundingClientRect(),box=strip.getBoundingClientRect(),rowBox=row.getBoundingClientRect(),plus=add.getBoundingClientRect();return {ok:tabs.length>=12&&strip.scrollWidth>strip.clientWidth&&Boolean(active&&active.left>=box.left-1&&active.right<=box.right+1&&plus.left>=rowBox.left&&plus.right<=rowBox.right),count:tabs.length};});
  assert.ok(overflow.ok,`overflow/reveal/add visibility ${JSON.stringify(overflow)}`); await captureAuxiliary('browser-overflow-en-light',{scenario:'twelve browser tabs overflow with active tab revealed and add control visible'});
  await browserPane.locator('[role=tab][aria-selected=true]').focus(); const browserEntered=await page.evaluate(()=>({role:document.activeElement?.getAttribute('role'),id:document.activeElement?.id})); await page.keyboard.press('ArrowLeft'); const moved=await page.evaluate(()=>({role:document.activeElement?.getAttribute('role'),id:document.activeElement?.id})); assert.equal(moved.role,'tab','ArrowLeft keeps multi-tab focus in the strip'); assert.notEqual(moved.id,browserEntered.id,'ArrowLeft moves multi-tab focus'); await page.keyboard.press('Shift+F10'); await page.getByRole('menuitem',{name:'Close page',exact:true}).waitFor(); await page.keyboard.press('Escape'); const restored=await page.evaluate(()=>({role:document.activeElement?.getAttribute('role'),id:document.activeElement?.id})); assert.deepEqual(restored,{role:'tab',id:moved.id},'Escape restores focus to the invoked multi-tab item'); await page.keyboard.press('ArrowRight'); assert.equal(await page.evaluate(()=>document.activeElement?.id),browserEntered.id,'ArrowRight restores the painted browser tab'); await until(async()=>(await attachedNativeBrowserPages(app,page)).some(item=>item.url===`${baseUrl}/second`),'painted tab restored after keyboard check');
- const nativeBounds=await browserPane.locator('.wb-web-preview:visible').evaluate(element=>{const serialize=rect=>rect&&({x:rect.x,y:rect.y,left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height});const rect=element.getBoundingClientRect(),host=serialize(element.querySelector('.tt-browser-view')?.getBoundingClientRect()),card=serialize(element.closest('.pane-card')?.getBoundingClientRect()),toolbar=serialize(element.querySelector('.wb-browser-toolbar')?.getBoundingClientRect());return{preview:serialize(rect),host,card,toolbar,insideWindow:rect.left>=0&&rect.top>=0&&rect.right<=innerWidth&&rect.bottom<=innerHeight,insideCard:Boolean(host&&card&&host.left>=card.left&&host.right<=card.right&&host.top>=card.top&&host.bottom<=card.bottom),belowToolbar:Boolean(host&&toolbar&&host.top>=toolbar.bottom)};}); const attached=(await attachedNativeBrowserPages(app,page)).find(item=>item.url===`${baseUrl}/second`); const actualBounds=attached&&await app.evaluate(({BrowserWindow},id)=>{const window=BrowserWindow.getAllWindows().find(item=>item.contentView.children.some(view=>view.webContents?.id===id));return window?.contentView.children.find(view=>view.webContents?.id===id)?.getBounds();},attached.id); assert.ok(attached&&actualBounds&&nativeBounds.host&&nativeBounds.insideWindow&&nativeBounds.insideCard&&nativeBounds.belowToolbar&&nativeBounds.preview.width>100&&nativeBounds.preview.height>100,`native browser bounds ${JSON.stringify(nativeBounds)}`); assert.ok(Math.abs(actualBounds.x-nativeBounds.host.x)<=1&&Math.abs(actualBounds.y-nativeBounds.host.y)<=1&&Math.abs(actualBounds.width-nativeBounds.host.width)<=1&&Math.abs(actualBounds.height-nativeBounds.host.height)<=1,`native/Dom browser view bounds ${JSON.stringify({native:actualBounds,dom:nativeBounds.host})}`); await captureNativePainted('browser-native-painted-composite',{scenario:'native-painted browser capture with explicit DOM/card/toolbar bounds',nativeBounds,actualBounds});
+ const nativeBounds=await browserPane.locator('.wb-web-preview:visible').evaluate(element=>{const serialize=rect=>rect&&({x:rect.x,y:rect.y,left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height});const rect=element.getBoundingClientRect(),host=serialize(element.querySelector('.tt-browser-view')?.getBoundingClientRect()),card=serialize(element.closest('.pane-card')?.getBoundingClientRect()),toolbar=serialize(element.querySelector('.wb-browser-toolbar')?.getBoundingClientRect());return{preview:serialize(rect),host,card,toolbar,insideWindow:rect.left>=0&&rect.top>=0&&rect.right<=innerWidth&&rect.bottom<=innerHeight,insideCard:Boolean(host&&card&&host.left>=card.left&&host.right<=card.right&&host.top>=card.top&&host.bottom<=card.bottom),belowToolbar:Boolean(host&&toolbar&&host.top>=toolbar.bottom)};}); const attached=(await attachedNativeBrowserPages(app,page)).find(item=>item.url===`${baseUrl}/second`); const actualBounds=attached&&await app.evaluate(({BrowserWindow},id)=>{/* Browser pages sit in container views (main.ts keeps app, pages and DevTools as siblings), so walk the tree and add each parent's offset. */const walk=(view,x,y)=>{for(const child of view.children??[]){const b=child.getBounds();if(child.webContents?.id===id)return {x:x+b.x,y:y+b.y,width:b.width,height:b.height};const found=walk(child,x+b.x,y+b.y);if(found)return found;}};for(const window of BrowserWindow.getAllWindows()){const found=walk(window.contentView,0,0);if(found)return found;}return undefined;},attached.id); assert.ok(attached&&actualBounds&&nativeBounds.host&&nativeBounds.insideWindow&&nativeBounds.insideCard&&nativeBounds.belowToolbar&&nativeBounds.preview.width>100&&nativeBounds.preview.height>100,`native browser bounds ${JSON.stringify({nativeBounds,attached:Boolean(attached),actualBounds})}`); assert.ok(Math.abs(actualBounds.x-nativeBounds.host.x)<=1&&Math.abs(actualBounds.y-nativeBounds.host.y)<=1&&Math.abs(actualBounds.width-nativeBounds.host.width)<=1&&Math.abs(actualBounds.height-nativeBounds.host.height)<=1,`native/Dom browser view bounds ${JSON.stringify({native:actualBounds,dom:nativeBounds.host})}`); await captureNativePainted('browser-native-painted-composite',{scenario:'native-painted browser capture with explicit DOM/card/toolbar bounds',nativeBounds,actualBounds});
  check('after acceptance: strip geometry, keyboard context menu, 125% chat, and twelve-tab overflow captured');
 }
 const runs = name => segment === 'all' || segment === name;

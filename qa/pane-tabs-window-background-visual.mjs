@@ -123,7 +123,7 @@ async function assertFeetPicture(caseName, regionPicture) {
   // different tab/panel y coordinates, including fractional browser zoom.
   const withoutLift = await captureWithoutSurfaceLift(), liftColor = parseRgba(withoutLift.lift.fill); assert.ok(liftColor, `${caseName}: surface lift fill parses`);
   const liftPoints = [];
-  for (let x = Math.round((geometry.tab.left + 20) * scale.x); x < Math.round((geometry.tab.right - 20) * scale.x); x += 2) for (let offset = 3; offset <= 8; offset++) { liftPoints.push({ x, y: Math.round((geometry.tab.top + offset) * scale.y), shape: 'tab' }, { x, y: Math.round((geometry.card.top + offset) * scale.y), shape: 'panel' }); }
+  for (let x = Math.round((geometry.tab.left + 20) * scale.x); x < Math.round((geometry.tab.right - 20) * scale.x); x += 2) for (let offset = 3; offset <= 8; offset++) { /* The tab's 16 px icon starts ~8.5 px below its top; rows past 6 px can land on its anti-aliased edge at fractional device scale. */ if (offset <= 6) liftPoints.push({ x, y: Math.round((geometry.tab.top + offset) * scale.y), shape: 'tab' }); liftPoints.push({ x, y: Math.round((geometry.card.top + offset) * scale.y), shape: 'panel' }); }
   const liftErrors = liftPoints.map(point => { const before = pixel(withoutLift.image, point.x, point.y), actual = pixel(withoutLift.restored, point.x, point.y), expected = composite([...liftColor.slice(0, 3), withoutLift.lift.opacity], before); return { ...point, before, actual, expected, error: distance(actual, expected) }; });
   const worstLiftError = Math.max(...liftErrors.map(point => point.error));
   report.measurements[caseName] = { raster: { width: image.width, height: image.height, scale }, geometry, overlay, lift: { color: liftColor.slice(0, 3), opacity: withoutLift.lift.opacity, worstError: worstLiftError, samples: liftErrors.slice(0, 12) } };
@@ -134,8 +134,9 @@ async function assertFeetPicture(caseName, regionPicture) {
   const tabFill = [], leftStrip = [], rightStrip = [];
   for (let y = Math.round((geometry.tab.top + 3) * scale.y); y <= Math.round((geometry.tab.top + 6) * scale.y); y += 1) {
     for (let x = Math.round((geometry.tab.left + 20) * scale.x); x < Math.round((geometry.tab.right - 20) * scale.x); x += Math.max(1, Math.round(4 * scale.x))) tabFill.push(luminance(pixel(image, x, y)));
-    for (let x = Math.round((geometry.tab.left - 26) * scale.x); x <= Math.round((geometry.tab.left - 14) * scale.x); x += Math.max(1, Math.round(2 * scale.x))) leftStrip.push(luminance(pixel(image, x, y)));
-    for (let x = Math.round((geometry.tab.right + 14) * scale.x); x <= Math.round((geometry.tab.right + 26) * scale.x); x += Math.max(1, Math.round(2 * scale.x))) rightStrip.push(luminance(pixel(image, x, y)));
+    // Flush panes put the first tab 20 px from the pane edge, so keep the side samples inside the pane's own strip.
+    for (let x = Math.round(Math.max(geometry.card.left + 2, geometry.tab.left - 26) * scale.x); x <= Math.round((geometry.tab.left - 14) * scale.x); x += Math.max(1, Math.round(2 * scale.x))) leftStrip.push(luminance(pixel(image, x, y)));
+    for (let x = Math.round((geometry.tab.right + 14) * scale.x); x <= Math.round(Math.min(geometry.card.right - 2, geometry.tab.right + 26) * scale.x); x += Math.max(1, Math.round(2 * scale.x))) rightStrip.push(luminance(pixel(image, x, y)));
   }
   const mean = values => Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
   const distinction = { tabMean: mean(tabFill), leftStripMean: mean(leftStrip), rightStripMean: mean(rightStrip), panelRange: range(panelBand) };
