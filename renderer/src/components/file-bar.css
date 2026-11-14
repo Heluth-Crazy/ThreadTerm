@@ -53,7 +53,9 @@
    Prototype screen Editor: breadcrumbs as quiet segments, ghost actions on the right, a quiet gutter whose
    current line number takes the text colour, and the change bars (added green, modified primary, deleted wedge).
    The primitives themselves live in components/cursor-grammar.css. */
-.file-workspace :is(.file-view-tabs,.file-bar).file-workspace-bar { height:34px; min-height:34px; max-height:34px; padding:0 6px; gap:2px; }
+/* 38 px like every bar under a pane strip (browser, map, history and review bars), so side-by-side panes keep one
+   line; the prototype's 34 px left the editor's rule 4 px above a page's beside it. */
+.file-workspace :is(.file-view-tabs,.file-bar).file-workspace-bar { height:38px; min-height:38px; max-height:38px; padding:0 6px; gap:2px; }
 .file-workspace-bar .file-bar-breadcrumb { gap:1px; font-size:12px; }
 .file-bar-crumb { display:inline-flex; align-items:center; gap:4px; flex:none; height:22px; padding:0 5px; border-radius:5px; color:var(--muted); white-space:nowrap; }
 .file-bar-crumb:hover { background:var(--fill-hover); color:var(--text); }

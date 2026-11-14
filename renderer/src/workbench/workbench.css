@@ -488,7 +488,8 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
    Sticky bar, then every changed file as one hairline section. Only an expanded file mounts its diff, and each
    diff body keeps its own scroll so a large review still scrolls as one page of files. */
 .wb-review-stack { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; background:var(--surface); }
-.wb-rs-bar { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:6px; height:40px; padding:0 12px 0 16px; border-bottom:1px solid var(--border); background:var(--surface); font-size:12.5px; }
+/* 38 px with its rule, like every bar under a pane strip, so it lines up with the panes beside it. */
+.wb-rs-bar { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:6px; box-sizing:border-box; height:38px; padding:0 12px 0 16px; border-bottom:1px solid var(--border); background:var(--surface); font-size:12.5px; }
 .wb-rs-bar b { font-weight:600; }
 .wb-rs-bar .grow { flex:1; }
 .wb-rs-files { display:grid; gap:10px; padding:12px 16px 28px; }

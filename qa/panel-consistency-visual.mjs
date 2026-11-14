@@ -15,7 +15,7 @@ import {electron} from './lib/desktop1.mjs';
 import {connectPeer} from './pipe-client.mjs';
 import {closeBrowserViewFixture} from './lib/browser-view-cleanup.mjs';
 import {sendChatPrompt} from './lib/chat-send.mjs';
-import {PANE_STRIP_CONTROL_SELECTOR,PANE_STRIP_HEIGHT,checkControlConsistency,isPaneStrip,paneStripViolations} from './lib/visual-consistency.mjs';
+import {PANE_STRIP_CONTROL_SELECTOR,PANE_STRIP_HEIGHT,SIDE_PANEL_FAMILY,checkControlConsistency,isPaneStrip,paneStripViolations,sharedRowViolations} from './lib/visual-consistency.mjs';
 
 const root=resolve(import.meta.dirname,'..'),scratchBase=resolve(process.env.TEMP??(()=>{throw Error('TEMP must point to the QA scratch directory');})());
 await mkdir(scratchBase,{recursive:true});
@@ -55,9 +55,10 @@ async function workspaceAction(name,actionsLabel='Workspace actions'){await focu
 async function capture(name){
  await page.mouse.move(0,0);await settled();
  const definitions=[
-  ['Session details','docked','.wb-panel-head','strong'],
+  // The side panel header is its own family: it shares the pane strips' row (sharedRowViolations).
+  ['Side panel',SIDE_PANEL_FAMILY,'.runtime-workspace .wb-panel > .wb-panel-head','strong'],
   ['Pane tabs','pane','.workspace-pane > .workspace-tabbar.ws-strip','.workspace-tab.active .workspace-tab-label'],['File editor/preview','file','.tt-editor-tabs.file-view-tabs','.file-bar-breadcrumb, .embedded-file-breadcrumb, .tt-editor-tab.active'],
-  ['File/diff/review toolbar','file','.file-bar:not(.wb-browser-toolbar)','.file-bar-breadcrumb, .path, .embedded-file-breadcrumb'],['Browser toolbar','browser-toolbar','.wb-browser-toolbar',null],['Files & Git','docked','.wb-tools-head','strong'],
+  ['File/diff/review toolbar','file','.file-bar:not(.wb-browser-toolbar)','.file-bar-breadcrumb, .path, .embedded-file-breadcrumb'],['Browser toolbar','browser-toolbar','.wb-browser-toolbar',null],['Review bar','file','.wb-rs-bar','b'],['Files & Git','docked','.wb-tools-head','strong'],
   ['Git history','docked','.wb-history-title','strong'],['Task map','toolbar','.task-map-toolbar','.task-map-title strong'],
   ['Task map details','docked','.task-graph-details > header','strong'],['Block inspector','floating','.block-inspector-heading','h2'],
   ['Worktree list','docked','.wtm-list > header','strong'],['Worktree details','docked','.wtm-detail > header','h3'],
@@ -106,11 +107,13 @@ async function capture(name){
   // A tab is part of the strip shape: its own controls sit inside the tab, and tabs scrolled out of the
   // strip are clipped by it (tab overflow), so bounds are judged by the tab geometry rule instead.
   for(const control of row.controls.filter(control=>!control.inTab))if(control.x<row.rect.x-1||control.right>row.rect.right+1||control.y<row.rect.y-1||control.bottom>row.rect.bottom+1)errors.push(`action outside header: ${control.label}`);
-  if(row.title&&['docked','pane','sheet-dialog','create-dialog','floating','settings','popover'].includes(row.family))for(const control of row.controls){const title=row.title.visibleRect;if(title.x<control.right-.5&&title.right>control.x+.5&&title.y<control.bottom-.5&&title.bottom>control.y+.5)errors.push(`title overlaps action: ${control.label}`)}
+  if(row.title&&['docked',SIDE_PANEL_FAMILY,'pane','sheet-dialog','create-dialog','floating','settings','popover'].includes(row.family))for(const control of row.controls){const title=row.title.visibleRect;if(title.x<control.right-.5&&title.right>control.x+.5&&title.y<control.bottom-.5&&title.bottom>control.y+.5)errors.push(`title overlaps action: ${control.label}`)}
   if(controls.violations?.length)errors.push(...controls.violations.map(v=>v.message??JSON.stringify(v)));
   if(verify&&row.family==='docked'&&Math.abs(row.rect.height-38)>.5)errors.push(`docked header height ${row.rect.height} != 38`);
   if(errors.length)report.violations.push({name,surface:row.surface,errors});
  }
+ // What sits side by side ends on one line: the side panel header with the strips, bars under the strips with each other.
+ for(const failure of sharedRowViolations(rows))report.violations.push({name,surface:failure.surface,errors:failure.errors});
  // The segmented mode switch is a nested control group; compare its siblings separately from bar actions.
  const switches=page.locator('.file-bar-segments');
  for(let index=0;index<await switches.count();index++){
@@ -122,7 +125,7 @@ async function capture(name){
   if(result.violations?.length)report.violations.push({name,surface:'File view switch',errors:result.violations.map(v=>v.message??JSON.stringify(v))});
   (report.segmentChecks??=[]).push({name,index,state,consistency:result});
  }
- const peers=rows.filter(row=>['Session details','Worktree list','Worktree details'].includes(row.surface));
+ const peers=rows.filter(row=>['Side panel','Worktree list','Worktree details'].includes(row.surface));
  const adjacent=peers.filter(row=>Math.abs(row.rect.y-peers[0].rect.y)<=1);
  if(adjacent.length>1){const delta=Math.max(...adjacent.map(row=>row.rect.bottom))-Math.min(...adjacent.map(row=>row.rect.bottom));if(delta>1)report.violations.push({name,surface:'adjacent headers',errors:[`bottom delta ${delta}`]})}
  if(await page.locator('.app-shell').count()){
@@ -212,8 +215,9 @@ try{
     await page.locator('.wb-web-preview:visible').waitFor({timeout:30000}).catch(async error=>{const value=await request('chat.snapshot',{sessionId:chat.id});(report.browserDiagnostics??=[]).push({items:value.items,connection:value.connection});throw error;});
    }
    await capture(`${cell}-browser`);
-   const tools=page.locator('.wb-web-preview:visible').getByRole('button',{name:zh?'开发者工具':'Developer tools',exact:true});
-   await tools.click();await page.locator('.wb-browser-devtools-splitter:visible').waitFor();await capture(`${cell}-devtools`);await tools.click();
+   // Developer tools sit in the page's ⋯ menu since the Design Mode toolbar (ad4730d).
+   const tools=async()=>{await page.locator('.wb-web-preview:visible').getByRole('button',{name:zh?'更多页面操作':'More page actions',exact:true}).click();await page.getByRole('menuitem',{name:zh?'开发者工具':'Developer tools',exact:true}).click();};
+   await tools();await page.locator('.wb-browser-devtools-splitter:visible').waitFor();await capture(`${cell}-devtools`);await tools();
    await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click();
   });
   await optional('Terminal pane',async()=>{
@@ -276,6 +280,13 @@ try{
    assert.equal(new Set(docked.map(signature)).size,1,`${language}-${theme}: docked heading typography, insets, gap, surface and rule match`);
    assert.ok(docked.every(row=>Math.abs(row.rect.height-38)<=.5),`${language}-${theme}: 38px docked family height`);
    assert.ok(docked.every(row=>row.controls.every(control=>Math.abs(control.height-24)<=.5&&(!control.icons.length||Math.abs(control.width-26)<=.5))),`${language}-${theme}: 24px docked action height and 26px icon width`);
+   // The side panel header is as tall as a pane strip; its actions keep the docked 24 px scale.
+   const sides=rows.filter(row=>row.family===SIDE_PANEL_FAMILY);assert.ok(sides.length>0,`${language}-${theme}: side panel header measured`);
+   assert.ok(sides.every(row=>Math.abs(row.rect.height-PANE_STRIP_HEIGHT)<=.5),`${language}-${theme}: side panel header is ${PANE_STRIP_HEIGHT}px like the strips beside it`);
+   assert.ok(sides.every(row=>row.controls.every(control=>Math.abs(control.height-24)<=.5)),`${language}-${theme}: 24px side panel actions`);
+   // Bars under a pane strip are 38 px, so panes side by side keep one line below their strips.
+   const bars=rows.filter(row=>['file','toolbar','browser-toolbar'].includes(row.family));
+   assert.deepEqual(bars.filter(row=>Math.abs(row.rect.height-38)>.5).map(row=>`${row.surface} ${row.rect.height}`),[],`${language}-${theme}: 38px content bars`);
    // Pane tab strips are a family of their own: one 30 px strip per pane, one selected
    // tab per strip, identical strip geometry in every pane kind.
    const strips=rows.filter(isPaneStrip);assert.ok(strips.length>0,`${language}-${theme}: pane tab strips measured`);

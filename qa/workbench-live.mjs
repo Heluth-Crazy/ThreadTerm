@@ -232,9 +232,10 @@ try {
  report.notes.push(`right panel ${JSON.stringify(edges.panel)}, pane card ${JSON.stringify(edges.card)}, pane strip ${edges.strip}px, strip overflowing ${edges.overflowing}`);
  assert.ok(edges.card!==undefined&&Math.abs(edges.panel.top-edges.card.top)<=0.5&&Math.abs(edges.panel.bottom-edges.card.bottom)<=0.5&&edges.switcherInHeader,`right panel aligns with the pane-card top/bottom and the view group remains in the header: ${JSON.stringify(edges)}`);
  assert.ok(edges.strip!==undefined&&edges.strip<=44,`per-pane tab strip must keep its height: ${JSON.stringify(edges)}`);
- const rules=await page.evaluate(()=>{const head=document.querySelector('.wb-panel-head').getBoundingClientRect();const bar=document.querySelector('.pane-tab-surface:not([hidden]) .file-view-tabs')?.getBoundingClientRect();return{head:head.bottom,bar:bar?.bottom};});
- assert.ok(rules.bar!==undefined&&Math.abs(rules.head-rules.bar)<=0.5,`panel header and file toolbar rules must align: ${JSON.stringify(rules)}`);
- report.checks.push('right panel aligns with pane-card edges and its header rule with the file toolbar rule; tab row holds only tabs and stays fixed');
+ // The panel header shares the pane strips' row (owner 2026-11-14), so its rule continues the strip's lower edge.
+ const rules=await page.evaluate(()=>{const head=document.querySelector('.wb-panel > .wb-panel-head').getBoundingClientRect();const strip=document.querySelector('.workspace-pane.selected > .workspace-tabbar.ws-strip')?.getBoundingClientRect();return{head:head.bottom,strip:strip?.bottom};});
+ assert.ok(rules.strip!==undefined&&Math.abs(rules.head-rules.strip)<=0.5,`panel header rule must continue the pane strip's lower edge: ${JSON.stringify(rules)}`);
+ report.checks.push('right panel aligns with pane-card edges and its header rule with the pane strip; tab row holds only tabs and stays fixed');
  await until(()=>page.evaluate(()=>{const strip=document.querySelector('.workspace-pane.selected .workspace-tabs');const box=strip.getBoundingClientRect(),tab=strip.querySelector('.workspace-tab.active').getBoundingClientRect();return tab.left>=box.left-0.5&&tab.right<=box.right+0.5&&(strip.scrollWidth<=strip.clientWidth+1||strip.classList.contains('fade-start')||strip.classList.contains('fade-end'));}),'active tab must stay fully visible after the strip narrows, with a fade on the hidden edge',3000);
  report.checks.push('active tab stays fully visible when the side panel narrows the tab strip; hidden overflow edges fade');
 

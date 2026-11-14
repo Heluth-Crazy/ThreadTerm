@@ -507,6 +507,67 @@ export function paneStripViolations(rows) {
   return violations;
 }
 
+// ---------------------------------------------------------------------------
+// One line across the window. Owner 2026-11-14: "浏览器的部分和chat部分，有的线条没有对齐" — the side
+// panel's 38 px header ended 5 px above the 43 px pane strips beside it. The two families keep their own rules
+// above; this rule only checks what sits side by side:
+// - the side panel header shares the strips' row: the same top, the same lower edge (where pane content starts),
+//   and its title and actions centred on the strips' tab row;
+// - bars that start on that content line (file, diff, map and browser toolbars, in panes or the side panel) end
+//   on one line too.
+// ---------------------------------------------------------------------------
+
+/** The Workbench side panel header (`.wb-panel > .wb-panel-head`), beside the panes. */
+export const SIDE_PANEL_FAMILY = 'side-panel';
+/** Bars that start where pane content starts. */
+const CONTENT_BAR_FAMILIES = ['file', 'toolbar', 'browser-toolbar', 'docked'];
+/** Lines this close look like one line. */
+const LINE_TOLERANCE = 1;
+
+/** The centre of a strip's tab row: the idle tabs stand on the strip's 1 px overlap with its pane. */
+export const paneTabRowCentre = strip => strip.rect.bottom - 1 - PANE_TAB_GEOMETRY.height / 2;
+
+const centreOf = rect => rect.y + rect.height / 2;
+
+/**
+ * Side-by-side rules for the rows of one capture. Returns `{ surface, errors }` entries for a side panel header
+ * that leaves the strips' row and for side-by-side content bars that end on different lines.
+ */
+export function sharedRowViolations(rows) {
+  const violations = [];
+  const strips = rows.filter(isPaneStrip);
+  if (!strips.length) return violations;
+  const top = Math.min(...strips.map(row => row.rect.y));
+  const row = strips.filter(strip => Math.abs(strip.rect.y - top) <= LINE_TOLERANCE);
+  const strip = row[0];
+  for (const panel of rows.filter(item => item.family === SIDE_PANEL_FAMILY)) {
+    if (Math.abs(panel.rect.y - top) > LINE_TOLERANCE) continue;
+    const errors = [];
+    if (Math.abs(panel.rect.bottom - strip.rect.bottom) > HEIGHT_TOLERANCE) {
+      errors.push(`side panel header ends at ${round(panel.rect.bottom)}, the pane strip beside it at ${round(strip.rect.bottom)}`);
+    }
+    const centre = paneTabRowCentre(strip);
+    const items = [...(panel.title?.rect ? [{ label: `title ${panel.title.text ?? ''}`.trim(), ...panel.title.rect }] : []), ...(panel.controls ?? [])];
+    for (const item of items) {
+      if (Math.abs(centreOf(item) - centre) > CENTER_TOLERANCE) {
+        errors.push(`${item.label} centre ${round(centreOf(item))} is off the strips' tab row (${round(centre)})`);
+      }
+    }
+    if (errors.length) violations.push({ surface: panel.surface, errors });
+  }
+  const contentTop = strip.rect.bottom;
+  const bars = rows.filter(item => CONTENT_BAR_FAMILIES.includes(item.family) && Math.abs(item.rect.y - contentTop) <= LINE_TOLERANCE);
+  for (let i = 0; i < bars.length; i++) {
+    for (let j = i + 1; j < bars.length; j++) {
+      const [a, b] = [bars[i], bars[j]];
+      const sideBySide = a.rect.x + a.rect.width <= b.rect.x + LINE_TOLERANCE || b.rect.x + b.rect.width <= a.rect.x + LINE_TOLERANCE;
+      if (!sideBySide || Math.abs(a.rect.bottom - b.rect.bottom) <= LINE_TOLERANCE) continue;
+      violations.push({ surface: 'content bars', errors: [`${a.surface} ends at ${round(a.rect.bottom)}, ${b.surface} beside it at ${round(b.rect.bottom)}`] });
+    }
+  }
+  return violations;
+}
+
 const COLOR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/g;
 
 /**

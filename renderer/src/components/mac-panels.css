@@ -5,6 +5,11 @@
 .runtime-workspace .wb-panel { border:0; border-left:1px solid var(--border); border-radius:0; background:var(--panel); box-shadow:none; }
 .runtime-workspace .wb-panel-body > .inspector { border:0; border-radius:0; background:var(--panel); }
 .runtime-workspace .wb-panel-head { height:38px; min-height:38px; gap:2px; padding:0 6px 0 14px; background:var(--panel); font-size:13px; }
+/* The side panel header shares the pane tab strips' row (owner 2026-11-14: its line sat 5 px above the chat's tab
+   bar). It is as tall as a strip, so its rule continues the strip's lower edge and panel content starts where pane
+   content starts, and its title and actions sit on the strips' tab row: the 32 px row standing on the strip's 1 px
+   overlap with its pane. qa/lib/visual-consistency.mjs sharedRowViolations checks both. */
+.runtime-workspace .wb-panel > .wb-panel-head { height:var(--pane-strip-height); min-height:var(--pane-strip-height); padding-top:calc(var(--pane-strip-height) - 33px); }
 .runtime-workspace .wb-panel-head strong { font-size:13px; }
 .runtime-workspace .wb-panel-head :is(.icon-btn,.btn) { height:24px; min-height:24px; border-radius:6px; }
 .runtime-workspace .wb-panel-head .icon-btn { width:26px; }

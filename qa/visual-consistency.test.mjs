@@ -15,7 +15,10 @@ import {
   groupControls,
   isPaneStrip,
   paneStripViolations,
+  paneTabRowCentre,
   PANE_STRIP_HEIGHT,
+  SIDE_PANEL_FAMILY,
+  sharedRowViolations,
   tokenLintDiff,
 } from './lib/visual-consistency.mjs';
 import { sendChatPrompt } from './lib/chat-send.mjs';
@@ -515,6 +518,42 @@ test('tabs keep the selected-tab geometry that merges into the panel', () => {
   assert.match(report({ ...active, width: 96 }).join(' '), /selected tab width 96 < 120/);
   assert.match(report({ ...active, bottom: 30 }).join(' '), /selected tab does not merge into the panel edge/);
   assert.match(report({ ...active, active: false }).join(' '), /2 selected tabs|0 selected tabs/);
+});
+
+// --- One line across the window: the side panel header beside the strips, bars under them ---------
+
+const at = (x, y, width, height) => ({ x, y, width, height, bottom: y + height, right: x + width });
+const sidePanel = (overrides = {}) => ({
+  surface: 'Side panel',
+  family: SIDE_PANEL_FAMILY,
+  rect: at(820, 0, 300, PANE_STRIP_HEIGHT),
+  title: { text: 'Browser', rect: at(834, 17, 60, 18) },
+  controls: [{ label: 'Close side bar', ...at(1090, 14, 26, 24) }],
+  ...overrides,
+});
+const bar = (surface, family, x, height) => ({ surface, family, rect: at(x, PANE_STRIP_HEIGHT, 400, height) });
+
+test('the side panel header shares the pane strips row: lower edge and tab row', () => {
+  assert.equal(paneTabRowCentre(stripRow()), PANE_STRIP_HEIGHT - 17);
+  assert.deepEqual(sharedRowViolations([stripRow(), sidePanel()]), []);
+  const short = sidePanel({ rect: at(820, 0, 300, 38), title: { text: 'Browser', rect: at(834, 10, 60, 18) }, controls: [{ label: 'Close side bar', ...at(1090, 7, 26, 24) }] });
+  const errors = sharedRowViolations([stripRow(), short]).flatMap(entry => entry.errors).join(' | ');
+  assert.match(errors, /side panel header ends at 38, the pane strip beside it at 43/);
+  assert.match(errors, /title Browser centre 19 is off the strips' tab row \(26\)/);
+  assert.match(errors, /Close side bar centre 19 is off the strips' tab row/);
+  assert.deepEqual(sharedRowViolations([sidePanel()]), [], 'without a pane strip there is no row to share');
+  assert.deepEqual(sharedRowViolations([stripRow(), sidePanel({ rect: at(820, 200, 300, 38) })]), [], 'a header lower down is not on the strip row');
+});
+
+test('bars under the strips end on one line when they sit side by side', () => {
+  const strips = [stripRow({ rect: at(0, 0, 400, PANE_STRIP_HEIGHT) }), stripRow({ rect: at(401, 0, 400, PANE_STRIP_HEIGHT) })];
+  assert.deepEqual(sharedRowViolations([...strips, bar('Browser toolbar', 'browser-toolbar', 0, 38), bar('File editor/preview', 'file', 401, 38)]), []);
+  const errors = sharedRowViolations([...strips, bar('Browser toolbar', 'browser-toolbar', 0, 38), bar('File editor/preview', 'file', 401, 34)]).flatMap(entry => entry.errors);
+  assert.deepEqual(errors, ['Browser toolbar ends at 81, File editor/preview beside it at 77']);
+  const stacked = { surface: 'Review bar', family: 'file', rect: at(0, PANE_STRIP_HEIGHT, 400, 40) };
+  assert.deepEqual(sharedRowViolations([...strips, bar('Browser toolbar', 'browser-toolbar', 0, 38), stacked]), [], 'bars in one column are not side by side');
+  const lower = { surface: 'Task map details', family: 'docked', rect: at(401, 120, 400, 34) };
+  assert.deepEqual(sharedRowViolations([...strips, bar('Browser toolbar', 'browser-toolbar', 0, 38), lower]), [], 'a bar below the content line is not compared');
 });
 
 test('collector addresses one repeated container by index', () => {

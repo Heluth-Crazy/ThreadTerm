@@ -593,12 +593,14 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   else if(command.action==='push'&&status.branch)void openPushPreview();
  },[command,scopeKey,status,git.loading,busy,visible]);
 
-/* Cursor's panel head: one row of ghost icons, the same 20 px controls the other Cursor surfaces use. */
+/* In a header (the side panel or the Files & Git head) these are that header's actions, the same 24 px icon buttons as
+   every other view's, so the row keeps one size; inline in the branch bar they are its 20 px ghost icons. */
+ const toolClass = toolbarHost ? 'icon-btn' : 'cg-ghost cg-icon cg-sm';
  const tools = <>
-  {actions.openHistory && <button type="button" className="cg-ghost cg-icon cg-sm" title={text('History', '提交历史')} aria-label={text('History', '提交历史')} onClick={() => actions.openHistory?.()}><WbIcon name="clock"/></button>}
-  <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} onClick={() => void git.refresh()}><WbIcon name="refresh"/></button>
-  <button type="button" className="cg-ghost cg-icon cg-sm" title={text('Stash changes…', '暂存更改…')} aria-label={text('Stash changes…', '暂存更改…')} disabled={!!busy} onClick={() => setStashDialog(true)}><WbIcon name="archive"/></button>
-  <button type="button" className="cg-ghost cg-icon cg-sm" title={text('More actions', '更多操作')} aria-label={text('More actions', '更多操作')} aria-haspopup="menu" disabled={!!busy} onClick={openMoreActions}><WbIcon name="more"/></button>
+  {actions.openHistory && <button type="button" className={toolClass} title={text('History', '提交历史')} aria-label={text('History', '提交历史')} onClick={() => actions.openHistory?.()}><WbIcon name="clock"/></button>}
+  <button type="button" className={toolClass} title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} onClick={() => void git.refresh()}><WbIcon name="refresh"/></button>
+  <button type="button" className={toolClass} title={text('Stash changes…', '暂存更改…')} aria-label={text('Stash changes…', '暂存更改…')} disabled={!!busy} onClick={() => setStashDialog(true)}><WbIcon name="archive"/></button>
+  <button type="button" className={toolClass} title={text('More actions', '更多操作')} aria-label={text('More actions', '更多操作')} aria-haspopup="menu" disabled={!!busy} onClick={openMoreActions}><WbIcon name="more"/></button>
  </>;
  const toolbar = toolbarHost ? createPortal(tools, toolbarHost) : null;
  if(git.error && !status) return <div className="wb-scm">{toolbar}<div className="wb-empty-state"><Icon name="branch"/><strong>{text('No Git repository', '没有 Git 仓库')}</strong><p>{git.error}</p><p className="wb-muted">{text('Files, search and editing still work in this folder.', '此文件夹仍可使用文件、搜索和编辑功能。')}</p></div></div>;
