@@ -331,9 +331,9 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
       <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => copy(info.hash)}><Icon name="export"/></button></span>
      <span className="wb-operation-actions">
       {headPrimary.map(item=><button key={item.id} type="button" className="cg-ghost cg-sm" disabled={item.disabled} title={item.reason} onClick={()=>void openAction(headerKind[item.id as keyof typeof headerKind],info)}>{item.label}</button>)}
+      {commentsHost?.attachContext && <ContextSendAction ghost host={commentsHost} item={{kind:'commit', id:crypto.randomUUID(), sha:info.hash, subject:info.subject} satisfies ContextItem} zh={zh} label={text('Send to agent', '发送给 Agent')} testId="history-send-to-agent"/>}
       {headOverflow.length>0&&<button type="button" className="cg-ghost cg-icon cg-sm" aria-label={text('More commit actions', '更多提交操作')} title={text('More commit actions', '更多提交操作')} aria-haspopup="menu" onClick={event=>{const anchor=event.currentTarget,rect=anchor.getBoundingClientRect();showContextMenu({x:rect.right,y:rect.bottom,restoreFocus:anchor,items:headOverflow.map(item=>({id:item.id,label:item.label,disabled:item.disabled,reason:item.reason,onSelect:()=>void openAction(headerKind[item.id as keyof typeof headerKind],info)}))});}}><Icon name="more"/></button>}
      </span>
-     {commentsHost?.attachContext && <ContextSendAction host={commentsHost} item={{kind:'commit', id:crypto.randomUUID(), sha:info.hash, subject:info.subject} satisfies ContextItem} zh={zh} label={text('Send to agent', '发送给 Agent')} testId="history-send-to-agent"/>}
      {detail?.body && <pre className="wb-commit-body">{detail.body}</pre>}
     </header>
     <div className="wb-commit-files" role="list">

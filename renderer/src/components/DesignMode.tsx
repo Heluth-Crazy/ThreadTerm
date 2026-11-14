@@ -34,7 +34,7 @@ export function DesignToolbar({preview,zh}:{preview:Preview;zh:boolean}) {
  return <div className="dm-entry" data-testid="design-mode">
   {preview.pending.length>0?<>
    <button ref={preview.commentButton} type="button" className="cg-ghost cg-primary" data-testid="design-send-count" disabled={busy} onClick={()=>void send()}><WbIcon name="arrowUp"/>{copy('Send','发送')} <span className="cg-count">{preview.pending.length}</span></button>
-   <button type="button" className="cg-ghost cg-icon" aria-label={copy('Pending notes','待发送标注')} aria-expanded={open} onClick={()=>setOpen(!open)}><WbIcon name="chevD"/></button>
+   <button type="button" className="cg-ghost cg-icon" aria-label={copy('Pending notes','待发送标注')} aria-haspopup="dialog" aria-expanded={open} onClick={()=>setOpen(!open)}><WbIcon name="chevD"/></button>
   </>:<button ref={preview.commentButton} type="button" className={`cg-ghost${preview.active?' cg-accent':''}`} title={copy('Comment · Annotate (Ctrl+Shift+D)','评论 · 标注（Ctrl+Shift+D）')} aria-label={copy('Annotate','标注')} aria-pressed={preview.active} onClick={preview.toggle}><WbIcon name="annotate"/>{copy('Annotate','标注')}</button>}
   {open&&<div className="cg-pop dm-pending" role="region" aria-label={copy('Pending notes','待发送标注')} data-testid="design-pending">
    <div className="cg-sec"><span>{copy('Pending notes','待发送标注')}</span><button type="button" className="cg-ghost cg-end" disabled={busy} onClick={()=>{if(preview.scope)void removeReviewComments(preview.scope,preview.pending.map(note=>note.id)).catch(error=>setIssue(String(error)));}}>{copy('Clear all','清除全部')}</button></div>

@@ -26,12 +26,14 @@ async function attach({ host, context, zh, sourceRoot }: PendingContext, receive
 
 /** The button only captures the item — a terminal selection is read at click time — and hands it to the dialog host,
  * because the toolbar that shows it (a terminal's selection bar) disappears with its selection. */
-export function ContextSendAction({ host, item, zh, label, iconOnly = false, testId, sourceRoot }: {
+export function ContextSendAction({ host, item, zh, label, iconOnly = false, ghost = false, testId, sourceRoot }: {
   host: FileCommentsHost | undefined;
   item: ContextItem | (() => Promise<ContextItem>);
   zh: boolean;
   label?: string;
   iconOnly?: boolean;
+  /** Draw as a cursor-grammar ghost (Cursor-referenced surfaces), instead of the default small button. */
+  ghost?: boolean;
   testId?: string;
   sourceRoot?: string;
 }) {
@@ -48,7 +50,7 @@ export function ContextSendAction({ host, item, zh, label, iconOnly = false, tes
     } catch (error) { host.notice?.(contextError(error, zh)); }
     finally { pending.current = false; }
   };
-  return <button type="button" className={iconOnly ? 'icon-btn' : 'btn btn-sm'} title={title} aria-label={title} data-testid={testId} onClick={() => void start()}><Icon name="send"/>{!iconOnly && title}</button>;
+  return <button type="button" className={ghost ? `cg-ghost cg-sm${iconOnly ? ' cg-icon' : ''}` : iconOnly ? 'icon-btn' : 'btn btn-sm'} title={title} aria-label={title} data-testid={testId} onClick={() => void start()}><Icon name="send"/>{!iconOnly && title}</button>;
 }
 
 /** Mounted once beside the workspace's context provider; owns the receiver dialog for every Send to agent action. */

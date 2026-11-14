@@ -196,11 +196,9 @@
 .wb-selected-summary { margin:0; color:var(--muted); font-size:11px; line-height:1.35; }
 .wb-changes { padding:4px 6px 16px; border-top:1px solid var(--border); }
 /* Source Control scope switch: Changes keeps today's view, Branch compares with a base. */
-.wb-scm-scope { display:flex; gap:2px; margin:8px 10px 0; padding:2px; border:1px solid var(--border); border-radius:9px; background:var(--soft); }
-.wb-scope-tab { flex:1; min-width:0; height:26px; padding:0 8px; border:0; border-radius:7px; background:transparent; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; }
-.wb-scope-tab:hover { color:var(--text); }
-.wb-scope-tab.active { background:var(--surface); color:var(--text); box-shadow:var(--wb-ring); }
-.wb-scope-tab:focus-visible { box-shadow:inset 0 0 0 1.5px var(--primary); outline:none; }
+/* The scope switch is the shared segmented control (cursor-grammar.css), stretched to the panel width. */
+.wb-scm-scope.cg-seg { display:flex; margin:8px 10px 0; }
+body .wb-scm-scope.cg-seg > .wb-scope-tab { flex:1; min-width:0; cursor:default; }
 .wb-branch-scope-head { display:flex; align-items:center; gap:6px; padding:2px 4px 4px 4px; }
 .wb-branch-scope-summary { flex:1; min-width:0; margin:0; color:var(--text); font-size:11.5px; line-height:1.4; overflow-wrap:anywhere; }
 .wb-branch-scope-controls { display:grid; gap:4px; padding:0 4px 6px; }
@@ -512,4 +510,5 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-rs-body .cm-merge-reject .ico { width:14px; height:14px; }
 
 .wb-rs-caption { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); font-size:11.5px; }
-
+/* Commit detail: the actions are one ghost row (two actions, Send to agent, ⋯) that wraps only when the pane is narrow. */
+.wb-commit-head .wb-operation-actions { align-items:center; gap:2px; margin-left:-7px; }

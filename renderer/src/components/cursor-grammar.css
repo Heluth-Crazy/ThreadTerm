@@ -10,7 +10,9 @@
    - Section head: 12 px semibold --muted, count in --faint, trailing action pushed to the end. */
 body .cg-ghost { display:inline-flex; align-items:center; justify-content:center; gap:5px; flex:none; height:24px; min-height:24px; padding:0 7px; border:0; border-radius:6px; background:transparent; box-shadow:none; color:var(--muted); font:12px/1 var(--font); white-space:nowrap; cursor:default; }
 body .cg-ghost:hover:not(:disabled) { background:var(--fill-hover); color:var(--text); }
-body .cg-ghost:is([aria-pressed="true"],[aria-expanded="true"],.is-on) { background:var(--fill-selected); color:var(--text); }
+/* Pressed: a toggle that is on, or a popup button whose popup is open. A disclosure (aria-expanded without a popup)
+   is not a pressed button, so its chevron stays plain. */
+body .cg-ghost:is([aria-pressed="true"],[aria-haspopup][aria-expanded="true"],.is-on) { background:var(--fill-selected); color:var(--text); }
 body .cg-ghost:disabled { opacity:.45; }
 body .cg-ghost:focus-visible { outline:2px solid color-mix(in srgb,var(--primary) 55%,transparent); outline-offset:1px; }
 body .cg-ghost .ico { width:14px; height:14px; flex:none; }
@@ -26,7 +28,9 @@ body .cg-ghost .cg-count { font-variant-numeric:tabular-nums; opacity:.75; }
 body .cg-ghost .cg-kbd, body .cg-kbd { margin-left:4px; color:inherit; font:11px var(--font); opacity:.7; }
 body .cg-seg { display:inline-flex; gap:1px; flex:none; padding:2px; border-radius:7px; background:var(--fill-hover); }
 body .cg-seg > button { height:20px; min-height:20px; padding:0 7px; border:0; border-radius:5px; background:transparent; box-shadow:none; color:var(--muted); font:11.5px var(--font); }
-body .cg-seg > button[aria-pressed="true"] { background:var(--control); color:var(--text); box-shadow:0 0 0 .5px var(--control-edge),0 1px 2px var(--control-drop); }
+body .cg-seg > button:is([aria-pressed="true"],[aria-selected="true"]) { background:var(--control); color:var(--text); box-shadow:0 0 0 .5px var(--control-edge),0 1px 2px var(--control-drop); }
+body .cg-seg > button:hover:not(:is([aria-pressed="true"],[aria-selected="true"])) { color:var(--text); }
+body .cg-seg > button:focus-visible { outline:2px solid color-mix(in srgb,var(--primary) 55%,transparent); outline-offset:1px; }
 body .cg-seg > button .ico { width:13px; height:13px; }
 body .cg-hair { border-radius:8px; box-shadow:inset 0 0 0 1px var(--border); }
 body .cg-hair-head { display:flex; align-items:center; gap:7px; min-height:34px; padding:0 6px 0 8px; background:var(--raised); box-shadow:inset 0 -1px 0 var(--border); font-size:12.5px; }

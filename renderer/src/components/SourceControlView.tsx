@@ -658,7 +658,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
  const localChangePaths=checkoutLocalPaths(status);
  return <div className={`wb-scm${compact ? ' compact' : ''}`}>
   {toolbar}
-  <div className="wb-scm-scope" role="tablist" aria-label={text('Source Control scope','源代码管理范围')}>
+  <div className="wb-scm-scope cg-seg" role="tablist" aria-label={text('Source Control scope','源代码管理范围')}>
    <button type="button" role="tab" aria-selected={scopeMode==='changes'} className={`wb-scope-tab${scopeMode==='changes' ? ' active' : ''}`} onClick={()=>switchScope('changes')}>{text('Changes','更改')}</button>
    <button type="button" role="tab" aria-selected={scopeMode==='branch'} className={`wb-scope-tab${scopeMode==='branch' ? ' active' : ''}`} onClick={()=>switchScope('branch')}>{text('Branch','分支')}</button>
   </div>
