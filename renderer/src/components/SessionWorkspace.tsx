@@ -32,6 +32,7 @@ import { formatAgentReference, referencePath } from '../workbench/agentReference
 import { workbenchError } from '../workbench/errors';
 import { isCodeReviewSession } from '../codeReview';
 import { coveredBy, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
+import { createFilesReveal, sameFilesScope, type FilesRevealRequest } from '../workbench/revealInFiles';
 import { Icon, SessionIcon } from './PrototypeIcon';
 import { SessionActions } from './SessionActions';
 import { QuickLaunchMenu, QuickLaunchRunChip } from './QuickLaunch';
@@ -495,6 +496,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  };
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{
   openExternalFiles:chooseOutside,externalDisabledReason,
+  revealFile:file=>revealInFiles(workbenchScope,file),
   comments:commentsHost,
   sessionDocuments:canPin?documents:undefined,
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
@@ -520,6 +522,34 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    if(targets.length)save(removeWorkspaceTabs(latestLayout.current,targets).layout);
   },
  }:undefined;
+ const revealInFiles=(scope:WorkbenchScope,file:string)=>{
+  const reveal=createFilesReveal(scope,file);
+  setWorkbenchCommand({view:'files',key:reveal.key,reveal});
+ };
+ const filesActionsForScope=(target:WorkbenchScope):WorkbenchActions=>{
+  if(workbenchScope&&workbenchActions&&sameFilesScope(target,workbenchScope)) return workbenchActions;
+  const targetProject=data.projects.find(candidate=>candidate.id===target.projectId);
+  const targetRoot=target.worktreePath??target.rootPath;
+  const targetProjectRoot=targetProject?.path??target.rootPath;
+  const sameTarget=(tab:ContentRef):tab is FileTab=>isFileTab(tab)&&tab.projectId===target.projectId&&sameCanonicalScope(tab.worktreePath??targetProjectRoot,targetRoot);
+  return {
+   revealFile:file=>revealInFiles(target,file),
+   openFile:(file,position)=>void openScopedFile({projectId:target.projectId,worktreePath:targetRoot,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
+   openDiff:(file,staged,compare)=>void openScopedFile({projectId:target.projectId,worktreePath:targetRoot,path:file,kind:'diff',staged,...(compare?{compare}:{})}).catch(fail),
+   openWorktree:worktreePath=>targetProject&&onProject(targetProject.id,worktreePath),
+   dirtyPaths:()=>dirtyPathsInScope({projectId:target.projectId,projectPath:targetProjectRoot,worktreePath:targetRoot}),
+   renamed:(from,to)=>{
+    invalidateQuickOpen(target);
+    const rename=(node:PaneLayout):PaneLayout=>node.kind==='split'?{...node,first:rename(node.first),second:rename(node.second)}:{...node,tabs:node.tabs.map(tab=>sameTarget(tab)&&coveredBy(tab.path,from)?{...tab,path:to+tab.path.slice(from.length)}:tab)};
+    save(rename(latestLayout.current));
+   },
+   deleted:file=>{
+    invalidateQuickOpen(target);
+    const targets=workspaceTabs(latestLayout.current).filter(item=>sameTarget(item.tab)&&coveredBy(item.tab.path,file)).map(item=>({paneId:item.paneId,tabId:item.tab.id}));
+    if(targets.length)save(removeWorkspaceTabs(latestLayout.current,targets).layout);
+   },
+  };
+ };
  const paneWorkbench:PaneWorkbench={
   openExternalFiles:(paths,source,ownerId)=>{if(!externalDisabledReason)void openOutside(paths,source,ownerId);},externalDisabledReason,
   openTaskMap,taskMapFocus,
@@ -549,6 +579,11 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    panelBrowser.open(url);setWorkbenchCommand({view:'browser',key:crypto.randomUUID()});
   }).catch(fail);},
   openFile:target=>{if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent');return;}void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail);},
+  revealFile:target=>{
+   const targetProject=data.projects.find(candidate=>candidate.id===target.projectId);
+   const targetRoot=target.worktreePath??targetProject?.path;
+   if(targetRoot) revealInFiles({projectId:target.projectId,worktreePath:target.worktreePath??targetRoot,rootPath:targetRoot},target.path);
+  },
   historyFocus,
  };
  useEffect(()=>onBrowserEvent(event=>{if(event.type==='open'){panelBrowser.open(event.url);setWorkbenchCommand({view:'browser',key:crypto.randomUUID()});}}),[panelBrowser.key]);
@@ -578,8 +613,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const pageCommentProvenance=new Map([...previewAssociations.current.entries()].map(([tabId,association])=>{const owner=data.sessions.find(candidate=>candidate.id===association.sessionId);return [tabId,{previewId:association.previewId,sessionId:association.sessionId,sessionTitle:owner?.title,providerId:owner?.provider,requestId:association.requestId,documentId:association.documentId,tabId,workspaceId:association.workspaceId,...(association.documentGeneration!==undefined?{navigation:association.documentGeneration}:{}),sequence:association.sequence}];}));
  const previewLabels=new Map([...previewAssociations.current.entries()].map(([tabId,association])=>[tabId,{title:association.title,observedTitle:association.observedTitle,sessionId:association.sessionId}]));
  const workspaceSessions=treeSessions.filter(candidate=>sessionIdsIn(layout).includes(candidate.id)||candidate.id===session.id);
- const focusedTab=focusTarget?workspaceTabs(layout).find(item=>item.tab.id===focusTarget.tabId)?.tab:undefined;
- const activeFilePath=focusedTab&&focusedTab.kind!=='session'&&focusedTab.kind!=='history'&&focusedTab.kind!=='usage'&&!focusedTab.ownerSessionId?focusedTab.path:undefined;
+ const focusedTab=focusedWorkspaceTab(layout,focusTarget?.paneId)?.tab;
+ const activeFilePath=focusedTab&&isFileTab(focusedTab)&&!focusedTab.ownerSessionId&&focusedTab.projectId===project?.id&&sameCanonicalScope(focusedTab.worktreePath??project?.path,path)?focusedTab.path:undefined;
  // Workbench shortcuts never fire inside a terminal: Ctrl+P/B/L belong to shells and TUIs there.
  const runLocale=useRef(zh);runLocale.current=zh;
  const performRunCommand=(command:RunCommandRequest)=>{
@@ -601,7 +636,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    if(!event.shiftKey&&letter==='o'){event.preventDefault();void chooseOutsideRef.current();return;}
    if(view){event.preventDefault();setWorkbenchCommand({view,key:crypto.randomUUID()});}
   };
-  const palette=(event:Event)=>{const detail=(event as CustomEvent<{view:WorkbenchView|'quick-open'|'external-files';key?:string;action?:GitWorkbenchAction;hostKey?:string;run?:RunCommandRequest}>).detail,scope=workbenchScopeRef.current;if(detail?.view==='external-files')void chooseOutsideRef.current();else if(detail?.view==='quick-open')setQuickOpen(true);else if(detail?.view==='run'&&detail.run){if(detail.hostKey===runWorkbenchHost.current)performRunCommand(detail.run);}else if(detail?.view==='scm'&&detail.action&&scope&&detail.hostKey===gitWorkbenchHost.current)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID(),action:detail.action,scopeKey:`${scope.projectId}\0${scope.worktreePath??''}\0${scope.rootPath}`});else if(detail?.view==='scm'&&!detail.action)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID()});else if(detail?.view&&detail.view!=='scm')setWorkbenchCommand({view:detail.view,key:detail.key??crypto.randomUUID()});};
+  const palette=(event:Event)=>{const detail=(event as CustomEvent<{view:WorkbenchView|'quick-open'|'external-files';key?:string;action?:GitWorkbenchAction;hostKey?:string;run?:RunCommandRequest;reveal?:FilesRevealRequest}>).detail,scope=workbenchScopeRef.current;if(detail?.view==='external-files')void chooseOutsideRef.current();else if(detail?.view==='quick-open')setQuickOpen(true);else if(detail?.view==='run'&&detail.run){if(detail.hostKey===runWorkbenchHost.current)performRunCommand(detail.run);}else if(detail?.view==='scm'&&detail.action&&scope&&detail.hostKey===gitWorkbenchHost.current)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID(),action:detail.action,scopeKey:`${scope.projectId}\0${scope.worktreePath??''}\0${scope.rootPath}`});else if(detail?.view==='scm'&&!detail.action)setWorkbenchCommand({view:'scm',key:detail.key??crypto.randomUUID()});else if(detail?.view==='files'&&detail.reveal)setWorkbenchCommand({view:'files',key:detail.reveal.key,reveal:detail.reveal});else if(detail?.view&&detail.view!=='scm')setWorkbenchCommand({view:detail.view,key:detail.key??crypto.randomUUID()});};
   addEventListener('keydown',key);addEventListener('threadterm:workbench',palette);
   return()=>{removeEventListener('keydown',key);removeEventListener('threadterm:workbench',palette);};
  },[]);
@@ -649,7 +684,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
       focusTarget={focusTarget} fileReveal={fileReveal} onOpenPath={openPaneFile} projectPath={project?.path} onWebClosed={closeRuntimePreview} onWebNavigation={observeRuntimePreview} previewProvenance={pageCommentProvenance} previewLabels={previewLabels}
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
-   </div>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} headerHost={headerTools} zh={zh}
+   </div>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} filesActions={filesActionsForScope} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} headerHost={headerTools} zh={zh}
     browser={()=> <PanelBrowser key={panelBrowser.key} browser={panelBrowser} sessions={treeSessions} zh={zh} onOpenTab={url=>openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url)}/>}
     browserActions={panelBrowser.url!==BROWSER_NEW_TAB_URL&&<button type="button" className="btn btn-sm btn-ghost" aria-label={zh?'作为标签页打开':'Open as tab'} onClick={()=>{
      if(openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url:panelBrowser.url},candidate=>candidate.kind==='web'&&candidate.url===panelBrowser.url)){
@@ -665,7 +700,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   </div></div>
   {picker&&<SurfaceDialog title={zh?(picker.mode==='switch'?'切换会话':picker.mode==='add'?'选择并排会话':'选择会话'):(picker.mode==='switch'?'Switch session':picker.mode==='add'?'Choose session for split':'Choose session')} onClose={cancelPicker} size="sm"><div className="switcher"><div className="tools"><div className="input-wrap"><Icon name="search"/><input type="search" autoFocus value={query} onChange={event=>setQuery(event.target.value)} placeholder={zh?'搜索会话':'Search sessions'}/></div>{picker.mode==='switch'&&<Select value={allProjects?'all':'tree'} onChange={event=>setAllProjects(event.target.value==='all')}><option value="tree">{zh?'当前工作树':'Current worktree'}</option><option value="all">{zh?'全部项目':'All projects'}</option></Select>}</div><div className="switcher-list">{available.filter(s=>`${s.title} ${s.provider}`.toLowerCase().includes(query.toLowerCase())).map(s=><button className="switcher-row" key={s.id} onClick={()=>{if(picker.mode==='switch'){setPicker(undefined);onSelect(s.id);}else if(picker.mode==='add')addSessionPane(s);else fillPane(s);}}><SessionIcon session={s}/>{s.title}<small>{providerName(s.provider)}</small></button>)}</div>{!available.length&&<p className="note">{zh?'没有其他可选会话。':'No other sessions are available.'}</p>}</div></SurfaceDialog>}
   {configOpen&&<SessionConfigDialog session={session} data={data} onClose={()=>setConfigOpen(false)} onRerun={onSelect}/>}
-  {quickOpen&&workbenchScope&&workbenchActions&&<QuickOpen scope={workbenchScope} zh={zh} onClose={()=>setQuickOpen(false)} onOpen={(file,position)=>workbenchActions.openFile(file,position)} onOpenExternal={(paths,source,position)=>openOutside(paths,source,previewSessionId,position)} externalDisabledReason={externalDisabledReason}/>}
+  {quickOpen&&workbenchScope&&workbenchActions&&<QuickOpen scope={workbenchScope} zh={zh} onClose={()=>setQuickOpen(false)} onOpen={(file,position)=>workbenchActions.openFile(file,position)} onReveal={workbenchActions.revealFile} onOpenExternal={(paths,source,position)=>openOutside(paths,source,previewSessionId,position)} externalDisabledReason={externalDisabledReason}/>}
   {pinPicker&&canPin&&workbenchScope&&<QuickOpen mode="pick" scope={workbenchScope} zh={zh} onClose={()=>setPinPicker(false)} onOpen={file=>{void documents.pin(file).catch(error=>setIssue(sessionDocumentError(error,zh)));}}/>}
  </section>;
 }

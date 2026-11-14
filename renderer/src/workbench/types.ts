@@ -15,6 +15,8 @@ export type WorkbenchActions = {
  /** Opens a page the host owns (a run's printed local address) through its preview rules. */
  openPreview?:(url:string) => void;
  openFile:(path:string, position?:{line?:number;column?:number}) => void;
+ /** Opens Files and reveals this workspace-relative path. */
+ revealFile?:(path:string) => void;
  /** Opens the file as a preview owned by the active session (hidden when switching sessions). */
  openBeside?:(path:string) => void;
  /** `compare` opens the same diff surface against a base branch instead of the index

@@ -40,6 +40,7 @@ import { FileBarActions, FileBreadcrumb } from "./FileBarActions";
 import type { ContextMenuItem } from "./ContextMenu";
 import { registerDirtyEditor } from "../dirtyEditors";
 import { ExplorerView } from "./ExplorerView";
+import { createFilesReveal, requestFilesReveal, type FilesRevealRequest } from '../workbench/revealInFiles';
 import { SourceControlView } from "./SourceControlView";
 import { useGitStatus } from "./WorkbenchSideBar";
 import { WbIcon } from "../workbench/icons";
@@ -163,6 +164,7 @@ function FileWorkspaceInstance({
   // A standalone workspace opened without a file (project Files page, Settings → Tools dialog) has
   // nothing else to show, so it starts with its Files & Git panel open.
   const [toolsOpen, setToolsOpen] = useState(!embedded && !initialPath);
+  const [filesReveal, setFilesReveal] = useState<FilesRevealRequest>();
   const [filesToolsHost, setFilesToolsHost] = useState<HTMLDivElement | null>(null);
   const [scmToolsHost, setScmToolsHost] = useState<HTMLDivElement | null>(null);
   const [gitCommand, setGitCommand] = useState<GitWorkbenchCommand>();
@@ -921,6 +923,10 @@ function FileWorkspaceInstance({
     rootPath: rootPath ?? worktreePath ?? "",
   };
   const workbenchScopeKey=`${workbenchScope.projectId}\0${workbenchScope.worktreePath??''}\0${workbenchScope.rootPath}`;
+  const revealInFiles = (path:string) => {
+    if(embedded) requestFilesReveal(workbenchScope, path);
+    else { setFilesReveal(createFilesReveal(workbenchScope, path)); setToolsOpen(true); }
+  };
   useEffect(() => {
     const palette=(event:Event)=>{
       if(external||embedded)return;
@@ -932,6 +938,7 @@ function FileWorkspaceInstance({
     return()=>removeEventListener('threadterm:workbench',palette);
   },[embedded,external,workbenchScopeKey]);
   const standaloneActions: WorkbenchActions = {
+    revealFile: revealInFiles,
     openFile: (path) => choose(path, "file"),
     openDiff: (path, nextStaged, nextCompare) => {
       setStaged(nextStaged);
@@ -1125,7 +1132,7 @@ function FileWorkspaceInstance({
     ...navigation.menuItems,
     {id:"file-copy-path",label:zh ? "复制路径" : "Copy path",icon:<WbIcon name="copy" />,onSelect:()=>navigator.clipboard.writeText(document.path)},
     ...(canOpenWithSystemApp(document.path) ? [{id:"file-open-system",label:zh ? "用系统应用打开" : "Open with system app",icon:<Icon name="folder" />,onSelect:()=>void openWithSystemApp({...scope,path:document.path,externalId},zh,setIssue)}] : []),
-    ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="folder" />,onSelect:()=>{if(embedded)dispatchEvent(new CustomEvent("threadterm:workbench",{detail:{view:"files"}}));else setToolsOpen(true);}}] : []),
+    ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="folder" />,onSelect:()=>revealInFiles(document.path)}] : []),
     ...(!busy ? [{id:"file-reload",label:copy.reload,icon:<WbIcon name="refresh" />,onSelect:()=>{if(external)void open(document.path,view,true);else setPending({path:document.path,view,reload:true});}}] : []),
     ...(view === "file" && !external && !image && gitState.status && (!dirty || blameOn) ? [{id:"file-blame",label:zh ? "逐行追溯" : "Blame",icon:<WbIcon name="person" />,onSelect:()=>setBlameOn(value=>!value)}] : []),
     ...(!external && onOpenHistory && !image ? [{id:"file-history",label:zh ? "文件历史" : "File history",icon:<Icon name="clock" />,onSelect:()=>onOpenHistory({path:document.path})}] : []),
@@ -1169,6 +1176,7 @@ function FileWorkspaceInstance({
               git={gitState}
               zh={zh}
               activePath={document?.path}
+              reveal={filesReveal}
               toolbarHost={filesToolsHost}
             />
             <section className="wb-tools-section" aria-label={zh ? "源代码管理" : "Source Control"}>

@@ -12,6 +12,7 @@ import { absolutePath, baseName, coveredBy, joinPath, parentPath, scopeParams, t
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { showContextMenu } from './ContextMenu';
 import { explorerFileMenuItems } from '../contextMenuSurfaceItems';
+import { resolveFilesReveal, sameFilesScope, type FilesRevealRequest } from '../workbench/revealInFiles';
 
 type Editing = { mode:'rename'|'file'|'directory'; dir:string; target?:string; value:string; error?:string };
 type Row = { entry:FileEntry; depth:number };
@@ -38,10 +39,9 @@ const revealTreeRow = (row:HTMLElement) => {
  else if(rowBox.top < hostBox.top + 1) host.scrollTop -= hostBox.top + 1 - rowBox.top;
 };
 const sortEntries = (entries:FileEntry[]) => entries
- .filter(entry => entry.name !== '.git')
  .sort((left, right) => (left.kind === 'directory' ? 0 : 1) - (right.kind === 'directory' ? 0 : 1) || left.name.localeCompare(right.name, undefined, {numeric:true, sensitivity:'base'}));
 
-export function ExplorerView({scope, actions, git, zh, activePath, focusKey, toolbarHost}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;activePath?:string;focusKey?:string;toolbarHost?:HTMLElement|null}) {
+export function ExplorerView({scope, actions, git, zh, activePath, focusKey, toolbarHost, reveal}:{scope:WorkbenchScope;actions:WorkbenchActions;git:GitState;zh:boolean;activePath?:string;focusKey?:string;toolbarHost?:HTMLElement|null;reveal?:FilesRevealRequest}) {
  const [tree, setTree] = useState<Record<string,FileEntry[]>>({});
  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
  const [selected, setSelected] = useState<string>();
@@ -50,6 +50,10 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  const [issue, setIssue] = useState<string>();
  const [busy, setBusy] = useState(false);
  const treeRef = useRef<HTMLDivElement>(null);
+ const pendingFocus = useRef<string|undefined>(undefined);
+ const revealGeneration = useRef(0);
+ const [revealedPath, setRevealedPath] = useState<string>();
+ const [rootFallback, setRootFallback] = useState(false);
  const expandedRef = useRef(expanded); expandedRef.current = expanded;
  const sessionDocuments = actions.sessionDocuments;
  const sessionDocumentIssue = sessionDocuments?.error;
@@ -72,7 +76,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
   setExpanded(current => new Set([...current].filter(dir => dir === '' || !gone.has(dir))));
  }, [scope.projectId, scope.worktreePath]);
 
- useEffect(() => { setTree({}); setExpanded(new Set([''])); void load('').catch(error => setIssue(workbenchError(error, zh))); }, [load]);
+ useEffect(() => { revealGeneration.current++; pendingFocus.current = undefined; setRevealedPath(undefined); setRootFallback(false); setSelected(undefined); setTree({}); setExpanded(new Set([''])); void load('').catch(error => setIssue(workbenchError(error, zh))); }, [load]);
  // Git status refreshes (focus, polling, mutations) also refresh the visible folders.
  useEffect(() => { if(git.status) void refresh(); }, [git.status]);
  useEffect(() => { if(focusKey) treeRef.current?.querySelector<HTMLElement>('[data-path][tabindex="0"]')?.focus(); }, [focusKey]);
@@ -80,6 +84,8 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  // Reveal the active editor file by expanding its ancestors.
  useEffect(() => {
   if(!activePath) return;
+  revealGeneration.current++;
+  pendingFocus.current = undefined;setRevealedPath(undefined);setRootFallback(false);
   setSelected(activePath);
   const parts = activePath.split('/');
   const ancestors = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'));
@@ -88,6 +94,25 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
   void Promise.all(missing.map(dir => load(dir).catch(() => undefined))).then(() => setExpanded(current => new Set([...current, ...ancestors])));
  }, [activePath, load]);
 
+ // Unlike active-file auto-reveal, this is a repeatable command. Ignore late results
+ // after a newer request/scope arrives, and focus only once the resolved row renders.
+ useEffect(() => {
+  pendingFocus.current = undefined;
+  if(!reveal || !sameFilesScope(reveal.scope, scope)) return;
+  const generation = ++revealGeneration.current;
+  let cancelled = false;
+  setIssue(undefined);
+  void resolveFilesReveal(reveal.path, dir => request('filesystem.list', {...params, path:dir})).then(result => {
+   if(cancelled || generation !== revealGeneration.current) return;
+   setTree(current => ({...current, ...Object.fromEntries(Object.entries(result.tree).map(([dir, entries]) => [dir, sortEntries(entries)]))}));
+   setExpanded(current => new Set([...current, ...result.expanded]));
+   setRevealedPath(reveal.path);setRootFallback(result.missing && result.path === '');
+   setSelected(result.path);pendingFocus.current = result.path;
+   if(result.missing) setIssue(text(`File missing. Showing ${result.path || scope.rootPath}.`, `文件不存在，已定位到 ${result.path || scope.rootPath}。`));
+  }).catch(error => { if(!cancelled && generation === revealGeneration.current) setIssue(workbenchError(error, zh)); });
+  return () => { cancelled = true; };
+ }, [reveal?.key, load, zh]);
+
  const toggle = async (dir:string) => {
   if(expanded.has(dir)) { setExpanded(current => { const next = new Set(current); next.delete(dir); return next; }); return; }
   try { await load(dir); setExpanded(current => new Set([...current, dir])); }
@@ -95,18 +120,24 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  };
  const rows = useMemo(() => {
   const list:Row[] = [];
-  const walk = (dir:string, depth:number) => { for(const entry of tree[dir] ?? []) { list.push({entry, depth}); if(entry.kind === 'directory' && expanded.has(entry.path)) walk(entry.path, depth + 1); } };
-  walk('', 0);
+  const walk = (dir:string, depth:number) => { for(const entry of tree[dir] ?? []) { if(entry.name === '.git' && !(revealedPath && coveredBy(revealedPath, entry.path))) continue; list.push({entry, depth}); if(entry.kind === 'directory' && expanded.has(entry.path)) walk(entry.path, depth + 1); } };
+  if(rootFallback) list.push({entry:{path:'', name:baseName(scope.rootPath.replace(/\\/g, '/')), kind:'directory'}, depth:0});
+  if(!rootFallback || expanded.has('')) walk('', rootFallback ? 1 : 0);
   return list;
- }, [tree, expanded]);
+ }, [tree, expanded, revealedPath, rootFallback, scope.rootPath]);
  const revealSelected = useCallback(() => {
   const root = treeRef.current;
   const path = selected ?? activePath;
-  if(!root || !path) return;
+  if(!root || path === undefined) return;
   const row = root.querySelector<HTMLElement>(`[data-path="${CSS.escape(path)}"]`);
   if(row) revealTreeRow(row);
  }, [activePath, selected]);
- useLayoutEffect(() => { revealSelected(); }, [revealSelected, rows]);
+ useLayoutEffect(() => {
+  revealSelected();
+  if(pendingFocus.current === undefined) return;
+  const row = treeRef.current?.querySelector<HTMLElement>(`[data-path="${CSS.escape(pendingFocus.current)}"]`);
+  if(row && row.getClientRects().length) { row.focus({preventScroll:true}); revealTreeRow(row); pendingFocus.current = undefined; }
+ }, [revealSelected, rows, focusKey]);
  useEffect(() => {
   const root = treeRef.current;
   if(!root || !(selected ?? activePath)) return;
@@ -199,13 +230,13 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
   else if(event.key === 'ArrowRight' && entry.kind === 'directory' && !expanded.has(entry.path)) { event.preventDefault(); void toggle(entry.path); }
   else if(event.key === 'ArrowLeft') { event.preventDefault(); if(entry.kind === 'directory' && expanded.has(entry.path)) void toggle(entry.path); else { const parent = parentPath(entry.path); const at = rows.findIndex(candidate => candidate.entry.path === parent); if(at >= 0) focusRow(at); } }
   else if(event.key === 'Enter') { event.preventDefault(); if(entry.kind === 'directory') void toggle(entry.path); else actions.openFile(entry.path); }
-  else if(event.key === 'F2') { event.preventDefault(); beginRename(entry); }
-  else if(event.key === 'Delete') { event.preventDefault(); beginDelete(entry); }
+  else if(event.key === 'F2' && entry.path) { event.preventDefault(); beginRename(entry); }
+  else if(event.key === 'Delete' && entry.path) { event.preventDefault(); beginDelete(entry); }
   else if((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') { event.preventDefault(); const rect=event.currentTarget.getBoundingClientRect(); openExplorerMenu(entry, {clientX:rect.left+Math.min(16, rect.width/2), clientY:rect.top+Math.min(16, rect.height/2), currentTarget:event.currentTarget}); }
  };
 
  const openExplorerMenu = (entry:FileEntry|undefined, event:{clientX:number;clientY:number;currentTarget:HTMLElement}) => {
-  if(!entry) {
+  if(!entry?.path) {
    showContextMenu({x:event.clientX, y:event.clientY, restoreFocus:event.currentTarget, items:[
     {id:'explorer-new-file', label:text('New file…', '新建文件…'), icon:<Icon name="file"/>, onSelect:() => beginCreate('file'), testId:'explorer-new-file'},
     {id:'explorer-new-folder', label:text('New folder…', '新建文件夹…'), icon:<Icon name="folder"/>, onSelect:() => beginCreate('directory'), testId:'explorer-new-folder'},

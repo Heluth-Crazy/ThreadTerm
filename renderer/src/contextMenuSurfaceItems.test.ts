@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { explorerFileMenuItems, fileTabMenuItems, historyCommitMenuItems, historyVersionMenuItems, sourceControlMenuItems } from './contextMenuSurfaceItems';
+import { explorerFileMenuItems, fileTabMenuItems, historyCommitMenuItems, historyVersionMenuItems, revealInFilesMenuItem, sourceControlMenuItems } from './contextMenuSurfaceItems';
 
 test('Source Control rows keep target actions first and destructive discard last', () => {
  const items=sourceControlMenuItems({zh:false,staged:false,conflict:false,discardable:true,busy:true,canSend:false});
- assert.deepEqual(items.map(item=>item.id),['source-control-send-diff','source-control-stage','source-control-open-changes','source-control-copy-path','source-control-separator','source-control-discard']);
+ assert.deepEqual(items.map(item=>item.id),['source-control-send-diff','source-control-stage','source-control-open-changes','source-control-reveal','source-control-copy-path','source-control-separator','source-control-discard']);
  assert.equal(items[0].reason,'Open a Chat session in this workspace first.');
  assert.equal(items.at(-1)?.danger,true);
  assert.equal(items.at(-1)?.reason,'Another Git action is running.');
@@ -37,8 +37,10 @@ test('history actions follow commit reachability and preserve existing targets',
 });
 
 test('file tabs only expose actions backed by their host capabilities', () => {
- assert.deepEqual(fileTabMenuItems({zh:false,canSend:false,canCopy:false}),[]);
- assert.deepEqual(fileTabMenuItems({zh:false,canSend:true,plansLabel:'Add to Plans & docs',canCopy:true}).map(item=>item.label),['Send file to agent','Add to Plans & docs','Copy path']);
+ assert.deepEqual(fileTabMenuItems({zh:false,canSend:false,canCopy:false}).map(item=>item.id),['workspace-tab-reveal']);
+ assert.deepEqual(fileTabMenuItems({zh:false,canSend:false,canCopy:false,canReveal:false}),[]);
+ assert.deepEqual(fileTabMenuItems({zh:false,canSend:true,plansLabel:'Add to Plans & docs',canCopy:true}).map(item=>item.label),['Send file to agent','Add to Plans & docs','Reveal in Files','Copy path']);
+ assert.equal(revealInFilesMenuItem(false).label,'Reveal in Files');
 });
 
 test('Explorer preserves its existing agent and document menu labels', () => {

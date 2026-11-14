@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { GitStatus, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
@@ -14,11 +14,12 @@ import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions,
 import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
 import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
+import { sameFilesScope, type FilesRevealRequest } from '../workbench/revealInFiles';
 import '../workbench/workbench.css';
 import './panel-headers.css';
 
 export type WorkbenchView = 'files'|'search'|'scm'|'run'|'changes'|'browser'|'details';
-export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeKey?:string };
+export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeKey?:string; reveal?:FilesRevealRequest };
 // Remember each view's width and the last view, but always start a workspace with the panel closed.
 type Stored = { view:WorkbenchView; widths:Record<WorkbenchView,number> };
 const STORAGE_KEY = 'threadterm.workbench.sidebar';
@@ -83,14 +84,22 @@ export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath
  return {status, error, loading, refresh};
 }
 
+function AlternateFilesExplorer({sessions, active, ...props}:{sessions:Session[];active:boolean}&Omit<ComponentProps<typeof ExplorerView>,'git'>) {
+ const git=useGitStatus(props.scope, active, props.zh, sessions.filter(session => session.projectId === props.scope.projectId && (session.worktreePath ?? '') === (props.scope.worktreePath ?? '')).map(session => session.id));
+ return <ExplorerView {...props} git={git}/>;
+}
+
 /** Fixed header tools and a single right panel aligned with the pane cards. */
-export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], activeSessionId, activePath, command, headerHost, details, browser, browserActions, zh}:{
- scope:WorkbenchScope; actions:WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; headerHost?:HTMLElement|null; details?:ReactNode; browser?:(close:()=>void)=>ReactNode; browserActions?:ReactNode; zh:boolean;
+export function WorkbenchSideBar({scope, actions, filesActions, sessions, allSessions = [], activeSessionId, activePath, command, headerHost, details, browser, browserActions, zh}:{
+ scope:WorkbenchScope; actions:WorkbenchActions; filesActions?:(scope:WorkbenchScope)=>WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; headerHost?:HTMLElement|null; details?:ReactNode; browser?:(close:()=>void)=>ReactNode; browserActions?:ReactNode; zh:boolean;
 }) {
  const [stored, setStored] = useState(readStored);
  const [open, setOpen] = useState(false);
  const [visited, setVisited] = useState<Set<WorkbenchView>>(() => new Set([stored.view]));
  const [focusKey, setFocusKey] = useState<string>();
+ const [filesReveal,setFilesReveal] = useState<FilesRevealRequest>();
+ const revealOwnerScope=useRef<WorkbenchScope|undefined>(undefined);
+ const previousActivePath=useRef(activePath);
  const [handledCommand,setHandledCommand]=useState<string>();
  const [actionsHost, setActionsHost] = useState<HTMLDivElement|null>(null);
  const git = useGitStatus(scope, open, zh, sessions.filter(session => session.projectId === scope.projectId && (session.worktreePath ?? '') === (scope.worktreePath ?? '')).map(session => session.id));
@@ -99,7 +108,8 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(stored)); } catch { /* storage full or disabled: keep in memory */ }
  }, [stored]);
  const update = (patch:Partial<Stored>) => setStored(current => ({...current, ...patch}));
- const select = (view:WorkbenchView, focus = false) => {
+ const select = (view:WorkbenchView, focus = false, preserveReveal = false) => {
+  if(view==='files'&&!preserveReveal) setFilesReveal(current => current&&!sameFilesScope(current.scope,scope) ? undefined : current);
   setVisited(current => current.has(view) ? current : new Set([...current, view]));
   // Clicking the active view collapses the panel, as in VS Code/Cursor.
   if(!focus && open && stored.view === view) setOpen(false);
@@ -108,9 +118,24 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
  };
  useEffect(() => {
   if(!command) return;
+  if(command.reveal) { setFilesReveal(command.reveal); revealOwnerScope.current=scope; previousActivePath.current=activePath; }
   if(command.view === 'toggle') setOpen(value => !value);
-  else select(command.view, true);
+  else select(command.view, true, Boolean(command.reveal));
  }, [command?.key]);
+ useEffect(() => {
+  const changed=previousActivePath.current!==activePath;
+  previousActivePath.current=activePath;
+  if(changed&&activePath) setFilesReveal(current => current&&!sameFilesScope(current.scope,scope) ? undefined : current);
+ }, [activePath]);
+ useEffect(() => {
+  if(revealOwnerScope.current && !sameFilesScope(revealOwnerScope.current,scope)) {
+   revealOwnerScope.current=undefined;
+   setFilesReveal(undefined);
+  }
+ }, [scope.projectId, scope.worktreePath, scope.rootPath]);
+ const filesScope=filesReveal?.scope ?? scope;
+ const scopedFilesActions=filesActions?.(filesScope) ?? actions;
+ const alternateFiles=Boolean(filesReveal&&!sameFilesScope(filesReveal.scope,scope));
  const slot=useRef<HTMLDivElement>(null);
  const [workspaceWidth,setWorkspaceWidth]=useState(0);
  useEffect(()=>{
@@ -159,7 +184,7 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
     <div className="wb-panel-body">
      {stored.view==='browser'&&browser?.(()=>setOpen(false))}
      {stored.view==='details'&&details}
-     {visited.has('files') && <div className="wb-view" hidden={stored.view !== 'files'}><ExplorerView scope={scope} actions={actions} git={git} zh={zh} activePath={activePath} focusKey={stored.view === 'files' ? focusKey : undefined} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/></div>}
+     {visited.has('files') && <div className="wb-view" hidden={stored.view !== 'files'}>{alternateFiles?<AlternateFilesExplorer key={`${filesScope.projectId}\0${filesScope.worktreePath??filesScope.rootPath}`} sessions={sessions} active={open&&stored.view==='files'} scope={filesScope} actions={scopedFilesActions} zh={zh} activePath={undefined} focusKey={stored.view === 'files' ? focusKey : undefined} reveal={filesReveal} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/>:<ExplorerView scope={scope} actions={actions} git={git} zh={zh} activePath={activePath} focusKey={stored.view === 'files' ? focusKey : undefined} reveal={filesReveal} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/>}</div>}
      {visited.has('search') && <div className="wb-view" hidden={stored.view !== 'search'}><SearchView scope={scope} actions={actions} zh={zh} focusKey={stored.view === 'search' ? focusKey : undefined}/></div>}
      {visited.has('scm') && <div className="wb-view" hidden={stored.view !== 'scm'}><SourceControlView scope={scope} actions={actions} git={git} zh={zh} visible={open&&stored.view==='scm'} command={open&&stored.view==='scm'&&command?.view==='scm'&&command.action&&command.key!==handledCommand?{view:'scm',key:command.key,action:command.action,scopeKey:command.scopeKey}:undefined} onCommandHandled={setHandledCommand} toolbarHost={stored.view === 'scm' ? actionsHost : undefined}/></div>}
      {visited.has('run') && <div className="wb-view" hidden={stored.view !== 'run'}><RunViewPanel scope={scope} actions={actions} sessions={allSessions} zh={zh} visible={open&&stored.view==='run'} toolbarHost={stored.view === 'run' ? actionsHost??undefined : undefined}/></div>}

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { SearchResult } from '@threadterm/protocol';
 import { request } from '../bridge';
 import { Icon } from './PrototypeIcon';
+import { showContextMenu } from './ContextMenu';
+import { revealInFilesMenuItem } from '../contextMenuSurfaceItems';
 import { workbenchError } from '../workbench/errors';
 import { baseName, parentPath, scopeParams, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 
@@ -67,7 +69,7 @@ export function SearchView({scope, actions, zh, focusKey}:{scope:WorkbenchScope;
   <div className="wb-results" role="tree" aria-label={text('Search results', '搜索结果')}>
    {result?.files.map(file => {
     const closed = collapsed.has(file.path);
-    return <div key={file.path} className="wb-result-file" role="treeitem" aria-expanded={!closed}>
+    return <div key={file.path} className="wb-result-file" role="treeitem" aria-expanded={!closed} onContextMenu={event => { if(!actions.revealFile) return; event.preventDefault(); showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:[{...revealInFilesMenuItem(zh),onSelect:()=>actions.revealFile?.(file.path)}]}); }}>
      <button type="button" className="wb-result-head" title={file.path} onClick={() => setCollapsed(current => { const next = new Set(current); if(next.has(file.path)) next.delete(file.path); else next.add(file.path); return next; })}>
       <span className={`wb-chevron${closed ? '' : ' open'}`} aria-hidden="true"><Icon name="chevR"/></span>
       <Icon name="file"/><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span><span className="wb-count">{file.matches.length}</span>

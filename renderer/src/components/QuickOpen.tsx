@@ -3,6 +3,8 @@ import { openExternalFiles, operationId, request, subscribeEvents } from '../bri
 import { externalFileError as externalFilesError } from '../externalFiles';
 import { displayPath } from '../displayPath';
 import { Icon } from './PrototypeIcon';
+import { showContextMenu } from './ContextMenu';
+import { revealInFilesMenuItem } from '../contextMenuSurfaceItems';
 import { fuzzyFilter, splitQuickOpenQuery } from '../workbench/fuzzy';
 import { workbenchError } from '../workbench/errors';
 import { scopeParams, type WorkbenchScope } from '../workbench/types';
@@ -27,7 +29,7 @@ type OpenSource = 'dialog'|'recent';
 type FilePosition = {line?:number;column?:number};
 type QuickOpenItem = {kind:'dialog'} | {kind:'workspace';path:string;positions:number[]} | {kind:'external';file:ExternalFile;positions:number[]};
 
-export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onOpenExternal, externalDisabledReason}:{scope:WorkbenchScope;zh:boolean;onOpen:(path:string, position?:FilePosition)=>void;onClose:()=>void;mode?:'open'|'pick';onOpenExternal?:(paths:string[],source:OpenSource,position?:FilePosition)=>void|Promise<void>;externalDisabledReason?:string}) {
+export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onReveal, onOpenExternal, externalDisabledReason}:{scope:WorkbenchScope;zh:boolean;onOpen:(path:string, position?:FilePosition)=>void;onClose:()=>void;mode?:'open'|'pick';onReveal?:(path:string)=>void;onOpenExternal?:(paths:string[],source:OpenSource,position?:FilePosition)=>void|Promise<void>;externalDisabledReason?:string}) {
  const key = `${scope.projectId}\0${scope.worktreePath ?? ''}`;
  const [files, setFiles] = useState(() => cache.get(key));
  const [externalFiles, setExternalFiles] = useState<ExternalFile[]>();
@@ -131,7 +133,7 @@ export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onOpenExtern
      <Icon name="file"/><b>{text('Open file outside workspace…', '打开工作区外文件…')}</b><span>Ctrl+O</span>
     </button>}
     {matches.map((match, index) => { const itemIndex = (externalEnabled ? 1 : 0) + index; return <button type="button" role="option" aria-selected={itemIndex === active} id={`wb-qo-${itemIndex}`} key={match.path}
-     className={`cmd-row${itemIndex === active ? ' active' : ''}`} onMouseEnter={() => setActive(itemIndex)} onClick={() => choose(match.path)} title={match.path}>
+     className={`cmd-row${itemIndex === active ? ' active' : ''}`} onMouseEnter={() => setActive(itemIndex)} onClick={() => choose(match.path)} onContextMenu={event => { if(!onReveal || mode !== 'open') return; event.preventDefault(); showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:[{...revealInFilesMenuItem(zh),onSelect:()=>{onClose();onReveal(match.path);}}]}); }} title={match.path}>
      <Icon name="file"/><Highlighted path={match.path} positions={match.positions}/>
     </button>; })}
     {externalEnabled && <><p className="external-file-section-label">{text('Outside workspace', '工作区外')}</p>{externalMatches.map((match, index) => { const itemIndex = 1 + matches.length + index; return <div role="option" aria-selected={itemIndex === active} id={`wb-qo-${itemIndex}`} key={match.file.id}
