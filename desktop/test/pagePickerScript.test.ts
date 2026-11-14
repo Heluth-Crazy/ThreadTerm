@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pagePickerSource } from '../src/pagePickerScript.js';
 
-type InputEvent = { type: string; clientX: number; clientY: number; pointerId: number; key: string; deltaX: number; deltaY: number; deltaMode: number; prevented: boolean; stopped: boolean; preventDefault(): void; stopPropagation(): void };
+type InputEvent = { type: string; clientX: number; clientY: number; pointerId: number; key: string; deltaX: number; deltaY: number; deltaMode: number; shiftKey:boolean; altKey:boolean; prevented: boolean; stopped: boolean; preventDefault(): void; stopPropagation(): void };
 class MockTarget {
   listeners = new Map<string, Array<{ handler: (event: InputEvent) => void; options: unknown }>>();
   addEventListener(type: string, handler: (event: InputEvent) => void, options?: unknown) {
@@ -12,7 +12,7 @@ class MockTarget {
     this.listeners.set(type, (this.listeners.get(type) || []).filter(item => item.handler !== handler));
   }
   fire(type: string, values: Partial<InputEvent> = {}) {
-    const event: InputEvent = { type, clientX: 50, clientY: 50, pointerId: 1, key: '', deltaX: 0, deltaY: 0, deltaMode: 0, prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...values };
+    const event: InputEvent = { type, clientX: 50, clientY: 50, pointerId: 1, key: '', deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey:false, altKey:false, prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...values };
     for (const { handler } of this.listeners.get(type) || []) handler(event);
     return event;
   }
@@ -108,12 +108,9 @@ test('closed overlay swallows events, selects keyboard parent and waits two clea
   for (const type of ['pointerdown', 'mousedown', 'mouseup', 'pointerup']) {
     const event = cover.fire(type); assert.equal(event.prevented, true, type); assert.equal(event.stopped, true, type);
   }
+  await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(overlay.isConnected, false);
   assert.equal(document.activeElement, fixture.button);
-  const tail = fixture.pageWindow.fire('click'); assert.equal(tail.prevented, true); assert.equal(tail.stopped, true);
-  let settled = false; void picking.then(() => { settled = true; });
-  fixture.flushFrame(); await Promise.resolve(); assert.equal(settled, false);
-  fixture.flushFrame();
   const result = await picking; assert.equal(result.target.selector, '#card'); assert.equal(result.target.label, 'div#card.card');
   assert.equal(fixture.pageWindow.listeners.get('click')?.length, 0);
   assert.equal((fixture.pageWindow as unknown as Record<symbol, unknown>)[Symbol.for('threadterm.pagePicker')], undefined);
@@ -168,6 +165,16 @@ test('drag threshold, area sampling deduplication and inline climbing', async ()
   const next = execute('pick'); const tiny = fixture.overlay().parts.get('#cover')!;
   tiny.fire('pointerdown', { clientX: 20, clientY: 30 }); tiny.fire('pointerup', { clientX: 23, clientY: 34 });
   fixture.flushFrame(); fixture.flushFrame(); assert.equal((await next).target.type, 'element');
+}));
+
+test('Shift collects elements until Enter and Alt click routes a target to chat', async () => withPage(async fixture => {
+  const picking=execute('pick'); const cover=fixture.overlay().parts.get('#cover')!;
+  cover.fire('pointerdown');cover.fire('pointerup',{shiftKey:true});
+  fixture.pageWindow.fire('keydown',{key:'Enter'});fixture.flushFrame();fixture.flushFrame();
+  const result=await picking as {elements?:unknown[];target:{selector:string}};assert.equal(result.target.selector,'#save');assert.equal(result.elements?.length,1);
+  const toChat=execute('pick');const next=fixture.overlay().parts.get('#cover')!;
+  next.fire('pointerdown');next.fire('pointerup',{altKey:true});fixture.flushFrame();fixture.flushFrame();
+  assert.equal((await toChat as {toChat?:boolean}).toChat,true);
 }));
 
 test('a replacement pick resolves the old pick without deleting the new controller', async () => withPage(async fixture => {

@@ -546,7 +546,7 @@ function registerIpc(): void {
   registerPageComments(assertTrustedRenderer, async after => {
     const references = await adminRuntime.request('reviewDrafts.assetReferences', after ? { after, limit: 200 } : { limit: 200 });
     return { paths: references.paths, nextAfter: references.nextAfter, legacyImportComplete: references.legacyImportComplete };
-  }, async (event, id) => machineBindings.get(event.sender.id).machineId !== 'local' ? readHostPageShot(runtimeFor(event), id) : undefined, sender => {
+  }, async (event, id) => readHostPageShot(runtimeFor(event), id), sender => {
     if (!machineRenderers.has(sender.id)) return undefined;
     const binding = machineBindings.get(sender.id); return binding.machineId !== 'local' ? binding.owner : undefined;
   });
@@ -565,7 +565,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('threadterm:persist-page-shot', async (event, id: unknown, sessionId: unknown, projectId: unknown, root: unknown) => {
     assertTrustedRenderer(event);
-    if (machineBindings.get(event.sender.id).machineId === 'local' || typeof id !== 'string') throw new Error('Invalid remote screenshot');
+    if (typeof id !== 'string') throw new Error('Invalid remote screenshot');
     const runtime = runtimeFor(event);
     try { const existing = await runtime.request('attachment.read', { assetId: id, offset: 0, limit: 1 }); return { id: existing.assetId, path: existing.hostPath }; }
     catch (error) { if (!(error instanceof RuntimeRequestError) || !/asset_not_found/.test(error.message)) throw error; }

@@ -45,12 +45,12 @@ test('unknown and interrupted operations stay settled and never acquire a Stop o
  const html=render([{...operation(),canStop:false}]);assert.equal(html.includes('<button'),false,'running alone cannot authorize Stop');
 });
 
-test('actual WebPreview defaults Control to unavailable until main publishes capability',()=>{
+test('actual WebPreview keeps Agent access compact until its popup opens',()=>{
  const previewCode=buildSync({entryPoints:['renderer/src/components/WebPreview.tsx'],bundle:true,platform:'node',format:'cjs',packages:'external',loader:{'.css':'empty'},write:false,logLevel:'silent'}).outputFiles[0].text;
  const previewModule={exports:{}};vm.runInNewContext(previewCode,{module:previewModule,exports:previewModule.exports,require,TextEncoder,URL,crypto:webcrypto});
  const html=renderToStaticMarkup(React.createElement(previewModule.exports.WebPreview,{tabId:'tab-a',url:'https://example.test',visible:true,zh:false,prepareBrowserShare:async()=>({id:'workspace',revision:1})}));
- assert.match(html,/aria-label="Agent access Control" aria-pressed="false" disabled=""/);
- assert.match(html,/aria-label="Agent access Off" aria-pressed="true"/);
+ assert.match(html,/aria-label="Agent access"/);
+ assert.match(html,/Agent: Off/);
  assert.equal(html.includes('Allow agents to control this page?'),false,'initial rendering cannot grant or open confirmation');
  assert.equal(html.includes('eval'),false);
  assert.match(html,/Control also allows page actions/);

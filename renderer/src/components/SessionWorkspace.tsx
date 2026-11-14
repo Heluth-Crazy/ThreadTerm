@@ -4,7 +4,7 @@ import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLa
 import { browserCommand, onBrowserEvent, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
 import { isRemoteFiles, uploadRemotePaths } from '../remoteFiles';
-import { attachChatImages, insertChatText, insertSessionText } from '../terminalInputTargets';
+import { attachChatImages, insertChatText, insertSessionText, submitChat } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { sameCanonicalScope } from '../projectScope';
@@ -485,13 +485,40 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   };
   requestAnimationFrame(()=>requestAnimationFrame(attempt));
  });
+ // Delivery must bring the receiving Chat forward before asking its registered composer to submit.
+ // Only retry the absence of that composer; an actual runtime send/queue error is returned once.
+ const sendIntoSession=(sessionId:string,packet:{text:string;images?:string[]})=>new Promise<void>((resolve,reject)=>{
+  const receiver=data.sessions.find(candidate=>candidate.id===sessionId);
+  if(!receiver||!working(receiver)||receiver.mode!=='chat'){reject(new Error(zh?'该会话已结束或不是聊天会话，无法发送标注。':'That session has ended or is not a Chat, so it cannot send design notes.'));return;}
+  let tab=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===receiver.id);
+  if(!tab){
+   const current=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===previewSessionId)??workspaceTabs(latestLayout.current)[0];
+   const updated=current?addTabToPane(latestLayout.current,current.paneId,tabFor(receiver)):addPane(latestLayout.current,tabFor(receiver));
+   save(updated);tab=workspaceTabs(updated).find(item=>item.tab.kind==='session'&&item.tab.sessionId===receiver.id);
+   if(!tab){reject(new Error(zh?'无法在此工作区打开该会话。':'That session could not be opened in this workspace.'));return;}
+  }
+  save(activate(latestLayout.current,tab.paneId,tab.tab.id));setFocusTarget({paneId:tab.paneId,tabId:tab.tab.id,key:crypto.randomUUID()});
+  const until=Date.now()+10_000;
+  const attempt=()=>{
+   const current=latestData.current.sessions.find(candidate=>candidate.id===sessionId);
+   if(!current||current.readOnly||!working(current)||current.mode!=='chat'){reject(new Error(zh?'该会话已结束或不可再接收标注。标注已保留。':'That session has ended or can no longer receive design notes. The notes were kept.'));return;}
+   void submitChat(current.id,packet).then(resolve).catch(error=>{
+    if(/chat_view_unavailable/.test(String(error))&&Date.now()<until){setTimeout(attempt,150);return;}
+    reject(error);
+   });
+  };
+  requestAnimationFrame(()=>requestAnimationFrame(attempt));
+ });
  const projectRootOf=(projectId:string)=>data.projects.find(candidate=>candidate.id===projectId)?.path;
  const commentsHost:FileCommentsHost={
   projectRoot:projectRootOf,
   receivers:commentReceivers.map(candidate=>({id:candidate.id,title:candidate.group&&groupTitles[candidate.group.id]?`@${candidate.group.handle} · ${groupTitles[candidate.group.id]}`:candidate.title,provider:candidate.provider,root:candidate.worktreePath??projectRootOf(candidate.projectId??'')??''})),
   defaultReceiverId:commentReceivers.some(candidate=>candidate.id===previewSessionId)?previewSessionId:undefined,
   openFile:target=>{if(isAbsoluteFilePath(target.path)){void openOutside([target.path],'recent',previewSessionId,{line:target.line});return;}void openScopedFile({projectId:target.projectId,worktreePath:sameCanonicalScope(target.root,projectRootOf(target.projectId))?undefined:target.root,path:target.path,kind:previewKind(target.path),line:target.line,ownerSessionId:previewSessionId}).catch(fail);},
-  insert:insertIntoSession,notice:setCommentNotice,
+  insert:insertIntoSession,
+  // The visible Chat composer performs the actual runtime send and owns whether it queues a follow-up.
+  send:sendIntoSession,
+  notice:setCommentNotice,
   attachContext:async(sessionId,item)=>{await insertIntoSession(sessionId,'',undefined,item);},
  };
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{

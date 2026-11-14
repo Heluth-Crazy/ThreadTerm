@@ -14,6 +14,8 @@ export type FileCommentsHost = {
   /** Inserts `text` into the session's message box without sending, opening its tab when needed. Rejects with a
    * readable (already localized) reason. */
   insert: (sessionId: string, text: string, images?: string[]) => Promise<void | number>;
+  /** Submits the receiving Chat's existing composer. It follows the normal send/queue path. */
+  send?: (sessionId: string, packet: { text: string; images?: string[] }) => Promise<void>;
   /** Adds a renderer-only context item without inserting or sending text. */
   attachContext?: (sessionId: string, item: import('./chatContext').ContextItem) => Promise<void>;
   /** Opens a pending file comment in the owning workspace. */

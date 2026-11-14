@@ -1,16 +1,19 @@
-import type { PageTargetRef } from '@threadterm/protocol';
+import type { PageRect, PageTargetRef } from '@threadterm/protocol';
 /** Runs inside the untrusted preview frame. Keep every helper inside this function: it is sent with toString(). */
 export function pagePickerScript(
-  action: 'pick' | 'cancel' | 'mark' | 'at',
+  action: 'pick' | 'cancel' | 'mark' | 'at' | 'inspect',
   target?: PageTargetRef,
   flash?: boolean,
   point?: { x: number; y: number },
+  edit?: { property?: string; value?: string; revert?: boolean; mode?: 'element'|'area'; zh?:boolean; pins?: Array<{number:number;target:PageTargetRef}> },
 ): unknown {
   const key = Symbol.for('threadterm.pagePicker');
   type Control = {
     cancel?: () => void;
     mark?: (t?: PageTargetRef, f?: boolean) => boolean;
     clear?: () => void;
+    pins?: (pins: Array<{number:number;target:PageTargetRef}>) => void;
+    css?: Map<string,{element:HTMLElement;property:string;before:string;inline:string;priority:string}>;
   };
   const w = window as unknown as Window & {
       [key: symbol]: Control | undefined;
@@ -28,6 +31,7 @@ export function pagePickerScript(
           .trim()
           .slice(0, n)
       : '';
+  const copy=(en:string,cn:string)=>edit?.zh?cn:en;
   const clamp = (n: number, a: number, b: number) => Math.min(b, Math.max(a, n));
   const box = (r: DOMRect | ClientRect) => ({
     x: r.left,
@@ -202,6 +206,12 @@ export function pagePickerScript(
       tag = e.tagName.toLowerCase(),
       html = (v: string) =>
         v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const computedStyles: Record<string,string> = {}, styles: Record<string,string> = {};
+    if (!pass(e)) try {
+      const style=getComputedStyle(e);
+      for(const name of ['color','background-color','font-size','font-family','display','position']) computedStyles[name]=clean(style.getPropertyValue(name),1000);
+      for(let index=0;index<style.length&&index<300;index++){const name=style.item(index);if(/^[a-z-]{1,80}$/.test(name))styles[name]=clean(style.getPropertyValue(name),1000);}
+    } catch {}
     return {
       type: 'element',
       selector: sel(e),
@@ -216,10 +226,12 @@ export function pagePickerScript(
         600,
       ),
       rect: box(e.getBoundingClientRect()),
+      ...(Object.keys(computedStyles).length?{computedStyles}:{}),
+      ...(Object.keys(styles).length?{styles}:{}),
       ...hints(e),
     };
   };
-  let markHost: HTMLElement | undefined,
+  let markHost: HTMLElement | undefined, pinHost: HTMLElement | undefined, pinUpdate: (()=>void) | undefined,
     timer: ReturnType<typeof setTimeout> | undefined,
     update: (() => void) | undefined;
   const clear = () => {
@@ -232,6 +244,22 @@ export function pagePickerScript(
     update = undefined;
     markHost?.remove();
     markHost = undefined;
+  };
+  const setPins = (pins: Array<{number:number;target:PageTargetRef}>) => {
+    if(pinUpdate){window.removeEventListener('scroll',pinUpdate,true);window.removeEventListener('resize',pinUpdate);pinUpdate=undefined;}
+    pinHost?.remove(); pinHost=undefined;
+    if (!pins.length) return;
+    const host=document.createElement('div');host.style.cssText='position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
+    const origin={x:window.scrollX,y:window.scrollY}, badges:Array<{badge:HTMLElement;element:Element|null;rect:PageRect}>=[];
+    for(const pin of pins) {
+      let element: Element|null=null;try{element=pin.target.selector?document.querySelector(pin.target.selector):null;}catch{}
+      const rect=element?box(element.getBoundingClientRect()):pin.target.rect;
+      if(!rect)continue;
+      const badge=document.createElement('span');badge.textContent=String(pin.number);badge.style.cssText=`position:fixed;left:${rect.x}px;top:${rect.y}px;transform:translate(-45%,-45%);min-width:18px;height:18px;border-radius:9px;background:Highlight;color:HighlightText;text-align:center;font:12px/18px system-ui;box-shadow:0 0 0 2px Canvas;`;
+      host.append(badge);badges.push({badge,element,rect});
+    }
+    pinUpdate=()=>{for(const pin of badges){const rect=pin.element?.isConnected?box(pin.element.getBoundingClientRect()):{...pin.rect,x:pin.rect.x-(window.scrollX-origin.x),y:pin.rect.y-(window.scrollY-origin.y)};pin.badge.style.left=`${rect.x}px`;pin.badge.style.top=`${rect.y}px`;}};pinUpdate();
+    document.documentElement.append(host);pinHost=host;window.addEventListener('scroll',pinUpdate,true);window.addEventListener('resize',pinUpdate);
   };
   const mark = (r?: PageTargetRef, f?: boolean) => {
     clear();
@@ -270,13 +298,15 @@ export function pagePickerScript(
   };
   if (action === 'mark') {
     old?.clear?.();
-    w[key] = { ...old, mark, clear };
+    const pins=edit?.pins, pinControl=old?.pins??setPins;
+    w[key] = { ...old, mark, clear, pins:pinControl };
+    if(pins) pinControl(pins);
     return mark(target, flash);
   }
   if (action === 'at') {
     old?.cancel?.();
     old?.clear?.();
-    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x<0 || point.y<0 || point.x>innerWidth || point.y>innerHeight) return null;
     const element = document.elementsFromPoint(point.x, point.y).find((value) => value instanceof Element);
     return element ? {
       url: location.href,
@@ -285,11 +315,32 @@ export function pagePickerScript(
       target: picked(element),
     } : null;
   }
+  if (action === 'inspect') {
+    if (!target?.selector) return null;
+    let element: Element | null = null; try { element=document.querySelector(target.selector); } catch { return null; }
+    if (!element || pass(element)) return null;
+    const history=old?.css??new Map<string,{element:HTMLElement;property:string;before:string;inline:string;priority:string}>();
+    w[key]={...old,css:history};
+    if(edit?.revert&&!edit.property){for(const item of history.values()){if(item.inline)item.element.style.setProperty(item.property,item.inline,item.priority);else item.element.style.removeProperty(item.property);}history.clear();}
+    const property=edit?.property, node=element as HTMLElement, keyFor=property?`${target.selector}\0${property}`:'';
+    if(property&&/^[a-z-]{1,80}$/.test(property)) {
+      let item=history.get(keyFor);
+      if(!item||item.element!==node||!item.element.isConnected){if(item?.element.isConnected){if(item.inline)item.element.style.setProperty(item.property,item.inline,item.priority);else item.element.style.removeProperty(item.property);}item={element:node,property,before:clean(getComputedStyle(node).getPropertyValue(property),1000),inline:node.style.getPropertyValue(property),priority:node.style.getPropertyPriority(property)};history.set(keyFor,item);}
+      if(edit?.revert){if(item.inline)node.style.setProperty(property,item.inline,item.priority);else node.style.removeProperty(property);history.delete(keyFor);}
+      else if(typeof edit.value==='string')node.style.setProperty(property,clean(edit.value,1000));
+    }
+    const result=picked(element) as {styles?:Record<string,string>};
+    return {styles:result.styles??{},cssEdits:[...history.values()].map(item=>({property:item.property,before:item.before,after:clean(getComputedStyle(item.element).getPropertyValue(item.property),1000)}))};
+  }
   old?.cancel?.();
   old?.clear?.();
   return new Promise((resolve) => {
     let done = false,
       hover: Element | null = null,
+      selections: ReturnType<typeof picked>[] = [],
+      textEdits: Array<{selector:string;before:string;after:string}> = [],
+      clickTimer: ReturnType<typeof setTimeout> | undefined,
+      editor: HTMLTextAreaElement | undefined,
       down: {
         x: number;
         y: number;
@@ -328,9 +379,11 @@ export function pagePickerScript(
         chip.textContent = `${label(e)} · ${Math.round(r.width)}×${Math.round(r.height)}`;
         chip.style.cssText += `;display:block;left:${clamp(r.left, 0, Math.max(0, innerWidth - 360))}px;top:${clamp(r.top - 25, 0, Math.max(0, innerHeight - 25))}px`;
       },
-      finish = (v: unknown) => {
+      finish = (v: unknown, delayed = false) => {
         if (done) return;
         done = true;
+        if(clickTimer)clearTimeout(clickTimer);
+        editor?.remove();editor=undefined;
         off();
         const tail = (e: Event) => stop(e);
         for (const t of ['click', 'mousedown', 'mouseup', 'pointerup', 'touchend'])
@@ -338,6 +391,7 @@ export function pagePickerScript(
         host.remove();
         if (previousFocus instanceof HTMLElement && previousFocus.isConnected)
           previousFocus.focus({ preventScroll: true });
+        if(delayed){for(const t of ['click','mousedown','mouseup','pointerup','touchend'])window.removeEventListener(t,tail,true);if(w[key]===controller)delete w[key];resolve(v);return;}
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
             for (const t of ['click', 'mousedown', 'mouseup', 'pointerup', 'touchend'])
@@ -347,6 +401,22 @@ export function pagePickerScript(
           }),
         );
       };
+    const finishElements = (current?: Element, delayed = false) => {
+      if(current) { const value=picked(current); if(!selections.some(item=>item.selector===value.selector)) selections.push(value); }
+      const primary=selections[0]??(hover?picked(hover):undefined);
+      if(!primary)return finish(null);
+      finish({url:location.href,title:clean(document.title,200),viewport:{width:innerWidth,height:innerHeight},target:primary,...(selections.length?{elements:selections}:{}),...(textEdits.length?{textEdits}:{})},delayed);
+    };
+    const editText = () => {
+      if(!hover||pass(hover))return;
+      if(hover.children.length)return;
+      const before=clean(hover.textContent,1000); if(!before)return;
+      const rect=hover.getBoundingClientRect(); editor=document.createElement('textarea');
+      editor.value=before;editor.maxLength=1000;editor.setAttribute('aria-label',copy('Edit page text','编辑页面文字'));editor.style.cssText=`position:fixed;z-index:2147483647;left:${rect.left}px;top:${rect.top}px;width:${Math.max(80,rect.width)}px;height:${Math.max(28,rect.height)}px;box-sizing:border-box;font:inherit;`;
+      document.documentElement.append(editor);editor.focus();
+      const close=(keep:boolean)=>{const after=clean(editor!.value,10000);editor!.remove();editor=undefined;if(keep&&after!==before){hover!.textContent=after;const selector=sel(hover!);if(selector)textEdits.push({selector,before,after});finishElements(hover!);}else host.focus({preventScroll:true});};
+      editor.addEventListener('keydown',(event:KeyboardEvent)=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();close(true);}else if(event.key==='Escape'){event.preventDefault();close(false);}});
+    };
     const areaPick = (
       s: {
         x: number;
@@ -405,6 +475,7 @@ export function pagePickerScript(
       },
       start = (e: PointerEvent) => {
         stop(e);
+        if(clickTimer){clearTimeout(clickTimer);clickTimer=undefined;}
         if (!hover || point.x !== e.clientX || point.y !== e.clientY) paint(under(e.clientX, e.clientY));
         point = { x: e.clientX, y: e.clientY };
         down = { x: e.clientX, y: e.clientY };
@@ -421,15 +492,15 @@ export function pagePickerScript(
             url: location.href,
             title: clean(document.title, 200),
             viewport: { width: innerWidth, height: innerHeight },
-            target: areaPick(s, { x: e.clientX, y: e.clientY }),
+            target: (()=>{const dx=e.clientX-s.x,dy=e.clientY-s.y;if(e.altKey)return areaPick({x:s.x-dx,y:s.y-dy},{x:s.x+dx,y:s.y+dy});if(e.shiftKey)return Math.abs(dx)>=Math.abs(dy)?areaPick(s,{x:e.clientX,y:s.y+(dy<0?-1:1)}):areaPick(s,{x:s.x+(dx<0?-1:1),y:e.clientY});return areaPick(s,{x:e.clientX,y:e.clientY});})(),
           });
-        else if (hover)
-          finish({
-            url: location.href,
-            title: clean(document.title, 200),
-            viewport: { width: innerWidth, height: innerHeight },
-            target: picked(hover),
-          });
+        else if (edit?.mode==='area') {
+          chip.textContent='Drag to mark an area';
+        } else if (hover) {
+          if(e.altKey) return finish({url:location.href,title:clean(document.title,200),viewport:{width:innerWidth,height:innerHeight},target:picked(hover),toChat:true});
+          if(e.shiftKey) { const value=picked(hover);if(!selections.some(item=>item.selector===value.selector))selections.push(value);chip.textContent=copy(`${selections.length} selected · Enter to continue`,`已选择 ${selections.length} 个 · 按 Enter 继续`);return; }
+          const pickedHover=hover;clickTimer=setTimeout(()=>finishElements(pickedHover,true),180);
+        }
       },
       wheel = (e: WheelEvent) => {
         stop(e);
@@ -460,8 +531,10 @@ export function pagePickerScript(
     cover.addEventListener('pointermove', move, true);
     cover.addEventListener('pointerdown', start, true);
     cover.addEventListener('pointerup', end, true);
+    cover.addEventListener('dblclick', (event:MouseEvent)=>{stop(event);if(clickTimer){clearTimeout(clickTimer);clickTimer=undefined;}editText();}, true);
     cover.addEventListener('wheel', wheel, { capture: true, passive: false });
     const keys = (e: KeyboardEvent) => {
+      if(editor&&e.target===editor)return;
       if (e.key === 'Escape') {
         stop(e);
         finish(null);
@@ -476,18 +549,21 @@ export function pagePickerScript(
           while (c.parentElement && c.parentElement !== hover) c = c.parentElement;
           if (c.parentElement === hover) paint(c);
         }
-      }
+      } else if(e.key==='Enter'&&selections.length){stop(e);finishElements();}
     };
     window.addEventListener('keydown', keys, true);
     off = () => window.removeEventListener('keydown', keys, true);
-    controller = { cancel: () => finish(null), mark, clear };
+    controller = { cancel: () => finish(null), mark, clear, pins:old?.pins };
     w[key] = controller;
+    if(edit?.mode==='area') chip.textContent=copy('Drag to mark an area','拖动以标记区域');
     paint(under(point.x, point.y));
   });
 }
-export function pagePickerSource(action: 'pick' | 'cancel' | 'mark' | 'at', target?: PageTargetRef, flash?: boolean, point?: { x: number; y: number }): string {
+export function pagePickerSource(action: 'pick' | 'cancel' | 'mark' | 'at' | 'inspect', target?: PageTargetRef, flash?: boolean, point?: { x: number; y: number }, edit?: { property?: string; value?: string; revert?: boolean; mode?: 'element'|'area'; zh?:boolean; pins?: Array<{number:number;target:PageTargetRef}> }): string {
   const encoded = (value: unknown) => JSON.stringify(value) ?? 'undefined';
   const args = [encoded(action), encoded(target), encoded(flash)];
   if (point) args.push(JSON.stringify(point));
+  else if(edit) args.push('undefined');
+  if(edit) args.push(JSON.stringify(edit));
   return `(${pagePickerScript.toString()})(${args.join(',')})`;
 }

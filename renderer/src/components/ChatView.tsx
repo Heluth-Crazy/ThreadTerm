@@ -4,7 +4,7 @@ import { parseChatMarkdown } from '../chatMath';
 import { ChatProviderNotice } from './ChatProviderNotice';
 import { ChatMarkdown } from './ChatMarkdownExtras';
 import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
-import { ChatItem, attachFiles, chooseDirectory, openExternal, operationId, request, subscribeEvents } from "../bridge";
+import { ChatItem, attachFiles, chooseDirectory, openExternal, operationId, readPageShot, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
 import { anchoredScrollTop, mergeEarlierPage, needsAnotherPage, shouldLoadEarlier } from "../chatPaging";
 import { acquireControl, sessionVisible } from '../controlLease';
@@ -60,6 +60,7 @@ import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
 import { isChatImage, isChatImageRef, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
 import { ChatMessageImages } from './ChatMessageImages';
+import { designNoteChips } from '../designNoteChips';
 import './chat-images.css';
 import { queueComposerMode } from '../chatQueue';
 import { isComposingKey, slashPaletteEnter } from '../composeKeys';
@@ -439,6 +440,7 @@ function hasVisibleAssistantResponse(items: ChatItem[], turnId: string): boolean
   return items.some(item => item.role === "assistant" && item.turnId === turnId && item.parts.some(shouldRenderPart));
 }
 
+
 /**
  * Folded completed-turn growth. The disclosure header always renders; the body
  * mounts on expand so a long session keeps no hidden activity cards in the DOM.
@@ -499,6 +501,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [stoppedRelocating, setStoppedRelocating] = useState(false);
   const resumeRequested = released && resumeForEpoch === releaseEpoch.current;
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
+  const [designScreenshot,setDesignScreenshot]=useState<{id:string;image?:string;issue?:string}>();
+  const [designAttachment,setDesignAttachment]=useState<{part:string;index:number}>();
+  const openDesignScreenshot=async(id:string)=>{setDesignScreenshot({id});try{const image=await readPageShot(id);setDesignScreenshot(current=>current?.id===id?image?{id,image}:{id,issue:copy('The page screenshot is unavailable.','页面截图不可用。')}:current);}catch{setDesignScreenshot(current=>current?.id===id?{id,issue:copy('The page screenshot could not be read.','无法读取页面截图。')}:current);}};
   const [codeReviewOpen, setCodeReviewOpen] = useState(false);
   const [codeReviewFocus, setCodeReviewFocus] = useState("");
   const turnChangesCache = useMemo(() => createTurnChangesCache<import('@threadterm/protocol').ReviewFile[]>(), [session.id]);
@@ -689,6 +694,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }
   const changeTextRef = useRef(changeText);
   changeTextRef.current = changeText;
+  const submitRef=useRef<(packet:{text:string;images?:string[]})=>Promise<void>>(async()=>{throw new Error('Chat is unavailable.');});
   const attachImagesRef=useRef<(incoming:string[])=>number>(()=>0);
   // Editor/file "Send to agent" inserts a reference at the caret; it never submits.
   useEffect(() => registerChatInputTarget(session.id, {
@@ -702,6 +708,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       changeTextRef.current(next.text);
       requestAnimationFrame(() => { area?.focus(); area?.setSelectionRange(next.caret, next.caret); });
     },
+    submit: (packet) => submitRef.current(packet ?? {text:''}),
   }), [session.id]);
   async function retryDraft() {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined; if (!canControl || epoch === undefined) return;
@@ -1221,9 +1228,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const timer=setTimeout(()=>{setDraftNotice(copy('Saving draft…','正在保存草稿…'));void persistCompose(text,epoch).then(()=>setDraftNotice(copy('Draft saved','草稿已保存'))).catch(caught=>{setDraftFailed(true);setDraftNotice(copy('Draft not saved','草稿未保存'));setError(String(caught));});},400);
     return()=>clearTimeout(timer);
   },[text,writable,recovery,draftFailed,context.items,mentionCatalogue]);
-  async function submit(event: FormEvent) {
+  async function submit(event: FormEvent, throwOnFailure = false, dedicated?: {text:string;images?:string[]}) {
     event.preventDefault();let value:string;
-    if(text.trim()==='/fork' && !images.length && !context.items.length){
+    if(!dedicated&&text.trim()==='/fork' && !images.length && !context.items.length){
       if(forkActions.disabledReason){setError(forkActions.disabledReason);return;}
       const captured=text;
       const child=await forkActions.fork();
@@ -1237,58 +1244,64 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       }
       return;
     }
-    const reviewSlash = parseReviewSlash(text);
+    const reviewSlash = dedicated?{matched:false,focus:undefined}:parseReviewSlash(text);
     if (reviewSlash.matched && !images.length && !context.items.length) {
       openCodeReview(reviewSlash.focus);
       changeText("");
       return;
     }
-    try { value=serializeSubmission(text.trim()); } catch(caught) { setError(contextError(caught,zh)); return; }
+    try { value=dedicated?.text??serializeSubmission(text.trim()); } catch(caught) { setError(contextError(caught,zh)); if(throwOnFailure)throw caught; return; }
+    const outboundImages=dedicated?selectChatImageAttachments([],dedicated.images??[],Boolean(ui.inputCapabilities?.images)):images;
     // Sending to a stopped chat reconnects the same conversation first, then
     // sends this one message; the draft and the transcript are kept meanwhile.
     if (released && !composerStateRef.current.writable) {
       setResumeForEpoch(releaseEpoch.current);
       const ready = await waitForChatReady();
-      if (!ready) { setError(copy('The conversation could not be resumed. Try Continue.', '未能恢复对话，请点“继续”重试。')); return; }
+      if (!ready) { const issue=copy('The conversation could not be resumed. Try Continue.', '未能恢复对话，请点“继续”重试。');setError(issue);if(throwOnFailure)throw new Error(issue);return; }
     }
     const epoch=leaseSessionId.current === session.id ? lease.current : undefined;
     const queueing = queueComposerMode(Boolean(activeTurnId(itemsRef.current, session.status)), queue);
-    if((!value&&!images.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!composerEditable(composerStateRef.current)||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))))return;
+    if((!value&&!outboundImages.length)||queue?.sessionId!==session.id||imageReading||epoch===undefined||!composerEditable(composerStateRef.current)||(!queueing&&(firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status)))){
+      if(throwOnFailure)throw new Error(copy('Message was not sent.', '消息未发送。'));
+      return;
+    }
     pickTicket.current = undefined;
     const submittingLifecycle = lifecycle.current;
+    if (!submittingLifecycle) {
+      if (throwOnFailure) throw new Error('Chat is unavailable.');
+      return;
+    }
     const token = operationId();
     if (queueing) {
       setBusy(true); setError(undefined);
       try {
-        await persistCompose(text, epoch);
-        if (lifecycle.current !== submittingLifecycle) return;
-        const nextQueue = await request('chat.queue.add', {sessionId:session.id, text:value, ...(images.length ? {images} : {}), operationId:token, leaseEpoch:epoch});
+        if(!dedicated)await persistCompose(text, epoch);
+        if (lifecycle.current !== submittingLifecycle) { if(throwOnFailure)throw new Error('Chat is unavailable.'); return; }
+        const nextQueue = await request('chat.queue.add', {sessionId:session.id, text:value, ...(outboundImages.length ? {images:outboundImages} : {}), operationId:token, leaseEpoch:epoch});
         if (lifecycle.current !== submittingLifecycle) return;
         setQueue(nextQueue);
-        clearMentions(); composerGeneration.current += 1;
-        changeText(''); setImages([]); context.clear();
-        try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted queue item is already durable. */ }
-        await persistCompose('', epoch);
+        if(!dedicated){clearMentions(); composerGeneration.current += 1; changeText(''); setImages([]); context.clear(); try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted queue item is already durable. */ } await persistCompose('', epoch);}
       } catch (caught) {
         if (lifecycle.current === submittingLifecycle) setError(asUserError(caught, copy('Message was not queued.', '消息未能加入队列。')));
+        if(throwOnFailure)throw caught;
       } finally { if (lifecycle.current === submittingLifecycle) setBusy(false); }
       return;
     }
     const pendingStart = { token, sessionUpdatedAt: session.updatedAt };
-    setSubmissionPreview({ token, text: value, images });
+    setSubmissionPreview({ token, text: value, images:outboundImages });
     firstResponseWaitRef.current = pendingStart;
     setFirstResponseWait(pendingStart);
     setBusy(true);setError(undefined);
     let accepted = false;
     try{
-      const submittedDraft = await persistCompose(text,epoch);
-      if (lifecycle.current !== submittingLifecycle) return;
+      const submittedDraft = dedicated?undefined:await persistCompose(text,epoch);
+      if (lifecycle.current !== submittingLifecycle) { if(throwOnFailure)throw new Error('Chat is unavailable.'); return; }
       const submittingWriter = submittingLifecycle?.writer;
-      if (!submittingWriter) throw new Error('Draft is not loaded');
-      submittingLifecycle.submittingDraft = submittedDraft.text;
-      const sentAndCleared = request('chat.send',{sessionId:session.id,text:value,...(images.length ? {images} : {}),operationId:token,leaseEpoch:epoch}).then(async sent => {
+      if (!submittingWriter&&!dedicated) throw new Error('Draft is not loaded');
+      if(submittedDraft)submittingLifecycle.submittingDraft = submittedDraft.text;
+      const sentAndCleared = request('chat.send',{sessionId:session.id,text:value,...(outboundImages.length ? {images:outboundImages} : {}),operationId:token,leaseEpoch:epoch}).then(async sent => {
         accepted = true;
-        return {sent, cleared: await submittingWriter.writeIfUnchanged(submittedDraft, '')};
+        return {sent, cleared: submittedDraft&&submittingWriter ? await submittingWriter.writeIfUnchanged(submittedDraft, '') : true};
       });
       // Keep the lease alive until an unmounted view conditionally clears its
       // acknowledged submission; the runtime request itself is time-bounded.
@@ -1308,7 +1321,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         setFirstResponseWait(pending);
         if (hasVisibleAssistantResponse(itemsRef.current, sent.turnId)) clearFirstResponseWait(token);
       }
-      const submittedTextStillVisible = currentText.current === text;
+      const submittedTextStillVisible = !dedicated&&currentText.current === text;
       // Do not erase an edit that arrived while the send was in flight. Its
       // writer update advances the revision, so the conditional clear above
       // also leaves the durable newer draft untouched.
@@ -1334,12 +1347,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           setError(asUserError(caught, copy('Message was not sent.', '消息未发送。')));
         }
       }
+      if(throwOnFailure)throw caught;
     }
     finally{
       if (submittingLifecycle) submittingLifecycle.submittingDraft = undefined;
       if (lifecycle.current === submittingLifecycle) setBusy(false);
     }
   }
+  submitRef.current=packet=>submit({ preventDefault() {} } as FormEvent,true,packet);
   function updateImages(next: string[]) {
     try {
       if (next.length) localStorage.setItem(imageDraftKey, JSON.stringify(validateChatImages(next)));
@@ -1983,13 +1998,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         const messageImageRefs = !redactedBrowser&&Array.isArray(partImageRefs) ? partImageRefs.filter(isChatImageRef) : [];
         const foldedTool = part.type === "tool";
         const codexMarkdown = item.role !== "user" && part.type === "text";
+        const chips=item.role==='user'?designNoteChips(body):[];
         return <div className={`chat-part ${part.type}${part.type === 'tool' ? ` v3-tool-card ${part.status ?? ''}` : ''}`} key={`${part.type}-${index}`}>
-          {(!!messageImages.length || !!messageImageRefs.length) && <ChatMessageImages sessionId={session.id} images={messageImages} refs={messageImageRefs} copy={copy} />}
+          {(!!messageImages.length || !!messageImageRefs.length) && <ChatMessageImages sessionId={session.id} images={messageImages} refs={messageImageRefs} copy={copy} openImageIndex={designAttachment?.part===`${item.id}:${index}`?designAttachment.index:undefined} onOpenImage={image=>{setDesignScreenshot({id:'attachment',image});setDesignAttachment(undefined);}} />}
           {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
               ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} zh={zh} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
-              : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} openFile={openFile} zh={zh} /></div>}</ContextMessage>{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
+              : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} openFile={openFile} zh={zh} /></div>}</ContextMessage>{chips.length>0&&<div className="design-note-chips" aria-label={copy('Design notes','设计标注')}>{chips.map(chip=>{const attachment=Number(chip.pin.slice(1))-1,available=Boolean(chip.shotId)||attachment<messageImages.length+messageImageRefs.length;return <button key={chip.pin} type="button" className="chip flat design-note-chip" disabled={!available} title={`${chip.target} · ${chip.words}`} onClick={()=>chip.shotId?void openDesignScreenshot(chip.shotId):setDesignAttachment({part:`${item.id}:${index}`,index:attachment})}>{chip.pin} · {chip.target} · {chip.words}</button>;})}</div>}{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={redactedBrowser?undefined:part.fileReferences} visibleText={body} openFile={openFile} />}
           </>}
@@ -2164,6 +2180,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     {overlay === "full" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={connectSlow} error={connection.error} variant="full" onRetry={connection.phase === "failed" && link.transport === "up" ? retryConnection : undefined} copy={copy} transportDown={link.transport !== "up"} />}
     {repairDialog && <SurfaceDialog title={legacyHistoryReload ? copy('Reload saved history?', '重新加载已保存的历史？') : copy('Repair chat history?', '修复对话记录？')} subtitle={session.title} icon={legacyHistoryReload ? 'clock' : 'refresh'} size="sm" className="chat-repair-dialog" descriptionId={repairDescriptionId} onClose={() => { if (!repairBusy) setRepairDialog(false); }} footer={<><button autoFocus className="btn" disabled={repairBusy} onClick={() => setRepairDialog(false)}>{copy('Cancel', '取消')}</button><button className="btn btn-primary" disabled={repairBusy} onClick={() => void confirmRepair()}>{repairBusy ? (legacyHistoryReload ? copy('Reloading…', '正在重新加载…') : copy('Repairing…', '正在修复…')) : (legacyHistoryReload ? copy('Reload history', '重新加载历史') : copy('Repair history', '修复历史'))}</button></>}><div id={repairDescriptionId} className="chat-repair-confirm"><p>{copy("The local transcript will be replaced by the agent's saved record. Some local details may be lost: tool details, subagent cards, question answers, usage and timings. A backup of the current transcript is kept, and pending requests will expire.", '本地对话记录将被代理保存的记录替换。部分本地细节可能丢失：工具详情、子代理卡片、问题回答、用量和耗时。当前记录会保留一份备份，待处理的请求将过期。')}</p><p>{copy('Queued prompts, drafts and review checkpoints are not changed.', '排队的提示词、草稿和审查检查点不受影响。')}</p><p className="note">{copy('This only reads the agent\'s saved history. It does not send a prompt or continue the conversation.', '此操作仅读取代理保存的历史，不会发送提示词，也不会继续对话。')}</p></div></SurfaceDialog>}
     {mentionPreview !== undefined && <SurfaceDialog title={copy('Context preview', '上下文预览')} variant="plain" size="wide" className="context-preview-dialog" onClose={() => setMentionPreview(undefined)}><pre className="context-preview" data-testid="context-preview">{mentionPreview}</pre></SurfaceDialog>}
+    {designScreenshot&&<SurfaceDialog title={copy('Page screenshot','页面截图')} size="wide" onClose={()=>setDesignScreenshot(undefined)}>{designScreenshot.image?<img className="wb-page-shot-full" src={designScreenshot.image} alt={copy('Page screenshot','页面截图')}/>:<p role={designScreenshot.issue?'alert':'status'}>{designScreenshot.issue??copy('Loading screenshot…','正在加载截图…')}{designScreenshot.issue&&<button type="button" className="btn btn-sm" onClick={()=>void openDesignScreenshot(designScreenshot.id)}>{copy('Retry','重试')}</button>}</p>}</SurfaceDialog>}
     {codeReviewOpen && leaseSessionId.current === session.id && lease.current !== undefined && <CodeReviewDialog
       session={session}
       leaseEpoch={lease.current}

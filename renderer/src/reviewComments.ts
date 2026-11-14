@@ -4,7 +4,7 @@ import { formatAgentReference, referencePath } from "./workbench/agentReference"
 import type { PagePick, PageTargetRef } from "@threadterm/protocol";
 import { operationId, request, subscribeEvents } from "./bridge";
 import { isAbsoluteFilePath } from './externalFiles';
-import { isRemoteFiles, persistRemotePageShot } from './remoteFiles';
+import { persistRemotePageShot } from './remoteFiles';
 
 export type CommentVersion =
   | { kind: "file" }
@@ -91,7 +91,12 @@ function validPage(value: unknown, scope: CommentScope): value is PageComment {
   if (shot && (!text(shot.id, 200) || !shot.id || !text(shot.path, 2048) || !shot.path || !text(shot.thumbnail, 350000) || !/^data:image\/(?:jpeg|png);base64,/i.test(shot.thumbnail) || !finite(shot.width) || !finite(shot.height) || shot.width <= 0 || shot.height <= 0)) return false;
   if (source && (!text(source.file, 400) || !source.file || !["react", "vue", "svelte", "attribute"].includes(String(source.framework)) || (source.line !== undefined && (!Number.isSafeInteger(source.line) || (source.line as number) < 1)) || (source.column !== undefined && (!Number.isSafeInteger(source.column) || (source.column as number) < 1)))) return false;
   if (target.components !== undefined && (!Array.isArray(target.components) || target.components.length > 6 || !target.components.every(item => text(item, 80) && !!item))) return false;
-  if (target.type === "element") return text(target.selector, 500) && !!target.selector && text(target.tag, 80) && !!target.tag && text(target.label, 160) && !!target.label && text(target.html, 600) && !!target.attributes && typeof target.attributes === "object" && !Array.isArray(target.attributes) && Object.entries(target.attributes as Record<string, unknown>).every(([key, value]) => text(key, 80) && text(value, 300));
+  const styleMap=(value:unknown,limit:number)=>value===undefined||!!value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value as Record<string,unknown>).length<=limit&&Object.entries(value as Record<string,unknown>).every(([key,item])=>text(key,80)&&!!key&&text(item,1000));
+  const sourceValid=(value:unknown)=>value===undefined||!!value&&typeof value==='object'&&text((value as Record<string,unknown>).file,400)&&!!(value as Record<string,unknown>).file&&["react","vue","svelte","attribute"].includes(String((value as Record<string,unknown>).framework))&&((value as Record<string,unknown>).line===undefined||(Number.isSafeInteger((value as Record<string,unknown>).line)&&(value as Record<string,unknown>).line as number>=1))&&((value as Record<string,unknown>).column===undefined||(Number.isSafeInteger((value as Record<string,unknown>).column)&&(value as Record<string,unknown>).column as number>=1));
+  const element=(value:unknown)=>{if(!value||typeof value!=='object')return false;const candidate=value as Record<string,unknown>,box=candidate.rect as Record<string,unknown>|undefined,attributes=candidate.attributes;return candidate.type==='element'&&text(candidate.selector,500)&&!!candidate.selector&&text(candidate.tag,80)&&!!candidate.tag&&text(candidate.label,160)&&!!candidate.label&&(candidate.text===undefined||text(candidate.text,200))&&text(candidate.html,600)&&!!attributes&&typeof attributes==='object'&&!Array.isArray(attributes)&&Object.entries(attributes as Record<string,unknown>).every(([key,item])=>text(key,80)&&text(item,300))&&!!box&&finite(box.x)&&finite(box.y)&&finite(box.width)&&finite(box.height)&&sourceValid(candidate.source)&&(candidate.components===undefined||Array.isArray(candidate.components)&&candidate.components.length<=6&&candidate.components.every(item=>text(item,80)&&!!item))&&styleMap(candidate.computedStyles,6)&&styleMap(candidate.styles,300);};
+  const edits=(value:unknown,kind:'css'|'text')=>value===undefined||Array.isArray(value)&&value.length<=80&&value.every(edit=>!!edit&&typeof edit==='object'&&text((edit as Record<string,unknown>).before,1000)&&text((edit as Record<string,unknown>).after,1000)&&text((edit as Record<string,unknown>)[kind==='css'?'property':'selector'],kind==='css'?120:500));
+  if(!styleMap(target.computedStyles,6)||!styleMap(target.styles,300)||!edits(item.cssEdits,'css')||!edits(item.textEdits,'text')||(item.toChat!==undefined&&typeof item.toChat!=='boolean')||(item.elements!==undefined&&(!Array.isArray(item.elements)||item.elements.length>8||!item.elements.every(element))))return false;
+  if (target.type === "element") return element(target);
   return target.type === "area" && Array.isArray(target.elements) && target.elements.length <= 8 && target.elements.every(item => text(item, 160) && !!item);
 }
 function assetPaths(comment: ReviewComment): string[] { return isPageComment(comment) && comment.shot ? [comment.shot.path] : []; }
@@ -142,7 +147,7 @@ export async function loadReviewComments(scope: CommentScope): Promise<ReviewCom
 }
 export async function loadFileComments(scope: CommentScope): Promise<FileComment[]> { return (await loadReviewComments(scope)).filter((comment): comment is FileComment => !isPageComment(comment)); }
 async function put(scope: CommentScope, comment: ReviewComment, expectedRevision: number): Promise<void> {
-  if (isRemoteFiles() && isPageComment(comment) && comment.shot) comment = { ...comment, shot: await persistRemotePageShot(comment.shot, comment.provenance?.sessionId, scope.projectId, scope.root) };
+  if (isPageComment(comment) && comment.shot) comment = { ...comment, shot: await persistRemotePageShot(comment.shot, comment.provenance?.sessionId, scope.projectId, scope.root) };
   const stored = storedScope(scope), result = await request("reviewDrafts.upsert", { draftId: comment.id, scopeProjectId: stored.projectId, scopeRoot: stored.root, draft: comment, assetPaths: assetPaths(comment), expectedRevision, operationId: operationId() });
   if (result.status === "conflict") { if (result.draft) revisions.set(result.draft.draftId, result.draft.revision); await loadReviewComments(scope); throw new Error("review_comments_conflict"); }
   revisions.set(result.draft.draftId, result.draft.revision);
@@ -241,10 +246,10 @@ export function pageTargetRef(target: PageComment["target"]): PageTargetRef {
   return target.type === "element" ? { selector: target.selector, rect: target.rect } : { rect: target.rect };
 }
 function formatPageComment(comment: PageComment, zh: boolean, reference: string): string[] {
-  const { target } = comment, rect = target.rect, position = `${Math.round(rect.width)}×${Math.round(rect.height)} ${zh ? "位于" : "at"} (${Math.round(rect.x)}, ${Math.round(rect.y)})`, shot = comment.shot ? `${zh ? " · 截图：" : " · Screenshot: "}${comment.shot.path}` : "";
+  const { target } = comment, rect = target.rect, position = `${Math.round(rect.width)}×${Math.round(rect.height)} ${zh ? "位于" : "at"} (${Math.round(rect.x)}, ${Math.round(rect.y)})`, shot = comment.shot ? `${zh ? " · 截图：" : " · Screenshot: "}${comment.shot.path} [shot:${comment.shot.id}]` : "";
   if (target.type === "area") {
     const contains = target.elements.length ? (zh ? `。包含：${target.elements.map(item => `“${item}”`).join("、")}` : `. Contains: ${target.elements.map(item => `"${item}"`).join(", ")}`) : "";
-    return [`- [${reference}] ${pageCommentLabel(target, zh)} ${zh ? "位于" : "at"} (${Math.round(rect.x)}, ${Math.round(rect.y)})${contains}`, `  ${zh ? "截图：" : "Screenshot: "}${comment.shot?.path ?? (zh ? "无" : "none")}`];
+    return [`- [${reference}] ${pageCommentLabel(target, zh)} ${zh ? "位于" : "at"} (${Math.round(rect.x)}, ${Math.round(rect.y)})${contains}`, `  ${zh ? "截图：" : "Screenshot: "}${comment.shot?.path ?? (zh ? "无" : "none")}${comment.shot?` [shot:${comment.shot.id}]`:''}`];
   }
   const output = [`- [${reference}] ${pageCommentLabel(target, zh)} (${target.selector})`];
   if (target.source) {
@@ -254,6 +259,19 @@ function formatPageComment(comment: PageComment, zh: boolean, reference: string)
   else if (target.components?.length) output.push(`  ${zh ? "组件：" : "Components: "}${target.components.join(" › ")}`);
   const attributes = Object.entries(target.attributes).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
   if (attributes) output.push(`  ${zh ? "属性：" : "Attributes: "}${attributes}`);
+  const all=[target,...(comment.elements??[])].filter((element,index,items)=>items.findIndex(other=>other.selector===element.selector)===index);
+  for(const [index,element] of all.entries())if(index){
+    const prefix=`  ${zh?'关联元素':'Related element'} ${index+1}: `;
+    const relatedAttributes=Object.entries(element.attributes).map(([key,value])=>`${key}=${JSON.stringify(value)}`).join(' ');
+    output.push(`${prefix}${element.label} (${element.selector})`, `    HTML: ${element.html}`, `    ${zh?'边框':'Box'}: ${Math.round(element.rect.width)}×${Math.round(element.rect.height)} ${zh?'位于':'at'} (${Math.round(element.rect.x)}, ${Math.round(element.rect.y)})`);
+    if(relatedAttributes)output.push(`    ${zh?'属性':'Attributes'}: ${relatedAttributes}`);
+    if(element.source)output.push(`    ${zh?'来源':'Source'}: ${element.source.file}${element.source.line?`:${element.source.line}${element.source.column?`:${element.source.column}`:''}`:''}`);
+    if(element.components?.length)output.push(`    ${zh?'组件':'Components'}: ${element.components.join(' › ')}`);
+    if(element.computedStyles&&Object.keys(element.computedStyles).length)output.push(`    ${zh?'计算样式':'Computed styles'}: ${Object.entries(element.computedStyles).map(([property,value])=>`${property}: ${value}`).join('; ')}`);
+  }
+  if(target.computedStyles&&Object.keys(target.computedStyles).length)output.push(`  ${zh?'计算样式':'Computed styles'}: ${Object.entries(target.computedStyles).map(([property,value])=>`${property}: ${value}`).join('; ')}`);
+  for(const edit of comment.cssEdits??[])output.push(`  CSS ${edit.property}: ${JSON.stringify(edit.before)} → ${JSON.stringify(edit.after)}`);
+  for(const edit of comment.textEdits??[])output.push(`  ${zh?'文本编辑':'Text edit'} ${edit.selector}: ${JSON.stringify(edit.before)} → ${JSON.stringify(edit.after)}`);
   output.push(`  HTML: ${target.html}`, `  ${zh ? "边框：" : "Box: "}${position}${shot}`);
   return output;
 }

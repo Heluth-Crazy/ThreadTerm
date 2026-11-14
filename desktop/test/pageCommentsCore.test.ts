@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { win32, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { clipPageRect, pageCaptureRect, pageImageSize, pageRect, pageShotPath, sanitizePagePick, sanitizePageTargetRef, validPageFrameName, validPageShotId } from '../src/pageCommentsCore.js';
+import { clipPageRect, pageCaptureRect, pageImageSize, pageRect, pageShotPath, sanitizePageInspectResult, sanitizePagePick, sanitizePageTargetRef, validPageFrameName, validPageShotId } from '../src/pageCommentsCore.js';
 
 function elementPick() {
   return { url: 'http://localhost:5173/cart', title: 'Cart', viewport: { width: 800, height: 600 }, target: {
@@ -24,6 +24,27 @@ test('valid area data and viewport clipping', () => {
   const raw = { url: 'https://example.com/', title: '', viewport: { width: 800, height: 600 }, target: { type: 'area', rect: { x: -10, y: 590, width: 900, height: 50 }, elements: ['header "Shop"', 'nav "Main"'] } };
   assert.deepEqual(sanitizePagePick(raw)?.target.rect, { x: 0, y: 590, width: 800, height: 10 });
   assert.deepEqual(raw.target.rect, { x: -10, y: 590, width: 900, height: 50 });
+});
+
+test('bounded design context preserves multiple targets and edit history', () => {
+  const raw = elementPick();
+  Object.assign(raw.target, { computedStyles: { color: 'rgb(1, 2, 3)', 'background-color': 'transparent', 'font-size': '14px', 'font-family': 'system-ui', display: 'block', position: 'relative' }, styles: { color: 'rgb(1, 2, 3)', display: 'block' } });
+  Object.assign(raw, { elements: [raw.target], cssEdits: [{ property: 'color', before: 'rgb(1, 2, 3)', after: 'red' }], textEdits: [{ selector: '#save', before: 'Save', after: 'Send' }], toChat: true });
+  const result = sanitizePagePick(raw);
+  assert.deepEqual(result, raw);
+  (raw.target as Record<string, unknown>).computedStyles = { width: '20px' };
+  assert.throws(() => sanitizePagePick(raw));
+});
+
+test('inspector reply rejects unbounded page controlled fields', () => {
+  assert.deepEqual(sanitizePageInspectResult({styles:{color:'red'},cssEdits:[{property:'color',before:'black',after:'red'}]}), {styles:{color:'red'},cssEdits:[{property:'color',before:'black',after:'red'}]});
+  for(const invalid of [
+    {styles:{color:'x'.repeat(1001)},cssEdits:[]},
+    {styles:{},cssEdits:Array(65).fill({property:'color',before:'a',after:'b'})},
+    {styles:{},cssEdits:[{property:'color\n',before:'a',after:'b'}]},
+    {styles:{},cssEdits:[{property:'color',before:'a\n',after:'b'}]},
+    {styles:{},cssEdits:[],extra:true},
+  ]) assert.throws(()=>sanitizePageInspectResult(invalid));
 });
 
 const invalid: Array<[string, (pick: ReturnType<typeof elementPick>) => void]> = [

@@ -2,8 +2,8 @@ import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent, type WebContents,
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import type { PagePick, PageRect, PageShot } from '@threadterm/protocol';
-import { MAX_PAGE_SHOT_BYTES, pageCaptureRect, pageImageSize, pageRect, pageShotPath, sanitizePagePick, sanitizePageTargetRef, validPageFrameName, validPageShotId } from './pageCommentsCore.js';
+import type { PagePick, PageRect, PageShot, PageTargetRef } from '@threadterm/protocol';
+import { MAX_PAGE_SHOT_BYTES, pageCaptureRect, pageImageSize, pageRect, pageShotPath, sanitizePageInspectResult, sanitizePagePick, sanitizePageTargetRef, validPageFrameName, validPageShotId } from './pageCommentsCore.js';
 import { pagePickerSource } from './pagePickerScript.js';
 
 type PendingPick = { frame: WebFrameMain; cancel: () => void; cancelled: boolean };
@@ -176,9 +176,12 @@ async function pickPageTarget(event: IpcMainInvokeEvent, value: unknown): Promis
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid page pick request');
   const request = value as Record<string, unknown>;
   const frameRect = pageRect(request.frameRect);
+  const zh=request.zh===undefined?undefined:(typeof request.zh==='boolean'?request.zh:(()=>{throw new Error('Invalid page pick locale');})());
+  const point=request.point===undefined?undefined:pageRect({x:(request.point as Record<string,unknown>)?.x,y:(request.point as Record<string,unknown>)?.y,width:0,height:0});
+  if(point&&(point.x>10000||point.y>10000))throw new Error('Invalid page pick point');
   const sender = event.sender;
   const native = typeof request.frameName === 'string' ? nativePages.get(nativeKey(sender, request.frameName)) : undefined;
-  if(native){const pick=await pickNativePage(native,sender,String(request.frameName));if(!sender.isDestroyed()&&BrowserWindow.fromWebContents(sender)?.isFocused())sender.focus();return pick;}
+  if(native){const mode=request.mode===undefined?undefined:(request.mode==='element'||request.mode==='area'?request.mode:(()=>{throw new Error('Invalid page pick mode');})());const pick=await pickNativePage(native,sender,String(request.frameName),mode,zh,point);if(!sender.isDestroyed()&&BrowserWindow.fromWebContents(sender)?.isFocused())sender.focus();return pick;}
   const frame = findFrame(sender, request.frameName);
   const key = `${sender.id}:${request.frameName}`;
   pendingPicks.get(key)?.cancel();
@@ -208,10 +211,14 @@ async function pickPageTarget(event: IpcMainInvokeEvent, value: unknown): Promis
   }, 150);
   gone.unref();
   try {
-    const raw = await Promise.race([frame.executeJavaScript(pagePickerSource('pick'), false), cancellation]);
+    const mode=request.mode===undefined?undefined:(request.mode==='element'||request.mode==='area'?request.mode:(()=>{throw new Error('Invalid page pick mode');})());
+    const raw = await Promise.race([frame.executeJavaScript(point?pagePickerSource('at',undefined,undefined,point):pagePickerSource('pick',undefined,undefined,undefined,{...(mode?{mode}:{}),...(zh?{zh}: {})}), false), cancellation]);
     if (pending.cancelled || frame.detached) return null;
     const pick = sanitizePagePick(raw);
     if (!pick) return null;
+    // Extending an open note keeps its existing screenshot. Capturing the occluded page here can wait forever for
+    // a detached native compositor, and an extra target must not replace the first note's image.
+    if (point) return pick;
     const capture = captureShot(sender, frameRect, pick).then(async (shot) => {
       if (pending.cancelled || frame.detached) {
         if (shot) await deletePageShots([shot.id], { force: true });
@@ -234,7 +241,7 @@ async function pickPageTarget(event: IpcMainInvokeEvent, value: unknown): Promis
   }
 }
 
-async function pickNativePage(native: NativePage, sender: WebContents, frameName: string): Promise<PagePick | null> {
+async function pickNativePage(native: NativePage, sender: WebContents, frameName: string, mode?:'element'|'area', zh?:boolean, point?:PageRect): Promise<PagePick | null> {
   const contents = native.contents;
   if (contents.isDestroyed()) return null;
   const key = nativeKey(sender, frameName);
@@ -245,9 +252,10 @@ async function pickNativePage(native: NativePage, sender: WebContents, frameName
   pendingPicks.set(key, pending);
   const navigating=(details:Electron.Event<Electron.WebContentsDidStartNavigationEventParams>)=>{if(details.isMainFrame&&!details.isSameDocument)pending.cancel();},destroyed=()=>pending.cancel();contents.on('did-start-navigation',navigating);contents.once('destroyed',destroyed);
   try {
-    const raw = await Promise.race([contents.executeJavaScriptInIsolatedWorld(999, [{ code: pagePickerSource('pick') }], false), cancelled]);
+    const raw = await Promise.race([contents.executeJavaScriptInIsolatedWorld(999, [{ code: point?pagePickerSource('at',undefined,undefined,{x:point.x,y:point.y}):pagePickerSource('pick',undefined,undefined,undefined,{...(mode?{mode}:{}),...(zh?{zh}: {})}) }], false), cancelled]);
     if (pending.cancelled || contents.isDestroyed()) return null;
     const pick = sanitizePagePick(raw); if (!pick) return null;
+    if (point) return pick;
     const capture = captureNativePageShot(contents, pick).then(async shot => {
       if (pending.cancelled && shot) { await deletePageShots([shot.id], { force: true }); return undefined; }
       return shot;
@@ -341,10 +349,24 @@ export function registerPageComments(
     const frame = findFrame(event.sender, request.frameName);
     const target = sanitizePageTargetRef(request.target);
     if (request.flash !== undefined && typeof request.flash !== 'boolean') throw new Error('Invalid page flash flag');
+    let pins: Array<{number:number;target:PageTargetRef}>|undefined;
+    if(request.pins!==undefined){if(!Array.isArray(request.pins)||request.pins.length>200)throw new Error('Invalid page pins');pins=request.pins.map(value=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid page pin');const pin=value as Record<string,unknown>,number=pin.number;if(typeof number!=='number'||!Number.isSafeInteger(number)||number<1||number>9999)throw new Error('Invalid page pin number');const target=sanitizePageTargetRef(pin.target);if(!target)throw new Error('Invalid page pin target');return {number,target};});}
     const native = typeof request.frameName === 'string' ? nativePages.get(nativeKey(event.sender, request.frameName)) : undefined;
-    if (native && !native.contents.isDestroyed()) return native.contents.executeJavaScriptInIsolatedWorld(999, [{ code: pagePickerSource('mark', target, request.flash as boolean | undefined) }], false).then((result: unknown) => result === true, () => false);
+    if (native && !native.contents.isDestroyed()) return native.contents.executeJavaScriptInIsolatedWorld(999, [{ code: pagePickerSource('mark', target, request.flash as boolean | undefined,undefined,pins?{pins}:undefined) }], false).then((result: unknown) => result === true, () => false);
     if (!frame) return false;
-    return frame.executeJavaScript(pagePickerSource('mark', target, request.flash as boolean | undefined), false).then((result: unknown) => result === true, () => false);
+    return frame.executeJavaScript(pagePickerSource('mark', target, request.flash as boolean | undefined,undefined,pins?{pins}:undefined), false).then((result: unknown) => result === true, () => false);
+  });
+  ipcMain.handle('threadterm:inspect-page-target', async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid page inspect request');
+    const request=value as Record<string,unknown>, frame=findFrame(event.sender,request.frameName), target=sanitizePageTargetRef(request.target);
+    if (!target) throw new Error('Missing page inspect target');
+    const edit={...(request.property===undefined?{}:{property:typeof request.property==='string'&&/^[a-z-]{1,80}$/.test(request.property)?request.property:(()=>{throw new Error('Invalid page style property');})()}),...(request.value===undefined?{}:{value:typeof request.value==='string'&&request.value.length<=1000&&!/[\x00-\x1f\x7f-\x9f]/.test(request.value)?request.value:(()=>{throw new Error('Invalid page style value');})()}),...(request.revert===undefined?{}:{revert:request.revert===true?true:(()=>{throw new Error('Invalid page style revert');})()})};
+    const native=typeof request.frameName==='string'?nativePages.get(nativeKey(event.sender,request.frameName)):undefined;
+    const run=(contents:WebContents)=>{const url=contents.getURL();return contents.executeJavaScriptInIsolatedWorld(999,[{code:pagePickerSource('inspect',target,undefined,undefined,edit)}],false).then(result=>{if(contents.isDestroyed()||contents.getURL()!==url)throw new Error('Page changed; inspect it again.');return sanitizePageInspectResult(result);});};
+    if(native&&!native.contents.isDestroyed()) return run(native.contents);
+    if(!frame)return null;
+    const url=frame.url;return frame.executeJavaScript(pagePickerSource('inspect',target,undefined,undefined,edit),false).then(result=>{if(frame.detached||frame.url!==url)throw new Error('Page changed; inspect it again.');return sanitizePageInspectResult(result);});
   });
   ipcMain.handle('threadterm:read-page-shot', async (event, id: unknown) => { assertTrustedRenderer(event); return await readPageShot(id) ?? await remoteReader?.(event, id); });
   ipcMain.handle('threadterm:delete-page-shots', async (event, ids: unknown) => { assertTrustedRenderer(event); return deletePageShots(ids, { assetReferences }); });

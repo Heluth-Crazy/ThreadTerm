@@ -5,7 +5,7 @@ import type { ContextItem } from './chatContext';
 import type { FileCommentsHost } from './fileCommentsHost';
 import { isRemoteFiles, persistRemotePageShot } from './remoteFiles';
 
-export type PageShotPacket={shot:PageShot;url:string;dataUrl:string};
+export type PageShotPacket={shot:PageShot;url:string;dataUrl:string;/** Marked region in page CSS pixels, when the screenshot was annotated. */targetRect?:import('@threadterm/protocol').PageRect};
 export type ShotDraft={shot:PageShot;url:string;mode:'image'|'offer'|'file';imageIndex?:number};
 type ShotReceiver={visible:()=>boolean;attach:(packet:PageShotPacket)=>void};
 const shotReceivers=new Map<string,Set<ShotReceiver>>();

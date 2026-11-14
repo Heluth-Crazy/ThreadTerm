@@ -23,3 +23,20 @@ test('remote review uploads its screenshot before persisting draft and assetPath
   const result = await addPageComment({ ...scope, url: 'https://example.invalid/', title: 'Host page', viewport: { width: 800, height: 600 }, target: { type: 'area', rect: { x: 0, y: 0, width: 100, height: 100 }, elements: [] }, shot: { id: 'local-shot', path: 'C:/client/shot.png', width: 100, height: 100, thumbnail: 'data:image/png;base64,YQ==' }, provenance: { previewId: 'preview', sessionId: 'host-chat' }, body: 'Review it' });
   assert.deepEqual(calls, ['upload', 'persist']); assert.equal(result.length, 1);
 });
+
+test('local review promotes its screenshot through the same durable attachment capability', async () => {
+  const calls: string[] = [], rows: unknown[] = [];
+  const scope = { projectId: 'local-project', root: 'C:/work' };
+  (globalThis as unknown as { window: unknown }).window = { threadterm: {
+    machineId: 'local',
+    persistPageShot: async (id: string, session: string | undefined, projectId: string, root: string) => { calls.push('promote'); assert.equal(id, 'local-shot'); assert.equal(session, undefined); assert.equal(projectId, scope.projectId); assert.equal(root, scope.root); return { id: 'durable-asset', path: 'C:/data/attachments/durable-asset/shot.png' }; },
+    request: async (method: string, params: Record<string, unknown>) => {
+      if (method === 'reviewDrafts.importLegacy') return { imported: false, complete: true };
+      if (method === 'reviewDrafts.list') return { drafts: rows };
+      if (method === 'reviewDrafts.upsert') { calls.push('persist'); const draft = params.draft as { shot: { id: string; path: string } }; assert.deepEqual(draft.shot,{id:'durable-asset',path:'C:/data/attachments/durable-asset/shot.png',width:100,height:100,thumbnail:'data:image/png;base64,YQ=='}); rows.push({ ...params, revision: 1, updatedAt: 'now' }); return { status: 'ok', draft: rows[0] }; }
+      throw new Error(method);
+    },
+  } };
+  await addPageComment({ ...scope, url: 'https://example.invalid/', title: 'Local page', viewport: { width: 800, height: 600 }, target: { type: 'area', rect: { x: 0, y: 0, width: 100, height: 100 }, elements: [] }, shot: { id: 'local-shot', path: 'C:/transient/shot.png', width: 100, height: 100, thumbnail: 'data:image/png;base64,YQ==' }, provenance: { previewId: 'preview' }, body: 'Review it' });
+  assert.deepEqual(calls,['promote','persist']);
+});

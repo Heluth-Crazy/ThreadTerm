@@ -16,7 +16,7 @@ vm.runInNewContext(ts.transpileModule(readFileSync('renderer/src/i18n.tsx','utf8
 const capture={shot:{id:'00000000-0000-4000-8000-000000000000',path:'C:/shots/page.png',width:40,height:30,thumbnail:'data:image/jpeg;base64,AA=='},dataUrl:'data:image/png;base64,c25hcA==',url:'https://example.test/',documentGeneration:3,width:40,height:30};
 
 function fixture(extra={}){
- const states=[],refs=[],effects=[],portals=[],commands=[];let stateIndex=0,refIndex=0,browserListener,resolveCapture,rejectCapture;
+ const states=[],refs=[],effects=[],portals=[],commands=[],menus=[];let stateIndex=0,refIndex=0,browserListener,resolveCapture,rejectCapture;
  const body={kind:'document-body'},placeholder={getBoundingClientRect:()=>({x:101.4,y:202.6,width:403.7,height:304.2})};
  const react={
   useId:()=>':browser-markup-fixture:',
@@ -45,7 +45,7 @@ function fixture(extra={}){
   if(name==='../browserOcclusion')return {usePassiveBrowserOcclusion(){},watchBrowserOverlays:()=>()=>{},updateBrowserOverlayBounds(){}};
   if(name==='./PageComments')return {PageCommentControls:Symbol('PageCommentControls'),PageCommentForm:Symbol('PageCommentForm'),PageHandoffDestination:Symbol('PageHandoffDestination'),ScreenshotMarkup,usePageCommentPreview:()=>({frameName:'tt-preview-native',provenance:{previewId:'preview-a'},enabled:true,cancel(){},acceptPick(){}})};
   if(name==='./FileComments')return {PendingComments:Symbol('PendingComments'),useReviewComments:()=>[]};
-  if(name==='./ContextMenu')return {showContextMenu(){}};
+  if(name==='./ContextMenu')return {showContextMenu:value=>menus.push(value)};
   if(name==='../webContextMenuItems')return {webContextMenuItems:()=>[]};
   if(name==='../pageShotDraft')return {addPageShotToDraft:async()=>{}};
   return {};
@@ -55,8 +55,12 @@ function fixture(extra={}){
  vm.runInNewContext(compiled,{require,module,exports:module.exports,document:{body},window:{dispatchEvent(){}},Node:class{},KeyboardEvent:class{},Element:class{},ResizeObserver:class{observe(){}disconnect(){}},addEventListener(){},removeEventListener(){},requestAnimationFrame(){}});
  const render=(visible=true)=>{stateIndex=0;refIndex=0;effects.length=0;portals.length=0;const tree=module.exports.WebPreview({tabId:'tab-a',url:'https://example.test/',visible,zh:false,commentsHost:{},...extra});find(tree,node=>node.props?.className==='tt-browser-view').props.ref.current=placeholder;return tree;};
  const find=(node,predicate)=>{if(!node)return; if(predicate(node))return node;const children=node.props?.children;for(const child of Array.isArray(children)?children:[children]){const found=find(child,predicate);if(found)return found;}};
- return {render,find,effects,portals,commands,body,ScreenshotMarkup,get browserListener(){return browserListener;},get resolveCapture(){return resolveCapture;},get rejectCapture(){return rejectCapture;}};
+ return {render,find,effects,portals,commands,menus,body,ScreenshotMarkup,get browserListener(){return browserListener;},get resolveCapture(){return resolveCapture;},get rejectCapture(){return rejectCapture;}};
 }
+
+function overflowItem(f,tree,label){const more=f.find(tree,node=>['More page actions','更多页面操作'].includes(node.props?.['aria-label']));assert.ok(more,'overflow actions remain reachable');more.props.onClick({currentTarget:{getBoundingClientRect:()=>({right:0,bottom:0})}});const item=f.menus.at(-1)?.items.find(value=>value.label===label);assert.ok(item,`${label} remains in overflow`);return item;}
+
+function agentItem(f,tree,label){const button=f.find(tree,node=>node.props?.['aria-label']==='Agent access');assert.ok(button,'agent popup remains reachable');button.props.onClick({currentTarget:{getBoundingClientRect:()=>({left:0,bottom:0})}});const item=f.menus.at(-1)?.items.find(value=>value.label===label);assert.ok(item,`${label} remains reachable`);return item;}
 
 function placeholderFrom(tree){
  const walk=node=>{if(!node)return; if(node.props?.className==='tt-browser-view')return node.props.ref?.current;const children=node.props?.children;for(const child of Array.isArray(children)?children:[children]){const found=walk(child);if(found)return found;}};
@@ -67,9 +71,8 @@ test('screenshot markup remains mounted outside the native placeholder across an
  const f=fixture();let tree=f.render();
  // This subscription receives the snapshot emitted by native-page occlusion
  // immediately after the editor mounts.
- f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();assert.equal(typeof f.browserListener,'function');
- const button=f.find(tree,node=>node.props?.['aria-label']==='Screenshot to Chat');assert.ok(button,'real toolbar exposes Screenshot to Chat');
- button.props.onClick();assert.equal(typeof f.resolveCapture,'function','real capture IPC is pending');
+ f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();assert.equal(typeof f.browserListener,'function');f.browserListener({type:'state',state:loadedState});tree=f.render();
+ const button=overflowItem(f,tree,'Screenshot to Chat');assert.equal(button.disabled,false);button.onSelect();assert.equal(typeof f.resolveCapture,'function','real capture IPC is pending');
  f.resolveCapture(capture);await new Promise(resolve=>setImmediate(resolve));tree=f.render();
  assert.equal(f.portals.length,1,'capture mounts one markup editor');
  let portal=f.portals[0];assert.equal(portal.child.type,f.ScreenshotMarkup,'portal records the real markup child');
@@ -86,29 +89,29 @@ test('screenshot markup remains mounted outside the native placeholder across an
 const loadedState={tabId:'tab-a',url:capture.url,title:'',loading:false,canGoBack:false,canGoForward:false,zoom:1,navigation:'load_observed',documentGeneration:3,unloaded:false};
 test('capture errors remain visible across unrelated browser state events and clear on retry',async()=>{
  const f=fixture();f.render();f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();f.browserListener({type:'state',state:loadedState});let tree=f.render();
- const button=()=>f.find(tree,node=>node.props?.['aria-label']==='Screenshot to Chat');
- assert.equal(button().props.disabled,false);button().props.onClick();f.rejectCapture(new Error('Page screenshot save failed: EACCES'));
+ const button=()=>overflowItem(f,tree,'Screenshot to Chat');
+ assert.equal(button().disabled,false);button().onSelect();f.rejectCapture(new Error('Page screenshot save failed: EACCES'));
  await new Promise(resolve=>setImmediate(resolve));tree=f.render();
  const alert=()=>f.find(tree,node=>node.props?.['data-browser-handoff-error']!==undefined);
  const message=()=>typeof alert().props.children==='string'?alert().props.children:f.find(alert(),node=>node.type==='span').props.children;
  assert.equal(message(),'Could not take a screenshot. Try again.');assert.equal(tree.props['data-handoff-state'],'error');assert.equal(f.portals.length,0);
  assert.doesNotMatch(JSON.stringify(alert()),/EACCES|save failed|Error invoking|page comment/i);
  f.browserListener({type:'state',state:{...loadedState,zoom:1.1}});tree=f.render();assert.equal(message(),'Could not take a screenshot. Try again.','an unrelated state event cannot erase the failed capture');
- f.find(alert(),node=>node.type==='button').props.onClick();tree=f.render();assert.equal(alert(),undefined);assert.equal(tree.props['data-handoff-state'],'capturing');assert.equal(button().props['aria-busy'],true);
+ f.find(alert(),node=>node.type==='button').props.onClick();tree=f.render();assert.equal(alert(),undefined);assert.equal(tree.props['data-handoff-state'],'capturing');assert.equal(button().disabled,true,'capture disables its overflow action while pending');
  f.resolveCapture(capture);await new Promise(resolve=>setImmediate(resolve));tree=f.render();assert.equal(tree.props['data-handoff-state'],'markup');assert.equal(f.portals.length,1);
 });
 test('capture stays disabled until a document is observed and groups page actions for wrapping',()=>{
- const f=fixture();let tree=f.render();const button=()=>f.find(tree,node=>node.props?.['aria-label']==='Screenshot to Chat');
- assert.equal(button().props.disabled,true,'a pending page is not ready even before loading becomes true');
- f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();f.browserListener({type:'state',state:loadedState});tree=f.render();assert.equal(button().props.disabled,false);
+ const f=fixture();let tree=f.render();const button=()=>overflowItem(f,tree,'Screenshot to Chat');
+ assert.equal(button().disabled,true,'a pending page is not ready even before loading becomes true');
+ f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();f.browserListener({type:'state',state:loadedState});tree=f.render();assert.equal(button().disabled,false);
  assert.equal(tree.props['data-document-generation'],3);const actions=f.find(tree,node=>node.props?.className==='wb-browser-actions');
- for(const label of ['Screenshot to Chat','Page console','Find in page','Open in browser'])assert.ok(f.find(actions,node=>node.props?.['aria-label']===label),`${label} belongs to the wrapping action group`);
+ assert.ok(f.find(actions,node=>node.props?.['aria-label']==='Page console'),'console stays in action group');for(const label of ['Screenshot to Chat','Find in page','Open in browser'])assert.ok(overflowItem(f,tree,label),`${label} stays reachable from the same action group`);
 });
 
 test('capture failures show localized recovery without exposing IPC or page details',async()=>{
  for(const zh of [false,true]){
   const f=fixture({zh});f.render();f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();f.browserListener({type:'state',state:loadedState});let tree=f.render();
-  f.find(tree,node=>node.props?.['aria-label']===(zh?'截图到对话':'Screenshot to Chat')).props.onClick();
+  overflowItem(f,tree,zh?'截图到对话':'Screenshot to Chat').onSelect();
   f.rejectCapture(new Error("Error invoking remote method 'threadterm:browser-handoff': Error: private page text"));
   await new Promise(resolve=>setImmediate(resolve));tree=f.render();
   const alert=f.find(tree,node=>node.props?.['data-browser-handoff-error']!==undefined);
@@ -125,17 +128,18 @@ test('browser toolbar glyphs and console/find controls survive unrelated renders
  f.browserListener({type:'state',state:{...loadedState,canGoBack:true,canGoForward:true}});
  let tree=f.render();
  const labels=['Back','Forward','Reload','Screenshot to Chat','Find in page','Open in browser'];
- const icons=labels.map(label=>f.find(tree,node=>node.props?.['aria-label']===label).props.children.props.name);
+ const glyph=label=>['Back','Reload'].includes(label)?f.find(tree,node=>node.props?.['aria-label']===label).props.children.props.name:overflowItem(f,tree,label).icon.props.name;
+ const icons=labels.map(glyph);
  // Pane selection re-renders WebPreview with unchanged props; console/state
  // events can also land between pointerdown and mousedown.
  for(let index=0;index<3;index++){
   f.browserListener({type:'state',state:{...loadedState,title:`title ${index}`,canGoBack:true,canGoForward:true}});tree=f.render();
-  labels.forEach((label,position)=>assert.equal(f.find(tree,node=>node.props?.['aria-label']===label).props.children.props.name,icons[position],`${label}: same glyph after state update`));
+  labels.forEach((label,position)=>assert.equal(glyph(label),icons[position],`${label}: same glyph after state update`));
  }
  const consoleButton=()=>f.find(tree,node=>node.props?.['aria-label']==='Page console');
  assert.equal(consoleButton().props['aria-expanded'],false);consoleButton().props.onClick();tree=f.render();assert.equal(consoleButton().props['aria-expanded'],true);
  consoleButton().props.onClick();tree=f.render();assert.equal(consoleButton().props['aria-expanded'],false);
- const find=f.find(tree,node=>node.props?.['aria-label']==='Find in page');find.props.onClick();tree=f.render();
+ overflowItem(f,tree,'Find in page').onSelect();tree=f.render();
  const findIcons=['Previous match','Next match','Close find'].map(label=>f.find(tree,node=>node.props?.['aria-label']===label).props.children.props.name);
  tree=f.render();['Previous match','Next match','Close find'].forEach((label,index)=>assert.equal(f.find(tree,node=>node.props?.['aria-label']===label).props.children.props.name,findIcons[index]));
 });
@@ -151,7 +155,7 @@ test('Read waits for saved scope and discards intent when the document changes d
  for(const changed of [false,true]){
  let finishSave;const f=fixture({prepareBrowserShare:()=>new Promise(resolve=>{finishSave=resolve;})});f.render();f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();
  const sharing={level:'off',status:'idle',grantEpoch:7,viewGeneration:4,navigationEpoch:8,reading:false};
- f.browserListener({type:'state',state:{...loadedState,sharing}});let tree=f.render();f.find(tree,node=>node.props?.['aria-label']==='Agent access Read').props.onClick();
+ f.browserListener({type:'state',state:{...loadedState,sharing}});let tree=f.render();agentItem(f,tree,'Agent access Read').onSelect();
  assert.equal(f.commands.length,0,'a toolbar click cannot share an unsaved layout');
  if(changed){f.browserListener({type:'state',state:{...loadedState,documentGeneration:4,sharing:{...sharing,navigationEpoch:9}}});tree=f.render();}
  finishSave({id:'saved-workspace',revision:12});await new Promise(done=>setImmediate(done));
@@ -161,8 +165,8 @@ test('Read waits for saved scope and discards intent when the document changes d
 
 test('Off cancels a delayed Read save without sending a later grant request',async()=>{
  let finishSave;const f=fixture({prepareBrowserShare:()=>new Promise(resolve=>{finishSave=resolve;})});f.render();f.effects.find(effect=>String(effect).includes('onBrowserEvent'))();
- f.browserListener({type:'state',state:{...loadedState,sharing:{level:'off',status:'idle',grantEpoch:0,viewGeneration:1,navigationEpoch:1,reading:false}}});let tree=f.render();f.find(tree,node=>node.props?.['aria-label']==='Agent access Read').props.onClick();tree=f.render();
- f.find(tree,node=>node.props?.['aria-label']==='Agent access Off').props.onClick();await new Promise(done=>setImmediate(done));finishSave({id:'workspace',revision:1});await new Promise(done=>setImmediate(done));
+ f.browserListener({type:'state',state:{...loadedState,sharing:{level:'off',status:'idle',grantEpoch:0,viewGeneration:1,navigationEpoch:1,reading:false}}});let tree=f.render();agentItem(f,tree,'Agent access Read').onSelect();tree=f.render();
+ agentItem(f,tree,'Agent access Off').onSelect();await new Promise(done=>setImmediate(done));finishSave({id:'workspace',revision:1});await new Promise(done=>setImmediate(done));
  assert.equal(JSON.stringify(f.commands),JSON.stringify([{type:'share',tabId:'tab-a',level:'off'}]));
 });
 

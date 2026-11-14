@@ -225,12 +225,14 @@ export interface PageRect { x:number; y:number; width:number; height:number }
 /** Best-effort dev-build hint for where an element is defined (React _debugSource, Vue __file, Svelte __svelte_meta,
  * code-inspector data attributes). Paths are as the page reports them (absolute or project-relative). */
 export interface PageSourceHint { file:string; line?:number; column?:number; framework:'react'|'vue'|'svelte'|'attribute' }
-export interface PageElementTarget { type:'element'; selector:string; tag:string; /** e.g. `button "Save changes"` */ label:string; text?:string; attributes:Record<string,string>; /** Opening tag + short text, ≤ 600 chars. */ html:string; rect:PageRect; source?:PageSourceHint; /** Nearest component names, innermost first (React/Vue/Svelte dev builds). */ components?:string[] }
+export interface PageCssEdit { property:string; before:string; after:string }
+export interface PageTextEdit { selector:string; before:string; after:string }
+export interface PageElementTarget { type:'element'; selector:string; tag:string; /** e.g. `button "Save changes"` */ label:string; text?:string; attributes:Record<string,string>; /** Opening tag + short text, ≤ 600 chars. */ html:string; rect:PageRect; source?:PageSourceHint; /** Nearest component names, innermost first (React/Vue/Svelte dev builds). */ components?:string[]; computedStyles?:Record<string,string>; styles?:Record<string,string> }
 export interface PageAreaTarget { type:'area'; rect:PageRect; /** Labels of the main elements inside the area, ≤ 8. */ elements:string[] }
 /** A saved screenshot of the pick: the full image is a file in the app's data folder (agents can open `path`); the
  * thumbnail (≤ 240 px wide JPEG data URL) is kept with the comment. */
 export interface PageShot { id:string; path:string; width:number; height:number; thumbnail:string }
-export interface PagePick { url:string; title:string; viewport:{ width:number; height:number }; target:PageElementTarget|PageAreaTarget; shot?:PageShot }
+export interface PagePick { url:string; title:string; viewport:{ width:number; height:number }; target:PageElementTarget|PageAreaTarget; elements?:PageElementTarget[]; cssEdits?:PageCssEdit[]; textEdits?:PageTextEdit[]; toChat?:boolean; shot?:PageShot }
 export interface PageTargetRef { selector?:string; rect?:PageRect }
 export interface PluginList { /** Where user plugins are installed (one folder per plugin, each with threadterm-plugin.json). */ directory:string; plugins:PluginInfo[] }
 /** A saved composer snippet inserted at the caret from the `+` menu or the composer's right-click menu. */
@@ -1267,11 +1269,12 @@ export interface ThreadTermBridge {
  /** Page comments: lets the user pick an element (click) or an area (drag) inside the preview iframe named
   * `frameName` (`tt-preview-…`, a frame of the calling window). `frameRect` is the iframe's CSS-pixel rect in the
   * window. Resolves with the pick, or null when cancelled (Esc in the page, cancelPagePick, navigation). */
- pickPageTarget(request:{ frameName:string; frameRect:PageRect }):Promise<PagePick|null>;
+ pickPageTarget(request:{ frameName:string; frameRect:PageRect; mode?:'element'|'area'; zh?:boolean; point?:{x:number;y:number} }):Promise<PagePick|null>;
  cancelPagePick(frameName:string):Promise<void>;
  /** Outlines a target in the preview (kept while a comment form is open, `flash` = brief highlight + scroll into
   * view); `target` undefined clears. Resolves false when the target can no longer be found on the page. */
- markPageTarget(request:{ frameName:string; target?:PageTargetRef; flash?:boolean }):Promise<boolean>;
+ markPageTarget(request:{ frameName:string; target?:PageTargetRef; flash?:boolean; pins?:Array<{number:number;target:PageTargetRef}> }):Promise<boolean>;
+ inspectPageTarget(request:{frameName:string;target:PageTargetRef;property?:string;value?:string;revert?:boolean}):Promise<{styles:Record<string,string>;cssEdits:PageCssEdit[]}>;
  /** The full screenshot of a pick as a data URL (for Chat image attachments); undefined when it was removed. */
  readPageShot(shotId:string):Promise<string|undefined>;
  deletePageShots(shotIds:string[]):Promise<void>;

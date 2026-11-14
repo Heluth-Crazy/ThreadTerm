@@ -26,7 +26,7 @@ const frameName='tt-preview-nativecomments';let serial=0;
 function fixture(){const calls=[],crops=[],sender=Object.assign(new EventEmitter(),{id:++serial,isDestroyed:()=>false,mainFrame:{framesInSubtree:[]},focus(){this.focused=true;}});
  const image=(width=800,height=600)=>({isEmpty:()=>false,getSize:()=>({width,height}),crop(rect){crops.push(rect);return image(rect.width,rect.height);},resize:size=>image(size.width,size.height),toPNG:()=>Buffer.from('png'),toJPEG:()=>Buffer.from('jpeg')});
  let resolvePick;
- const page=Object.assign(new EventEmitter(),{isDestroyed:()=>false,mainFrame:{},capturePage:async()=>image(),executeJavaScriptInIsolatedWorld:async(world,scripts,gesture)=>{calls.push({world,scripts,gesture});if(scripts[0].code.endsWith('("pick",undefined,undefined)'))return new Promise(resolve=>{resolvePick=resolve;});return true;}});
+ const page=Object.assign(new EventEmitter(),{isDestroyed:()=>false,mainFrame:{},capturePage:async()=>image(),executeJavaScriptInIsolatedWorld:async(world,scripts,gesture)=>{calls.push({world,scripts,gesture});if(/\)\("at",/.test(scripts[0].code))return {url:'https://example.test/',title:'Point target',viewport:{width:400,height:300},target:{type:'element',selector:'#other',tag:'button',label:'Other',attributes:{},html:'<button>Other</button>',rect:{x:10,y:10,width:30,height:20}}};if( /\)\("pick",/.test(scripts[0].code))return new Promise(resolve=>{resolvePick=resolve;});return true;}});
  api.nativePageRegistered(sender,frameName,page,()=>({x:20,y:80,width:400,height:300}));
  return {sender,page,calls,crops,event:{sender,trusted:true},pick:()=>resolvePick,close:()=>api.nativePageClosed(sender,frameName)};
 }
@@ -49,4 +49,12 @@ test('native pages cannot be picked through another renderer identity',async()=>
 test('native unregister and navigation cancel a pending picker without leaving screenshot files',async()=>{
  const f=fixture(),pending=invoke('pick-page-target',f.event,request);await tick();f.close();assert.equal(await pending,null);assert.ok(f.calls.some(call=>call.scripts[0].code.endsWith('("cancel",undefined,undefined)')));
  const next=fixture(),navigation=invoke('pick-page-target',next.event,request);await tick();next.page.emit('did-start-navigation',{isMainFrame:true});assert.equal(await navigation,null);assert.equal(next.page.listenerCount('did-start-navigation'),0);next.close();assert.deepEqual(await readdir(join(root,'page-comments')).catch(()=>[]),[]);
+});
+
+test('English and Chinese picker requests accept explicit boolean locale flags',async()=>{
+ for(const zh of [false,true]){const f=fixture(),pending=invoke('pick-page-target',f.event,{...request,zh,mode:'element'});await tick();assert.ok(f.pick());f.pick()(pick());const selected=await pending;assert.ok(selected.shot);await api.deletePageShots([selected.shot.id],{force:true});f.close();}
+});
+
+test('a point pick extends context without waiting for a detached screenshot compositor',async()=>{
+ const f=fixture();let captured=0;f.page.capturePage=()=>{captured++;return new Promise(()=>{});};const selected=await invoke('pick-page-target',f.event,{...request,point:{x:25,y:20},zh:false});assert.equal(selected.target.selector,'#other');assert.equal(selected.shot,undefined);assert.equal(captured,0,'an open note retains its primary screenshot');f.close();
 });

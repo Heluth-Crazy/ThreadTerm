@@ -31,9 +31,10 @@ export const windowAction = (action: "minimize" | "maximize" | "close") => facad
 export const outputSubscription = (sessionId: string, cursor: number, listener: (chunk: OutputChunk) => void) => facade().subscribeOutput(sessionId, cursor, listener);
 export const outputText = (chunk: OutputChunk) => new TextDecoder().decode(chunk.data);
 export const operationId = () => crypto.randomUUID();
-export const pickPageTarget = (request: { frameName: string; frameRect: PageRect }) => facade().pickPageTarget(request);
+export const pickPageTarget = (request: Parameters<typeof window.threadterm.pickPageTarget>[0]) => facade().pickPageTarget(request);
 export const cancelPagePick = (frameName: string) => facade().cancelPagePick(frameName);
-export const markPageTarget = (request: { frameName: string; target?: PageTargetRef; flash?: boolean }) => facade().markPageTarget(request);
+export const markPageTarget = (request: Parameters<typeof window.threadterm.markPageTarget>[0]) => facade().markPageTarget(request);
+export const inspectPageTarget = (request: Parameters<typeof window.threadterm.inspectPageTarget>[0]) => facade().inspectPageTarget(request);
 export const readPageShot = (shotId: string) => facade().readPageShot(shotId);
 export const deletePageShots = (shotIds: string[]) => facade().deletePageShots(shotIds);
 export const onPageContextMenu = (listener: (value: { frameName: string; x: number; y: number; pick?: PagePick; staticFrame?: boolean; selectionText: string }) => void) => facade().onPageContextMenu(listener);

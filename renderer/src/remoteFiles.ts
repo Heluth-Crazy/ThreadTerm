@@ -18,9 +18,11 @@ export async function uploadRemotePaths(sessionId: string, paths: string[]): Pro
 }
 
 export async function persistRemotePageShot(shot: PageShot, sessionId?: string, projectId?: string, root?: string): Promise<PageShot> {
-  if (!isRemoteFiles()) return shot;
-  if (!adapter().persistPageShot) throw new Error('Remote screenshot uploads are unavailable');
-  return { ...shot, ...await adapter().persistPageShot!(shot.id, sessionId, projectId, root) };
+  // Local and remote desktop backends share this durable attachment capability. Browser/test facades that
+  // predate it retain the captured shot unchanged so legacy comment storage remains usable.
+  const bridge=adapter();
+  if (!bridge.persistPageShot) return shot;
+  return { ...shot, ...await bridge.persistPageShot(shot.id, sessionId, projectId, root) };
 }
 
 export async function readRemoteDropPaths(paths: string[]): Promise<AttachedFile[]> {
