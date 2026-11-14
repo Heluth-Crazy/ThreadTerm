@@ -248,3 +248,16 @@
   .workbench-page .quiet-row { flex-wrap: wrap; }
   .workbench-page .quiet-row .meta { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 }
+
+/* Mac-style composer row (owner 2026-11-14: "这里的线条多余了，显得很杂乱"). The composer card is the only outline: its
+   pickers are ghost buttons in the Codex manner, muted and filled only on hover, and the popup inside a picker drops
+   the Mac popup-button ring (mac-controls.css) so it reads as the chip's own label. */
+.workbench-page .composer-row { gap:4px; }
+.workbench-page .composer-chip { height:28px; gap:6px; padding:0 8px; border:0; border-radius:7px; background:transparent; color:var(--muted); transition:background-color .12s ease, color .12s ease; }
+.workbench-page .composer-chip:hover, .workbench-page .composer-chip:focus-within { background:var(--fill-hover); color:var(--text); }
+.workbench-page .composer-chip.disabled:hover { background:transparent; color:var(--muted); }
+.workbench-page .composer-chip .tt-select { height:auto; min-height:0; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.workbench-page .composer-chip .tt-select .tt-select-trigger { height:26px; min-height:26px; padding:0; gap:4px; font-weight:500; }
+.workbench-page .composer-chip .tt-select .tt-select-trigger:focus-visible { outline:none; }
+.workbench-page .composer-chip:has(.tt-select-trigger:focus-visible) { box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 45%,transparent); }
+.workbench-page .composer-chip.composer-agent-chip { color:var(--text); }

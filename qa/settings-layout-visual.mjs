@@ -15,7 +15,8 @@ import { acquireElectronQaLock } from './lib/electron-lock.mjs';
 const root = resolve(import.meta.dirname, '..');
 const base = resolve(process.env.TEMP ?? (() => { throw new Error('TEMP must be tt-qa-temp'); })());
 const runtime = resolve(process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe'));
-const out = join(root, process.argv.includes('--toolbar') ? 'qa/results/toolbar-views' : 'qa/results/settings-layout');
+const mode = process.argv.includes('--toolbar') ? 'toolbar' : process.argv.includes('--start') ? 'start' : 'settings';
+const out = join(root, { toolbar: 'qa/results/toolbar-views', start: 'qa/results/start-composer', settings: 'qa/results/settings-layout' }[mode]);
 const scratch = await mkdtemp(join(base, 'tt-settings-layout-'));
 const bin = join(scratch, 'bin'), plugins = join(scratch, 'plugins'), work = join(scratch, 'work');
 const data = join(scratch, 'data'), profile = join(scratch, 'profile'), pipe = `\\\\.\\pipe\\tt-settings-layout-${randomUUID()}`;
@@ -101,6 +102,23 @@ async function capture(label, tab) {
   return issues;
 }
 
+// The start page composer (project, worktree and agent pickers) in light and dark.
+async function start() {
+  const { execFileSync } = await import('node:child_process');
+  execFileSync('git', ['init', '-q', '-b', 'fix/terminal-workbench-polish', work]);
+  await request('project.add', { path: work, name: 'ThreadTerm', operationId: randomUUID() });
+  await page.getByRole('button', { name: 'ThreadTerm', exact: true }).first().click();
+  const composer = page.locator('.workbench-page .composer'); await composer.waitFor();
+  await page.waitForFunction(() => [...document.querySelectorAll('.workbench-page .composer-chip')].every(chip => !/Loading|加载/.test(chip.textContent)));
+  for (const theme of ['light', 'dark']) {
+    const snap = await request('runtime.snapshot');
+    await request('settings.update', { patch: { theme }, expectedRevision: snap.settings.revision, operationId: randomUUID() });
+    await page.waitForFunction(value => document.documentElement.dataset.theme === value, theme); await page.mouse.move(0, 0); await settle();
+    await composer.screenshot({ path: join(out, `start-composer-${theme}.png`), animations: 'disabled' }); report.screenshots.push(`start-composer-${theme}.png`);
+    report.measurements = { ...report.measurements, [`start-${theme}`]: await page.locator('.workbench-page .composer-row').evaluate(row => [...row.querySelectorAll('.composer-chip, .composer-chip .tt-select, .composer-send')].map(node => { const s = getComputedStyle(node); return `${node.className} border=${s.borderTopWidth} ${s.borderTopColor} shadow=${s.boxShadow} bg=${s.backgroundColor} h=${node.getBoundingClientRect().height}`; })) };
+  }
+}
+
 // The session toolbar's view switcher next to the prototype's, both at CSS scale 1, light and dark.
 async function toolbar() {
   const { chromium } = await import('@playwright/test');
@@ -158,8 +176,9 @@ try {
   await page.waitForFunction(() => Boolean(window.threadterm?.request)); await page.locator('#boot-splash').waitFor({ state: 'detached' });
   await wait(async () => (await request('provider.list')).some(item => item.id === 'codex'), 'fake Codex discovery');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900)); await page.setViewportSize({ width: 1440, height: 900 });
-  if (process.argv.includes('--toolbar')) await toolbar();
-  for (const [language, theme] of process.argv.includes('--toolbar') ? [] : process.argv.includes('--dom') ? [['zh-CN', 'light']] : [['zh-CN', 'light'], ['zh-CN', 'dark'], ['en', 'light']]) {
+  if (mode === 'toolbar') await toolbar();
+  if (mode === 'start') await start();
+  for (const [language, theme] of mode !== 'settings' ? [] : process.argv.includes('--dom') ? [['zh-CN', 'light']] : [['zh-CN', 'light'], ['zh-CN', 'dark'], ['en', 'light']]) {
     const snap = await request('runtime.snapshot');
     await request('settings.update', { patch: { language, theme, themeSelection: undefined, notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: snap.settings.revision, operationId: randomUUID() });
     await page.waitForFunction(value => document.documentElement.lang === value, language);
