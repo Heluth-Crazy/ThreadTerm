@@ -73,9 +73,47 @@ function strings(value: unknown, count: number, length: number): string[] {
   return value.map((item) => string(item, length));
 }
 
+const computedStyleKeys = ['color', 'background-color', 'font-size', 'font-family', 'display', 'position'] as const;
+function styleMap(value: unknown, limit: number, required = false): Record<string, string> {
+  const source = record(value), entries = Object.entries(source);
+  if (entries.length > limit || (required && !entries.length)) throw new Error('Invalid page styles');
+  const result: Record<string, string> = {};
+  for (const [key, item] of entries) {
+    if (!/^[a-z-]{1,80}$/.test(key)) throw new Error('Invalid page style property');
+    result[key] = string(item, 1000);
+  }
+  return result;
+}
+function sanitizeElementTarget(value: unknown, viewport: { width:number; height:number }): import('@threadterm/protocol').PageElementTarget {
+  const target = record(value, ['type', 'selector', 'tag', 'label', 'text', 'attributes', 'html', 'rect', 'source', 'components', 'computedStyles', 'styles']);
+  if (target.type !== 'element') throw new Error('Invalid page target type');
+  const tag = string(target.tag, 80, true);
+  if (!/^[a-z][a-z0-9-]*$/.test(tag)) throw new Error('Invalid page element tag');
+  const attributes: Record<string, string> = {};
+  for (const [key, item] of Object.entries(record(target.attributes, PAGE_ATTRIBUTE_KEYS))) attributes[key] = string(item, 300);
+  if (tag === 'input' && attributes.type?.toLowerCase() === 'password') throw new Error('Password attributes must be omitted');
+  const computedStyles=target.computedStyles===undefined?undefined:styleMap(target.computedStyles,6);
+  if(computedStyles&&Object.keys(computedStyles).some(key=>!computedStyleKeys.includes(key as typeof computedStyleKeys[number])))throw new Error('Invalid page computed style');
+  return {type:'element',selector:string(target.selector,500,true),tag,label:string(target.label,160),...(target.text===undefined?{}:{text:string(target.text,300)}),attributes,html:string(target.html,600),rect:clipPageRect(pageRect(target.rect),viewport.width,viewport.height),...(target.source===undefined?{}:{source:sourceHint(target.source)}),...(target.components===undefined?{}:{components:strings(target.components,6,80)}),...(computedStyles?{computedStyles}:{}),...(target.styles===undefined?{}:{styles:styleMap(target.styles,300)})};
+}
+function sanitizeEdits(value: unknown, fields: readonly string[], maximum: number): Array<Record<string,string>> {
+  if(!Array.isArray(value)||value.length>maximum)throw new Error('Invalid page edits');
+  return value.map(item=>{const row=record(item,fields),out:Record<string,string>={};for(const field of fields)out[field]=string(row[field],field==='property'||field==='selector'?500:1000,field==='property'||field==='selector');return out;});
+}
+
+/** Inspector output is untrusted page data. Keep it on the same bounded contract as a page pick. */
+export function sanitizePageInspectResult(value: unknown): {styles:Record<string,string>;cssEdits:import('@threadterm/protocol').PageCssEdit[]} {
+  const result=record(value,['styles','cssEdits']);
+  const cssEdits=sanitizeEdits(result.cssEdits,['property','before','after'],64).map(edit=>{
+    if(!/^[a-z-]{1,80}$/.test(edit.property))throw new Error('Invalid page style property');
+    return edit as unknown as import('@threadterm/protocol').PageCssEdit;
+  });
+  return {styles:styleMap(result.styles,300),cssEdits};
+}
+
 export function sanitizePagePick(value: unknown): PagePick | null {
   if (value === null) return null;
-  const pick = record(value, ['url', 'title', 'viewport', 'target']);
+  const pick = record(value, ['url', 'title', 'viewport', 'target', 'elements', 'cssEdits', 'textEdits', 'toChat']);
   const url = string(pick.url, 2048, true);
   if (!isLocalHtmlPreviewUrl(url) && (!/^https?:\/\//i.test(url) || !['http:', 'https:'].includes(new URL(url).protocol))) throw new Error('Invalid page URL');
   const title = string(pick.title, 200);
@@ -88,20 +126,9 @@ export function sanitizePagePick(value: unknown): PagePick | null {
     record(target, ['type', 'rect', 'elements']);
     return { url, title, viewport, target: { type: 'area', rect, elements: strings(target.elements, 8, 160) } };
   }
-  if (target.type !== 'element') throw new Error('Invalid page target type');
-  record(target, ['type', 'selector', 'tag', 'label', 'text', 'attributes', 'html', 'rect', 'source', 'components']);
-  const tag = string(target.tag, 80, true);
-  if (!/^[a-z][a-z0-9-]*$/.test(tag)) throw new Error('Invalid page element tag');
-  const attributes: Record<string, string> = {};
-  for (const [key, value] of Object.entries(record(target.attributes, PAGE_ATTRIBUTE_KEYS))) attributes[key] = string(value, 300);
-  if (tag === 'input' && attributes.type?.toLowerCase() === 'password') throw new Error('Password attributes must be omitted');
-  return { url, title, viewport, target: {
-    type: 'element', selector: string(target.selector, 500, true), tag, label: string(target.label, 160),
-    ...(target.text === undefined ? {} : { text: string(target.text, 300) }),
-    attributes, html: string(target.html, 600), rect,
-    ...(target.source === undefined ? {} : { source: sourceHint(target.source) }),
-    ...(target.components === undefined ? {} : { components: strings(target.components, 6, 80) }),
-  } };
+  const element=sanitizeElementTarget(target,viewport);
+  const elements=pick.elements===undefined?undefined:(Array.isArray(pick.elements)&&pick.elements.length>0&&pick.elements.length<=8?pick.elements.map(value=>sanitizeElementTarget(value,viewport)):(()=>{throw new Error('Invalid page elements');})());
+  return {url,title,viewport,target:element,...(elements?{elements}:{}),...(pick.cssEdits===undefined?{}:{cssEdits:sanitizeEdits(pick.cssEdits,['property','before','after'],64) as unknown as import('@threadterm/protocol').PageCssEdit[]}),...(pick.textEdits===undefined?{}:{textEdits:sanitizeEdits(pick.textEdits,['selector','before','after'],32) as unknown as import('@threadterm/protocol').PageTextEdit[]}),...(pick.toChat===undefined?{}:{toChat:pick.toChat===true?true:(()=>{throw new Error('Invalid page chat flag');})()})};
 }
 
 export function sanitizePageTargetRef(value: unknown): PageTargetRef | undefined {

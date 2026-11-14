@@ -1,0 +1,56 @@
+/* Design Mode geometry follows the Flush annotate prototype. Controls use cg-* unchanged. */
+.wb-web-preview.dm-browser { position:relative; }
+.wb-web-preview.dm-browser > .file-bar.wb-browser-toolbar { min-height:38px; padding:0 6px; gap:2px; }
+.wb-web-preview.dm-browser .wb-browser-address { height:26px; min-width:48px; margin:0 4px; padding:0 4px; border-radius:7px; background:var(--fill-hover); }
+.wb-web-preview.dm-browser .wb-browser-address input { height:24px; font-size:12px; }
+.wb-web-preview.dm-browser .wb-browser-page-glyph { width:18px; height:18px; }
+.wb-web-preview.dm-browser .wb-browser-page-glyph > .ico { width:12px; height:12px; }
+.wb-web-preview.dm-browser .wb-browser-url { left:24px; font-size:12px; }
+.wb-web-preview.dm-browser .wb-browser-actions,.wb-web-preview.dm-browser .wb-browser-navigation { gap:2px; }
+.dm-entry { display:flex; position:relative; align-items:center; flex:none; }
+.dm-pending { position:absolute; z-index:15; right:0; top:30px; width:min(320px,calc(100vw - 32px)); padding:8px; }
+.dm-pending-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid var(--border); }
+.dm-pending-row > span:nth-child(2) { display:grid; gap:3px; min-width:0; flex:1; }
+.dm-pending-row b,.dm-pending-row small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:400; }
+.dm-pending-row small { color:var(--muted); }
+.dm-pin-inline { display:inline-grid; place-items:center; flex:none; width:20px; height:20px; border-radius:50% 50% 50% 3px; background:var(--primary); color:var(--primary-fg); font:600 11px var(--font); }
+.dm-hint { display:flex; align-items:center; flex:none; gap:8px; height:34px; min-width:0; padding:0 6px 0 10px; border-bottom:1px solid var(--border); background:var(--raised); color:var(--muted); font-size:12px; white-space:nowrap; }
+.dm-hint-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.dm-batch { display:flex; align-items:center; gap:6px; flex:none; }
+.dm-batch input { appearance:none; position:relative; width:26px; height:15px; margin:0; border:0; border-radius:999px; background:var(--fill-selected); cursor:pointer; }
+.dm-batch input::after { content:''; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%; background:var(--control); box-shadow:0 1px 2px var(--control-drop); }
+.dm-batch input:checked { background:var(--primary); }
+.dm-batch input:checked::after { left:13px; background:var(--primary-fg); }
+.dm-batch input:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.dm-divider { flex:none; width:1px; height:16px; background:var(--separator-strong); }
+.dm-note { position:absolute; z-index:12; top:120px; right:16px; display:grid; gap:8px; width:min(304px,calc(100% - 32px)); max-height:calc(100% - 136px); padding:10px; overflow:auto; color:var(--text); font-size:12.5px; }
+.dm-note-target { display:flex; align-items:center; gap:6px; min-width:0; color:var(--muted); font:11.5px var(--mono); }
+.dm-note-target > .ico { flex:none; width:14px; height:14px; }
+.dm-note-target > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+.dm-note-target > small { flex:0 1 auto; margin-left:auto; padding:0 5px; overflow:hidden; text-overflow:ellipsis; border-radius:4px; background:var(--fill-hover); font:11px var(--font); white-space:nowrap; }
+.dm-note textarea { box-sizing:border-box; width:100%; min-height:54px; padding:7px 9px; border:0; resize:none; outline:none; color:var(--text); font:12.5px/1.45 var(--font); }
+.dm-note-shot { max-width:100%; max-height:74px; border-radius:4px; object-fit:contain; justify-self:start; }
+.dm-note-foot { display:flex; align-items:center; gap:2px; min-width:0; }
+.dm-css { overflow:hidden; font:11.5px var(--mono); }
+body .dm-note .dm-css > input { box-sizing:border-box; width:100%; height:26px; padding:0 8px; border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; color:var(--text); font:12px var(--font); outline:none; }
+.dm-css-rows { max-height:192px; overflow:auto; }
+.dm-css-row { display:flex; align-items:center; gap:8px; height:24px; padding:0 8px; }
+.dm-css-row > span { color:var(--muted); max-width:50%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dm-css-row > s { min-width:0; max-width:20%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); }
+body .dm-note .dm-css-row > input { box-sizing:border-box; flex:1; min-width:0; width:0; height:22px; margin-left:auto; padding:0; border:0; border-radius:0; background:transparent; color:var(--text); font:inherit; text-align:right; box-shadow:none; }
+.dm-css-row[data-changed] { background:color-mix(in srgb,var(--primary) 14%,transparent); }
+.dm-css-row[data-changed] > input { color:var(--primary); }
+@container browser-preview (width < 600px) {
+ .dm-hint { gap:4px; padding-left:6px; }
+ .dm-hint-text { display:none; }
+ .dm-batch { margin-left:auto; }
+ .dm-note-foot { flex-wrap:wrap; }
+}
+@container browser-preview (width < 550px) {
+ .wb-web-preview.dm-browser > .file-bar.wb-browser-toolbar { flex-wrap:nowrap; padding-block:0; }
+ .wb-web-preview.dm-browser .wb-browser-actions { flex-basis:auto; flex-wrap:nowrap; }
+}
+
+.dm-css input:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+
+.dm-note-foot > .grow { flex:1; min-width:0; }

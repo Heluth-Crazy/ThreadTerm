@@ -141,6 +141,7 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & Backgrou
   pickPageTarget: (request) => ipcRenderer.invoke('threadterm:pick-page-target', request),
   cancelPagePick: (frameName) => ipcRenderer.invoke('threadterm:cancel-page-pick', frameName),
   markPageTarget: (request) => ipcRenderer.invoke('threadterm:mark-page-target', request),
+    inspectPageTarget: (request) => ipcRenderer.invoke('threadterm:inspect-page-target', request),
   readPageShot: (shotId) => ipcRenderer.invoke('threadterm:read-page-shot', shotId),
   deletePageShots: (shotIds) => ipcRenderer.invoke('threadterm:delete-page-shots', shotIds),
   onPageContextMenu: (listener) => {

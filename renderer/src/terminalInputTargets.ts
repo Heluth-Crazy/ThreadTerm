@@ -1,5 +1,5 @@
 import type { ContextItem } from './chatContext';
-type Target={visible:()=>boolean;insert:(text:string)=>void;focus?:()=>boolean|void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean};
+type Target={visible:()=>boolean;insert:(text:string)=>void;focus?:()=>boolean|void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean;submit?:(packet?:{text:string;images?:string[]})=>Promise<void>};
 const requestedChatFocus = new Map<string, object>();
 const focusBurst = new Map<string, number>();
 function stopFocusBurst(sessionId: string) {
@@ -99,4 +99,10 @@ export function attachChatContext(sessionId:string,item:ContextItem):boolean {
   const chat=visibleTarget(chatTargets,sessionId);
   if(!chat?.attachContext)throw new Error('chat_view_unavailable');
   return chat.attachContext(item);
+}
+/** Submits the same visible composer used by insertChatText. The composer owns queuing and follows-up. */
+export async function submitChat(sessionId:string,packet:{text:string;images?:string[]}):Promise<void> {
+  const chat=visibleTarget(chatTargets,sessionId);
+  if(!chat?.submit)throw new Error('chat_view_unavailable');
+  await chat.submit(packet);
 }

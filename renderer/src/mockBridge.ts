@@ -91,6 +91,7 @@ export function installMockBridge(): void {
     pickPageTarget: () => Promise.resolve(null),
     cancelPagePick: () => Promise.resolve(),
     markPageTarget: () => Promise.resolve(false),
+    inspectPageTarget: () => Promise.resolve({styles:{},cssEdits:[]}),
     readPageShot: () => Promise.resolve(undefined),
     deletePageShots: () => Promise.resolve(),
     onPageContextMenu: () => () => {},

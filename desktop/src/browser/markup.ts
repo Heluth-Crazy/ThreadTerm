@@ -1,5 +1,5 @@
 /** Normalized screenshot geometry; persisted marks contain theme token names, never CSS or HTML. */
-export type MarkupTool = 'rectangle'|'arrow'|'pen'|'text';
+export type MarkupTool = 'rectangle'|'ellipse'|'arrow'|'pen'|'text';
 export type MarkupColor = '--primary'|'--danger'|'--text';
 export type MarkupPoint = {x:number;y:number};
 export type MarkupMark = {tool:MarkupTool;color:MarkupColor;points:MarkupPoint[];text?:string};
@@ -10,6 +10,13 @@ export function markupPoint(x:number,y:number,width:number,height:number):Markup
  return {x:Math.max(0,Math.min(1,x/width)),y:Math.max(0,Math.min(1,y/height))};
 }
 export function markupRect(a:MarkupPoint,b:MarkupPoint) {return {x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),width:Math.abs(a.x-b.x),height:Math.abs(a.y-b.y)};}
+/** Bounds are normalized to the captured viewport, so pins remain in CSS pixels at any display scale. */
+export function markupBounds(marks:readonly MarkupMark[],width:number,height:number) {
+ const points=marks.flatMap(mark=>{const [a,b=a]=mark.points;return mark.tool==='arrow'?[...mark.points,...markupArrow(a,b,width,height)]:mark.points;});
+ if(!points.length)return {x:0,y:0,width:1,height:1};
+ const left=Math.max(0,Math.min(...points.map(point=>point.x))-3/width),top=Math.max(0,Math.min(...points.map(point=>point.y))-3/height),right=Math.min(1,Math.max(...points.map(point=>point.x))+3/width),bottom=Math.min(1,Math.max(...points.map(point=>point.y))+3/height);
+ return {x:left,y:top,width:Math.max(1/width,right-left),height:Math.max(1/height,bottom-top)};
+}
 export function markupArrow(a:MarkupPoint,b:MarkupPoint,width:number,height:number):MarkupPoint[] {
  const angle=Math.atan2((b.y-a.y)*height,(b.x-a.x)*width),length=Math.min(14,Math.hypot((b.x-a.x)*width,(b.y-a.y)*height)/3);
  return [-.55,.55].map(offset=>({x:b.x-Math.cos(angle+offset)*length/width,y:b.y-Math.sin(angle+offset)*length/height}));
@@ -20,7 +27,7 @@ export function parseMarkup(value:string):MarkupMark[] {
  const marks:unknown=JSON.parse(value);
  if(!Array.isArray(marks)||marks.length>MAX_MARKUP_MARKS)throw new Error('Too much screenshot markup.');
  return marks.map(mark=>{
-  if(!mark||typeof mark!=='object'||!['rectangle','arrow','pen','text'].includes(mark.tool)||!MARKUP_COLORS.includes(mark.color)||!Array.isArray(mark.points)||mark.points.length<1||mark.points.length>MAX_MARKUP_POINTS)throw new Error('Invalid screenshot markup.');
+  if(!mark||typeof mark!=='object'||!['rectangle','ellipse','arrow','pen','text'].includes(mark.tool)||!MARKUP_COLORS.includes(mark.color)||!Array.isArray(mark.points)||mark.points.length<1||mark.points.length>MAX_MARKUP_POINTS)throw new Error('Invalid screenshot markup.');
   if(mark.tool!=='pen'&&mark.points.length!==(mark.tool==='text'?1:2))throw new Error('Invalid screenshot markup.');
   const points=mark.points.map((point:MarkupPoint)=>{if(!point||![point.x,point.y].every(v=>Number.isFinite(v)&&v>=0&&v<=1))throw new Error('Invalid markup point.');return {x:point.x,y:point.y};});
   if(mark.tool==='text'&&(typeof mark.text!=='string'||!mark.text.trim()||mark.text.length>120))throw new Error('Enter a label of at most 120 characters.');

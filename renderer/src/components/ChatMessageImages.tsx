@@ -10,8 +10,9 @@ function key(sessionId: string, ref: ChatImageRef): string {
   return `${sessionId}:${ref.itemId}:${ref.part}:${ref.index}`;
 }
 
-function ChatReferenceImage({ sessionId, imageRef, label, copy }: {
+function ChatReferenceImage({ sessionId, imageRef, label, copy, open, onOpen }: {
   sessionId: string; imageRef: ChatImageRef; label: string; copy: (en: string, zh: string) => string;
+  open?: boolean; onOpen?: (image:string)=>void;
 }) {
   const cacheKey = key(sessionId, imageRef);
   const [src, setSrc] = useState(() => cache.get(cacheKey));
@@ -31,6 +32,7 @@ function ChatReferenceImage({ sessionId, imageRef, label, copy }: {
       .catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
   }, [cacheKey, sessionId, imageRef.itemId, imageRef.part, imageRef.index]);
+  useEffect(()=>{if(src&&open)onOpen?.(src);},[src,open,onOpen]);
   if (src) return <img src={src} alt={label} loading="lazy" />;
   return <p className="chat-message-image-missing" role="note">{failed
     ? copy('This image could not be loaded.', '无法加载此图片。')
@@ -38,15 +40,23 @@ function ChatReferenceImage({ sessionId, imageRef, label, copy }: {
 }
 
 /** Inline data URLs, or references to a message too large for one page. */
-export function ChatMessageImages({ sessionId, images, refs, copy }: {
+export function ChatMessageImages({ sessionId, images, refs, copy, openImageIndex, onOpenImage }: {
   sessionId: string;
   images: readonly string[];
   refs: readonly ChatImageRef[];
   copy: (en: string, zh: string) => string;
+  /** Index spans inline images then persisted refs; used by Design Mode note chips. */
+  openImageIndex?: number;
+  onOpenImage?: (image:string)=>void;
 }) {
   if (!images.length && !refs.length) return null;
   return <div className="chat-message-images">
-    {images.map((image, index) => <img key={`inline-${index}`} src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} loading="lazy" />)}
-    {refs.map(ref => <ChatReferenceImage key={`ref-${ref.part}-${ref.index}`} sessionId={sessionId} imageRef={ref} label={`${copy('Pasted image', '已粘贴图片')} ${ref.index + 1}`} copy={copy} />)}
+    {images.map((image, index) => <InlineImage key={`inline-${index}`} image={image} label={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} open={openImageIndex===index} onOpen={onOpenImage} />)}
+    {refs.map((ref,index) => <ChatReferenceImage key={`ref-${ref.part}-${ref.index}`} sessionId={sessionId} imageRef={ref} label={`${copy('Pasted image', '已粘贴图片')} ${ref.index + 1}`} copy={copy} open={openImageIndex===images.length+index} onOpen={onOpenImage} />)}
   </div>;
+}
+
+function InlineImage({image,label,open,onOpen}:{image:string;label:string;open:boolean;onOpen?: (image:string)=>void}) {
+  useEffect(()=>{if(open)onOpen?.(image);},[image,open,onOpen]);
+  return <img src={image} alt={label} loading="lazy" />;
 }

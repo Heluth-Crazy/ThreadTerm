@@ -370,3 +370,9 @@ test('late lifecycle events from a destroyed native view cannot alter its replac
  old.emit('did-fail-load',{},-102,'ERR_CONNECTION_REFUSED','https://stale.test/',true);old.emit('did-stop-loading');
  const result=await f.handoff({type:'console',tabId:'page-one',documentGeneration:1});assert.equal(result.url,url);assert.equal(result.errors,1);assert.match(result.text,/replacement error/);
 });
+
+test('a leased screenshot attaches only for capture and restores detachment on success or failure',async()=>{
+ for(const fails of [false,true]){const f=fixture();await f.show();const view=f.views[0],wc=view.webContents;wc.emit('did-navigate',{},wc.url);wc.emit('did-finish-load');await f.invoke({type:'occlusion',active:true});const state=await f.invoke({type:'state',tabId:'page-one'});await f.invoke({type:'snapshotReady',tabId:'page-one',generation:state.snapshotGeneration});assert.equal(f.first.win.contentView.children.includes(view),false);
+ f.setCapture(async()=>{assert.equal(f.first.win.contentView.children.includes(view),true,'native view must be attached while Chromium captures');if(fails)throw Error('capture failed');return f.bitmap();});
+ const capture=f.handoff({type:'capture',tabId:'page-one',documentGeneration:state.documentGeneration});if(fails)await assert.rejects(capture,/capture failed/);else await capture;assert.equal(f.first.win.contentView.children.includes(view),false,'capture restores the existing occlusion lease');}
+});

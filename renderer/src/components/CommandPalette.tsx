@@ -31,6 +31,7 @@ export function CommandPalette({ data, onClose, onSession, onProject, onCreate, 
   const gitDisabledReason=gitHost?.repository?undefined:gitHost?copy('Open a workspace with a Git repository first.','请先打开包含 Git 仓库的工作区。'):copy('Focus a Git workspace or open its Files and changes dialog first.','请先聚焦 Git 工作区，或打开其文件和更改对话框。');
   // The Run entries belong to one captured worktree and reach only it, exactly like the Git host above.
   const [runHost]=useState(()=>captureRunPaletteHost(document));
+  const [designHost]=useState(()=>{const surfaces=Array.from(document.querySelectorAll<HTMLElement>('.wb-web-preview[data-design-enabled]')).filter(element=>element.getClientRects().length);return surfaces.find(element=>element.contains(document.activeElement))??surfaces.at(-1);});
   const runDisabledReason=runHost?undefined:copy('Focus a workspace with the Run view first.','请先聚焦包含运行视图的工作区。');
   const [runEntries,setRunEntries]=useState<PaletteRunEntry[]>([]);
   const [runIssue,setRunIssue]=useState<string>();
@@ -54,6 +55,7 @@ export function CommandPalette({ data, onClose, onSession, onProject, onCreate, 
   const workbenchEntry = (view: string, label: string, detail: string, icon: string): Entry => ({ id:`workbench:${view}`, group:copy("Workspace", "工作区"), label, detail, icon, run:() => dispatchEvent(new CustomEvent("threadterm:workbench", { detail:{ view } })) });
   const gitEntry = (action:GitWorkbenchAction, label:string, detail:string, icon:string):Entry => ({id:`git:${action}`,group:copy('Git','Git'),label,detail:gitDisabledReason??detail,icon,disabledReason:gitDisabledReason,run:()=>{if(!gitDisabledReason&&gitHost?.element.isConnected)dispatchEvent(new CustomEvent('threadterm:workbench',{detail:{view:'scm',key:crypto.randomUUID(),action,hostKey:gitHost.key}}));}});
   const entries = useMemo<Entry[]>(() => [
+    {id:'browser:design-mode',group:copy('Browser','浏览器'),label:copy('Toggle Design Mode','切换设计模式'),detail:'Ctrl+Shift+D',icon:'annotate',disabledReason:designHost?undefined:copy('Open a browser page first.','请先打开浏览器页面。'),run:()=>{if(designHost?.isConnected)requestAnimationFrame(()=>designHost.dispatchEvent(new Event('threadterm:toggle-design-mode')));}},
     ...(workbench ? [
       workbenchEntry("quick-open", copy("Go to file…", "转到文件…"), "Ctrl+P", "file"),
       {...workbenchEntry("external-files", copy("Open file outside workspace…", "打开工作区外的文件…"), externalDisabledReason??"Ctrl+O", "popout"),disabledReason:externalDisabledReason,run:()=>{if(!externalDisabledReason)dispatchEvent(new CustomEvent('threadterm:workbench',{detail:{view:'external-files'}}));}},

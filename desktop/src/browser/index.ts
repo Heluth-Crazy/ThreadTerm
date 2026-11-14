@@ -168,7 +168,7 @@ function makeView(tab: Tab): WebContentsView {
     if(input.type==='keyDown'&&handleDevtoolsShortcut(tab,event,input))return;
     const control=input.control || input.meta, key=input.key.toLowerCase();
     if(input.type==='keyDown'&&input.key==='Escape'&&tab.find){event.preventDefault();if(tab.window.isFocused())tab.owner.focus();tab.owner.send('threadterm:browser-event',{type:'shortcut',tabId:tab.id,key:input.key,code:input.code,control:input.control,meta:input.meta,shift:input.shift,alt:input.alt} satisfies BrowserEvent);return;}
-    const appShortcut=control&&!input.alt&&((!input.shift&&['f','p','b','k','l','t','-','0','='].includes(key))||(input.shift&&['e','f','g','k','+','='].includes(key)));
+     const appShortcut=control&&!input.alt&&((!input.shift&&['f','p','b','k','l','t','-','0','='].includes(key))||(input.shift&&['d','e','f','g','k','+','='].includes(key)));
     const modifierRelease=input.type==='keyUp'&&['Control','Meta'].includes(input.key);
     if(!modifierRelease&&(input.type!=='keyDown'||!control))return;
     if(appShortcut){event.preventDefault();if(tab.window.isFocused())tab.owner.focus();}
@@ -276,7 +276,36 @@ function agentControllerFor(event:IpcMainInvokeEvent):BrowserAgentController {
 async function handoffDirectory():Promise<string>{const root=await realpath(app.getPath('userData')),directory=join(root,'page-comments');await mkdir(directory,{recursive:true});const actual=await realpath(directory);if(actual!==directory)throw new Error('Page shot directory escaped user data');return actual;}
 async function storeHandoffImage(image:Electron.NativeImage):Promise<{shot:import('@threadterm/protocol').PageShot;dataUrl:string}>{let stored=image,size=stored.getSize(),bytes=stored.toPNG(),extension:'png'|'jpg'=bytes.length<=600*1024?'png':'jpg';if(extension==='jpg')bytes=stored.toJPEG(85);while(bytes.length>MAX_PAGE_SHOT_BYTES){const next=pageImageSize(Math.max(1,Math.floor(size.width*.8)),Math.max(1,Math.floor(size.height*.8)),1600);if(next.width===size.width&&next.height===size.height)throw new Error('Screenshot exceeds image size limit');stored=stored.resize({...next,quality:'best'});size=next;extension='jpg';bytes=stored.toJPEG(85);}const thumbnail=stored.resize({...pageImageSize(size.width,size.height,240),quality:'good'}).toJPEG(70),directory=await handoffDirectory(),id=randomUUID(),path=pageShotPath(directory,id,extension),dataUrl=`data:image/${extension==='jpg'?'jpeg':'png'};base64,${bytes.toString('base64')}`;await writeFile(path,bytes,{flag:'wx'});return {shot:{id,path,width:size.width,height:size.height,thumbnail:`data:image/jpeg;base64,${thumbnail.toString('base64')}`},dataUrl};}
 function validGeneration(tab:Tab,value:unknown):void{if(!Number.isSafeInteger(value)||value!==tab.documentGeneration)throw new Error('Page changed; capture it again.');}
-async function captureHandoff(tab:Tab,generation:unknown):Promise<BrowserHandoffResult>{validGeneration(tab,generation);const expected=generation as number,wc=tab.view?.webContents;if(!wc||!tab.visible||wc.isDestroyed())throw new Error('Browser page is not visible.');const url=wc.getURL(),origin=pageOrigin(url),epoch=tab.navigationEpoch,viewGeneration=tab.viewGeneration,image=await wc.capturePage(undefined,{stayHidden:true,stayAwake:true}).catch(error=>{throw new Error(`Page screenshot capture failed: ${String(error)}`);}),current=()=>tab.visible&&tab.view?.webContents===wc&&!wc.isDestroyed()&&tab.documentGeneration===expected&&tab.navigationEpoch===epoch&&tab.viewGeneration===viewGeneration&&wc.getURL()===url;if(!current())throw new Error('Page changed; capture it again.');if(image.isEmpty())throw new Error('Could not capture the page.');const stored=await storeHandoffImage(image).catch(error=>{throw new Error(`Page screenshot save failed: ${String(error)}`);});if(!current()){await deletePageShots([stored.shot.id]);throw new Error('Page changed; capture it again.');}while(tab.handoffs.size>=200)tab.handoffs.delete(tab.handoffs.keys().next().value!);tab.handoffs.set(stored.shot.id,{path:stored.shot.path,epoch,generation:expected,viewGeneration,origin,url,currentUrl:url});return {shot:stored.shot,dataUrl:stored.dataUrl,url,documentGeneration:tab.documentGeneration,width:stored.shot.width,height:stored.shot.height};}
+async function captureHandoff(tab:Tab,generation:unknown):Promise<BrowserHandoffResult> {
+ validGeneration(tab,generation);
+ const expected=generation as number,wc=tab.view?.webContents;
+ if(!wc||!tab.visible||wc.isDestroyed())throw new Error('Browser page is not visible.');
+ const url=wc.getURL(),origin=pageOrigin(url),epoch=tab.navigationEpoch,viewGeneration=tab.viewGeneration;
+ const current=()=>tab.visible&&tab.view?.webContents===wc&&!wc.isDestroyed()&&tab.documentGeneration===expected&&tab.navigationEpoch===epoch&&tab.viewGeneration===viewGeneration&&wc.getURL()===url;
+ const wasAttached=appView(tab).children.includes(tab.view!);
+ let viewport:{width:number;height:number}|undefined,image:Electron.NativeImage;
+ // Chromium can return a nonempty background-only image for a detached WebContentsView. Capture while attached,
+ // then restore this view's lease immediately; no global occlusion state or other tab is changed.
+ if(!wasAttached)attach(tab);
+ try {
+  const execute=wc.executeJavaScriptInIsolatedWorld,raw=typeof execute==='function'?await execute.call(wc,999,[{code:'({width:innerWidth,height:innerHeight})'}],false):undefined;
+  if(!current())throw new Error('Page changed; capture it again.');
+  if(raw!==null&&raw!==undefined){
+   if(typeof raw!=='object'||!['width','height'].every(key=>typeof (raw as Record<string,unknown>)[key]==='number'&&Number.isFinite((raw as Record<string,unknown>)[key])&&Number((raw as Record<string,unknown>)[key])>0&&Number((raw as Record<string,unknown>)[key])<=10000))throw new Error('Invalid page viewport.');
+   viewport={width:Number(raw.width),height:Number(raw.height)};
+  }
+  image=await wc.capturePage(undefined,{stayHidden:true,stayAwake:true}).catch(error=>{throw new Error(`Page screenshot capture failed: ${String(error)}`);});
+ } finally {
+  if(!wasAttached&&tab.view?.webContents===wc&&(tab.leases||!tab.visible))detach(tab);
+ }
+ if(!current())throw new Error('Page changed; capture it again.');
+ if(image.isEmpty())throw new Error('Could not capture the page.');
+ const stored=await storeHandoffImage(image).catch(error=>{throw new Error(`Page screenshot save failed: ${String(error)}`);});
+ if(!current()){await deletePageShots([stored.shot.id]);throw new Error('Page changed; capture it again.');}
+ while(tab.handoffs.size>=200)tab.handoffs.delete(tab.handoffs.keys().next().value!);
+ tab.handoffs.set(stored.shot.id,{path:stored.shot.path,epoch,generation:expected,viewGeneration,origin,url,currentUrl:url});
+ return {shot:stored.shot,dataUrl:stored.dataUrl,url,documentGeneration:tab.documentGeneration,width:stored.shot.width,height:stored.shot.height,...(viewport?{viewport}:{})};
+}
 function pngSize(bytes:Buffer):{width:number;height:number}{if(bytes.length<24||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||bytes.readUInt32BE(12)!==0x49484452)throw new Error('Invalid marked-up screenshot.');const width=bytes.readUInt32BE(16),height=bytes.readUInt32BE(20);if(!width||!height||width>10000||height>10000)throw new Error('Invalid marked-up screenshot.');return {width,height};}
 async function saveMarkup(tab:Tab,command:Extract<BrowserHandoffCommand,{type:'saveMarkup'}>):Promise<BrowserHandoffResult>{
  validGeneration(tab,command.documentGeneration);const owned=tab.handoffs.get(command.shotId);

@@ -8,7 +8,7 @@ export type BrowserHandoffCommand =
  | { type:'preferences'; patch?:{devServerOffers?:boolean} };
 export type BrowserConsoleEntry = { level:string; text:string; sourceUrl:string; line:number };
 export type BrowserConsoleResult = { url:string; documentGeneration:number; entries:BrowserConsoleEntry[]; errors:number; warnings:number; truncated:boolean; text:string };
-export type BrowserCaptureResult = { shot:PageShot; dataUrl:string; url:string; documentGeneration:number; width:number; height:number };
+export type BrowserCaptureResult = { shot:PageShot; dataUrl:string; url:string; documentGeneration:number; width:number; height:number; /** CSS-pixel viewport when the capture was made; optional for older/mock bridges. */ viewport?:{width:number;height:number} };
 export type BrowserHandoffResult = BrowserCaptureResult|BrowserConsoleResult|{devServerOffers:boolean};
 export type BrowserHandoffEvent = { type:'console'; tabId:string; documentGeneration:number; errors:number; warnings:number }|{type:'preferences';devServerOffers:boolean};
 export interface BrowserHandoffBridge { browserHandoff(command:BrowserHandoffCommand):Promise<BrowserHandoffResult>; onBrowserHandoffEvent(listener:(event:BrowserHandoffEvent)=>void):()=>void }

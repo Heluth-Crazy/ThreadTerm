@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const require=createRequire(import.meta.url),ts=require('typescript'),module={exports:{}};
 const path=resolve('desktop/src/browser/markup.ts');
 vm.runInNewContext(ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module,exports:module.exports,require});
-const {markupPoint,markupRect,markupArrow,parseMarkup,serializeMarkup}=module.exports;
+const {markupPoint,markupRect,markupBounds,markupArrow,parseMarkup,serializeMarkup}=module.exports;
 const plain=value=>JSON.parse(JSON.stringify(value));
 test('pointer coordinates scale to the original image and clamp to its edges',()=>{
  assert.deepEqual(plain(markupPoint(100,50,400,100)),{x:.25,y:.5});
@@ -20,12 +20,18 @@ test('reverse rectangle drags and arrows retain correct geometry on a non-square
  assert.ok(tips.every(tip=>tip.x<.9));assert.ok(tips[0].y>.5&&tips[1].y<.5);
  assert.ok(Math.abs((tips[0].y-.5)*400-14*Math.sin(.55))<1e-8);
 });
-test('all four tools round-trip bounded marks using only theme tokens and inert text',()=>{
- const marks=[{tool:'rectangle',color:'--primary',points:[{x:0,y:0},{x:1,y:1}]},{tool:'arrow',color:'--danger',points:[{x:.1,y:.2},{x:.3,y:.4}]},{tool:'pen',color:'--text',points:[{x:.1,y:.1},{x:.2,y:.3},{x:.4,y:.5}]},{tool:'text',color:'--primary',points:[{x:.5,y:.5}],text:'<script>page data</script>'}];
+test('all five tools round-trip bounded marks using only theme tokens and inert text',()=>{
+	const marks=[{tool:'rectangle',color:'--primary',points:[{x:0,y:0},{x:1,y:1}]},{tool:'ellipse',color:'--primary',points:[{x:.2,y:.2},{x:.8,y:.7}]},{tool:'arrow',color:'--danger',points:[{x:.1,y:.2},{x:.3,y:.4}]},{tool:'pen',color:'--text',points:[{x:.1,y:.1},{x:.2,y:.3},{x:.4,y:.5}]},{tool:'text',color:'--primary',points:[{x:.5,y:.5}],text:'<script>page data</script>'}];
  assert.deepEqual(plain(parseMarkup(serializeMarkup(marks))),marks);
 });
 test('serialization rejects malformed, unbounded or CSS-injecting marks',()=>{
  const mark={tool:'rectangle',color:'--primary',points:[{x:0,y:0},{x:1,y:1}]};
- for(const marks of [[{...mark,color:'red'}],[{...mark,color:'url(https://evil.test)'}],[{...mark,points:[{x:2,y:0},{x:1,y:1}]}],[{...mark,tool:'html'}],Array(101).fill(mark),[{...mark,tool:'text',points:[{x:0,y:0}],text:'x'.repeat(121)}],[{...mark,tool:'arrow',points:[]}],[{...mark,tool:'pen',points:Array(1001).fill({x:0,y:0})}]])assert.throws(()=>serializeMarkup(marks));
+	for(const marks of [[{...mark,color:'red'}],[{...mark,color:'url(https://evil.test)'}],[{...mark,points:[{x:2,y:0},{x:1,y:1}]}],[{...mark,tool:'html'}],[{...mark,tool:'ellipse',points:[{x:0,y:0}]}],Array(101).fill(mark),[{...mark,tool:'text',points:[{x:0,y:0}],text:'x'.repeat(121)}],[{...mark,tool:'arrow',points:[]}],[{...mark,tool:'pen',points:Array(1001).fill({x:0,y:0})}]])assert.throws(()=>serializeMarkup(marks));
  assert.throws(()=>parseMarkup('x'.repeat(3*1024*1024+1)),/Too much/);
+});
+
+// All Design Mode tools return a target region instead of pinning the full screenshot.
+test('markup bounds preserve the selected region independent of CSS viewport size',()=>{
+ for(const tool of ['rectangle','ellipse','arrow','pen']){const rect=markupBounds([{tool,color:'--primary',points:[{x:.25,y:.25},{x:.75,y:.5}]}],1600,1200);assert.ok(rect.x<.25&&rect.y<.25);assert.ok(rect.width<.6&&rect.height<.4);assert.ok(Math.abs(rect.x*800-(200-1.5))<1e-8,'CSS viewport scales normalized marks independently of screenshot pixels');}
+ assert.deepEqual(plain(markupBounds([],800,600)),{x:0,y:0,width:1,height:1});
 });

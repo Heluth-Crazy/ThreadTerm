@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+import {readFileSync,existsSync} from 'node:fs';
+import {resolve,join} from 'node:path';
+import vm from 'node:vm';
+import {chromium} from '@playwright/test';
+
+const require=createRequire(import.meta.url),ts=require('typescript'),module={exports:{}};
+vm.runInNewContext(ts.transpileModule(readFileSync(resolve('desktop/src/pagePickerScript.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module,exports:module.exports,require});
+const {pagePickerSource}=module.exports;
+const bundled=chromium.executablePath(),cached=join(process.env.LOCALAPPDATA??'','ms-playwright','chromium-1223','chrome-win64','chrome.exe');
+const browser=await chromium.launch({headless:true,executablePath:process.env.THREADTERM_QA_CHROMIUM??(existsSync(bundled)?bundled:cached)});
+const page=await browser.newPage({viewport:{width:800,height:600}});
+await page.setContent('<style>#a,#b{position:absolute;width:100px;height:40px;color:rgb(1,2,3);background-color:rgb(4,5,6);font-size:14px;font-family:Arial;display:block;position:absolute}#a{left:100px;top:100px}#b{left:300px;top:100px}</style><button id=a>Alpha</button><button id=b>Beta</button>');
+const start=async(options={})=>page.evaluate(({source,options})=>{window.__pick=eval(source);},{source:pagePickerSource('pick',undefined,undefined,undefined,options),options});
+await start();await page.mouse.move(120,120);await page.keyboard.down('Shift');await page.mouse.click(120,120);await page.mouse.move(320,120);await page.mouse.click(320,120);await page.keyboard.up('Shift');await page.keyboard.press('Enter');
+let pick=await page.evaluate(()=>window.__pick);assert.equal(pick.elements.length,2);assert.equal(pick.target.computedStyles.color,'rgb(1, 2, 3)');
+await start();await page.mouse.move(200,250);await page.mouse.down();await page.mouse.move(250,280,{steps:2});await page.keyboard.down('Alt');await page.mouse.up();await page.keyboard.up('Alt');pick=await page.evaluate(()=>window.__pick);assert.equal(pick.target.type,'area');assert.equal(pick.target.rect.width,100);
+const inspect=async(edit)=>page.evaluate(({source,edit})=>eval(source),{source:pagePickerSource('inspect',{selector:'#a'},undefined,undefined,edit),edit});
+let styles=await inspect({property:'color',value:'red'});styles=await inspect({property:'font-size',value:'20px'});assert.equal(styles.cssEdits.length,2);styles=await inspect({revert:true});assert.equal(styles.cssEdits.length,0);assert.equal(await page.locator('#a').evaluate(e=>getComputedStyle(e).color),'rgb(1, 2, 3)');
+await inspect({property:'color',value:'red'});await page.locator('#a').evaluate(e=>e.outerHTML='<button id="a" style="color: green !important">Alpha</button>');styles=await inspect({property:'color',value:'blue'});assert.equal(styles.cssEdits[0].after,'rgb(0, 0, 255)');await inspect({revert:true});assert.equal(await page.locator('#a').evaluate(e=>e.style.getPropertyValue('color')),'green');assert.equal(await page.locator('#a').evaluate(e=>e.style.getPropertyPriority('color')),'important');
+await start();await page.mouse.dblclick(120,120);const editor=page.getByLabel('Edit page text');await editor.fill('Gamma');await editor.press('Enter');pick=await page.evaluate(()=>window.__pick);assert.deepEqual(pick.textEdits,[{selector:'#a',before:'Alpha',after:'Gamma'}]);assert.equal(await page.locator('#a').textContent(),'Gamma');
+await start();await page.mouse.dblclick(120,120);await page.getByLabel('Edit page text').fill('Discard');await page.keyboard.press('Escape');assert.equal(await page.locator('#a').textContent(),'Gamma');assert.equal(await page.locator('textarea').count(),0);await page.keyboard.press('Escape');
+const mark=options=>page.evaluate(({source})=>eval(source),{source:pagePickerSource('mark',undefined,undefined,undefined,options)});
+await page.locator('body').evaluate(e=>e.style.height='1600px');await mark({pins:[{number:1,target:{selector:'#a'}}]});assert.equal(await page.locator('span').filter({hasText:'1'}).count(),1);await start();await page.keyboard.press('Escape');await mark({pins:[]});assert.equal(await page.locator('span').filter({hasText:'1'}).count(),0);
+await browser.close();
+console.log('design-picker: passed');

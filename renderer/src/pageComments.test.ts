@@ -91,6 +91,15 @@ test("page formatting includes element and area evidence in English and Chinese"
   }
 });
 
+test("design page context preserves computed styles, multi-picks, and edits", async () => {
+  await addPageComment({...scope,...element(),body:'Align these controls',elements:[{...element().target as Extract<PageComment['target'],{type:'element'}>,selector:'#cancel',label:'button "Cancel"',computedStyles:{color:'rgb(1, 2, 3)',display:'inline-flex'}}],cssEdits:[{property:'gap',before:'8px',after:'12px'}],textEdits:[{selector:'#save',before:'Save',after:'Apply'}]});
+  const formatted=formatReviewComments((await loadReviewComments(scope)),{fileRoot:scope.root},false);
+  assert.match(formatted,/Computed styles: color: rgb\(1, 2, 3\); display: inline-flex/);
+  assert.match(formatted,/Related element 2: button "Cancel"/);
+  assert.match(formatted,/CSS gap: "8px" → "12px"/);
+  assert.match(formatted,/Text edit #save: "Save" → "Apply"/);
+});
+
 test("all page instructions follow all page references, with global IDs and intact multiline bodies", async () => {
   await addFileComment(fileInput);
   await addPageComment({ ...scope, ...element(), body: "First change\r\nKeep the label.\n\nKeep keyboard focus." });
