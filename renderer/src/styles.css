@@ -200,7 +200,10 @@ html[data-theme="dark"] { color-scheme:dark; }
 .app-shell :is(.page-head,.ov-page-head) .page-sub { margin:0; font-size:11px; line-height:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .app-shell :is(.page-head,.ov-page-head) > :first-child { min-width:0; flex:1; }
 .app-shell :is(.page-head,.ov-page-head,.ws-top) :is(button,input,select,textarea,[role="button"],.tt-select) { -webkit-app-region:no-drag; }
-.app-shell .runtime-workspace .ws-top, .app-shell .project-file-page > .ws-top, .app-shell .usage-page .usage-head { height:46px; min-height:46px; padding-right:calc(var(--caption-width) + 10px); -webkit-app-region:drag; }
+.app-shell .runtime-workspace .ws-top, .app-shell .project-file-page > .ws-top { height:46px; min-height:46px; padding-right:calc(var(--caption-width) + 10px); -webkit-app-region:drag; }
+/* Usage as the window's page sits under the caption buttons; as a pane tab it does not. Either way its filter row may
+   wrap, so the head grows instead of spilling over the cards below. */
+.app-shell .content.main > .usage-page > .usage-head { min-height:46px; padding-right:calc(var(--caption-width) + 10px); -webkit-app-region:drag; }
 .app-shell.sidebar-collapsed :is(.ws-top,.shell-route-toolbar), .app-shell.sidebar-collapsed .content.main > :is(.page,.terminals-page,section.ov-page) > :is(.page-head,.ov-page-head) { padding-left:80px; }
 .floating-shell { --sidebar-width:0px; grid-template-columns:minmax(0,1fr); }
 .floating-shell > .sidebar { display:none; }

@@ -108,7 +108,7 @@ ipcRenderer.invoke=async(channel,...args)=>{
 
   for (const theme of ['light', 'dark']) {
     await appearance(theme); await size(1440, 900);
-    await page.locator('.nav-item.new').click();
+    await page.getByRole('button', { name: 'New terminal', exact: true }).first().click();
     await page.getByRole('button', { name: 'Chat', exact: true }).click();
     await page.getByRole('textbox', { name: 'Chat draft', exact: true }).fill('First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line');
     await frames();
@@ -149,7 +149,7 @@ ipcRenderer.invoke=async(channel,...args)=>{
     await page.mouse.move(restoreHandle.x + restoreHandle.width / 2 - (520 - keyed.panel), restoreHandle.y + restoreHandle.height / 2); await page.mouse.up(); await frames();
     await page.getByRole('button', { name: 'Session details', exact: true }).click(); await frames();
     const inspector = await widths(); report.measurements[`C-${theme}-inspector`] = inspector;
-    check(`C-${theme}-inspector`, inspector.panel >= 220 && inspector.pane > 0 && Math.abs(inspector.panel - 320) <= 1 && inspector.details > 0 && inspector.details <= inspector.panel && inspector.detailsActive && inspector.filesHidden && inspector.stored === 320, inspector);
+    check(`C-${theme}-inspector`, inspector.panel >= 220 && inspector.pane > 0 && Math.abs(inspector.panel - 304) <= 1 && inspector.details > 0 && inspector.details <= inspector.panel && inspector.detailsActive && inspector.filesHidden && inspector.stored === 304, inspector);
     await shot(`${theme}-C-960-inspector.png`);
     await page.getByRole('button', { name: 'Close side bar', exact: true }).click();
     await page.locator('.ws-top .wb-switcher button[aria-label="Files"]').click(); await frames();

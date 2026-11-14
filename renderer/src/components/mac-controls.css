@@ -75,6 +75,8 @@ body .workspace-tabbar.ws-strip .icon-btn { width:28px; height:28px; }
 body .wb-panel-head :is(.btn,.icon-btn), body .wb-tools-head :is(.btn,.icon-btn), body .wb-history-title :is(.btn,.icon-btn), body .worktree-manager :is(.wtm-list,.wtm-detail) > header :is(.btn,.icon-btn), body .task-graph-details > header :is(.btn,.icon-btn) { height:24px; min-height:24px; }
 body .wb-history-title .wb-history-scope { border:0; padding:2px; }
 body .wb-history-title .wb-history-scope .seg-btn { height:24px; min-height:24px; padding:0 7px; }
+/* Tab-style segments (.btn-tab, 30 px on their own) take the Mac segment height inside a segmented control. */
+body .seg > .seg-btn.btn-tab { height:24px; min-height:24px; }
 @keyframes mac-sheet-drop { from { opacity:0; transform:translateY(-14px); } }
 @media (prefers-reduced-motion:reduce) { body :is(.runtime-overlay,.scrim) > .dialog { animation:none; } }
 
