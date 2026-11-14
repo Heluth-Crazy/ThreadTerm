@@ -382,29 +382,30 @@ export function assertNoControlViolations(result, label = 'surface') {
 
 // ---------------------------------------------------------------------------
 // Panel families: docked headers (38 px, panel-headers.css) and pane tab strips
-// (30 px flush tabs, T1 / workspace-parity.css) are measured by different
+// (43 px Chrome-style tabs, T1 / workspace-parity.css) are measured by different
 // rule sets. `qa/panel-consistency-visual.mjs` runs both.
 // ---------------------------------------------------------------------------
 
 /** Docked panel headers keep the shared 38 px header scale and 26 px icon actions
  *  (`panel-headers.css`); `qa/panel-consistency-visual.mjs` asserts those directly. */
 
-/** Every pane owns a 30 px flush tab strip, whatever content the pane shows. */
-export const PANE_STRIP_HEIGHT = 30;
+/** Every pane owns a 43 px tab strip, whatever content the pane shows. */
+export const PANE_STRIP_HEIGHT = 43;
 /** Icon actions inside a pane strip (add, split, overflow, close) share 28 px. */
 export const PANE_STRIP_CONTROL_HEIGHT = 28;
 
 /**
- * T1 tab geometry: every Finder-style tab is 30 px, with square separators and a
- * 30 px target. The hover-only close target is deliberately compact.
+ * T1 tab geometry: idle tabs are 32 px tall with 8 px shoulders, the selected tab
+ * is 33 px and merges into the panel edge, its target is 30 px and the row's icon
+ * buttons are 28 px. The selected tab keeps room for a readable label.
  */
 export const PANE_TAB_GEOMETRY = {
-  height: 30,
-  activeHeight: 30,
+  height: 32,
+  activeHeight: 33,
   selectHeight: 30,
-  closeHeight: 18,
-  shoulder: 0,
-  activeMinWidth: 72,
+  closeHeight: 28,
+  shoulder: 8,
+  activeMinWidth: 120,
 };
 
 /** Families whose rows are pane tab strips rather than docked panel headers. */
@@ -451,12 +452,6 @@ function tabGeometryErrors(row) {
   const tabs = row.tabs ?? [];
   const active = tabs.filter(tab => tab.active);
   if (tabs.length && active.length !== 1) errors.push(`${active.length} selected tabs in one strip`);
-  if (tabs.length > 1) {
-    const widths = tabs.map(tab => tab.width);
-    if (Math.max(...widths) - Math.min(...widths) > HEIGHT_TOLERANCE) {
-      errors.push(`tabs are not equal width: ${widths.map(round).join(' ')}`);
-    }
-  }
   for (const tab of tabs) {
     const kind = tab.active ? 'selected' : 'idle';
     const expected = tab.active ? PANE_TAB_GEOMETRY.activeHeight : PANE_TAB_GEOMETRY.height;
@@ -485,7 +480,7 @@ function tabGeometryErrors(row) {
 
 /**
  * Pane tab strip rules for the rows of one capture. Returns `{ surface, errors }`
- * entries: every strip is 30 px, all strips of one theme agree on insets, surface
+ * entries: every strip is 43 px, all strips of one theme agree on insets, surface
  * and rule (they sit on one row), strip controls share one size and radius, and the
  * tabs keep the T1 geometry with exactly one selected tab merging into its panel.
  */

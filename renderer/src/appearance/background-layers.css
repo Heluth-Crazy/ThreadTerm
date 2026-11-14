@@ -8,6 +8,7 @@
 .wb-panel[data-background-region] .file-list.wb-embedded-tools,
 .wb-panel[data-background-region] .wb-tools-head { background:transparent; }
 .workspace-pane[data-background-region] > .pane-card { position:relative; background:transparent; border-color:transparent; }
+.workspace-pane[data-background-region] :is(.workspace-tabbar.ws-strip,.workspace-tab-add-slot) { background:transparent; }
 .workspace-pane[data-background-region] .workspace-tab.active { background:transparent; border-color:transparent; box-shadow:none; }
 .workspace-pane[data-background-region] .workspace-tab.active::before,
 .workspace-pane[data-background-region] .workspace-tab.active::after { display:none; }

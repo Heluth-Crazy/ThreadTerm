@@ -451,10 +451,10 @@ const stripRow = (overrides = {}) => ({
   surface: 'Pane tabs',
   family: 'pane',
   rect: { x: 0, y: 0, width: 800, height: PANE_STRIP_HEIGHT, bottom: PANE_STRIP_HEIGHT, right: 800 },
-  padding: ['0px', '0px', '0px', '0px'],
-  gap: '0px',
-  background: 'rgb(236, 236, 238)',
-  border: '0px none rgb(29, 29, 31)',
+  padding: ['0px', '8px', '0px', '8px'],
+  gap: '4px',
+  background: 'rgba(0, 0, 0, 0)',
+  border: '0px none rgb(35, 34, 31)',
   radius: ['0px', '0px'],
   title: null,
   controls: [
@@ -463,8 +463,8 @@ const stripRow = (overrides = {}) => ({
     { label: 'Close tab Panel QA', height: 28, width: 28, radius: '5px', icons: [{}], inTab: true },
   ],
   tabs: [
-    { active: true, height: 30, width: 140, bottom: PANE_STRIP_HEIGHT, radius: [0, 0, 0, 0], selectHeight: 30, closeHeight: 18 },
-    { active: false, height: 30, width: 140, bottom: PANE_STRIP_HEIGHT, radius: [0, 0, 0, 0], selectHeight: 30, closeHeight: 18 },
+    { active: true, height: 33, width: 140, bottom: PANE_STRIP_HEIGHT, radius: [8, 8, 0, 0], selectHeight: 30, closeHeight: 28 },
+    { active: false, height: 32, width: 120, bottom: PANE_STRIP_HEIGHT - 1, radius: [8, 8, 0, 0], selectHeight: 30, closeHeight: 28 },
   ],
   ...overrides,
 });
@@ -485,12 +485,12 @@ test('a pane strip keeps the T1 geometry', () => {
   assert.deepEqual(paneStripViolations([stripRow({ tabs: [] })]), [], 'an empty pane keeps the bare strip');
 });
 
-test('every pane strip is 30 px and panes agree on insets, surface, rule and row', () => {
-  const short = paneStripViolations([stripRow({ rect: { x: 0, y: 0, width: 800, height: 26, bottom: 26, right: 800 } })]);
-  assert.match(short.flatMap(entry => entry.errors).join(' '), /pane strip height 26 != 30/);
+test('every pane strip is 43 px and panes agree on insets, surface, rule and row', () => {
+  const short = paneStripViolations([stripRow({ rect: { x: 0, y: 0, width: 800, height: 38, bottom: 38, right: 800 } })]);
+  assert.match(short.flatMap(entry => entry.errors).join(' '), /pane strip height 38 != 43/);
   const insets = paneStripViolations([stripRow(), stripRow({ padding: ['0px', '6px', '0px', '14px'] })]);
   assert.match(insets[0].errors.join(' '), /differ between panes/);
-  const row = paneStripViolations([stripRow(), stripRow({ rect: { x: 0, y: 12, width: 400, height: 30, bottom: 42, right: 400 } })]);
+  const row = paneStripViolations([stripRow(), stripRow({ rect: { x: 0, y: 12, width: 400, height: 43, bottom: 55, right: 400 } })]);
   assert.match(row.map(entry => entry.errors.join(' ')).join(' '), /do not share one row/);
 });
 
@@ -507,15 +507,14 @@ test('strip icon buttons share one size and radius while tab controls keep the t
 test('tabs keep the selected-tab geometry that merges into the panel', () => {
   const report = (...tabs) => paneStripViolations([stripRow({ tabs })]).flatMap(entry => entry.errors);
   const [active, idle] = stripRow().tabs;
-  assert.match(report({ ...active, height: 28 }).join(' '), /selected tab height 28 != 30/);
-  assert.match(report({ ...idle, height: 28 }).join(' '), /idle tab height 28 != 30/);
-  assert.match(report({ ...active, radius: [6, 6, 0, 0] }).join(' '), /selected tab shoulders 6 6 0 0 != 0px 0px 0 0/);
+  assert.match(report({ ...active, height: 30 }).join(' '), /selected tab height 30 != 33/);
+  assert.match(report({ ...idle, height: 33 }).join(' '), /idle tab height 33 != 32/);
+  assert.match(report({ ...active, radius: [6, 6, 0, 0] }).join(' '), /selected tab shoulders 6 6 0 0 != 8px 8px 0 0/);
   assert.match(report({ ...active, selectHeight: 28 }).join(' '), /selected tab target height 28 != 30/);
-  assert.match(report({ ...active, closeHeight: 26 }).join(' '), /selected tab close button height 26 != 18/);
-  assert.match(report({ ...active, width: 60 }).join(' '), /selected tab width 60 < 72/);
-  assert.match(report({ ...active, bottom: 28 }).join(' '), /selected tab does not merge into the panel edge/);
+  assert.match(report({ ...active, closeHeight: 30 }).join(' '), /selected tab close button height 30 != 28/);
+  assert.match(report({ ...active, width: 96 }).join(' '), /selected tab width 96 < 120/);
+  assert.match(report({ ...active, bottom: 30 }).join(' '), /selected tab does not merge into the panel edge/);
   assert.match(report({ ...active, active: false }).join(' '), /2 selected tabs|0 selected tabs/);
-  assert.match(report({ ...active, width: 120 }, { ...idle, width: 100 }).join(' '), /tabs are not equal width: 120 100/);
 });
 
 test('collector addresses one repeated container by index', () => {
