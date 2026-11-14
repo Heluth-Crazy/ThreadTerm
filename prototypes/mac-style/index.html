@@ -554,15 +554,110 @@ html[data-theme="dark"] .swin { box-shadow: 0 0 0 .5px var(--win-edge), inset 0 
 .sw.is-sel::after { content: ""; position: absolute; inset: 5.5px; border-radius: 50%; background: #fff; }
 .sw.multi { background: conic-gradient(#ff3b30, #ff9500, #ffcc00, #34c759, #007aff, #af52de, #ff2d55, #ff3b30); }
 .bar { display: inline-block; height: 6px; border-radius: 999px; background: var(--accent); vertical-align: middle; }
+/* ───────────────────────── Cursor look (owner 2026-11-14: "参考一下cursor的设计，cursor mac端的设计") ─────────────────────────
+   Cursor 3's Agents Window on macOS, translated to ThreadTerm: monochrome, hairlines instead of filled tracks,
+   borderless ghost controls, agents grouped by project in a flat sidebar, a bordered composer whose pickers are ghost
+   chips (agent first) and a round monochrome send button. Tabs keep the agreed design. The palette is its own token
+   set (Cursor mono), so the look can also be tried with Mac neutral or the warm palette. */
+html[data-palette="cursor"] {
+  --content:#ffffff; --sidebar:#f8f8f8; --inspector:#fbfbfb; --tabbar:#f6f6f6; --raised:#f6f6f6; --group:#fafafa; --bubble:#f3f3f3;
+  --text:#141414; --text-2:#6b6b6b; --text-3:#a3a3a3;
+  --sep:rgba(0,0,0,.075); --sep-strong:rgba(0,0,0,.13);
+  --fill-1:rgba(0,0,0,.04); --fill-2:rgba(0,0,0,.07); --fill-3:rgba(0,0,0,.11);
+  --control:#ffffff; --control-edge:rgba(0,0,0,.13); --control-drop:rgba(0,0,0,.06);
+  --capsule:rgba(255,255,255,.9); --glass:rgba(246,246,246,.9); --glass-edge:rgba(0,0,0,.09);
+  --menu:rgba(252,252,252,.96); --menu-edge:rgba(0,0,0,.12);
+  --accent:#141414; --on-accent:#ffffff;
+  --st-run:#1f9d55; --st-run-text:#1a7f46; --st-needs:#e08a00; --st-needs-text:#a86400; --st-fail:#e5484d; --st-end:#a3a3a3;
+  --win-edge:rgba(0,0,0,.2); --term-bg:#ffffff; --term-fg:#141414;
+  --syn-k:#a626a4; --syn-s:#c2410c; --syn-n:#0f6fbf; --syn-t:#0b7285; --syn-c:#8a8a8a;
+}
+html[data-palette="cursor"][data-theme="dark"] {
+  --content:#181818; --sidebar:#141414; --inspector:#161616; --tabbar:#141414; --raised:#1f1f1f; --group:#1c1c1c; --bubble:#232323;
+  --text:#e6e6e6; --text-2:#8f8f8f; --text-3:#5e5e5e;
+  --sep:rgba(255,255,255,.07); --sep-strong:rgba(255,255,255,.12);
+  --fill-1:rgba(255,255,255,.045); --fill-2:rgba(255,255,255,.08); --fill-3:rgba(255,255,255,.12);
+  --control:#222222; --control-edge:rgba(255,255,255,.08); --control-drop:rgba(0,0,0,.4);
+  --capsule:rgba(34,34,34,.9); --glass:rgba(22,22,22,.86); --glass-edge:rgba(255,255,255,.08);
+  --menu:rgba(30,30,30,.96); --menu-edge:rgba(255,255,255,.1);
+  --accent:#ececec; --on-accent:#141414;
+  --st-run:#3ecf7a; --st-run-text:#3ecf7a; --st-needs:#f5a524; --st-needs-text:#f5b544; --st-fail:#ff6369; --st-end:#5e5e5e;
+  --win-edge:rgba(0,0,0,.8); --term-bg:#181818; --term-fg:#e6e6e6;
+  --syn-k:#d68bd4; --syn-s:#f0a074; --syn-n:#79b8ff; --syn-t:#5fc4d4; --syn-c:#6e6e6e;
+}
+.win[data-style="cursor"] { --tb-h: 40px; --sbw: 252px; --insw: 320px; }
+/* Sidebar: New agent on top, quiet search, agents grouped by project. */
+.win[data-style="cursor"] .sb-head { height: var(--tb-h); padding-left: 12px; }
+.win[data-style="cursor"] .sb-row { height: 28px; gap: 8px; padding: 0 8px; }
+.win[data-style="cursor"] .sb-row > .ic { color: var(--text-2); }
+.win[data-style="cursor"] .sb-row.is-sel { background: var(--fill-2); color: var(--text); }
+.win[data-style="cursor"] .sb-row.lvl2 { padding-left: 8px; }
+.win[data-style="cursor"] .search-field { height: 28px; background: transparent; box-shadow: inset 0 0 0 1px var(--sep); }
+.win[data-style="cursor"] .search-field:hover { background: var(--fill-1); }
+.cur-new { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; margin: 0 0 6px; padding: 0 8px; border-radius: 6px; color: var(--text); font-weight: 500; text-align: left; }
+.cur-new:hover { background: var(--fill-1); }
+.cur-new .ic { width: 16px; height: 16px; }
+.cur-new kbd { margin-left: auto; }
+.cur-group { margin-top: 14px; }
+.cur-group-head { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; color: var(--text-3); font-size: 11.5px; font-weight: 500; }
+.cur-group-head .ic { width: 12px; height: 12px; }
+.cur-group-head .cnt { margin-left: auto; font-variant-numeric: tabular-nums; }
+.cur-group-head .online { width: 6px; height: 6px; border-radius: 50%; background: var(--st-run); }
+.cur-ago { flex: none; color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.cur-diff { flex: none; font: 11px var(--mono); white-space: nowrap; }
+.cur-diff .a { color: var(--st-run-text); } .cur-diff .d { color: var(--st-fail); }
+/* Toolbar: one-line title, outlined Run field, the view switcher as plain icon buttons. */
+.win[data-style="cursor"] .toolbar { gap: 4px; }
+.win[data-style="cursor"] .tb-title { flex-direction: row; align-items: baseline; gap: 8px; }
+.win[data-style="cursor"] .tb-title > span { font-size: 12px; color: var(--text-3); }
+.win[data-style="cursor"] .activity { background: transparent; box-shadow: inset 0 0 0 1px var(--sep); }
+.win[data-style="cursor"] .seg { gap: 2px; padding: 0; background: transparent; }
+.win[data-style="cursor"] .seg > button { height: 28px; min-width: 28px; padding: 0 6px; border-radius: 6px; }
+.win[data-style="cursor"] .seg > button:hover { background: var(--fill-1); }
+.win[data-style="cursor"] .seg > button[aria-pressed="true"] { background: var(--fill-2); box-shadow: none; }
+.win[data-style="cursor"] .tb-icon { width: 28px; }
+/* Chat: the prompt is a full-width card; tool lines are quieter; boxes are hairlines. */
+.win[data-style="cursor"] .chat-col { max-width: 720px; }
+.win[data-style="cursor"] .msg-user > div { max-width: none; width: 100%; padding: 10px 14px; border-radius: 10px; background: var(--raised); box-shadow: inset 0 0 0 1px var(--sep); }
+.win[data-style="cursor"] .tool { height: 26px; color: var(--text-3); font-size: 12px; }
+.win[data-style="cursor"] .tool > .ic { width: 14px; height: 14px; }
+.win[data-style="cursor"] .tool span:not(.meta) { color: var(--text-2); }
+.win[data-style="cursor"] .working .ic { color: var(--text-2); }
+.win[data-style="cursor"] :is(.group, .code) { background: transparent; box-shadow: inset 0 0 0 1px var(--sep); }
+.win[data-style="cursor"] .ask { background: var(--content); box-shadow: inset 0 0 0 1px var(--sep-strong); }
+.win[data-style="cursor"] .ask-ic { background: var(--fill-1); color: var(--text-2); }
+/* Composer: one hairline box, ghost pickers with the agent first, round monochrome send. */
+.win[data-style="cursor"] .composer { border-radius: 12px; background: var(--content); box-shadow: inset 0 0 0 1px var(--sep-strong), 0 1px 3px rgba(0,0,0,.04); }
+html[data-theme="dark"] .win[data-style="cursor"] .composer { background: var(--raised); }
+.win[data-style="cursor"] .composer:focus-within { box-shadow: inset 0 0 0 1px var(--text-3); }
+.win[data-style="cursor"] .comp-row { gap: 2px; padding: 4px 8px 8px; }
+.win[data-style="cursor"] .pb { height: 26px; padding: 0 6px; color: var(--text-2); }
+.win[data-style="cursor"] .send { width: 26px; height: 26px; background: var(--text); color: var(--content); }
+.win[data-style="cursor"] .conn { margin: 0 4px; }
+.win[data-style="cursor"] .btn.primary { background: var(--text); color: var(--content); box-shadow: none; }
+/* Inspector: flat header and list. */
+.win[data-style="cursor"] .ins-head h2 { font-size: 12px; font-weight: 600; color: var(--text-2); }
+
+/* Start screen (both looks): a centred composer and the recent sessions. */
+.start { flex: 1; overflow: auto; display: flex; justify-content: center; background: var(--content); }
+.start-col { width: min(680px, calc(100% - 48px)); padding: 13vh 0 32px; }
+.start-q { margin: 0 0 18px; font: 600 22px var(--font-display); text-align: center; letter-spacing: -.01em; }
+.start .composer-wrap { padding: 0; }
+.start .composer textarea { min-height: 76px; padding: 14px 16px 4px; }
+.start-recent { margin-top: 26px; }
+.start-recent .sb-row { height: 32px; }
+.start-recent .where { flex: none; color: var(--text-3); font-size: 12px; }
+.win[data-style="cursor"] .start-q { display: none; }
+.win[data-style="cursor"] .start-col { padding-top: 18vh; }
 </style>
 </head>
 <body>
 <header class="board-bar">
   <div class="board-title"><img src="../../renderer/public/brand-mark.png" alt=""><b>ThreadTerm · Mac-style redesign</b><span>Prototype · still a Windows app · click around, right-click sessions, Ctrl+K</span></div>
   <div class="board-controls">
-    <div class="bctl">Screen <div class="bseg" data-k="screen"><button data-v="session">Session</button><button data-v="split">Split panes</button><button data-v="inbox">Inbox</button><button data-v="terminals">All terminals</button><button data-v="settings">Settings</button></div></div>
-    <div class="bctl">Look <div class="bseg" data-k="style"><button data-v="flush">Flush · macOS 15</button><button data-v="floating">Floating · macOS 26</button></div></div>
-    <div class="bctl">Palette <div class="bseg" data-k="palette"><button data-v="mac">Mac neutral</button><button data-v="warm">Current warm</button></div></div>
+    <div class="bctl">Screen <div class="bseg" data-k="screen"><button data-v="start">Start</button><button data-v="session">Session</button><button data-v="split">Split panes</button><button data-v="inbox">Inbox</button><button data-v="terminals">All terminals</button><button data-v="settings">Settings</button></div></div>
+    <div class="bctl">Look <div class="bseg" data-k="style"><button data-v="flush">Flush · macOS 15</button><button data-v="floating">Floating · macOS 26</button><button data-v="cursor">Cursor · Agents</button></div></div>
+    <div class="bctl">Palette <div class="bseg" data-k="palette"><button data-v="mac">Mac neutral</button><button data-v="warm">Current warm</button><button data-v="cursor">Cursor mono</button></div></div>
     <div class="bctl"><div class="bseg" data-k="theme"><button data-v="light">Light</button><button data-v="dark">Dark</button></div></div>
     <div class="bctl">Window buttons <div class="bseg" data-k="caption"><button data-v="windows">Windows</button><button data-v="mac">Mac (compare)</button></div></div>
   </div>
@@ -584,6 +679,7 @@ html[data-theme="dark"] .swin { box-shadow: 0 0 0 .5px var(--win-edge), inset 0 
   <p><b>Mac controls everywhere.</b> Push and popup buttons, switches, segmented controls, translucent menus with Ctrl shortcuts, a Spotlight-style palette, a sheet for New session, and Settings as a System Settings window with a sidebar instead of 11 overflowing tabs.</p>
   <p><b>Two looks, one token set.</b> Flush (macOS 15) is denser and suits terminals. Floating (macOS 26) puts the sidebar, inspector and toolbar groups on glass panels. Both are geometry only: the palette switch shows that the current warm palette and the theme packs still recolor everything.</p>
   <p><b>Windows-specific choices.</b> Segoe UI Variable stands in for SF Pro, which can't ship on Windows. Shortcuts say Ctrl, not ⌘, and "Show in Explorer" replaces "Reveal in Finder". The sidebar can use real Mica through Electron's <code>backgroundMaterial</code> on Windows 11. Windows 10 falls back to the solid tint shown here.</p>
+  <p><b>Cursor · Agents (exploration, 2026-11-14).</b> Cursor 3's Agents Window translated to ThreadTerm: a monochrome palette (Cursor mono), hairlines instead of filled tracks, ghost controls, New session on top of a flat sidebar with sessions grouped by project and their change stats, a one-line toolbar title, the prompt as a full-width card, and a bordered composer whose agent and model pickers lead, with a round monochrome Send. Tabs, the panel and every feature stay as agreed. The Start screen shows the new-session composer in both looks.</p>
   <p><b>Kept from earlier decisions.</b> One right-side panel with Files · Search · Source Control · Agent changes · Browser | Session details; agent icons are the session-list AgentTile; rows stay one line; empty sections stay hidden (no "Staged 0").</p>
 </section>
 
@@ -605,6 +701,7 @@ const I = {
   stop:'<rect x="6" y="6" width="12" height="12" rx="2.2" fill="currentColor"/>',
   doc:'<path d="M7 3.5h6.5L18.5 8.5v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2z"/><path d="M13.5 3.5v5h5"/>',
   branch:'<circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 3.5-2.5 5-6 5.5L8.5 16"/>',
+  diff:'<path d="M12 4v11M6.5 9.5h11M6.5 20h11"/>',
   sparkles:'<path d="M10 3.5l1.7 4.6 4.6 1.7-4.6 1.7L10 16.1l-1.7-4.6-4.6-1.7 4.6-1.7z"/><path d="M17.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
   globe:'<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.3 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.3-3.5-8.5s1.1-6.1 3.5-8.5z"/>',
   info:'<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.9v.1"/>',
@@ -676,6 +773,8 @@ const SESS = {
   s7:{ title:'GPU smoke tests', agent:'opencode', state:'running', project:'renderer-lab', branch:'gpu-smoke', machine:'studio-pc', model:'Default', effort:'Default' },
   s8:{ title:'Shader cleanup', agent:'pi', state:'idle', project:'renderer-lab', branch:'main', machine:'studio-pc', model:'Default', effort:'Default' },
 };
+// Cursor look: relative time and change stats beside each agent.
+const AGO = { s3:'1m', s4:'1h', s5:'3h', s6:'1d', s8:'2d' }, DIFF = { s1:[86, 12], s4:[11, 0], s5:[24, 3] };
 const S = { screen:'session', session:'s1', sidebar:true, panel:'scm', tab:{ s1:'chat' }, rightTab:'dev', running:true, settingsPage:'appearance', sel:'s1', split:52, termSel:0 };
 
 /* ───────────────────────── Helpers ───────────────────────── */
@@ -687,6 +786,7 @@ const fileIcon = n => { const e = n.split('.').pop(); const c = { tsx:'fi-ts', t
 
 /* ───────────────────────── Sidebar ───────────────────────── */
 function renderSidebar() {
+  if (win.dataset.style === 'cursor') return cursorSidebar();
   const nav = (key, icon, label, trail) => `<button class="sb-row ${S.screen === key ? 'is-sel' : ''}" data-act="go-screen" data-v="${key}">${ic(icon)}<span class="lbl">${label}</span><span class="trail">${trail}</span></button>`;
   let h = `<div class="sb-head">${TRAFFIC}<img class="app-mark" src="../../renderer/public/brand-mark.png" alt="ThreadTerm">
       <button class="tb-icon" data-act="sidebar" title="Hide sidebar (Ctrl+B)" aria-label="Hide sidebar">${ic('sidebarL')}</button>
@@ -705,9 +805,30 @@ function renderSidebar() {
     }
     h += `</div>`;
   }
-  h += `</nav><div class="sb-foot"><span class="avatar">LU</span><span class="who">Local user<small>Local profile</small></span>
-    <button class="tb-icon" data-act="settings" title="Settings (Ctrl+,)" aria-label="Settings">${ic('gear')}</button></div>`;
+  h += `</nav>${FOOT()}`;
   $('#sidebar').innerHTML = h;
+}
+const FOOT = () => `<div class="sb-foot"><span class="avatar">LU</span><span class="who">Local user<small>Local profile</small></span>
+    <button class="tb-icon" data-act="settings" title="Settings (Ctrl+,)" aria-label="Settings">${ic('gear')}</button></div>`;
+const agentTrail = id => { const s = SESS[id], d = DIFF[id];
+  return `${d ? `<span class="cur-diff"><span class="a">+${d[0]}</span>${d[1] ? ` <span class="d">−${d[1]}</span>` : ''}</span>` : ''}${s.state === 'running' ? '<span class="spin" title="Working"></span>' : s.state === 'needs' ? '<span class="status-dot needs" title="Needs you"></span>' : `<span class="cur-ago">${AGO[id] || ''}</span>`}`; };
+/* Cursor look: New session on top, then every session grouped by project (remote projects carry their computer). */
+function cursorSidebar() {
+  const nav = (key, icon, label, trail) => `<button class="sb-row ${S.screen === key ? 'is-sel' : ''}" data-act="go-screen" data-v="${key}">${ic(icon)}<span class="lbl">${label}</span><span class="cur-ago">${trail}</span></button>`;
+  let h = `<div class="sb-head">${TRAFFIC}<img class="app-mark" src="../../renderer/public/brand-mark.png" alt="ThreadTerm">
+      <button class="tb-icon" data-act="sidebar" title="Hide sidebar (Ctrl+B)" aria-label="Hide sidebar">${ic('sidebarL')}</button></div>
+    <div class="sb-search"><button class="cur-new" data-act="go-screen" data-v="start">${ic('compose')}<span>New session</span><kbd>Ctrl N</kbd></button>
+      <button class="search-field" data-act="palette">${ic('search')}<span>Search sessions</span><kbd>Ctrl K</kbd></button></div>
+    <nav class="sb-scroll">${nav('inbox', 'tray', 'Inbox', '2')}${nav('terminals', 'terminal', 'All terminals', '8')}`;
+  for (const m of MACHINES) for (const p of m.projects) {
+    h += `<div class="cur-group"><div class="cur-group-head">${m.id !== 'local' ? `<span class="online" title="${m.name} online"></span>${m.name} ·` : ''} ${p.name}<span class="cnt">${p.sessions.length}</span></div>`;
+    for (const id of p.sessions) {
+      const s = SESS[id], sel = ['session', 'split', 'settings'].includes(S.screen) && S.session === id;
+      h += `<button class="sb-row ${sel ? 'is-sel' : ''} ${s.state === 'ended' ? 'ended' : ''}" data-act="go-session" data-v="${id}" data-ctx="session">${tile(s.agent, 14)}<span class="lbl">${s.title}</span>${agentTrail(id)}</button>`;
+    }
+    h += `</div>`;
+  }
+  $('#sidebar').innerHTML = h + `</nav>${FOOT()}`;
 }
 
 /* ───────────────────────── Toolbar ───────────────────────── */
@@ -724,8 +845,10 @@ function renderToolbar() {
       <button class="act-main" data-act="run-menu"><span class="act-dot ${S.running ? 'on' : ''}"></span><b>npm run dev</b><span class="st">${S.running ? 'Running · localhost:5173' : 'Stopped · ran 2 min ago'}</span>${ic('updown')}</button></div>`;
     h += `<span class="tb-flex"></span>`;
     const t = (k, icon, label, extra = '') => `<button aria-pressed="${S.panel === k}" data-act="panel" data-v="${k}" title="${label}" aria-label="${label}">${ic(icon)}${extra}</button>`;
-    h += `<div class="seg" role="group" aria-label="Workbench views">${t('files', 'doc', 'Files')}${t('search', 'search', 'Search')}${t('scm', 'branch', 'Source Control', '<span class="badge">3</span>')}${t('changes', 'sparkles', 'Agent changes')}${t('browser', 'globe', 'Browser')}</div>`;
+    h += `<div class="seg" role="group" aria-label="Workbench views">${t('files', 'doc', 'Files')}${t('search', 'search', 'Search')}${t('scm', 'branch', 'Source Control', '<span class="badge">3</span>')}${t('changes', 'diff', 'Agent changes')}${t('browser', 'globe', 'Browser')}</div>`;
     h += `<span class="tb-group"><button class="tb-icon ${S.panel === 'details' ? 'is-on' : ''}" data-act="panel" data-v="details" title="Session details" aria-label="Session details">${ic('info')}</button></span>`;
+  } else if (S.screen === 'start') {
+    h += `<div class="tb-title"><b>New session</b><span>Pick the agent, the project and where it runs</span></div><span class="tb-flex"></span>`;
   } else if (S.screen === 'inbox') {
     h += `<div class="tb-title"><b>Inbox</b><span>2 need you · 2 finished</span></div><span class="tb-flex"></span>
       <div class="seg" role="group" aria-label="Filter"><button aria-pressed="true">All</button><button aria-pressed="false">Needs you</button><button aria-pressed="false">Finished</button></div>`;
@@ -790,15 +913,31 @@ function chatHTML(id) {
     <div class="msg-ai"><button class="tool">${ic('chevR', 'chev')}${ic('doc')}<span>Read 12 files</span><span class="meta">CHANGELOG.md +11</span></button>
       <p>${s.state === 'ended' ? 'Done. The notes are in <code>docs/release-0.9.md</code>; three items still need a screenshot.' : s.state === 'running' ? 'Running the suite now. 41 of 64 scenes passed so far.' : 'Ready when you are.'}</p>
       ${s.state === 'running' ? `<div class="working">${ic('sparkles')}<span class="shimmer">Rendering scene 42 of 64</span><span class="t">3:10</span></div>` : ''}</div>`;
-  const send = s.state === 'running' ? `<button class="send stop" title="Stop (Esc)" aria-label="Stop">${ic('stop')}</button>` : `<button class="send" title="Send (Enter)" aria-label="Send">${ic('arrowUp')}</button>`;
-  return `<div class="chat"><div class="chat-col">${body}</div></div>
-    <div class="composer-wrap"><div class="composer"><textarea rows="2" placeholder="Message ${AGENT[s.agent]}, or type / for commands"></textarea>
-      <div class="comp-row"><button class="pb icon" title="Attach" aria-label="Attach">${ic('plus')}</button>
-        <button class="pb" data-act="perm-menu">${ic('shield')}Ask as needed${ic('updown', 'ud')}</button>
-        <button class="pb" data-act="model-menu">${s.model || 'Default'} · ${s.effort || 'Default'}${ic('updown', 'ud')}</button>
-        <span class="tb-flex"></span>
-        <button class="pb" data-act="agent-menu">${tile(s.agent, 14)}${AGENT[s.agent]}${ic('updown', 'ud')}</button>
-        <span class="conn" title="Connected"></span>${send}</div></div></div>`;
+  return `<div class="chat"><div class="chat-col">${body}</div></div>${composerHTML(s)}`;
+}
+/* The composer. Mac looks: options on the left, the agent beside Send. Cursor look: the agent and model lead, as in
+   Cursor's prompt box, and attach sits beside Send. The Start screen adds where the session runs. */
+function composerHTML(s, start = false) {
+  const cursor = win.dataset.style === 'cursor', ud = ic('updown', 'ud');
+  const agent = `<button class="pb" data-act="agent-menu">${tile(s.agent, 14)}${AGENT[s.agent]}${ud}</button>`;
+  const model = `<button class="pb" data-act="model-menu">${s.model || 'Default'} · ${s.effort || 'Default'}${ud}</button>`;
+  const perm = `<button class="pb" data-act="perm-menu">${ic('shield')}Ask as needed${ud}</button>`;
+  const attach = `<button class="pb icon" title="Attach" aria-label="Attach">${ic('plus')}</button>`;
+  const where = `<button class="pb" data-act="project-menu">${ic('folder')}ThreadTerm${ud}</button><button class="pb" data-act="branch-menu">${ic('branch')}office-preview${ud}</button><button class="pb" data-act="machine-menu">${ic('desktop')}This PC${ud}</button>`;
+  const conn = start ? '' : '<span class="conn" title="Connected"></span>';
+  const send = s.state === 'running' && !start ? `<button class="send stop" title="Stop (Esc)" aria-label="Stop">${ic('stop')}</button>` : `<button class="send" title="${start ? 'Start (Enter)' : 'Send (Enter)'}" aria-label="${start ? 'Start' : 'Send'}">${ic('arrowUp')}</button>`;
+  const flex = '<span class="tb-flex"></span>';
+  const row = cursor ? agent + model + (start ? where : perm) + flex + attach + conn + send
+    : (start ? where : attach + perm + model) + flex + agent + conn + send;
+  const hint = start ? (cursor ? 'Describe a task, @ to add files, / for commands' : 'Describe what you want to do, or leave it empty for a terminal') : `Message ${AGENT[s.agent]}, or type / for commands`;
+  return `<div class="composer-wrap"><div class="composer"><textarea rows="${start ? 3 : 2}" placeholder="${hint}"></textarea><div class="comp-row">${row}</div></div></div>`;
+}
+/* Start screen: the composer, then recent sessions. */
+function startHTML() {
+  const draft = { agent:'codex', model:'gpt-5.5', effort:'High', state:'idle' };
+  const recent = ['s1', 's2', 's7', 's4'].map(id => { const r = SESS[id];
+    return `<button class="sb-row" data-act="go-session" data-v="${id}">${tile(r.agent, 16)}<span class="lbl">${r.title}</span><span class="where">${r.machine ? r.machine + ' · ' : ''}${r.project}</span>${agentTrail(id)}</button>`; }).join('');
+  return `<div class="start"><div class="start-col"><h1 class="start-q">Where do you want to start?</h1>${composerHTML(draft, true)}<div class="start-recent"><div class="cur-group-head">Recent</div>${recent}</div></div></div>`;
 }
 function termHTML(kind) {
   if (kind === 'verify') return `<pre class="term"><span class="pr">PS D:\\project\\ThreadTerm&gt;</span> npm test -- sheet
@@ -892,7 +1031,8 @@ function paneHTML(sid, active, pane, dim) {
 }
 function renderBody() {
   let h = '';
-  if (S.screen === 'inbox') h = inboxHTML();
+  if (S.screen === 'start') h = startHTML();
+  else if (S.screen === 'inbox') h = inboxHTML();
   else if (S.screen === 'terminals') h = tableHTML();
   else {
     const sid = S.session;
@@ -1008,7 +1148,7 @@ function settingsPage(id) {
     appearance: () => `<div class="group">${row('Appearance', '', `<div class="modes">${modeCard('Auto', 'linear-gradient(135deg,#fff 50%,#1e1e1e 50%)', 'linear-gradient(135deg,#ebebed 50%,#2a2a2c 50%)', '#8e8e93', false)}${modeCard('Light', '#fff', '#ebebed', '#1d1d1f', !dark)}${modeCard('Dark', '#1e1e1e', '#2a2a2c', '#fff', dark)}</div>`)}</div>
       <div class="group">${row('Theme', 'Theme packs recolor everything; this layout stays.', pop('ThreadTerm'))}
         ${row('Accent color', '', `<div class="swatches">${ACCENTS.map(([c, on]) => `<button class="sw ${c === 'multi' ? 'multi' : ''} ${accent === c ? 'is-sel' : ''}" style="--c:${c}" data-act="accent" data-v="${c}" data-on="${on || '#fff'}" aria-label="Accent ${c}"></button>`).join('')}</div>`)}
-        ${row('Window style', 'Floating puts the sidebar and panel on glass.', seg(['Flush', 'Floating'], style === 'floating' ? 1 : 0, 'wstyle'))}
+        ${row('Window style', 'Floating puts the sidebar and panel on glass; Cursor is the monochrome agents layout.', seg(['Flush', 'Floating', 'Cursor'], style === 'floating' ? 1 : style === 'cursor' ? 2 : 0, 'wstyle'))}
         ${row('Sidebar icon size', '', pop('Medium'))}</div>
       <div class="g-title">Tabs and panes</div>
       <div class="group">${row('Show agent icons on terminal tabs', '', sw(true))}${row('Background image', '', `<span style="display:flex;gap:8px">${pop('None')}<button class="btn">Choose…</button></span>`)}</div>`,
@@ -1052,6 +1192,12 @@ function setScreen(v) {
 function setRoot(k, v) {
   if (k === 'theme' || k === 'palette') document.documentElement.dataset[k] = v;
   else win.dataset[k] = v;
+  if (k === 'style') {
+    const root = document.documentElement.dataset;
+    if (v === 'cursor' && root.palette === 'mac') root.palette = 'cursor';
+    else if (v !== 'cursor' && root.palette === 'cursor') root.palette = 'mac';
+    applyAccent(); render();
+  }
   if (k === 'palette') applyAccent();
   syncBoard();
   if (S.screen === 'settings' && layer.querySelector('.swin')) openSettings();
@@ -1092,13 +1238,15 @@ win.addEventListener('click', e => {
     case 'model-menu': openMenu(el, [{ head:'Model' }, { check:true, t:SESS[S.session].model || 'Default' }, { check:false, t:'Faster model' }, '-', { head:'Reasoning' }, { check:false, t:'Low' }, { check:false, t:'Medium' }, { check:true, t:SESS[S.session].effort || 'High' }], { above:true }); break;
     case 'agent-menu': openMenu(el, ['codex', 'claude', 'gemini', 'kimi', 'grok', 'opencode', 'pi'].map(x => ({ tile:x, t:AGENT[x], k:x === SESS[S.session].agent ? '✓' : '' })), { above:true, alignRight:true }); break;
     case 'more-menu': openMenu(el, [{ ic:'refresh', t:'Refresh' }, { ic:'popout', t:'Open in new pane' }, '-', { ic:'copy', t:'Copy path' }, { ic:'folder', t:'Show in Explorer' }], { alignRight:true }); break;
+    case 'project-menu': openMenu(el, MACHINES.flatMap(m => m.projects.map(p => ({ check:p.id === 'tt', t:p.name, k:m.id === 'local' ? '' : m.name })))); break;
+    case 'machine-menu': openMenu(el, [{ check:true, t:'This PC' }, { check:false, t:'studio-pc', k:'32 ms' }]); break;
     case 'close-layer': closeLayer(); break;
     case 'caption-close': break;
     case 'pick': pick = v; if (e.detail === 2) { closeLayer(); break; } openSheet(); break;
     case 'spage': S.settingsPage = v; openSettings(); break;
     case 'switch': el.setAttribute('aria-checked', String(el.getAttribute('aria-checked') !== 'true')); break;
     case 'theme': if (v === 'auto') break; setRoot('theme', v); break;
-    case 'wstyle': setRoot('style', v === 'floating' ? 'floating' : 'flush'); break;
+    case 'wstyle': setRoot('style', ['floating', 'cursor'].includes(v) ? v : 'flush'); break;
     case 'accent': accent = v; applyAccent(); openSettings(); break;
     case 'tsel': S.termSel = +v; if (e.detail === 2) { S.session = el.dataset.s; setScreen('session'); } else renderBody(); break;
   }
@@ -1123,7 +1271,7 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'k') { e.preventDefault(); openPalette(); }
   else if (k === 'b') { e.preventDefault(); S.sidebar = !S.sidebar; render(); }
-  else if (k === 'n') { e.preventDefault(); openSheet(); }
+  else if (k === 'n') { e.preventDefault(); if (win.dataset.style === 'cursor') setScreen('start'); else openSheet(); }
   else if (k === ',') { e.preventDefault(); setScreen('settings'); }
 });
 
@@ -1135,6 +1283,7 @@ if (qp.get('panel')) S.panel = qp.get('panel') === 'none' ? null : qp.get('panel
 if (qp.get('session')) S.session = qp.get('session');
 if (qp.get('sidebar') === 'closed') S.sidebar = false;
 if (qp.get('spage')) S.settingsPage = qp.get('spage');
+if (qp.get('style') === 'cursor' && !qp.get('palette')) document.documentElement.dataset.palette = 'cursor';
 setScreen(qp.get('screen') || 'session');
 ({ palette: openPalette, sheet: openSheet, menu: () => document.querySelector('[data-act="run-menu"]')?.click() })[qp.get('overlay')]?.();
 </script>
