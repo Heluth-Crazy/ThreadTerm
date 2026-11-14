@@ -275,8 +275,11 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  const headSnapshot=gitStatus?.selectedCommit?.head;
  const statusHead=headSnapshot&&headSnapshot.kind!=='unborn'?headSnapshot.oid:undefined;
  useEffect(()=>{setActionPlan(undefined);if(!info)return;let live=true;void request('git.history.plan',{...scope,hash:info.hash}).then(plan=>{if(live&&isCurrent())setActionPlan(plan);}).catch(error=>{if(live&&isCurrent())setIssue(workbenchError(error,zh));});return()=>{live=false;};},[info?.hash,statusHead,gitStatus?.branch,gitStatus?.operation?.kind,scopeKey]);
- const headerItems=actionItems(actionPlan).slice(0,5);
- const headerKinds=['branch','worktree','cherry-pick','revert','reset'] as const;
+ const headerKind={ 'history-new-branch':'branch','history-new-worktree':'worktree','history-cherry-pick':'cherry-pick','history-revert':'revert','history-reset':'reset' } as const;
+ // Cursor's commit head keeps the two common actions as ghosts and the rest behind a ⋯ menu.
+ const headerItems=actionItems(actionPlan).slice(0,5).filter(item=>item.id in headerKind);
+ const headPrimary=headerItems.filter(item=>item.id==='history-revert'||item.id==='history-reset');
+ const headOverflow=headerItems.filter(item=>!headPrimary.includes(item));
  const resetPreview=dialog?.kind==='reset'?resetDialogPreview(dialog.plan.reset):undefined;
  // The diff loads from the selected row as before; comments wait for the full hash (a blame click may select a short
  // one), so a comment always names the same commit.
@@ -326,19 +329,26 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
      <strong>{info.subject}</strong>
      <span className="wb-commit-meta">{info.authorName} &lt;{info.authorEmail}&gt; · {new Date(info.authoredAt).toLocaleString()} · <code title={info.hash}>{info.hash.slice(0, 10)}</code>
       <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => copy(info.hash)}><Icon name="export"/></button></span>
-     <span className="wb-operation-actions">{headerItems.map((item,index)=><button key={item.id} type="button" className="btn btn-sm" disabled={item.disabled} title={item.reason} onClick={()=>void openAction(headerKinds[index],info)}>{item.label}</button>)}</span>
+     <span className="wb-operation-actions">
+      {headPrimary.map(item=><button key={item.id} type="button" className="cg-ghost cg-sm" disabled={item.disabled} title={item.reason} onClick={()=>void openAction(headerKind[item.id as keyof typeof headerKind],info)}>{item.label}</button>)}
+      {headOverflow.length>0&&<button type="button" className="cg-ghost cg-icon cg-sm" aria-label={text('More commit actions', '更多提交操作')} title={text('More commit actions', '更多提交操作')} aria-haspopup="menu" onClick={event=>{const anchor=event.currentTarget,rect=anchor.getBoundingClientRect();showContextMenu({x:rect.right,y:rect.bottom,restoreFocus:anchor,items:headOverflow.map(item=>({id:item.id,label:item.label,disabled:item.disabled,reason:item.reason,onSelect:()=>void openAction(headerKind[item.id as keyof typeof headerKind],info)}))});}}><Icon name="more"/></button>}
+     </span>
      {commentsHost?.attachContext && <ContextSendAction host={commentsHost} item={{kind:'commit', id:crypto.randomUUID(), sha:info.hash, subject:info.subject} satisfies ContextItem} zh={zh} label={text('Send to agent', '发送给 Agent')} testId="history-send-to-agent"/>}
      {detail?.body && <pre className="wb-commit-body">{detail.body}</pre>}
     </header>
     <div className="wb-commit-files" role="list">
-     {detail?.files.map(candidate => <button type="button" role="listitem" key={candidate.path} className={`wb-change-row tone-${candidate.status === 'A' ? 'added' : candidate.status === 'D' ? 'deleted' : candidate.status === 'R' ? 'renamed' : 'modified'}${file?.path === candidate.path ? ' selected' : ''}`}
-      title={candidate.originalPath ? `${candidate.originalPath} → ${candidate.path}` : candidate.path} onClick={() => setFile({path:candidate.path, originalPath:candidate.originalPath})}>
-      <Icon name="file"/><span className="wb-name">{baseName(candidate.path)}</span><span className="wb-dir">{parentPath(candidate.path)}</span><span className="wb-deco">{candidate.status}</span>
-     </button>)}
+     {detail?.files.map(candidate => <div role="listitem" key={candidate.path} className={`wb-change-row tone-${candidate.status === 'A' ? 'added' : candidate.status === 'D' ? 'deleted' : candidate.status === 'R' ? 'renamed' : 'modified'}${file?.path === candidate.path ? ' selected' : ''}`} data-history-path={candidate.path}>
+      <button type="button" className="wb-change-open"
+       title={candidate.originalPath ? `${candidate.originalPath} → ${candidate.path}` : candidate.path} onClick={() => setFile({path:candidate.path, originalPath:candidate.originalPath})}>
+       <Icon name="file"/><span className="wb-name">{baseName(candidate.path)}</span><span className="wb-dir">{parentPath(candidate.path)}</span>
+      </button>
+      {onOpenFile && <span className="wb-row-actions"><button type="button" className="cg-ghost cg-icon cg-sm" title={text('Open current file', '打开当前文件')} aria-label={text('Open current file', '打开当前文件')} onClick={() => onOpenFile(candidate.path)}><Icon name="popout"/></button></span>}
+      <span className="wb-deco">{candidate.status}</span>
+     </div>)}
      {detail && !detail.files.length && <p className="wb-empty">{text('No file changes in this folder.', '此目录中没有文件更改。')}</p>}
     </div>
     <div className="wb-history-diff">
-     {file && <div className="file-bar"><span className="path" title={file.path}>{file.path}</span><span className="grow"/>{commentScope && version && <button type="button" className="btn btn-sm" disabled={!selection || Boolean(draft)} title={selection ? text('Comment on the selected lines', '评论选中的行') : text('Select lines (or put the cursor on a line) on either side first', '请先在任一侧选中行（或将光标放在某行）')} onClick={() => selection && setDraft(selection)}>{text('Comment', '评论')}</button>}{onOpenFile && <button type="button" className="btn btn-sm" onClick={() => onOpenFile(file.path)}>{text('Open current file', '打开当前文件')}</button>}</div>}
+     {file && <div className="file-bar"><span className="path" title={file.path}>{file.path}</span><span className="grow"/>{commentScope && version && <button type="button" className="cg-ghost cg-sm" disabled={!selection || Boolean(draft)} title={selection ? text('Comment on the selected lines', '评论选中的行') : text('Select lines (or put the cursor on a line) on either side first', '请先在任一侧选中行（或将光标放在某行）')} onClick={() => selection && setDraft(selection)}>{text('Comment', '评论')}</button>}{onOpenFile && <button type="button" className="cg-ghost cg-sm" onClick={() => onOpenFile(file.path)}>{text('Open current file', '打开当前文件')}</button>}</div>}
      {commentScope && version && pair && draft && <CommentForm scope={commentScope} path={pair.path} version={version} selection={draft} zh={zh} onCancel={() => setDraft(undefined)} onAdded={() => setDraft(undefined)}/>}
      {commentScope && commentsHost && <PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>}
      {pair?.binary ? <p className="tt-editor-state">{text('Binary file — no text diff.', '二进制文件，无法显示文本对比。')}</p>
