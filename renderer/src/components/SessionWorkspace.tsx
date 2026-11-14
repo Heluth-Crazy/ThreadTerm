@@ -15,7 +15,8 @@ import { focusedWorkspaceTab, isFileTab, isWebTabUrl, removeWorkspaceTabs, works
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { sameDiffTabKey } from '../workbench/branchScope';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
-import { PanelBrowser } from './PanelBrowser';
+import { PanelBrowser, PanelBrowserTabs } from './PanelBrowser';
+import { WbIcon } from '../workbench/icons';
 import { usePanelBrowser } from '../panelBrowser';
 import { BROWSER_NEW_TAB_URL } from '../browserNewTab';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
@@ -372,6 +373,16 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   setFocusTarget({paneId:target.paneId,tabId:target.tab.id,key:crypto.randomUUID()});
   return target.tab.id;
  };
+ // A page moved out of the Browser panel gets a pane of its own beside the chat, never a tab in the chat's pane
+ // (owner 2026-11-14: the chat and the page must stay visible together). An existing page-only pane is reused.
+ const openPageBeside=()=>{
+  const page:Extract<ContentRef,{kind:'web'}>={id:crypto.randomUUID(),kind:'web',url:panelBrowser.url};
+  const placed=placeWebTabBesideSession(latestLayout.current,previewSessionId,page);
+  if(placed.status!=='placed'||!placed.paneId){fail(new Error(zh?'已有四个窗格。先关闭一个，再并排打开。':'There are already four panes. Close one, then open the page side by side.'));return;}
+  save(placed.layout);setFocusTarget({paneId:placed.paneId,tabId:page.id,key:crypto.randomUUID()});
+  panelBrowser.close(panelBrowser.tabId);setWorkbenchCommand({view:'toggle',key:crypto.randomUUID()});
+ };
+ const pageBesideAvailable=placeWebTabBesideSession(layout,previewSessionId,{id:'',kind:'web',url:''}).status==='placed';
  const openGroupTab=(group:NonNullable<Props['groupToOpen']>)=>{
   const existing=workspaceTabs(latestLayout.current).find(item=>(item.tab.kind==='group'&&item.tab.groupId===group.id)||(item.tab.kind==='roundtable'&&item.tab.roundtableId===group.id));
   if(existing){save(activate(latestLayout.current,existing.paneId,existing.tab.id));setFocusTarget({paneId:existing.paneId,tabId:existing.tab.id,key:crypto.randomUUID()});return;}
@@ -712,12 +723,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
    </div>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} filesActions={filesActionsForScope} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} headerHost={headerTools} zh={zh}
-    browser={()=> <PanelBrowser key={panelBrowser.key} browser={panelBrowser} sessions={treeSessions} zh={zh} onOpenTab={url=>openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url)}/>}
-    browserActions={panelBrowser.url!==BROWSER_NEW_TAB_URL&&<button type="button" className="btn btn-sm btn-ghost" aria-label={zh?'作为标签页打开':'Open as tab'} onClick={()=>{
-     if(openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url:panelBrowser.url},candidate=>candidate.kind==='web'&&candidate.url===panelBrowser.url)){
-      panelBrowser.reset();setWorkbenchCommand({view:'toggle',key:crypto.randomUUID()});
-     }
-    }}>{zh?'作为标签页打开':'Open as tab'}</button>}
+    browser={()=> <PanelBrowser key={panelBrowser.key} browser={panelBrowser} sessions={treeSessions} zh={zh} activeSessionId={previewSessionId} commentScope={project&&path?{projectId:project.id,root:path}:undefined} commentsHost={commentsHost}/>}
+    browserTitle={panelBrowser.tabs.length>1&&<PanelBrowserTabs browser={panelBrowser} zh={zh}/>}
+    browserActions={<>
+     {(panelBrowser.tabs.length>1||panelBrowser.url!==BROWSER_NEW_TAB_URL)&&<button type="button" className="icon-btn" aria-label={zh?'新标签页':'New tab'} title={zh?'新标签页（Ctrl+T）':'New tab (Ctrl+T)'} onClick={panelBrowser.newTab}><WbIcon name="plus"/></button>}
+     {panelBrowser.url!==BROWSER_NEW_TAB_URL&&<button type="button" className="icon-btn" aria-label={zh?'并排打开':'Open side by side'} title={pageBesideAvailable?(zh?'移到对话旁边的单独窗格':'Move this page to its own pane beside the chat'):(zh?'已有四个窗格，先关闭一个':'There are already four panes; close one first')} disabled={!pageBesideAvailable} onClick={openPageBeside}><WbIcon name="split"/></button>}
+    </>}
     details={<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-scroll">
     <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path??'')}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
     {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}

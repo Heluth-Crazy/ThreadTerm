@@ -14,3 +14,16 @@
 @container browser-preview (width < 330px) {
  .wb-side-browser .wb-browser-actions { display:none; }
 }
+.wb-side-browser-page { display:flex; flex:1; min-width:0; min-height:0; }
+.wb-side-browser-page[hidden] { display:none; }
+/* Tabs take the header's title slot once there are two (owner 2026-11-14: pages stay beside the chat). Ghost
+   grammar: transparent, --fill-hover on hover, --fill-selected for the tab in front; close shows on hover/front. */
+.wb-panel-head .wb-browser-tabs { display:flex; flex:1; align-items:center; gap:2px; min-width:0; margin-left:-8px; overflow-x:auto; scrollbar-width:none; }
+.wb-browser-tab { display:flex; align-items:center; flex:0 1 168px; min-width:72px; height:26px; padding-right:3px; border-radius:6px; color:var(--muted); }
+.wb-browser-tab:hover { background:var(--fill-hover); color:var(--text); }
+.wb-browser-tab.is-active { background:var(--fill-selected); color:var(--text); }
+.wb-browser-tab-main { flex:1; min-width:0; height:100%; padding:0 4px 0 9px; overflow:hidden; border:0; border-radius:6px; background:transparent; color:inherit; font:12px var(--font); text-align:left; text-overflow:ellipsis; white-space:nowrap; cursor:default; }
+.wb-browser-tab-main:focus-visible { outline:2px solid color-mix(in srgb,var(--primary) 55%,transparent); outline-offset:-2px; }
+body .wb-browser-tab .wb-browser-tab-close { opacity:0; }
+body .wb-browser-tab:is(:hover,.is-active,:focus-within) .wb-browser-tab-close { opacity:1; }
+body .wb-browser-tab .wb-browser-tab-close .ico { width:12px; height:12px; }

@@ -90,8 +90,8 @@ function AlternateFilesExplorer({sessions, active, ...props}:{sessions:Session[]
 }
 
 /** Fixed header tools and a single right panel aligned with the pane cards. */
-export function WorkbenchSideBar({scope, actions, filesActions, sessions, allSessions = [], activeSessionId, activePath, command, headerHost, details, browser, browserActions, zh}:{
- scope:WorkbenchScope; actions:WorkbenchActions; filesActions?:(scope:WorkbenchScope)=>WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; headerHost?:HTMLElement|null; details?:ReactNode; browser?:(close:()=>void)=>ReactNode; browserActions?:ReactNode; zh:boolean;
+export function WorkbenchSideBar({scope, actions, filesActions, sessions, allSessions = [], activeSessionId, activePath, command, headerHost, details, browser, browserActions, browserTitle, zh}:{
+ scope:WorkbenchScope; actions:WorkbenchActions; filesActions?:(scope:WorkbenchScope)=>WorkbenchActions; sessions:Session[]; allSessions?:Session[]; activeSessionId?:string; activePath?:string; command?:WorkbenchCommand; headerHost?:HTMLElement|null; details?:ReactNode; browser?:(close:()=>void)=>ReactNode; browserActions?:ReactNode; browserTitle?:ReactNode; zh:boolean;
 }) {
  const [stored, setStored] = useState(readStored);
  const [open, setOpen] = useState(false);
@@ -179,7 +179,7 @@ export function WorkbenchSideBar({scope, actions, filesActions, sessions, allSes
   {headerHost&&createPortal(switcher, headerHost)}
   {open && <div ref={slot} className={`wb-sidebar-slot${browserWidth?' wb-sidebar-browser':''}`} style={{width:browserWidth&&!workspaceWidth?'45%':width}}><div className="wb-sidebar-strip" aria-hidden="true"/><aside className="wb-sidebar" aria-label={text('Workbench', '工作台侧栏')}>
    <section className="wb-panel" aria-label={current.label}>
-    <header className="wb-panel-head"><strong>{current.label}</strong><div className="wb-panel-actions" ref={setActionsHost}>{browserWidth&&browserActions}</div>
+    <header className="wb-panel-head">{browserWidth&&browserTitle?browserTitle:<strong>{current.label}</strong>}<div className="wb-panel-actions" ref={setActionsHost}>{browserWidth&&browserActions}</div>
      <button type="button" className="icon-btn wb-panel-close" title={text('Close side bar (Ctrl+Alt+B)', '关闭侧栏（Ctrl+Alt+B）')} aria-label={text('Close side bar', '关闭侧栏')} onClick={() => setOpen(false)}><Icon name="close"/></button></header>
     <div className="wb-panel-body">
      {stored.view==='browser'&&browser?.(()=>setOpen(false))}

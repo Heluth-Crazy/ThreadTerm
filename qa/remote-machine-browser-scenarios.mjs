@@ -124,8 +124,8 @@ export async function runRemoteBrowserProbe({app,remotePage,localPage,rpc,until,
   assert.equal(await remotePage.locator('iframe[title="Development service preview"]').count(),0);assert.match(await evaluate(hostPage.id,'document.body.innerText'),/^HOST/);pass('remote FilePreview Preview address opens HOST in the panel with no live app iframe');
   await evaluate(hostPage.id,"document.cookie='remoteOnly=HOST;path=/';");
 
-  // Open a normal workspace web tab for sharing/comments (the panel deliberately hides these controls).
-  await remotePage.getByRole('button',{name:'Open as tab',exact:true}).click();
+  // Open the page in its own pane for agent sharing (the Browser panel has no agent access).
+  await remotePage.getByRole('button',{name:'Open side by side',exact:true}).click();
   const web=remotePage.locator('.wb-web-preview:visible').first();
   // Favicons are fetched by main outside the page; they rely on the session's proxy sign-in from the page load.
   await until(async()=>(await remotePage.locator('img.browser-page-favicon').first().getAttribute('src',{timeout:500}).catch(()=>null))?.startsWith('data:image/svg+xml'),'host favicon through the machine proxy');pass('the host page favicon loads through the machine proxy');

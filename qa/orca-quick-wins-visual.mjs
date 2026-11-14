@@ -262,7 +262,7 @@ try {
    const preview = page.locator('.wb-web-preview').first();
    await preview.waitFor();
    assert.equal(await page.locator('.workspace-tab[data-tab-kind="web"]').count(), 0, 'a user terminal preview opens only in the Browser panel');
-   await page.getByRole('button', { name: 'Open as tab', exact: true }).click();
+   await page.getByRole('button', { name: 'Open side by side', exact: true }).click();
   const title = 'QA page';
   // Browser pages live in the pane's strip, never the upper workspace strip (pane-layout.md).
   const browserTab = page.locator('.browser-page-tabs').getByRole('tab', { name: url, exact: true });
@@ -279,7 +279,7 @@ try {
   await until(async () => await browserTab.innerText() === title && await browserTab.getAttribute('aria-selected') === 'true', 'the browser pane does not show the selected page title');
   await native.screenshot({ path: join(out, 'en-3-native-page.png') }); report.shots.push('en-3-native-page.png');
   await shot('en-3-web-tab.png');
-   check(`terminal link bar offers Open in preview in the Browser panel; Open as tab moves the page into an isolated native tab`);
+   check(`terminal link bar offers Open in preview in the Browser panel; Open side by side moves the page into its own pane with an isolated native tab`);
   // The same address again activates the existing tab instead of adding one.
   await tab('Dev server').click();
   await clickUrl();
