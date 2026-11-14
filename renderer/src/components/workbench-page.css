@@ -240,13 +240,34 @@
 .workbench-page .group-notice { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); color: var(--text); font-size: 12px; line-height: 1.45; flex-wrap: wrap; overflow-wrap: anywhere; }
 .workbench-page .group-notice > .ico { flex: none; }
 
-.start.workbench-page { min-width: 0; width: 100%; box-sizing: border-box; grid-template-columns: minmax(0, 1fr); }
+/* Cursor's Start (owner 2026-11-14): the composer then Recent, centred in one 680px column, with no visible
+   headline. The heading stays in the DOM for screen readers and for the probes that wait on `.start-q`. */
+.start.workbench-page { display:flex; flex:1; min-height:0; width:100%; max-width:none; margin:0; padding:0; gap:0; justify-content:center; overflow:auto; background:var(--surface); }
+.workbench-page .start-col { width:min(680px, calc(100% - 48px)); padding:16vh 0 32px; }
+.workbench-page .start-q { position:absolute; width:1px; height:1px; margin:-1px; padding:0; border:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.workbench-page .start-col > .composer { padding:14px 16px 12px; gap:12px; }
+.workbench-page .start-col .composer textarea { min-height:76px; padding:14px 16px 4px; }
+.workbench-page .start-col .composer-send { width:26px; height:26px; margin-left:0; background:var(--text); color:var(--surface); }
+.workbench-page .start-col .composer-send:hover { filter:none; background:color-mix(in srgb,var(--text) 85%,var(--surface)); }
+.workbench-page .start-recent { margin-top:26px; }
+.workbench-page .start-recent-head { display:flex; align-items:center; gap:6px; height:22px; padding:0 8px; color:var(--faint); font-size:11.5px; font-weight:500; }
+.workbench-page .start-row { display:flex; align-items:center; gap:8px; width:100%; height:32px; padding:0 8px; border:0; border-radius:6px; background:transparent; color:var(--text); font:inherit; font-size:13px; text-align:left; white-space:nowrap; }
+.workbench-page .start-row:hover { background:var(--fill-hover); }
+.workbench-page .start-row .agent-tile { flex:none; }
+.workbench-page .start-row .meta { flex:none; margin-left:auto; color:var(--faint); font-size:12px; }
+/* Cursor's Recent trail is quiet: the state reads as a dot and a label, not a pill. */
+.workbench-page .start-row .chip { flex:none; height:auto; min-height:0; padding:0; border-radius:0; background:transparent; font-size:12px; }
+.workbench-page .start-inbox { display:flex; align-items:center; gap:8px; width:100%; height:32px; margin-top:10px; padding:0 8px; border:0; border-radius:6px; background:transparent; color:var(--text); font:inherit; font-size:12.5px; text-align:left; }
+.workbench-page .start-inbox:hover { background:var(--fill-hover); }
+.workbench-page .start-inbox .link { color:var(--primary); white-space:nowrap; }
+.workbench-page .workbench-links { margin-top:18px; padding:0 8px; }
 .workbench-page .composer, .workbench-page .composer textarea { min-width: 0; }
 .workbench-page .composer textarea { width: 100%; }
 .workbench-page .composer-row > * { max-width: 100%; }
+/* A narrow window stacks the row instead of clipping the pickers. */
 @media (max-width: 760px) {
-  .workbench-page .quiet-row { flex-wrap: wrap; }
-  .workbench-page .quiet-row .meta { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .workbench-page .start-row { flex-wrap: wrap; height:auto; min-height:32px; padding:6px 8px; }
+  .workbench-page .start-row .meta, .workbench-page .start-row .chip { margin-left:0; max-width:100%; white-space:normal; }
 }
 
 /* Mac-style composer row (owner 2026-11-14: "这里的线条多余了，显得很杂乱"). The composer card is the only outline: its

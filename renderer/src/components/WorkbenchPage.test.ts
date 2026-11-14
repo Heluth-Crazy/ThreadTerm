@@ -50,6 +50,26 @@ test('Workbench requires an explicit Shell choice when no agent is ready', () =>
   assert.match(html, /composer-send[^>]*disabled/);
 });
 
+// G1: Cursor's Start keeps the composer and a Recent list only, and hides Recent when it is empty.
+test('Workbench Start hides Recent when nothing is recent and keeps the heading for screen readers', () => {
+  const empty = render('en');
+  assert.match(empty, /<h1 class="start-q">/);
+  assert.doesNotMatch(empty, /class="start-recent"/);
+  assert.doesNotMatch(empty, /Continue|继续上次/);
+  assert.match(render('en', ['running']), /class="start-recent"/);
+});
+
+// G1: the composer row follows Cursor's order (agent, project, worktree, then Send) and rows end with the state.
+test('Workbench Start orders the composer row and ends a recent row with its state', () => {
+  const html = render('en', ['running']);
+  const agent = html.indexOf('data-menu-trigger="agent"');
+  const project = html.indexOf('aria-label="Choose project"');
+  const worktree = html.indexOf('aria-label="Choose worktree"');
+  const send = html.indexOf('class="composer-send"');
+  assert.ok(agent > 0 && agent < project && project < worktree && worktree < send, 'agent, project, worktree, Send');
+  assert.match(html, /class="start-row"><span class="agent-tile[^]*?class="chip st-running">Running<\/span><\/button>/);
+});
+
 test('Workbench calls Chat text an unsent draft and terminal text a title', () => {
   const base = snapshot('en');
   for (const [language, label, hint] of [['en', 'Chat draft', 'press Send'], ['zh-CN', '聊天草稿', '点击发送']] as const) {
