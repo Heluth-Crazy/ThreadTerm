@@ -427,16 +427,6 @@ function MachineApp() {
       {remoteMachine && <HostFiles />}
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}${remoteMachine ? ' remote-machine' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} style={{ '--machine-color': currentMachine?.color } as CSSProperties}>
         {!remoteMachine && themeBackgrounds && <Suspense fallback={null}><BackgroundLayers theme={resolvedTheme} backgrounds={themeBackgrounds} layoutKey={`${route.kind}:${route.id ?? ""}`}/></Suspense>}
-        <div className="window-controls app-chrome" role="group" aria-label={locale === 'zh-CN' ? '窗口控制' : 'Window controls'}>
-          <button type="button" aria-label={t("minimize")} onClick={() => void windowAction("minimize")}><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" /></svg></button>
-          <button type="button" aria-label={t("maximize")} onClick={() => void windowAction("maximize")}><svg viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" rx="1" /></svg></button>
-          <button type="button" className="caption-close" aria-label={t("closeWindow")} onClick={() => void windowAction("close")}><svg viewBox="0 0 10 10" aria-hidden="true"><path d="m.5.5 9 9m0-9-9 9" /></svg></button>
-        </div>
-        {sidebarCollapsed && <div className="shell-toolbar-prefix">
-          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={false} onClick={() => setSidebarCollapsed(false)}><Icon name="panel" /></button>
-          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4H4v16h16V10M12 12l8-8 2 2-8 8-4 1z" /></svg></button>
-          {remoteMachine && <MachineChrome zh={locale === 'zh-CN'} />}
-        </div>}
         <aside className="sidebar">
           <div className="side-head">
             <button className="brand-home" aria-label="ThreadTerm" title="ThreadTerm" onClick={() => void navigate({ kind: "workbench" })}><span className="brand-mark"><img src="./brand-mark.png" alt="" /></span></button>
@@ -608,6 +598,17 @@ function MachineApp() {
             />
           )}
         </main>
+        {/* After <main> on purpose: Chromium resolves -webkit-app-region in DOM order, so these no-drag controls must come after the drag toolbars they overlap or Windows swallows their clicks as window drags. */}
+        <div className="window-controls app-chrome" role="group" aria-label={locale === 'zh-CN' ? '窗口控制' : 'Window controls'}>
+          <button type="button" aria-label={t("minimize")} onClick={() => void windowAction("minimize")}><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" /></svg></button>
+          <button type="button" aria-label={t("maximize")} onClick={() => void windowAction("maximize")}><svg viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" rx="1" /></svg></button>
+          <button type="button" className="caption-close" aria-label={t("closeWindow")} onClick={() => void windowAction("close")}><svg viewBox="0 0 10 10" aria-hidden="true"><path d="m.5.5 9 9m0-9-9 9" /></svg></button>
+        </div>
+        {sidebarCollapsed && <div className="shell-toolbar-prefix">
+          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={false} onClick={() => setSidebarCollapsed(false)}><Icon name="panel" /></button>
+          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4H4v16h16V10M12 12l8-8 2 2-8 8-4 1z" /></svg></button>
+          {remoteMachine && <MachineChrome zh={locale === 'zh-CN'} />}
+        </div>}
         <RuntimeStatusChip state={visibleRuntimeProblem} locale={locale} onRetry={() => void refresh()} placementKey={`${route.kind}:${route.id ?? ""}:${sessionView}`} />
         {data && companionEnabled && companionOpen && (
           <DesktopCompanion
