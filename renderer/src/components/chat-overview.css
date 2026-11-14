@@ -1,13 +1,14 @@
 /* Chat overview (ChatOverview.tsx): the docked card and the header button/popover. */
 .chat-overview-header { position:relative; display:inline-flex; align-items:center; }
-.chat-overview-button { display:inline-flex; align-items:center; gap:7px; height:30px; padding:0 10px 0 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--soft); color:var(--text); font:inherit; font-size:12px; cursor:pointer; }
-.chat-overview-button:hover { background:var(--raised); }
-.chat-overview-button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-.chat-overview-button.open { border-color:var(--primary); }
+/* Codex-style header control: a ghost button that only fills on hover or while its popover is open. */
+.chat-overview-button { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 8px 0 6px; border:0; border-radius:6px; background:transparent; color:var(--muted); font:inherit; font-size:12px; font-weight:500; cursor:default; transition:background-color .12s ease, color .12s ease; }
+.chat-overview-button:hover { background:var(--fill-hover); color:var(--text); }
+.chat-overview-button:focus-visible { outline:2px solid color-mix(in srgb,var(--primary) 55%,transparent); outline-offset:1px; }
+.chat-overview-button.open { background:var(--fill-selected); color:var(--text); }
 .chat-overview-stack { display:inline-flex; align-items:center; }
-.chat-overview-stack > * { width:16px; height:16px; margin-left:-4px; border-radius:4px; background:var(--surface); box-shadow:0 0 0 1.5px var(--surface); }
+.chat-overview-stack > * { width:16px; height:16px; margin-left:-4px; border-radius:4px; background:var(--surface); box-shadow:0 0 0 1.5px var(--tabbar,var(--surface)); }
 .chat-overview-stack > *:first-child { margin-left:0; }
-.chat-overview-stack > .ico { color:var(--muted); }
+.chat-overview-stack > .ico { width:14px; height:14px; margin:0 1px; background:none; box-shadow:none; color:currentColor; }
 .chat-overview-button-label { white-space:nowrap; }
 .chat-overview-badge { min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--st-needs, #e2b340); color:var(--bg); font-size:10px; font-weight:700; display:grid; place-items:center; }
 .chat-overview-popover { position:absolute; top:calc(100% + 6px); right:0; z-index:40; width:300px; max-height:min(56vh, 520px); overflow:auto; border-radius:14px; }
