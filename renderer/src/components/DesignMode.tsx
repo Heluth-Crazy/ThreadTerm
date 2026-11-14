@@ -10,6 +10,9 @@ import type { usePageCommentPreview } from './PageComments';
 type Preview=ReturnType<typeof usePageCommentPreview>;
 
 /** The shared picker also serves saved-file comments; Design Mode is enabled only for the native browser. */
+/** Properties shown before the user filters: the six sent with every note, then the usual layout knobs. */
+const KEY_CSS=['color','background-color','font-size','font-family','display','position','font-weight','line-height','width','height','padding-top','padding-right','padding-bottom','padding-left','margin-top','margin-bottom','row-gap','column-gap','border-top-left-radius','opacity'];
+
 export function DesignToolbar({preview,zh}:{preview:Preview;zh:boolean}) {
  const copy=(en:string,cn:string)=>zh?cn:en;
  const [open,setOpen]=useState(false),[busy,setBusy]=useState(false),[issue,setIssue]=useState<string>();
@@ -84,7 +87,10 @@ export function DesignNoteCard({preview,scope,zh}:{preview:Preview;scope?:Commen
  const cancel=()=>{if(saved.current){preview.added();return;}preview.cancel();};
  const inspect=async()=>{setCss(!css);if(css||pick.target.type!=='element')return;const generation=++serial.current,selected=pick,current=()=>generation===serial.current&&preview.isCurrentPick(selected);try{const result=await inspectPageTarget({frameName:preview.frameName,target:pageTargetRef(selected.target)});if(!current())return;setStyles(result.styles);setCssEdits(result.cssEdits);}catch{if(current())setIssue(copy('CSS properties are unavailable for this element.','无法读取此元素的 CSS 属性。'));}};
  const edit=async(property:string,value:string)=>{const generation=++serial.current,selected=pick,current=()=>generation===serial.current&&preview.isCurrentPick(selected);setBusy(true);try{const result=await inspectPageTarget({frameName:preview.frameName,target:pageTargetRef(selected.target),property,value});if(!current())return;setStyles(result.styles);setCssEdits(result.cssEdits);setIssue(undefined);await preview.refresh?.();}catch{if(current())setIssue(copy('This CSS value could not be previewed.','无法预览此 CSS 值。'));}finally{if(current())setBusy(false);}};
- const entries=Object.entries(styles).filter(([property])=>property.includes(filter.toLowerCase()));
+ // An empty filter shows what people change (edited properties first, then the common ones), not ~300 computed
+ // properties in alphabetical order; typing searches every property.
+ const query=filter.trim().toLowerCase(),edited=new Set(cssEdits.map(edit=>edit.property));
+ const entries=query?Object.entries(styles).filter(([property])=>property.includes(query)):[...Object.entries(styles).filter(([property])=>edited.has(property)),...KEY_CSS.filter(property=>!edited.has(property)&&property in styles).map(property=>[property,styles[property]] as [string,string])];
  const wait=preview.batch||Boolean(pick.textEdits?.length),label=pageCommentLabel(pick.target,zh);
  return <div className="cg-pop dm-note wb-page-comment-form" data-testid="design-note" aria-busy={busy} role="region" aria-label={copy('Design note','设计标注')} onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();cancel();}else if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='l'){event.preventDefault();event.stopPropagation();void submit(true);}}}>
   <div className="dm-note-target"><WbIcon name="element-code"/><span title={label}>{label}</span>{pick.elements&&pick.elements.length>1?<small>{copy(`${pick.elements.length} elements`,`${pick.elements.length} 个元素`)}</small>:pick.target.type==='element'&&pick.target.components?.[0]&&<small>{pick.target.components[0]}</small>}</div>

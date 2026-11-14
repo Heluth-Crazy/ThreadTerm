@@ -210,7 +210,10 @@ export function pagePickerScript(
     if (!pass(e)) try {
       const style=getComputedStyle(e);
       for(const name of ['color','background-color','font-size','font-family','display','position']) computedStyles[name]=clean(style.getPropertyValue(name),1000);
-      for(let index=0;index<style.length&&index<300;index++){const name=style.item(index);if(/^[a-z-]{1,80}$/.test(name))styles[name]=clean(style.getPropertyValue(name),1000);}
+      // The common properties first, then the rest up to the cap: computed styles enumerate alphabetically and run past
+      // 300, so a plain first-300 cut would drop width, z-index, transform and friends.
+      for(const name of ['color','background-color','font-size','font-family','display','position','font-weight','line-height','width','height','padding-top','padding-right','padding-bottom','padding-left','margin-top','margin-right','margin-bottom','margin-left','row-gap','column-gap','border-top-left-radius','border-top-color','opacity','z-index','transform','visibility']) styles[name]=clean(style.getPropertyValue(name),1000);
+      for(let index=0;index<style.length&&Object.keys(styles).length<300;index++){const name=style.item(index);if(!(name in styles)&&/^[a-z-]{1,80}$/.test(name))styles[name]=clean(style.getPropertyValue(name),1000);}
     } catch {}
     return {
       type: 'element',

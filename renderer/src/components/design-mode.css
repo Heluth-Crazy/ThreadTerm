@@ -28,7 +28,7 @@
 .dm-note-target > .ico { flex:none; width:14px; height:14px; }
 .dm-note-target > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
 .dm-note-target > small { flex:0 1 auto; margin-left:auto; padding:0 5px; overflow:hidden; text-overflow:ellipsis; border-radius:4px; background:var(--fill-hover); font:11px var(--font); white-space:nowrap; }
-.dm-note textarea { box-sizing:border-box; width:100%; min-height:54px; padding:7px 9px; border:0; resize:vertical; outline:none; color:var(--text); font:12.5px/1.45 var(--font); }
+.dm-note textarea { box-sizing:border-box; width:100%; min-height:54px; padding:7px 9px; border:0; resize:none; outline:none; color:var(--text); font:12.5px/1.45 var(--font); }
 .dm-note-shot { max-width:100%; max-height:74px; border-radius:4px; object-fit:contain; justify-self:start; }
 .dm-note-foot { display:flex; align-items:center; gap:2px; min-width:0; }
 .dm-css { overflow:hidden; font:11.5px var(--mono); }
