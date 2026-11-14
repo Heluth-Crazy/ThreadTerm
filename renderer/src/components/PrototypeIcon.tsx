@@ -34,6 +34,7 @@ const icons: Record<string,string> = {
   "split": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M12 4v16\"/>",
   "archive": "<rect x=\"3\" y=\"6\" width=\"18\" height=\"14\" rx=\"2\"/><path d=\"M3 10h18M10 14h4\"/>",
   "trash": "<path d=\"M5 7h14M9 7V5h6v2M8 7l1 13h6l1-13\"/>",
+  "diff": "<path d=\"M12 4v11M6.5 9.5h11M6.5 20h11\"/>",
   "flow": "<rect x=\"3\" y=\"3\" width=\"6\" height=\"6\" rx=\"1.5\"/><rect x=\"15\" y=\"3\" width=\"6\" height=\"6\" rx=\"1.5\"/><rect x=\"15\" y=\"15\" width=\"6\" height=\"6\" rx=\"1.5\"/><path d=\"M9 6h6M6 9v9h9\"/>",
   "globe": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18\"/>",
   "image": "<rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\"/><circle cx=\"8\" cy=\"10\" r=\"1.5\"/><path d=\"m4 17 5-5 3 3 2-2 6 4\"/>",

@@ -192,7 +192,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
   if(sessionId) actions.openReview?.({sessionId, checkpointId:checkpoint.id, ...(next ? {toCheckpointId:next.id} : {}), path});
  };
  const toolbar = toolbarHost ? createPortal(<><button type="button" className="icon-btn" data-testid="agent-review-start" title={text('Review with agent', '请智能体审查')} aria-label={text('Review with agent', '请智能体审查')} disabled={!canReview || busy} onClick={() => void openAgentReview()}><Icon name="spark"/></button><button type="button" className="icon-btn" title={text('Refresh', '刷新')} aria-label={text('Refresh', '刷新')} disabled={!sessionId} onClick={() => void load()}><WbIcon name="refresh"/></button></>, toolbarHost) : null;
- if(!sessions.length) return <div className="wb-review"><div className="wb-empty-state"><Icon name="spark"/><strong>{text('No sessions in this workspace', '此工作区没有会话')}</strong><p>{text('Start an agent session to review what it changes.', '启动 Agent 会话后即可审查其改动。')}</p></div></div>;
+ if(!sessions.length) return <div className="wb-review"><div className="wb-empty-state"><Icon name="diff"/><strong>{text('No sessions in this workspace', '此工作区没有会话')}</strong><p>{text('Start an agent session to review what it changes.', '启动 Agent 会话后即可审查其改动。')}</p></div></div>;
  return <div className="wb-review">
   {toolbar}
   {sessions.length > 1 && <Select className="wb-session-select" value={sessionId ?? ''} aria-label={text('Session', '会话')} onChange={event => setSessionId(event.target.value)}>
@@ -200,7 +200,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
   </Select>}
   {session && sessions.length === 1 && <div className="wb-review-session"><SessionIcon session={session}/><span>{session.title}</span></div>}
   {issue && <p className="wb-issue" role="alert">{issue}<button type="button" className="icon-btn" aria-label={text('Dismiss', '关闭提示')} onClick={() => setIssue(undefined)}><Icon name="close"/></button></p>}
-  {state && !state.available && <div className="wb-empty-state"><Icon name="spark"/><strong>{text('Change review is unavailable', '无法审查改动')}</strong>
+  {state && !state.available && <div className="wb-empty-state"><Icon name="diff"/><strong>{text('Change review is unavailable', '无法审查改动')}</strong>
    <p>{state.reason === 'git_unavailable' ? text('Checkpoints need a Git repository. Files and search still work.', '检查点需要 Git 仓库；文件和搜索功能仍可使用。') : text('This session is not attached to a project folder.', '此会话未关联项目目录。')}</p></div>}
   {state?.available && <>
    <div className="wb-review-head">

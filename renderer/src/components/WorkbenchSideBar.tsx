@@ -136,7 +136,7 @@ export function WorkbenchSideBar({scope, actions, sessions, allSessions = [], ac
   {id:'files', icon:'file', label:text('Files', '文件'), shortcut:'Ctrl+Shift+E'},
   {id:'search', icon:'search', label:text('Search', '搜索'), shortcut:'Ctrl+Shift+F'},
   {id:'scm', icon:'branch', label:text('Source Control', '源代码管理'), shortcut:'Ctrl+Shift+G', badge:changeCount || undefined},
-  {id:'changes', icon:'spark', label:text('Agent changes', 'Agent 改动'), shortcut:''},
+  {id:'changes', icon:'diff', label:text('Agent changes', 'Agent 改动'), shortcut:''},
   ...(browser?[{id:'browser' as const,icon:'globe',label:text('Browser','浏览器'),shortcut:''}]:[]),
   {id:'details', icon:'info', label:text('Session details', '会话详情面板'), shortcut:''},
  ];

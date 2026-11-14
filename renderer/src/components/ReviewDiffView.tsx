@@ -179,7 +179,7 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
  };
  return <section ref={host} className="tt-diff-shell wb-review-diff" data-testid="review-diff-surface">
   <div className="file-bar">
-   <Icon name="spark"/>
+   <Icon name="diff"/>
    <span className="path" title={path}>{path}</span>
    <span className="dim">{live ? copy('Checkpoint → current file', '检查点 → 当前文件') : copy('Checkpoint → next checkpoint (read-only)', '检查点 → 下一个检查点（只读）')}</span>
    <span className="grow"/>
