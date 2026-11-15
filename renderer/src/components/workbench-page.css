@@ -243,7 +243,10 @@
 /* Cursor's Start (owner 2026-11-14): the composer then Recent, centred in one 680px column, with no visible
    headline. The heading stays in the DOM for screen readers and for the probes that wait on `.start-q`. */
 .start.workbench-page { display:flex; flex:1; min-height:0; width:100%; max-width:none; margin:0; padding:0; gap:0; justify-content:center; overflow:auto; background:var(--surface); }
-.workbench-page .start-col { width:min(680px, calc(100% - 48px)); padding:16vh 0 32px; }
+/* The page fills the window under the toolbar and the column sits in its middle, a little above centre (the extra
+   bottom padding). Owner 2026-11-15: with a picture, the page ended at its content and read as an off-centre slab.
+   Auto margins, not align-items:center, so a column taller than the window scrolls from its top. */
+.workbench-page .start-col { width:min(680px, calc(100% - 48px)); margin:auto 0; padding:32px 0 calc(32px + 8vh); }
 .workbench-page .start-q { position:absolute; width:1px; height:1px; margin:-1px; padding:0; border:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .workbench-page .start-col > .composer { padding:14px 16px 12px; gap:12px; }
 .workbench-page .start-col .composer textarea { min-height:76px; padding:14px 16px 4px; }
