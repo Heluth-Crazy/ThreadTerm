@@ -44,5 +44,9 @@
  background:color-mix(in srgb,var(--side) 72%,transparent);
  backdrop-filter:blur(24px) saturate(1.6);
 }
+/* The sidebar search box is solid on glass: its translucent fill lifted the picture under the faint placeholder to
+   3.5:1 in dark. Mixed from the sidebar and text colours, it looks as it does without a picture. */
+.app-shell[data-has-backgrounds] > aside.sidebar[data-background-region] .search-field { background:color-mix(in srgb,var(--side) 90%,var(--text)); }
+.app-shell[data-has-backgrounds] > aside.sidebar[data-background-region] .search-field:hover { background:color-mix(in srgb,var(--side) 84%,var(--text)); }
 .app-shell[data-has-backgrounds] .runtime-workspace .wb-sidebar-slot,
 .app-shell[data-has-backgrounds] .runtime-workspace .wb-panel[data-background-region] :is(.wb-panel-head,.wb-panel-body > .inspector,.wb-view,.file-list.wb-embedded-tools,.wb-tools-head) { background:transparent; }

@@ -122,7 +122,7 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
     };
   }, [resolved]);
   useLayoutEffect(() => { schedule.current?.(); }, [layoutKey]);
-  const paint = (region: BackgroundRegion, key: string, shape: BackgroundShape, radius: number) => {
+  const paint = (region: BackgroundRegion, key: string, shape: BackgroundShape, radius: number, glass: readonly PlacementBox[] = []) => {
     const value = resolved[region];
     if (!value.imageUrl || !value.layer) return null;
     // CSS owns the single 72% glass tint for inherited navigation regions.
@@ -131,22 +131,26 @@ export default function BackgroundLayers({ theme, backgrounds, layoutKey }: { th
     if (!record) return null;
     const picture = value.layer.blur > 0 ? record.variants[String(value.layer.blur)] ?? record : record;
     const p = placement(value.layer, shape.box, picture), [width, height] = p.size.split(' ').map(parseFloat);
-    const clip = `${id}-${key}`, tile = `${clip}-tile`, color = regionColor(theme, region);
+    const clip = `${id}-${key}`, tile = `${clip}-tile`, veil = `${clip}-veil`, color = regionColor(theme, region);
     const pane = !['window','sidebar','sidebar2'].includes(region);
     const frostedNavigation = region === 'sidebar' || region === 'sidebar2';
     return <g key={key} data-background-layer={region} data-overlay={value.overlay} data-floor={value.floor} data-source={value.source}>
       <defs><clipPath id={clip}><rect x={shape.panel.x} y={shape.panel.y} width={shape.panel.w} height={shape.panel.h} rx={radius}/>{shape.tab && <path d={tabShape(shape)}/>}</clipPath>
+        {glass.length > 0 && <mask id={veil} maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/>{glass.map((box, index) => <rect key={index} x={box.x} y={box.y} width={box.w} height={box.h} fill="black"/>)}</mask>}
         {own && p.repeat === 'repeat' && <pattern id={tile} patternUnits="userSpaceOnUse" x={p.x} y={p.y} width={width} height={height}><image href={value.imageUrl} width={width} height={height} preserveAspectRatio="none"/></pattern>}
       </defs>
       <g clipPath={`url(#${clip})`}>
         {own && <><rect width="100%" height="100%" fill={color}/>{p.repeat === 'repeat' ? <rect width="100%" height="100%" fill={`url(#${tile})`} opacity={value.layer.opacity / 100}/> : <image href={value.imageUrl} x={p.x} y={p.y} width={width} height={height} opacity={value.layer.opacity / 100} preserveAspectRatio="none"/>}</>}
-        {!frostedNavigation && <rect width="100%" height="100%" fill={color} opacity={value.overlay}/>}
+        {!frostedNavigation && <rect width="100%" height="100%" fill={color} opacity={value.overlay} mask={glass.length > 0 ? `url(#${veil})` : undefined}/>}
         {pane && <rect data-background-lift="" width="100%" height="100%" fill={color} opacity={theme.mode === 'dark' ? 0.75 : 0.5}/>}
       </g>
     </g>;
   };
   return <svg ref={host} className="appearance-backgrounds" aria-hidden="true" data-ready={records.length > 0} width="100%" height="100%">
-    {paint('window', 'window', backgroundShape({ x: 0, y: 0, w: geometry.width, h: geometry.height }), 0)}
+    {/* The window overlay stops at frosted navigation that inherits the window picture: its 72% glass tint is the one
+        dimming there (owner 2026-11-13: with a picture the sidebar and panel turn to frosted glass). Dimmed by both, the
+        picture fell to 11–14% under the sidebar and read as no picture at all. */}
+    {paint('window', 'window', backgroundShape({ x: 0, y: 0, w: geometry.width, h: geometry.height }), 0, geometry.regions.filter(item => (item.region === 'sidebar' || item.region === 'sidebar2') && resolved[item.region].source === 'window').map(item => item.shape.panel))}
     {geometry.regions.map(item => paint(item.region, item.key, item.shape, item.radius))}
   </svg>;
 }
