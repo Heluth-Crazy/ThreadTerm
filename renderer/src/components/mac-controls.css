@@ -17,6 +17,9 @@ body .tt-select.tt-select .tt-select-trigger { height:24px; min-height:24px; pad
 body .tt-select.tt-select.btn-sm { height:22px; min-height:22px; padding:0; }
 body .tt-select.tt-select.btn-sm .tt-select-trigger { height:22px; min-height:22px; padding:0 9px; font-size:12px; }
 body .wb-review-diff > .file-bar .icon-btn.icon-btn-sm { height:22px; min-height:22px; }
+/* A small icon button beside a small text button takes its 22 px, so the row keeps one height (context chips, the
+   page screenshot chip, the history rail head, terminal bars; control-consistency "height differs inside one row"). */
+body :has(> .btn.btn-sm) > .icon-btn.icon-btn-sm { height:22px; min-height:22px; }
 body .tt-select-chevron { width:11px; height:11px; color:var(--muted); }
 body :is(button,input,textarea,select,[role="button"]):focus-visible { outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent); outline-offset:0; }
 body .input-wrap:has(input:focus-visible), body .setting-switch input:focus-visible + span { outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent); outline-offset:0; }

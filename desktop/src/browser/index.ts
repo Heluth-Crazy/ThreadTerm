@@ -168,7 +168,9 @@ function makeView(tab: Tab): WebContentsView {
     if(input.type==='keyDown'&&handleDevtoolsShortcut(tab,event,input))return;
     const control=input.control || input.meta, key=input.key.toLowerCase();
     if(input.type==='keyDown'&&input.key==='Escape'&&tab.find){event.preventDefault();if(tab.window.isFocused())tab.owner.focus();tab.owner.send('threadterm:browser-event',{type:'shortcut',tabId:tab.id,key:input.key,code:input.code,control:input.control,meta:input.meta,shift:input.shift,alt:input.alt} satisfies BrowserEvent);return;}
-     const appShortcut=control&&!input.alt&&((!input.shift&&['f','p','b','k','l','t','-','0','='].includes(key))||(input.shift&&['d','e','f','g','k','+','='].includes(key)));
+    // App shortcuts the page must not also act on. The side panel moved from Ctrl+B to Ctrl+Alt+B (mac-style S2), so
+    // the page keeps its own Ctrl+B and Ctrl+Alt+B goes to the app alone.
+    const appShortcut=control&&((!input.alt&&((!input.shift&&['f','p','k','l','t','-','0','='].includes(key))||(input.shift&&['d','e','f','g','k','+','='].includes(key))))||(input.alt&&!input.shift&&key==='b'));
     const modifierRelease=input.type==='keyUp'&&['Control','Meta'].includes(input.key);
     if(!modifierRelease&&(input.type!=='keyDown'||!control))return;
     if(appShortcut){event.preventDefault();if(tab.window.isFocused())tab.owner.focus();}

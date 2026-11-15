@@ -7,6 +7,7 @@ import {freemem,tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {electron} from './lib/desktop1.mjs';
 import {acquireElectronQaLock} from './lib/electron-lock.mjs';
+import {agentAccessLevel,clickPageAction,pageActionDisabled} from './lib/browser-page-actions.mjs';
 
 const root=resolve(import.meta.dirname,'..'),out=join(root,'qa/results/browser-history-visual');
 const scratch=await mkdtemp(join(tmpdir(),'tt-browser-history-')),report={passed:false,scope:'Production WebPreview/native browser with an isolated loopback page and mocked BrowserAgentRuntime; no Rust, provider, account, or user profile.',checks:[],errors:[],limitations:['The QA virtual desktop did not deliver visibilitychange when the native view was occluded (scrollSaves remained zero); the test invokes the equivalent same-URL History replacement and records that limitation rather than claiming the user page lifecycle was reproduced.']};
@@ -37,11 +38,11 @@ app.whenReady().then(()=>{registerBrowser(()=>{},()=>runtime);new BrowserWindow(
  const page=await app.firstWindow();page.setDefaultTimeout(12_000);page.on('pageerror',e=>report.errors.push(e.message));
  const state=()=>page.evaluate(()=>window.threadterm.browserCommand({type:'state',tabId:'qa-tab'}));
  const native=code=>app.evaluate(async({webContents},source)=>{const wc=webContents.getAllWebContents().find(v=>v.getURL().includes('roundId=fixture'));if(!wc)throw Error('fixture native page missing');return wc.executeJavaScript(source);},code);
- await page.waitForFunction(()=>Boolean(window.threadterm)&&document.querySelector('[aria-label="Agent access Control"]')?.disabled===false);
+ await page.waitForFunction(()=>Boolean(window.threadterm));const controlReady=async()=>{for(let attempt=0;attempt<120;attempt++){if(!await pageActionDisabled(page,page,'Agent access Control'))return;await page.waitForTimeout(100);}throw Error('Agent access Control never became available');};const controlGranted=async()=>{for(let attempt=0;attempt<120;attempt++){if(await agentAccessLevel(page)==='control')return;await page.waitForTimeout(100);}throw Error('Control was not granted');};await controlReady();
  // Establish a state entry, mirroring Vue Router's prerequisite for scroll persistence.
  await native("history.replaceState({route:'fixture'},'',location.href)");await page.waitForTimeout(120);
  const before=await state();
- await page.getByRole('button',{name:'Agent access Control',exact:true}).click();await page.getByRole('dialog').waitFor();await page.waitForTimeout(450);
+ await clickPageAction(page,page,'Agent access Control');await page.getByRole('dialog').waitFor();await page.waitForTimeout(450);
  // A detached WebContentsView remains `visible` in Electron's virtual-desktop
  // host. The production incident separately proves its visibility event; invoke
  // the identical History commit here to validate the native authority boundary.
@@ -50,7 +51,7 @@ app.whenReady().then(()=>{registerBrowser(()=>{},()=>runtime);new BrowserWindow(
  report.firstOcclusion={scrollSaves:await native('window.scrollSaves'),visibility:await native('document.visibilityState'),snapshotReady:Boolean((await state()).snapshot)};
  const during=await state();assert.equal(during.sharing.navigationEpoch,before.sharing.navigationEpoch,'same-URL scroll-state replacement retains native navigation epoch');
  await page.getByRole('button',{name:'Allow Control',exact:true}).click();
- await page.waitForFunction(()=>document.querySelector('[aria-label="Agent access Control"]')?.getAttribute('aria-pressed')==='true');
+ await controlGranted();
  check('same-URL scroll-state replacement retains confirmation and completes Control grant');
  const controlEpoch=(await state()).sharing.navigationEpoch;
  await native("history.replaceState({route:'again'},'')");await page.waitForTimeout(120);assert.equal((await state()).sharing.navigationEpoch,controlEpoch,'ordinary same-URL replace preserves established control');
@@ -67,16 +68,16 @@ app.whenReady().then(()=>{registerBrowser(()=>{},()=>runtime);new BrowserWindow(
  check('history-cap pushState remains navigation');
  // Hold the async grant after Allow, then make the native page hidden again.
  // A matching scroll-save must not poison the captured expected fence.
- await page.getByRole('button',{name:'Agent access Off',exact:true}).click();
- await page.waitForFunction(()=>document.querySelector('[aria-label="Agent access Control"]')?.disabled===false);
- await page.getByRole('button',{name:'Agent access Control',exact:true}).click();await page.getByRole('dialog').waitFor();
+ await clickPageAction(page,page,'Agent access Off');
+ await controlReady();
+ await clickPageAction(page,page,'Agent access Control');await page.getByRole('dialog').waitFor();
  await app.evaluate(()=>globalThis.qaControl.holdSnapshot());await page.getByRole('button',{name:'Allow Control',exact:true}).click();
- await page.waitForFunction(()=>document.querySelector('.wb-browser-share')?.getAttribute('aria-busy')==='true');
+ await page.waitForFunction(()=>document.querySelector('.wb-browser-share, [aria-label="Agent access"]')?.getAttribute('aria-busy')==='true');
  await page.evaluate(()=>{const menu=document.createElement('div');menu.id='qa-native-menu';menu.setAttribute('role','menu');menu.textContent='Menu';document.body.append(menu)});
  await page.waitForTimeout(160);await native("history.replaceState({...history.state,scroll:{left:0,top:0}},'')");await page.waitForTimeout(100);
  await page.evaluate(()=>document.querySelector('#qa-native-menu')?.remove());
  await app.evaluate(()=>globalThis.qaControl.releaseSnapshot());
- await page.waitForFunction(()=>document.querySelector('[aria-label="Agent access Control"]')?.getAttribute('aria-pressed')==='true');
+ await controlGranted();
  check('pending Control grant survives a second native occlusion and scroll-state replacement');
  // Bind a real AX reference before the held screenshot. The later hover proves
  // that the same reference survives the menu/state-update interval.

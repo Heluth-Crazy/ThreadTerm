@@ -51,9 +51,11 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.locator('.codex-work > summary').waitFor();
   const bubble = page.locator('.is-codex.user');
-  const geometry = await bubble.evaluate(el => ({ height: el.getBoundingClientRect().height, text: el.innerText }));
+  // One line of text plus the bubble's own padding and borders, read from the theme rather than fixed numbers (the Mac
+  // chat bubble is 13.5 px type at 1.6 with 8 px padding).
+  const geometry = await bubble.evaluate(el => { const box = getComputedStyle(el), line = getComputedStyle(el.querySelector('.v3-message-text') ?? el); return { height: el.getBoundingClientRect().height, text: el.innerText, oneLine: parseFloat(line.lineHeight) + parseFloat(box.paddingTop) + parseFloat(box.paddingBottom) + parseFloat(box.borderTopWidth) + parseFloat(box.borderBottomWidth) }; });
   assert.equal(geometry.text, 'Test message');
-  assert.equal(geometry.height, 44, 'shared 24px line height plus 20px vertical padding; no phantom Markdown newline');
+  assert.ok(Math.abs(geometry.height - geometry.oneLine) <= 0.5, `one line plus the bubble's padding (${geometry.oneLine}px), got ${geometry.height}px; no phantom Markdown newline`);
   assert.equal(await page.locator('.codex-work').getAttribute('open'), null);
   assert.equal(await page.locator('.codex-work-body').isVisible(), false);
   assert.equal(await page.locator('.codex-turn > .assistant').filter({hasText:'The test message completed successfully.'}).locator('.v3-message-text').first().innerText(), 'The test message completed successfully.');

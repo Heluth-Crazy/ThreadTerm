@@ -1268,7 +1268,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     pickTicket.current = undefined;
     const submittingLifecycle = lifecycle.current;
     if (!submittingLifecycle) {
-      if (throwOnFailure) throw new Error('Chat is unavailable.');
+      // A send before the draft has loaded says so, as it did before Design Mode's direct send (#29).
+      const issue = copy('Message was not sent.', '消息未发送。');
+      if (!dedicated) setError(issue);
+      if (throwOnFailure) throw new Error(issue);
       return;
     }
     const token = operationId();

@@ -382,7 +382,7 @@ export function pagePickerScript(
         chip.textContent = `${label(e)} · ${Math.round(r.width)}×${Math.round(r.height)}`;
         chip.style.cssText += `;display:block;left:${clamp(r.left, 0, Math.max(0, innerWidth - 360))}px;top:${clamp(r.top - 25, 0, Math.max(0, innerHeight - 25))}px`;
       },
-      finish = (v: unknown, delayed = false) => {
+      finish = (v: unknown) => {
         if (done) return;
         done = true;
         if(clickTimer)clearTimeout(clickTimer);
@@ -394,7 +394,8 @@ export function pagePickerScript(
         host.remove();
         if (previousFocus instanceof HTMLElement && previousFocus.isConnected)
           previousFocus.focus({ preventScroll: true });
-        if(delayed){for(const t of ['click','mousedown','mouseup','pointerup','touchend'])window.removeEventListener(t,tail,true);if(w[key]===controller)delete w[key];resolve(v);return;}
+        // Every pick, a click that waited out the double-click window included, settles two frames after the overlay
+        // leaves: the caller captures the page next, and the highlight must not be in that screenshot.
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
             for (const t of ['click', 'mousedown', 'mouseup', 'pointerup', 'touchend'])
@@ -404,11 +405,11 @@ export function pagePickerScript(
           }),
         );
       };
-    const finishElements = (current?: Element, delayed = false) => {
+    const finishElements = (current?: Element) => {
       if(current) { const value=picked(current); if(!selections.some(item=>item.selector===value.selector)) selections.push(value); }
       const primary=selections[0]??(hover?picked(hover):undefined);
       if(!primary)return finish(null);
-      finish({url:location.href,title:clean(document.title,200),viewport:{width:innerWidth,height:innerHeight},target:primary,...(selections.length?{elements:selections}:{}),...(textEdits.length?{textEdits}:{})},delayed);
+      finish({url:location.href,title:clean(document.title,200),viewport:{width:innerWidth,height:innerHeight},target:primary,...(selections.length?{elements:selections}:{}),...(textEdits.length?{textEdits}:{})});
     };
     const editText = () => {
       if(!hover||pass(hover))return;
@@ -502,7 +503,7 @@ export function pagePickerScript(
         } else if (hover) {
           if(e.altKey) return finish({url:location.href,title:clean(document.title,200),viewport:{width:innerWidth,height:innerHeight},target:picked(hover),toChat:true});
           if(e.shiftKey) { const value=picked(hover);if(!selections.some(item=>item.selector===value.selector))selections.push(value);chip.textContent=copy(`${selections.length} selected · Enter to continue`,`已选择 ${selections.length} 个 · 按 Enter 继续`);return; }
-          const pickedHover=hover;clickTimer=setTimeout(()=>finishElements(pickedHover,true),180);
+          const pickedHover=hover;clickTimer=setTimeout(()=>finishElements(pickedHover),180);
         }
       },
       wheel = (e: WheelEvent) => {

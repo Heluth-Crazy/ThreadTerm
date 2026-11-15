@@ -185,12 +185,16 @@ html[data-theme="dark"] { color-scheme:dark; }
 .search-field kbd { font:11px var(--font); color:var(--faint); letter-spacing:.02em; border:0; background:none; padding:0; }
 .sidebar-machine-head { display:grid; gap:2px; padding:0 10px 6px; color:var(--muted); font-size:11px; }
 .sidebar-machine-head .machine-chip { margin:0; padding:0; border:0; font-size:11px; }
-.app-shell .side-foot { display:flex; align-items:center; gap:8px; height:46px; min-height:46px; padding:0 8px 0 16px; border:0; }
-.app-shell .side-foot .user-row { flex:1; min-width:0; padding:0; height:38px; gap:8px; }
-.side-foot .user-copy { font-size:12.5px; line-height:1.2; }
+/* 18 px: the nav rows' content inset (.side-nav 10 px + .nav-item 8 px), so the avatar lines up with the nav icons (#44 probe). */
+.app-shell .side-foot { display:flex; align-items:center; gap:8px; height:46px; min-height:46px; padding:0 8px 0 18px; border:0; }
+/* min-height too: the prototype sheet's .user-row min-height 48px otherwise wins over the 38 px and overflows the 46 px foot. */
+.app-shell .side-foot .user-row { flex:1; min-width:0; padding:0; height:38px; min-height:38px; gap:8px; }
+/* 1.35, not 1.2: each line box holds its glyphs (Segoe UI is ~1.33 em tall), so neither line clips (#44 probe "account text fits"). */
+.side-foot .user-copy { font-size:12.5px; line-height:1.35; }
 .side-foot .user-copy small { font-size:11px; }
 .app-shell .side-foot .avatar { width:24px; height:24px; font-size:10px; }
-.side-foot > .icon-btn { width:30px; height:28px; flex:none; }
+/* As tall as the account button beside it, so both hover fills cover one band (control-consistency, #44 probe). */
+.side-foot > .icon-btn { width:30px; height:38px; min-height:38px; flex:none; }
 .legacy-toolbar { display:none; }
 .content.main:has(> .session-screen), .content.main:has(> .file-workspace), .content.main:has(> .pane-workspace) { display:flex; flex-direction:column; overflow:hidden; }
 .shell-route-toolbar { display:flex; align-items:center; flex:none; height:46px; min-height:46px; padding:0 calc(var(--caption-width) + 10px) 0 14px; border-bottom:1px solid var(--border); background:var(--surface); font-size:13px; -webkit-app-region:drag; }

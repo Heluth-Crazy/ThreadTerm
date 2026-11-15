@@ -89,6 +89,9 @@ function execute(action: 'pick' | 'cancel' | 'mark' | 'at', target?: { selector?
   return new Function(`return ${source};`)();
 }
 
+/** A plain click waits out the double-click window, then settles two clean frames after the overlay leaves. */
+async function settleClick(fixture: { flushFrame(): void }): Promise<void> { await new Promise(resolve => setTimeout(resolve, 200)); fixture.flushFrame(); fixture.flushFrame(); }
+
 test('pointer pick returns the element under the context-menu coordinate without adding an overlay', async () => withPage(async fixture => {
   const pick = execute('at', undefined, undefined, { x: 50, y: 50 }) as { target: { selector: string; text: string } };
   assert.equal(pick.target.selector, '#save');
@@ -108,9 +111,13 @@ test('closed overlay swallows events, selects keyboard parent and waits two clea
   for (const type of ['pointerdown', 'mousedown', 'mouseup', 'pointerup']) {
     const event = cover.fire(type); assert.equal(event.prevented, true, type); assert.equal(event.stopped, true, type);
   }
-  await new Promise(resolve => setTimeout(resolve, 200));
+  await new Promise(resolve => setTimeout(resolve, 200)); // A plain click first waits out the double-click window.
   assert.equal(overlay.isConnected, false);
   assert.equal(document.activeElement, fixture.button);
+  const tail = fixture.pageWindow.fire('click'); assert.equal(tail.prevented, true); assert.equal(tail.stopped, true);
+  let settled = false; void picking.then(() => { settled = true; });
+  fixture.flushFrame(); await Promise.resolve(); assert.equal(settled, false);
+  fixture.flushFrame();
   const result = await picking; assert.equal(result.target.selector, '#card'); assert.equal(result.target.label, 'div#card.card');
   assert.equal(fixture.pageWindow.listeners.get('click')?.length, 0);
   assert.equal((fixture.pageWindow as unknown as Record<symbol, unknown>)[Symbol.for('threadterm.pagePicker')], undefined);
@@ -120,7 +127,7 @@ test('ArrowDown steps toward pointer, wheel scrolls ancestor and suppresses page
   const picking = execute('pick'); const cover = fixture.overlay().parts.get('#cover')!;
   cover.fire('pointermove'); fixture.pageWindow.fire('keydown', { key: 'ArrowUp' }); fixture.pageWindow.fire('keydown', { key: 'ArrowUp' });
   fixture.pageWindow.fire('keydown', { key: 'ArrowDown' });
-  cover.fire('pointerdown'); cover.fire('pointerup'); fixture.flushFrame(); fixture.flushFrame();
+  cover.fire('pointerdown'); cover.fire('pointerup'); await settleClick(fixture);
   assert.equal((await picking).target.selector, '#card');
   fixture.card.overflowY = 'auto'; fixture.card.scrollHeight = 1500;
   const next = execute('pick'); const wheelCover = fixture.overlay().parts.get('#cover')!;
@@ -134,7 +141,7 @@ test('element metadata escapes HTML and bounds source hints without reading valu
   fixture.button.attributes['aria-label'] = 'Save changes'; fixture.button.attributes.class = 'primary';
   Object.assign(fixture.button, { __reactFiber$test: { type: { name: 'SaveButton' }, _debugSource: { fileName: 'src/Save.tsx', lineNumber: 12, columnNumber: 3 }, return: { type: { displayName: 'Cart' } } } });
   const picking = execute('pick'); const cover = fixture.overlay().parts.get('#cover')!;
-  cover.fire('pointerdown'); cover.fire('pointerup'); fixture.flushFrame(); fixture.flushFrame();
+  cover.fire('pointerdown'); cover.fire('pointerup'); await settleClick(fixture);
   const result = (await picking).target;
   assert.equal(result.selector, '#save'); assert.equal(result.label, 'button "Save changes"');
   assert.equal(result.text, 'Save & confirm'); assert.match(result.html, /Save &amp; confirm/);
@@ -148,7 +155,7 @@ test('password picks omit names, attributes, text, value and source metadata', a
   fixture.button.attributes = { type: 'password', id: 'PRIVATE_ID', 'aria-label': 'PRIVATE_LABEL', placeholder: 'PRIVATE_PLACEHOLDER' };
   Object.defineProperty(fixture.button, '__svelte_meta', { get() { throw new Error('Password metadata must not be inspected'); } });
   const picking = execute('pick'); const cover = fixture.overlay().parts.get('#cover')!;
-  cover.fire('pointerdown'); cover.fire('pointerup'); fixture.flushFrame(); fixture.flushFrame();
+  cover.fire('pointerdown'); cover.fire('pointerup'); await settleClick(fixture);
   const result = (await picking).target;
   assert.equal(result.selector, 'input'); assert.equal(result.label, 'input'); assert.equal(result.html, '<input>');
   assert.deepEqual(result.attributes, {}); assert.equal('text' in result, false); assert.equal('source' in result, false);
@@ -164,7 +171,7 @@ test('drag threshold, area sampling deduplication and inline climbing', async ()
   assert.deepEqual(result.rect, { x: 20, y: 30, width: 60, height: 60 }); assert.deepEqual(result.elements, ['div#card.card']);
   const next = execute('pick'); const tiny = fixture.overlay().parts.get('#cover')!;
   tiny.fire('pointerdown', { clientX: 20, clientY: 30 }); tiny.fire('pointerup', { clientX: 23, clientY: 34 });
-  fixture.flushFrame(); fixture.flushFrame(); assert.equal((await next).target.type, 'element');
+  await settleClick(fixture); assert.equal((await next).target.type, 'element');
 }));
 
 test('Shift collects elements until Enter and Alt click routes a target to chat', async () => withPage(async fixture => {
@@ -188,7 +195,7 @@ test('test attributes and duplicate ids use a verified unique selector', async (
   const duplicate = new MockElement('BUTTON'); duplicate.attributes.id = 'save'; fixture.card.append(duplicate);
   fixture.button.attributes['data-testid'] = 'save-button';
   const picking = execute('pick'); const cover = fixture.overlay().parts.get('#cover')!;
-  cover.fire('pointerdown'); cover.fire('pointerup'); fixture.flushFrame(); fixture.flushFrame();
+  cover.fire('pointerdown'); cover.fire('pointerup'); await settleClick(fixture);
   assert.equal((await picking).target.selector, '[data-testid="save-button"]');
 }));
 
@@ -204,7 +211,7 @@ test('Vue, Svelte and code-inspector source hints use bounded dev metadata', asy
     if (item.property) Object.assign(fixture.button, { [item.property]: item.value });
     if (item.attributes) Object.assign(fixture.button.attributes, item.attributes);
     const picking = execute('pick'); const cover = fixture.overlay().parts.get('#cover')!;
-    cover.fire('pointerdown'); cover.fire('pointerup'); fixture.flushFrame(); fixture.flushFrame();
+    cover.fire('pointerdown'); cover.fire('pointerup'); await settleClick(fixture);
     const result = (await picking).target; assert.deepEqual(result.source, item.expected);
     if (item.property === '__vueParentComponent') assert.deepEqual(result.components, ['SaveButton']);
   });

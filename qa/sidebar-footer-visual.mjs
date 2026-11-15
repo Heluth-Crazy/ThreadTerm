@@ -34,7 +34,7 @@ async function until(probe,label,ms=30000){const end=Date.now()+ms;for(;;){if(aw
 const request=(method,params={})=>page.evaluate(([method,params])=>window.threadterm.request(method,params),[method,params]);
 function env(){
  const value=Object.fromEntries(Object.entries(process.env).filter(([key])=>!['path','temp','tmp','home','userprofile','codex_home','threadterm_v3_data','threadterm_v3_user_data','threadterm_v3_pipe','threadterm_v3_plugin_dirs'].includes(key.toLowerCase())));
- Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_RUNTIME_BIN:runtime,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_V3_RELOCATION_QA:'1'});
+ Object.assign(value,{TEMP:scratchBase,TMP:scratchBase,PATH:[bin,dirname(process.execPath),join(process.env.SystemRoot||'C:\\Windows','System32')].join(';'),HOME:join(scratch,'home'),USERPROFILE:join(scratch,'home'),CODEX_HOME:join(scratch,'home','.codex'),THREADTERM_QA_PROVIDER_BIN:bin,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'profile'),THREADTERM_V3_PIPE:pipe,THREADTERM_V3_RUNTIME:runtime,THREADTERM_V3_RUNTIME_BIN:runtime,THREADTERM_V3_PLUGIN_DIRS:plugins,THREADTERM_QA_BROWSER_CWD:work,THREADTERM_V3_RELOCATION_QA:'1'});
  assert.equal(Object.keys(value).filter(key=>key.toLowerCase()==='path').length,1);
  return value;
 }
@@ -61,19 +61,15 @@ async function bottomGapPixels(label){
  if(!value.cards.length){report.bottomGapPixels.push({label,skipped:'route has no floating panel'});return}
  assert.ok(value.content,`${label}: app content frame is available for panel-gap measurement`);
  // Electron's transparent outer padding and navigation rail are outside this frame.  Only
- // rightmost cards and the lowest card in each column can own the outer 12px gap.
+ // rightmost cards and the lowest card in each column meet the outer edge.
  const rightmost=value.cards.filter(card=>!value.cards.some(peer=>peer!==card&&peer.x>=card.right-1&&peer.y<card.bottom-1&&peer.bottom>card.y+1));
  const lowest=value.cards.filter(card=>!value.cards.some(peer=>peer!==card&&peer.y>=card.bottom-1&&peer.x<card.right-1&&peer.right>card.x+1));
  const sideGaps=rightmost.map(card=>value.content.right-card.right),bottomGaps=lowest.map(card=>value.content.bottom-card.bottom);
- assert.ok(sideGaps.every(gap=>gap>=11&&gap<=13),`${label}: rightmost floating panels keep the 12px content-frame side gap`);
- assert.ok(bottomGaps.every(gap=>gap>=11&&gap<=13),`${label}: lowest floating panels keep the 12px content-frame bottom gap`);
- const viewport=await page.evaluate(()=>({width:innerWidth,height:innerHeight}));
- const image=PNG.sync.read(await page.screenshot({animations:'disabled'})),scaleX=image.width/viewport.width,scaleY=image.height/viewport.height;
- const sample=(x,y)=>{const offset=(y*image.width+x)*4;return[image.data[offset],image.data[offset+1],image.data[offset+2]]};
- const samples=lowest.map(card=>{const x=Math.round((card.x+card.width/2)*scaleX),y=Math.round((card.bottom+Math.max(1,(value.content.bottom-card.bottom)/2))*scaleY);return{x,y,pixel:sample(x,y)}});
- assert.ok(samples.every(sample=>sample.x>=0&&sample.x<image.width&&sample.y>=0&&sample.y<image.height),`${label}: bottom-gap pixels remain inside the screenshot`);
- assert.ok(samples.every(item=>item.pixel.every((channel,index)=>Math.abs(channel-value.frame[index])<=3)),`${label}: bottom-gap pixels are the frame background`);
- report.bottomGapPixels.push({label,content:value.content,frame:value.frame,sideGaps,bottomGaps,scale:{x:scaleX,y:scaleY},samples});
+ // The Mac Flush look (owner 2026-11-13) puts panes against the content frame; T1's 12 px floating gap is retired, so
+ // there is no gap band to sample either.
+ assert.ok(sideGaps.every(gap=>gap>=-0.5&&gap<=1),`${label}: rightmost panels meet the content frame (Flush) ${JSON.stringify(sideGaps)}`);
+ assert.ok(bottomGaps.every(gap=>gap>=-0.5&&gap<=1),`${label}: lowest panels meet the content frame (Flush) ${JSON.stringify(bottomGaps)}`);
+ report.bottomGapPixels.push({label,content:value.content,sideGaps,bottomGaps,flush:true});
 }
 async function footerGeometry(label){
  const value=await page.evaluate(()=>{
@@ -88,7 +84,7 @@ async function footerGeometry(label){
  assert.equal(value.statusbarCount,0,`${label}: no statusbar element remains on the page`);
  assert.ok(value.text.every(row=>row.inside&&!row.clipped),`${label}: account text fits`);
  assert.ok(value.text.every((row,i,rows)=>rows.every((peer,j)=>i===j||row.right<=peer.x||row.x>=peer.right||row.bottom<=peer.y||row.y>=peer.bottom)),`${label}: no text overlaps`);
- const consistency=await checkControlConsistency(page,'.side-foot',{checkStates:true,checkDisabledRows:true});assertNoControlViolations(consistency,label);assert.equal(consistency.checked,1);
+ const consistency=await checkControlConsistency(page,'.side-foot',{checkStates:true,checkDisabledRows:true});assertNoControlViolations(consistency,label);/* Every footer control is checked: the account button and, since the Mac footer, the Settings gear. */assert.equal(consistency.checked,await page.locator('.side-foot button:visible').count());assert.ok(consistency.checked>=1);
  report.geometry.push({label,...value,consistency});
 }
 async function contrast(selector,label,minimum){
