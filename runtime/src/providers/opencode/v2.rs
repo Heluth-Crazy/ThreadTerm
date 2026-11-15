@@ -251,6 +251,12 @@ fn subagent_marker_child(tool: &Value) -> Option<&str> {
     })
 }
 
+fn subagent_claim(tool: &Value) -> Option<&str> {
+    tool.pointer("/state/metadata/sessionID")
+        .and_then(Value::as_str)
+        .or_else(|| subagent_marker_child(tool))
+}
+
 fn marker_child(text: &str) -> Option<&str> {
     let mut rest = text;
     while let Some(open) = rest.find("<subagent") {
@@ -428,14 +434,10 @@ impl State {
             return Ok(());
         }
         // Filled from the native task contract, never a session parent link.
-        // 2.2.5 stopped sending `state.metadata.sessionID`; it names the child
-        // only in its own tool output. Older builds still send the metadata, so
-        // both paths are read. Either one is a claim: `recover_children` proves
+        // Older inline results can carry only the marker. Background calls
+        // announce the child in metadata. Either is a claim: `recover_children` proves
         // ownership from the verified native parent link before it binds.
-        let child = tool
-            .pointer("/state/metadata/sessionID")
-            .and_then(Value::as_str)
-            .or_else(|| subagent_marker_child(tool));
+        let child = subagent_claim(tool);
         if let Some(child) = child {
             validate_native_id(child)?;
             if child == session {
@@ -457,13 +459,13 @@ impl State {
                 if !self.task_candidates.contains_key(child) {
                     self.task_order.push_back(child.into());
                 }
+                let call = text(tool, "id")?;
                 self.task_candidates
-                    .insert(child.into(), (session.into(), text(tool, "id")?.into()));
+                    .entry(child.into())
+                    .or_insert_with(|| (session.into(), call.into()));
             }
-            if self
-                .parents
-                .get(child)
-                .is_some_and(|parent| parent == session)
+            if !self.children.contains_key(child)
+                && self.parents.get(child).is_some_and(|parent| parent == session)
             {
                 let key = self
                     .children
@@ -998,6 +1000,11 @@ impl State {
             }
             if matches!(kind, "session.tool.success" | "session.tool.failed")
                 && data.get("metadata").is_none()
+                && !message
+                    .tools
+                    .get(text(data, "id")?)
+                    .and_then(|index| message.content.get(index))
+                    .is_some_and(|tool| tool["name"] == "subagent")
             {
                 full_data
                     .as_object_mut()
@@ -1567,12 +1574,42 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                     if session != target.native_id {
                         continue;
                     }
-                    let status = match tool.pointer("/state/status").and_then(Value::as_str) {
-                        Some("completed") => "completed",
-                        Some("error") => "failed",
-                        _ => "running",
-                    };
-                    let mut info = json!({"status":status,"transcript":"live"});
+                    let tool_status = tool.pointer("/state/status").and_then(Value::as_str);
+                    if tool_status == Some("streaming") {
+                        continue;
+                    }
+                    let claimed = subagent_claim(tool);
+                    let requested_child =
+                        tool.pointer("/state/input/sessionID").and_then(Value::as_str);
+                    let bound = claimed
+                        .or(requested_child)
+                        .filter(|child| state.parents.get(*child) == Some(&session))
+                        .and_then(|child| state.children.get(child).map(|key| (child, key.as_str())))
+                        .or_else(|| {
+                            state.children.iter().find_map(|(child, key)| {
+                                (key == call && state.parents.get(child) == Some(&session))
+                                    .then_some((child.as_str(), call))
+                            })
+                        });
+                    // The parent tool acknowledges dispatch. A verified child
+                    // owns the card's lifecycle, including on message replay.
+                    let mut info = json!({"transcript":"live"});
+                    let mut key = call;
+                    if let Some((child, owned_key)) = bound {
+                        info["native"] = json!({"kind":"opencode-session","id":child});
+                        key = owned_key;
+                    } else if claimed.is_none()
+                        && !state
+                            .task_candidates
+                            .values()
+                            .any(|(parent, key)| parent == &session && key == call)
+                    {
+                        info["status"] = json!(match tool_status {
+                            Some("completed") => "completed",
+                            Some("error") => "failed",
+                            _ => "running",
+                        });
+                    }
                     // 2.2.5 passes the agent under `input.agent`; the shared card
                     // contract keeps it as `agentType` next to the description.
                     if let Some(agent) = tool
@@ -1588,16 +1625,9 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                     {
                         info["description"] = json!(description);
                     }
-                    if let Some(child) = state
-                        .children
-                        .iter()
-                        .find_map(|(child, key)| (key == call).then_some(child))
-                    {
-                        info["native"] = json!({"kind":"opencode-session","id":child});
-                    }
                     emit(
                         "chat.subagent",
-                        json!({"key":call,"info":info}),
+                        json!({"key":key,"info":info}),
                         turn.as_deref(),
                     );
                 }
@@ -1627,6 +1657,18 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
                     json!({"resumedNativeTurn":true}),
                     Some(NATIVE_BUSY_TURN),
                 );
+            }
+        }
+        Change::Started { session } => {
+            if state.parents.get(&session) == Some(&target.native_id) {
+                if let Some(key) = state.children.get(&session) {
+                    emit(
+                        "chat.subagent",
+                        json!({"key":key,"reopen":true,"info":{"status":"running","endedAt":null,
+                            "native":{"kind":"opencode-session","id":session}}}),
+                        turn.as_deref(),
+                    );
+                }
             }
         }
         Change::Terminal {
@@ -1668,12 +1710,14 @@ fn publish(target: &EventTarget, state: &mut State, change: Change) {
         Change::Terminal {
             session, status, ..
         } => {
-            if let Some(key) = state.children.get(&session) {
-                emit(
-                    "chat.subagent",
-                    json!({"key":key,"info":{"status":status,"native":{"kind":"opencode-session","id":session}}}),
-                    turn.as_deref(),
-                );
+            if state.parents.get(&session) == Some(&target.native_id) {
+                if let Some(key) = state.children.get(&session) {
+                    emit(
+                        "chat.subagent",
+                        json!({"key":key,"info":{"status":status,"native":{"kind":"opencode-session","id":session}}}),
+                        turn.as_deref(),
+                    );
+                }
             }
             // A child whose execution ended (succeeded, failed or interrupted)
             // can no longer answer its own native requests: retire its cards
@@ -2507,6 +2551,7 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
                 state.task_order.retain(|candidate| candidate != &settled);
             }
         }
+        let direct = parent == target.native_id;
         state.parents.insert(child.clone(), parent);
         state.children.insert(child.clone(), key.clone());
         // Proven ownership needs no further claim; keeping it would grow the
@@ -2530,21 +2575,31 @@ fn recover_children(target: &EventTarget) -> Result<(), ProviderError> {
                 _ => "unknown",
             }
         };
-        emit_scoped(
-            &target.events,
-            "opencode",
-            &target.threadterm_session,
-            Some(&target.native_id),
-            target
-                .active
-                .lock()
-                .ok()
-                .as_deref()
-                .and_then(|turn| turn.as_deref()),
-            "chat.subagent",
-            json!({"key":key,"info":{"status":status,"transcript":"live","native":{"kind":"opencode-session","id":child}}}),
-            Some(&target.worker_token),
-        );
+        if direct {
+            let mut card = json!({"key":key,"info":{"transcript":"live","native":{"kind":"opencode-session","id":child}}});
+            if status != "unknown" {
+                card["info"]["status"] = json!(status);
+            }
+            if child_running {
+                card["reopen"] = json!(true);
+                card["info"]["endedAt"] = Value::Null;
+            }
+            emit_scoped(
+                &target.events,
+                "opencode",
+                &target.threadterm_session,
+                Some(&target.native_id),
+                target
+                    .active
+                    .lock()
+                    .ok()
+                    .as_deref()
+                    .and_then(|turn| turn.as_deref()),
+                "chat.subagent",
+                card,
+                Some(&target.worker_token),
+            );
+        }
         for row in rows.iter().rev() {
             if let Some(change) = state.seed_message(&child, row)? {
                 publish(target, &mut state, change);

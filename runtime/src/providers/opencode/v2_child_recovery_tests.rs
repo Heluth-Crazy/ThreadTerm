@@ -561,6 +561,130 @@ fn push_event(target: &EventTarget, raw: Value) {
 }
 
 #[test]
+fn opencode_230_background_subagent_waits_for_its_native_child() {
+    let fixture = crate::providers::conformance::fixture("opencode-v230-background-subagent.jsonl");
+    let frame = |kind: &str| {
+        fixture
+            .iter()
+            .find(|row| row["case"] == kind)
+            .unwrap_or_else(|| panic!("missing fixture case {kind}"))["value"]
+            .clone()
+    };
+    let success = frame("parent_success");
+    let child = frame("child_created")["data"]["sessionID"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let parent = success["data"]["sessionID"].as_str().unwrap().to_owned();
+    let call = success["data"]["id"].as_str().unwrap().to_owned();
+
+    for omit_success_metadata in [false, true] {
+        let (mut target, mut events) = target();
+        target.native_id.clone_from(&parent);
+        target.v2.lock().unwrap().recovering = false;
+        let scratch = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(&scratch.path().join("chat.sqlite")).unwrap();
+        let session = db
+            .create_session(crate::db::CreateSession {
+                project_id: None,
+                title: None,
+                provider: "opencode",
+                mode: "chat",
+                native_id: Some(&parent),
+                operation_id: "opencode-background-replay",
+            })
+            .unwrap();
+        target.threadterm_session = session.id;
+
+        for kind in ["parent_tool_start", "parent_called", "parent_progress"] {
+            push_event(&target, frame(kind));
+        }
+        {
+            // Isolate the status projection after the native session GET has
+            // verified the recorded parent and placed the child in recovery state.
+            assert_eq!(frame("child_created")["data"]["parentID"], parent);
+            let mut state = target.v2.lock().unwrap();
+            assert_eq!(
+                state.task_candidates.remove(&child),
+                Some((parent.clone(), call.clone()))
+            );
+            state.parents.insert(child.clone(), parent.clone());
+            state.children.insert(child.clone(), call.clone());
+        }
+        let mut success = success.clone();
+        if omit_success_metadata {
+            success["data"].as_object_mut().unwrap().remove("metadata");
+        }
+        push_event(&target, success.clone());
+
+        let mut project_events = || {
+            let mut terminal = 0;
+            while let Ok(event) = events.try_recv() {
+                if event.kind == "chat.subagent" {
+                    terminal += usize::from(event.data["info"]["status"] == "completed");
+                    crate::chat_projection::record(
+                        &db,
+                        &event.session_id,
+                        event.turn_id.as_deref(),
+                        &event.kind,
+                        &event.data,
+                    )
+                    .unwrap();
+                }
+            }
+            terminal
+        };
+        let card = || {
+            db.subagent_card(&target.threadterm_session, &call)
+                .unwrap()
+                .unwrap()
+                .parts[0]
+                .clone()
+        };
+        assert_eq!(
+            project_events(),
+            0,
+            "parent tool success must not settle the child card"
+        );
+        assert_eq!(card()["status"], "running");
+        assert_eq!(card()["data"]["native"]["id"], child);
+
+        push_event(&target, frame("child_started"));
+        let finished = frame("child_succeeded");
+        push_event(&target, finished.clone());
+        push_event(&target, finished);
+        push_event(&target, success);
+        assert_eq!(
+            project_events(),
+            1,
+            "repeated frames settle the child only once"
+        );
+        assert_eq!(card()["status"], "completed");
+        assert_eq!(card()["data"]["native"]["id"], child);
+        assert!(card()["data"]["endedAt"].is_string());
+
+        // A subsequent run of the same child reopens the existing card.
+        let mut next_start = frame("child_started");
+        next_start["id"] = json!("evt-followup-start");
+        next_start["created"] = json!(next_start["created"].as_i64().unwrap() + 1000);
+        next_start["durable"]["seq"] = json!(next_start["durable"]["seq"].as_u64().unwrap() + 100);
+        push_event(&target, next_start);
+        assert_eq!(project_events(), 0);
+        assert_eq!(card()["status"], "running");
+        assert!(card()["data"]["endedAt"].is_null());
+
+        let mut next_finish = frame("child_succeeded");
+        next_finish["id"] = json!("evt-followup-finish");
+        next_finish["created"] = json!(next_finish["created"].as_i64().unwrap() + 1000);
+        next_finish["durable"]["seq"] = json!(next_finish["durable"]["seq"].as_u64().unwrap() + 100);
+        push_event(&target, next_finish.clone());
+        push_event(&target, next_finish);
+        assert_eq!(project_events(), 1);
+        assert_eq!(card()["status"], "completed");
+    }
+}
+
+#[test]
 fn a_captured_225_marker_binds_the_child_only_through_the_verified_parent_link() {
     let (base, finished, peer) = child_peer("ses-root");
     let (mut target, mut events) = target();
@@ -737,14 +861,25 @@ fn a_waiting_childs_card_keeps_its_owner_when_settled_children_are_pruned() {
     assert!(state.children.len() <= MAX_SESSIONS);
 }
 
-/// A reconnect peer that still lists one pending native form on a proven child.
-fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<()>) {
+/// Replays a busy background child or an idle child with a pending native form.
+fn reconnect_peer(
+    child_busy: bool,
+) -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let (sender, paths) = mpsc::channel();
     let handle = thread::spawn(move || {
         let info = |id: &str, parent: Option<&str>| json!({"id":id,"parentID":parent,"location":{"directory":"C:/isolated"},"time":{"created":0,"updated":1,"busy":0,"idle":1}});
+        let mut child = info("ses-child", Some("ses-root"));
+        let mut tool = json!({"type":"tool","id":"call-root-child","name":"subagent","state":{"status":"running","input":{},"metadata":{"sessionID":"ses-child"}}});
+        let mut forms = json!([{"id":"form-child","sessionID":"ses-child","title":"still pending","fields":[{"key":"answer","title":"Answer","type":"string","required":true}]}]);
+        if child_busy {
+            child["time"] = json!({"created":0,"updated":2,"busy":2,"idle":1});
+            tool["state"]["status"] = json!("completed");
+            tool["state"]["output"] = json!("Background job accepted");
+            forms = json!([]);
+        }
         let mut seen = Vec::new();
         for _ in 0..10 {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -761,7 +896,9 @@ fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<
                 }
             };
             stream.set_nonblocking(false).unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             let mut request = Vec::new();
             let mut chunk = [0; 1024];
             loop {
@@ -778,12 +915,12 @@ fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<
             let path = first.split_whitespace().nth(1).unwrap().to_owned();
             let response = match path.as_str() {
                 "/api/session/ses-root" => json!({"data":info("ses-root",None)}).to_string(),
-                "/api/session/ses-root/message?limit=128&order=desc" => json!({"data":[{"id":"msg-root","type":"assistant","time":{"created":1},"content":[{"type":"tool","id":"call-root-child","name":"subagent","state":{"status":"running","input":{},"metadata":{"sessionID":"ses-child"}}}]}],"cursor":{}}).to_string(),
+                "/api/session/ses-root/message?limit=128&order=desc" => json!({"data":[{"id":"msg-root","type":"assistant","time":{"created":1},"content":[tool]}],"cursor":{}}).to_string(),
                 "/api/session/active" => json!({"data":{}}).to_string(),
                 "/api/session/ses-root/inbox" | "/api/session/ses-root/form" | "/api/session/ses-root/permission" => json!({"data":[]}).to_string(),
-                "/api/session/ses-child" => json!({"data":info("ses-child",Some("ses-root"))}).to_string(),
+                "/api/session/ses-child" => json!({"data":child}).to_string(),
                 "/api/session/ses-child/message?limit=128&order=desc" => json!({"data":[],"cursor":{}}).to_string(),
-                "/api/session/ses-child/form" => json!({"data":[{"id":"form-child","sessionID":"ses-child","title":"still pending","fields":[{"key":"answer","title":"Answer","type":"string","required":true}]}]}).to_string(),
+                "/api/session/ses-child/form" => json!({"data":forms}).to_string(),
                 "/api/session/ses-child/permission" => json!({"data":[]}).to_string(),
                 other => panic!("unexpected native path {other}"),
             };
@@ -793,6 +930,55 @@ fn reconnect_peer() -> (String, mpsc::Receiver<Vec<String>>, thread::JoinHandle<
         sender.send(seen).unwrap();
     });
     (base, paths, handle)
+}
+
+#[test]
+fn a_busy_background_child_survives_reconnect_and_settles_once() {
+    let (mut target, mut events) = target();
+    let (base, paths, peer) = reconnect_peer(true);
+    target.base_url = base;
+    recover(&target).unwrap();
+    peer.join().unwrap();
+    assert_eq!(paths.recv().unwrap().len(), 10);
+
+    let mut card_events = || {
+        std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| event.kind == "chat.subagent")
+            .map(|event| event.data)
+            .collect::<Vec<_>>()
+    };
+    let recovered = card_events();
+    assert!(recovered
+        .iter()
+        .all(|card| card["info"]["status"] != "completed"));
+    let running = recovered
+        .iter()
+        .find(|card| card["info"]["status"] == "running")
+        .unwrap();
+    assert_eq!(running["key"], "call-root-child");
+    assert_eq!(running["info"]["native"]["id"], "ses-child");
+    assert_eq!(running["reopen"], true);
+
+    let finished = json!({
+        "id":"evt-child-terminal","created":3,"type":"session.execution.succeeded",
+        "durable":{"aggregateID":"ses-child","seq":2,"version":1},
+        "data":{"sessionID":"ses-child"}
+    });
+    push_event(&target, finished.clone());
+    push_event(&target, finished);
+    push_event(
+        &target,
+        json!({
+            "id":"evt-child-idle-again","created":4,"type":"session.execution.succeeded",
+            "durable":{"aggregateID":"ses-child","seq":3,"version":1},
+            "data":{"sessionID":"ses-child"}
+        }),
+    );
+    let settled = card_events();
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0]["key"], "call-root-child");
+    assert_eq!(settled[0]["info"]["status"], "completed");
+    assert_eq!(settled[0]["info"]["native"]["id"], "ses-child");
 }
 
 /// Verification round 4, rule 1 and its accepted limitation: the root turn
@@ -849,7 +1035,7 @@ fn a_card_expired_with_a_pending_native_request_is_raised_again_on_reconnect() {
         recovering: true,
         ..Default::default()
     };
-    let (base, paths, peer) = reconnect_peer();
+    let (base, paths, peer) = reconnect_peer(false);
     target.base_url = base;
     recover(&target).unwrap();
     peer.join().unwrap();

@@ -21,7 +21,29 @@ const user = {id:'user',role:'user',turnId:'turn-1',createdAt:'now',parts:[text(
 const approval = {type:'approval',approvalId:'approval-1',status:'pending',data:{approvalId:'approval-1',title:'Approval stays visible',requestType:'command',submittable:false,choices:[]}};
 const plan = {type:'text',status:'complete',text:'Plan usage',data:{kind:'plan',rows:[{label:'Weekly limit',percent:10,reset:'resets in 1d'}]}};
 const live = {id:'live',role:'assistant',turnId:'turn-live',createdAt:'now',parts:[{type:'thinking',text:'Live thinking remains visible',status:'streaming'}]};
+const thought = (text, status = 'complete') => ({type:'thinking',text,status});
+const row = (id, turnId, parts, extra) => ({id,turnId,parts,role:'assistant',createdAt:'now',...extra});
+const read = {type:'tool',toolName:'Read',toolId:'group-read',text:'AGENTS.md',status:'complete'};
+const settledThoughts = [
+  row('settled-first','settled',[thought('Settled first'),thought('Settled second')]),
+  row('settled-tool','settled',[read]),
+  row('settled-last','settled',[thought('Settled after tool')]),
+  row('settled-reply','settled',[text('Settled final answer')],{elapsedMs:8000,turnStatus:'completed'}),
+];
+const activeThoughts = [
+  ...Array.from({length:14}, (_, i) => row('active-'+i,'active',[thought('Thought entry '+(i+1))])),
+  row('active-note','active',[text('Message between runs'),thought('First after message')]),
+  row('active-more','active',[thought('Second after message')]),
+  row('active-stream','active',[thought('Current thinking text','streaming')]),
+];
+const drawerThoughts = [
+  row('drawer-first','drawer',[thought('Before read one'),thought('Before read two')]),
+  row('drawer-tool','drawer',[read]),
+  row('drawer-last','drawer',[thought('After read one'),thought('After read two'),thought('Now thinking','streaming')]),
+];
 const transcripts = {
+  'thinking-groups': [...settledThoughts,...activeThoughts],
+  'thinking-drawer': drawerThoughts,
   // Kimi mirrors Codex's tool call so the parity checks below compare the same structure. A provider without a tool
   // legitimately lays its final reply higher, which is not a presentation difference.
   kimi: [user,{id:'kimi-tool',role:'assistant',turnId:'turn-1',createdAt:'now',parts:[{type:'tool',toolName:'Read',toolId:'read-1',status:'complete',text:'AGENTS.md'}]},{id:'kimi-response',role:'assistant',turnId:'turn-1',createdAt:'now',elapsedMs:7000,parts:[{type:'thinking',text:'Kimi private thought',status:'complete'},text('Final answer'),plan,approval]},live],
@@ -42,13 +64,17 @@ window.threadterm = {
     // real empty states.
     if (method === 'chat.queue.read') return {sessionId:params.sessionId,paused:false,items:[]};
     if (method === 'chat.feedback.read') return {notes:[]};
-    if (method === 'chat.options') return {options:[],commands:[]};
+    if (method === 'chat.options') return {options:[],commands:[],loadState:'ready'};
+    if (method === 'chat.connection' || method === 'chat.connect') return {sessionId:params.sessionId,runtimeEpoch:'qa',connectionGeneration:1,revision:1,phase:'ready',optionsLoadState:'ready'};
+    if (method === 'session.claim') return {leaseEpoch:1};
+    if (method === 'session.release') return null;
     throw new Error('Unexpected QA request '+method);
   },
 };
 const root=createRoot(document.getElementById('root'));
 const session=(id,provider) => ({id,provider,mode:'chat',status:'idle',readOnly:true,title:provider+' QA',createdAt:'now',updatedAt:'now'});
 window.qaRenderProvider = provider => root.render(<I18nProvider locale="zh-CN"><ChatView session={session('single-'+provider,provider)} /></I18nProvider>);
+window.qaRenderThinking = (id, locale = 'en') => root.render(<I18nProvider locale={locale}><ChatView session={{...session(id,'kimi'),readOnly:false,status:'running'}} /></I18nProvider>);
 root.render(<I18nProvider locale="zh-CN"><div className="qa-turn-grid"><section data-panel="kimi"><ChatView session={session('kimi','kimi')} /></section><section data-panel="codex"><ChatView session={session('codex','codex')} /></section></div></I18nProvider>);
 `;
 await build({stdin:{contents:entry,resolveDir:resolve('.'),loader:'tsx'},bundle:true,outfile:join(scratch,'qa.js'),jsx:'automatic',loader:{'.woff2':'dataurl','.woff':'dataurl','.ttf':'dataurl'}});
@@ -143,7 +169,45 @@ try {
   await grok.locator('.codex-work-body').waitFor({state:'visible'});
   assert.equal(await grok.locator('article').filter({hasText:'Grok private thought'}).isVisible(), true, 'grok expanded process is visible');
   await page.screenshot({path:join(out,'grok-full-expanded.png')});
-  await writeFile(join(out,'report.json'),JSON.stringify({passed:true,geometry,checks:['Kimi/Codex collapsed parity','approval and Kimi quota visible','streaming visible','expand preserves final','light/dark 1280/1440/1920'],scratch},null,2));
+  await page.evaluate(() => window.qaRenderThinking('thinking-groups'));
+  const thinking = page.getByTestId('session-chat-thinking-groups');
+  const active = thinking.locator('[data-chat-turn="active-0"]');
+  const groups = active.locator('.v3-thinking-group');
+  await active.getByText('Message between runs', {exact:true}).waitFor();
+  assert.equal(await groups.count(), 2, 'completed runs each use one row, split at the intervening message');
+  assert.deepEqual(await groups.locator(':scope > summary').allTextContents(), ['Thought process (14)', 'Thought process (2)']);
+  assert.equal(await active.getByText('Current thinking text', {exact:true}).isVisible(), true);
+  assert.equal(await active.locator('.chat-live-activity').isVisible(), true);
+  assert.equal(await groups.first().evaluate(el => el.open), false);
+  assert.equal(await active.getByText('Thought entry 14', {exact:true}).isVisible(), false);
+  await page.screenshot({path:join(out,'thinking-groups-collapsed.png')});
+  await groups.first().locator(':scope > summary').press('Enter');
+  const cards = groups.first().locator('details.v3-thinking');
+  assert.deepEqual(await cards.locator('.v3-message-text').allTextContents(), Array.from({length:14}, (_, i) => 'Thought entry '+(i+1)));
+  assert.equal(await cards.nth(13).evaluate(el => el.open), false);
+  await cards.nth(13).locator('summary').press('Space');
+  assert.equal(await active.getByText('Thought entry 14', {exact:true}).isVisible(), true);
+  assert.equal(await active.getByText('Thought entry 13', {exact:true}).isVisible(), false);
+  const settled = thinking.locator('[data-chat-turn="settled-first"]');
+  await settled.locator('.codex-work > summary').click();
+  assert.equal(await settled.locator('.v3-thinking-group > summary').innerText(), 'Thought process (2)', 'a tool breaks a run even in the settled activity projection');
+  assert.equal(await settled.locator('details.v3-thinking:not(.v3-thinking-group) > summary').filter({visible:true}).count(), 1);
+  assert.equal(await settled.getByText('Settled final answer', {exact:true}).isVisible(), true);
+  await page.screenshot({path:join(out,'thinking-groups-expanded.png')});
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = 'dark';
+    window.qaRenderThinking('thinking-drawer', 'zh-CN');
+  });
+  const drawer = page.getByTestId('session-chat-thinking-drawer').locator('.chat-tool-activity');
+  await drawer.locator('.chat-tool-current-action').getByText('思考中…', {exact:true}).waitFor();
+  await drawer.locator(':scope > summary').click();
+  await drawer.getByText('Now thinking', {exact:true}).waitFor();
+  const drawerEntries = drawer.locator('.chat-tool-entries > [role="listitem"]');
+  assert.deepEqual(await drawerEntries.evaluateAll(nodes => nodes.map(node =>
+    node.classList.contains('chat-tool-thought') ? [...node.querySelectorAll('article > details > summary')].map(summary => summary.textContent) : 'tool'
+  )), [['思考过程（2）'], 'tool', ['思考过程（2）','思考中…']], 'group summaries and the live thought keep their original positions around the tool');
+  await page.screenshot({path:join(out,'thinking-groups-tool-drawer-dark-zh.png')});
+  await writeFile(join(out,'report.json'),JSON.stringify({passed:true,geometry,checks:['Kimi/Codex collapsed parity','approval and Kimi quota visible','streaming visible','expand preserves final','light/dark 1280/1440/1920','thinking runs keep order and live indicators','keyboard opens each disclosure independently'],scratch},null,2));
   console.log(JSON.stringify({passed:true,out,geometry}));
 } finally {
   await app?.close();

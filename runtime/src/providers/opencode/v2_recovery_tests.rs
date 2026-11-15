@@ -243,6 +243,9 @@ fn proven_child_terminal_never_settles_the_root_turn() {
             .children
             .insert("ses-child".into(), "task-call".into());
         state
+            .parents
+            .insert("ses-child".into(), target.native_id.clone());
+        state
             .executions
             .entry("ses-child".into())
             .or_default()
