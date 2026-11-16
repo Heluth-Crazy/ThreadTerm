@@ -37,6 +37,10 @@ struct LivePty {
     // Taking this ownership boundary closes the Windows Job immediately,
     // terminating only this session's assigned descendant tree.
     job: Mutex<Option<SessionJob>>,
+    /// The bootstrap process the PTY started; the program it launches is its only child.
+    root_pid: u32,
+    /// The program is a plain shell, which ignores Ctrl+C at its prompt (see `only_the_shell_is_left`).
+    plain_shell: bool,
     _reader: thread::JoinHandle<()>,
 }
 impl PtyManager {
@@ -233,6 +237,8 @@ impl PtyManager {
             writer: Mutex::new(writer),
             exit_code: Mutex::new(None),
             job: Mutex::new(Some(job)),
+            root_pid: pid,
+            plain_shell: executable.map_or(true, is_plain_shell),
             _reader: handle,
         });
         let mut sessions = self
@@ -366,7 +372,8 @@ impl PtyManager {
             let _ = writer.write_all(&[3]);
             let _ = writer.flush();
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let interrupted = std::time::Instant::now();
+        let deadline = interrupted + std::time::Duration::from_secs(5);
         let mut exit = None;
         while std::time::Instant::now() < deadline {
             exit = *live
@@ -374,6 +381,12 @@ impl PtyManager {
                 .lock()
                 .map_err(|_| anyhow!("PTY exit lock poisoned"))?;
             if exit.is_some() {
+                break;
+            }
+            // A shell at its prompt ignores Ctrl+C. Once the interrupt has ended what the shell
+            // was running, the rest of the grace period only freezes the app: stop runs on the
+            // ordered lane, so every other request (snapshot, open, send) waits behind it.
+            if interrupted.elapsed() >= SHELL_INTERRUPT_SETTLE && only_the_shell_is_left(&live) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -474,6 +487,33 @@ impl PtyManager {
             .unwrap_or_default()
     }
 }
+/// Time for Ctrl+C to reach the shell's foreground program before the shell is taken to be idle.
+const SHELL_INTERRUPT_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
+fn is_plain_shell(program: &str) -> bool {
+    std::path::Path::new(program)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| {
+            ["cmd", "powershell", "pwsh", "sh", "zsh", "fish", "nu"]
+                .iter()
+                .any(|shell| stem.eq_ignore_ascii_case(shell))
+        })
+}
+
+/// Only the bootstrap and the shell itself are left in the session's Job: nothing the shell
+/// started is still running, so a cooperative stop has nothing more to wait for. An unreadable
+/// Job (and every non-Windows platform) never qualifies, keeping the full grace period.
+fn only_the_shell_is_left(live: &LivePty) -> bool {
+    if !live.plain_shell {
+        return false;
+    }
+    let Ok(job) = live.job.lock() else { return false };
+    let Some(job) = job.as_ref() else { return false };
+    let ids = job.process_ids();
+    ids.len() == 2 && ids.contains(&live.root_pid)
+}
+
 fn default_shell() -> &'static str {
     if cfg!(windows) {
         "cmd.exe"
@@ -748,6 +788,56 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         manager.stop(&db, &session.id, true).unwrap();
+    }
+
+    /// Ending or deleting a shell terminal used to hold the ordered request lane for the whole 5 s
+    /// grace period, because a shell at its prompt ignores Ctrl+C: the app looked frozen.
+    #[cfg(windows)]
+    #[test]
+    fn a_cooperative_stop_ends_an_idle_shell_without_waiting_out_the_grace_period() {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe { SetConsoleCtrlHandler(None, 0) };
+            }
+        }
+        unsafe { SetConsoleCtrlHandler(None, 1) }; // like the detached runtime
+        let _restore = Restore;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        let args = ["/d".to_owned(), "/k".to_owned(), "prompt READY$G".to_owned()];
+        for (case, command) in [("idle", None), ("busy", Some("ping -n 30 127.0.0.1\r"))] {
+            let session = db
+                .create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: &format!("pty-idle-stop-{case}") })
+                .unwrap();
+            manager.launch(Arc::clone(&db), &session.id, dir.path().to_str().unwrap(), Some("cmd.exe"), &args).unwrap();
+            let text = || {
+                let mut output = Vec::new();
+                for (_, bytes) in db.output_from(&session.id, 0, 1024 * 1024).unwrap() {
+                    output.extend(bytes);
+                }
+                String::from_utf8_lossy(&output).into_owned()
+            };
+            let wait = |check: &dyn Fn(&str) -> bool, what: &str| {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !check(&text()) {
+                    assert!(Instant::now() < deadline, "{case}: {what}; output: {}", text());
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            };
+            wait(&|output| output.contains("READY>"), "cmd prompt did not appear");
+            if let Some(command) = command {
+                manager.input(&session.id, command.as_bytes()).unwrap();
+                wait(&|output| output.matches("127.0.0.1").count() >= 4, "ping did not start");
+            }
+            let started = Instant::now();
+            manager.stop(&db, &session.id, false).unwrap();
+            let took = started.elapsed();
+            assert!(took < Duration::from_secs(3), "{case}: stop waited {took:?}");
+            assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().status, "exited", "{case}");
+        }
     }
 
     /// A refused second launch used to start its own console first, whose opening frame (clear

@@ -105,7 +105,9 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
     setDeleteNotice(undefined);
     const current=await request('runtime.snapshot',{}),active=sessionsInCatalogScope(target,current.sessions,project?.path).filter(isActiveSession),confirmed=sessionsToEnd??[];
     if(active.some(session=>!confirmed.some(confirmedSession=>confirmedSession.id===session.id))){setSessionsToEnd(active);setDeleteNotice('scope-changed');return;}
-    try{for(const activeSession of active.filter(session=>confirmed.some(confirmedSession=>confirmedSession.id===session.id)))await request('session.stop',{sessionId:activeSession.id,operationId:operationId()});}
+    // The user confirmed ending them for a delete: stop at once instead of granting each one the cooperative 5 s grace,
+    // which runs on the runtime's ordered lane and froze the app for every session in the scope.
+    try{for(const activeSession of active.filter(session=>confirmed.some(confirmedSession=>confirmedSession.id===session.id)))await request('session.stop',{sessionId:activeSession.id,force:true,operationId:operationId()});}
     catch(error){setDeleteNotice('stop-failed');throw error;}
     const [latestVisibility,latestSnapshot]=await Promise.all([request('catalog.visibility.list',{}),request('runtime.snapshot',{})]);
     const remaining=sessionsInCatalogScope(target,latestSnapshot.sessions,project?.path).filter(isActiveSession);
