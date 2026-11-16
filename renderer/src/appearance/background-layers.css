@@ -38,6 +38,17 @@
 .app-shell[data-window-background] :is(.window-controls,.shell-route-toolbar,.page-head,.ov-page-head,.usage-head),
 .app-shell[data-window-background] .project-file-page > .ws-top { background:transparent; }
 .app-shell[data-window-background] .content.main > :is(.page,.terminals-page,section.ov-page) > :is(.page-head,.ov-page-head) { background:transparent; }
+/* Workbench over a window picture (owner 2026-11-15): the page shows the picture and only the centred column is
+   opaque, one card holding the composer, Recent and the links, so all its text keeps the no-picture contrast. The
+   card's padding replaces the column's own; the page's extra bottom padding keeps the card a little above centre.
+   Inside the card the composer drops its own shadow (one raised layer, not two). */
+.app-shell[data-window-background] .start.workbench-page { container:start / inline-size; padding:24px 0 calc(24px + 8vh); background:transparent; }
+.app-shell[data-window-background] .workbench-page .start-col { width:min(728px, calc(100% - 48px)); padding:24px 24px 16px; border:1px solid color-mix(in srgb,var(--border) 70%,transparent); border-radius:16px; background:var(--surface); box-shadow:var(--shadow); }
+.app-shell[data-window-background] .workbench-page .start-col > .composer { box-shadow:none; }
+/* A narrow page gets a slimmer card, so the composer keeps its pickers and Send on one row; a short window drops the
+   above-centre offset, so the card fits without scrolling. */
+@container start (max-width:640px) { .app-shell[data-window-background] .workbench-page .start-col { width:calc(100% - 32px); padding:16px 16px 12px; } }
+@media (max-height:640px) { .app-shell[data-window-background] .start.workbench-page { padding:12px 0; } }
 /* Glass is opt-in, and the SVG keeps the source picture beneath this single tint. */
 .app-shell[data-has-backgrounds] > aside.sidebar[data-background-region],
 .app-shell[data-has-backgrounds] .runtime-workspace .wb-panel[data-background-region] {
