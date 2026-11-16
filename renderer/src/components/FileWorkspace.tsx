@@ -31,6 +31,8 @@ import { SurfaceDialog } from "./SurfaceDialog";
 import { FilePreview } from "./FilePreview";
 import { LargeFileView } from "./LargeFileView";
 import { isLargeFileError } from "../largeFileWindow";
+import { isBinaryFileError } from "../packageFiles";
+import { BinaryFileView } from "./BinaryFileView";
 import { officeKind } from "../officeFiles";
 import { canOpenWithSystemApp, openWithSystemApp } from "../openFileApp";
 import { OpenWithSystemAppButton } from "./OpenWithSystemAppButton";
@@ -174,7 +176,8 @@ function FileWorkspaceInstance({
   const gitWorkbenchHost=useRef(crypto.randomUUID());
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [document, setDocument] = useState<FileDocument>();
-  const [largeFile, setLargeFile] = useState<{ path: string; externalId?: string; key: number }>();
+  /** A file shown without its text: too large for the editor (a read-only window), or not text at all (`binary`). */
+  const [largeFile, setLargeFile] = useState<{ path: string; externalId?: string; key: number; binary?: true }>();
   /** Excel/ODS preview (`design.md` §3.6). Word stays on the text path until step 5. */
   const [officeFile, setOfficeFile] = useState<{ path: string; externalId?: string; key: number }>();
   const [image, setImage] = useState<{ mime: string; data: string }>();
@@ -554,7 +557,7 @@ function FileWorkspaceInstance({
       return true;
     } catch (error) {
       if (mounted.current && ticket === generation.current) {
-        if (canApply() && isLargeFileError(error)) {
+        if (canApply() && (isLargeFileError(error) || isBinaryFileError(error))) {
           // Partial contents never enter FileDocument, drafts, CodeMirror, diff or blame.
           loaded.current = undefined;
           base.current = "";
@@ -569,7 +572,7 @@ function FileWorkspaceInstance({
           setBlameOn(false);
           setView("file");
           setOfficeFile(undefined);
-          setLargeFile({ path: externalPath.current ?? path, externalId: resolvedExternalId, key: ticket });
+          setLargeFile({ path: externalPath.current ?? path, externalId: resolvedExternalId, key: ticket, ...(isBinaryFileError(error) ? { binary: true as const } : {}) });
           setOpenPaths(paths => paths.includes(path) ? paths : [...paths, path]);
           setIssue(undefined);
           onDocumentChange?.({ path, dirty: false });
@@ -1288,7 +1291,7 @@ function FileWorkspaceInstance({
             <div className="tt-editor-tabs file-view-tabs file-workspace-bar">
               {external ? <ExternalFileBoundary path={largeFile.path} zh={zh} noticeOpen={externalNoticeOpen} onNoticeToggle={() => setExternalNoticeOpen(value => !value)} onCopy={() => void navigator.clipboard.writeText(largeFile.path)} onReload={() => void open(largeFile.path, "file", true)} /> : embedded && previewNavigation ? embeddedNavigation() : <FileBreadcrumb path={largeFile.path} />}
               {!embedded && !external && openPaths.length > 1 && <Select className="embedded-file-navigation" value={largeFile.path} aria-label={zh ? "切换文件预览" : "Switch file preview"} onChange={event => choose(event.target.value, "file")}>{openPaths.map(path => <option key={path} value={path}>{path}</option>)}</Select>}
-              {!external && <span className="ws-chip">{copy.readOnly}</span>}
+              {!external && !largeFile.binary && <span className="ws-chip">{copy.readOnly}</span>}
               <span className="grow" />
               {commentAction}
               {fileSendAction(largeFile.path)}
@@ -1310,8 +1313,10 @@ function FileWorkspaceInstance({
             </div>
             {noteForm}
             {commentScope && commentsHost && <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />}
-            <LargeFileView key={largeFile.key} {...scope} path={largeFile.path} externalId={largeFile.externalId} zh={zh} active={active}
-              onReload={() => void open(largeFile.path, "file", true)} selectionActions={noteActions} />
+            {largeFile.binary
+              ? <BinaryFileView key={largeFile.key} path={largeFile.path} target={largeFile.externalId ? {externalId:largeFile.externalId} : {...scope,path:largeFile.path}} zh={zh} onIssue={setIssue} />
+              : <LargeFileView key={largeFile.key} {...scope} path={largeFile.path} externalId={largeFile.externalId} zh={zh} active={active}
+                onReload={() => void open(largeFile.path, "file", true)} selectionActions={noteActions} />}
           </>
         ) : document ? (
           <>

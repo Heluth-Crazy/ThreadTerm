@@ -4,10 +4,32 @@ import { request, subscribeEvents } from '../bridge';
 import { extractFileReferences, parseFileReference, parseMarkdownFileReference } from '../fileReferences';
 import { useLocale } from '../i18n';
 import { showContextMenu } from './ContextMenu';
-import { fileLocationMenuItem } from '../fileLocation';
+import { fileLocationLabel, fileLocationMenuItem, revealFileLocation } from '../fileLocation';
 import { referenceLocationTarget } from '../referenceLocation';
+import { isPackageFile } from '../packageFiles';
 
 type OpenFile = (reference: FileReference) => void;
+
+/** Beside a link to an archive, package or program (a .jar the agent just built): its folder, one click away.
+ * Opening such a file only says it is not text, so this is the useful choice. */
+function PackageReveal({ reference, sessionId, zh }: { reference: FileReference; sessionId?: string; zh: boolean }) {
+  const target = isPackageFile(reference.path) ? referenceLocationTarget(sessionId, reference) : undefined;
+  if (!target) return null;
+  const label = fileLocationLabel(zh);
+  return <button type="button" className="file-reference-reveal" aria-label={`${label}: ${reference.path}`} title={label} data-testid="file-reference-package-reveal" onClick={() => void revealFileLocation(target, zh)} />;
+}
+
+/** The same button for Markdown, built as an inert element: the HTML path keeps only data- and aria- attributes. */
+function packageRevealButton(reference: FileReference, zh: boolean): HTMLButtonElement | undefined {
+  if (!isPackageFile(reference.path)) return undefined;
+  const label = fileLocationLabel(zh);
+  const button = document.createElement('button');
+  button.type = 'button'; button.className = 'file-reference-reveal';
+  button.dataset.fileReveal = JSON.stringify({ path: reference.path });
+  button.dataset.testid = 'file-reference-package-reveal';
+  button.setAttribute('aria-label', `${label}: ${reference.path}`); button.title = label;
+  return button;
+}
 
 function referenceContextMenu(event: MouseEvent<HTMLElement>, reference: FileReference, sessionId: string | undefined, openFile: OpenFile, zh: boolean): void {
   event.preventDefault();
@@ -201,6 +223,7 @@ export function FileLinkedText({ text, openFile, sourceSessionId, canonicalRoot 
     pieces.push(text.slice(offset, candidate.start));
     const reference = { path: candidate.path, ...(candidate.line ? { line: candidate.line } : {}), ...(candidate.column ? { column: candidate.column } : {}) };
     pieces.push(<button type="button" className="file-reference-link" key={candidate.start} onClick={() => openFile(reference)} onContextMenu={event => referenceContextMenu(event, reference, scope.sourceSessionId, openFile, zh)} title={candidate.path}>{text.slice(candidate.start, candidate.end)}</button>);
+    pieces.push(<PackageReveal key={`${candidate.start}:reveal`} reference={reference} sessionId={scope.sourceSessionId} zh={zh} />);
     offset = candidate.end;
   }
   pieces.push(text.slice(offset));
@@ -224,7 +247,7 @@ export function FileReferenceChips({ references, visibleText, visibleReferences,
   }
   if (!unique.length) return null;
   return <div className="file-reference-chips" aria-label={locale === 'zh-CN' ? '文件引用' : 'File references'}>{unique.map((reference, index) =>
-    <button type="button" className="file-reference-link" key={`${reference.path}:${index}`} onClick={() => openFile(reference)} onContextMenu={event => referenceContextMenu(event, reference, scope.sourceSessionId, openFile, locale === 'zh-CN')} title={reference.path}>{reference.path}{reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}</button>
+    <Fragment key={`${reference.path}:${index}`}><button type="button" className="file-reference-link" onClick={() => openFile(reference)} onContextMenu={event => referenceContextMenu(event, reference, scope.sourceSessionId, openFile, locale === 'zh-CN')} title={reference.path}>{reference.path}{reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}</button><PackageReveal reference={reference} sessionId={scope.sourceSessionId} zh={locale === 'zh-CN'} /></Fragment>
   )}</div>;
 }
 
@@ -258,7 +281,7 @@ function markdownAnchorReferences(sanitized:string):FileReference[] {
  return references;
 }
 
-function decorateMarkdown(sanitized: string, interactive: boolean, accepted:ReadonlySet<string>): string {
+function decorateMarkdown(sanitized: string, interactive: boolean, accepted:ReadonlySet<string>, reveal?: { zh: boolean }): string {
   const root = document.createElement('div');
   root.innerHTML = sanitized;
   for (const anchor of Array.from(root.querySelectorAll('a'))) {
@@ -279,7 +302,8 @@ function decorateMarkdown(sanitized: string, interactive: boolean, accepted:Read
     button.type = 'button'; button.className = 'file-reference-link';
     button.dataset.fileReference = JSON.stringify(reference);
     button.textContent = anchor.textContent || reference.path;
-    anchor.replaceWith(button);
+    const revealButton = reveal && packageRevealButton(reference, reveal.zh);
+    if (revealButton) anchor.replaceWith(button, revealButton); else anchor.replaceWith(button);
   }
   if (!interactive) return root.innerHTML;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -300,6 +324,8 @@ function decorateMarkdown(sanitized: string, interactive: boolean, accepted:Read
       button.dataset.fileReference = JSON.stringify({ path: candidate.path, ...(candidate.line ? { line: candidate.line } : {}), ...(candidate.column ? { column: candidate.column } : {}) });
       button.textContent = text.slice(candidate.start, candidate.end);
       fragment.append(button);
+      const revealButton = reveal && packageRevealButton({ path: candidate.path }, reveal.zh);
+      if (revealButton) fragment.append(revealButton);
       offset = candidate.end;
     }
     fragment.append(document.createTextNode(text.slice(offset)));
@@ -318,13 +344,22 @@ export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, source
   const accepted=useMemo(()=>new Set(verified.map(referenceKey)),[verified]);
   const visibleReferences=useMemo(()=>[...anchors,...verified],[anchors,verified]);
   const rendered = useMemo(() => {
-    const html = decorateMarkdown(sanitizedHtml, interactive, accepted);
+    const html = decorateMarkdown(sanitizedHtml, interactive, accepted, scope.sourceSessionId ? { zh } : undefined);
     const container = document.createElement('div');
     container.innerHTML = html;
     return { innerHtml: { __html: html }, visibleText: container.textContent ?? '' };
-  }, [accepted, interactive, sanitizedHtml]);
+  }, [accepted, interactive, sanitizedHtml, scope.sourceSessionId, zh]);
   const rich = useMemo(() => renderHtml?.(rendered.innerHtml.__html), [renderHtml, rendered]);
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
+    const reveal = event.target instanceof Element ? event.target.closest<HTMLElement>('button[data-file-reveal]') : null;
+    if (reveal && event.currentTarget.contains(reveal)) {
+      try {
+        const reference = JSON.parse(reveal.dataset.fileReveal ?? '') as FileReference;
+        const location = isPackageFile(reference.path) ? referenceLocationTarget(scope.sourceSessionId, reference) : undefined;
+        if (location) void revealFileLocation(location, zh);
+      } catch { /* Ignore malformed display metadata. */ }
+      return;
+    }
     const target = event.target instanceof Element ? event.target.closest('button[data-file-reference]') : null;
     if (!target || !event.currentTarget.contains(target) || !openFile) return;
     try {

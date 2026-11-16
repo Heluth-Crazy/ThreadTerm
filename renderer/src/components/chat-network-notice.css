@@ -26,4 +26,10 @@
 .file-reference-link:hover { border-bottom-style:solid; }
 .file-reference-link:focus-visible { outline:2px solid var(--primary, #4f59c8); outline-offset:2px; border-radius:2px; }
 .file-reference-chips { display:flex; flex-wrap:wrap; gap:5px 10px; padding:6px 0 2px; font-size:12px; }
+/* Beside a link to an archive, package or program: a small ghost button that shows it in its folder. */
+.file-reference-reveal { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; margin:0 0 0 3px; padding:0; border:0; border-radius:4px; background:none; color:var(--muted); vertical-align:-4px; cursor:pointer; }
+.file-reference-reveal::before { content:""; width:13px; height:13px; background:currentColor; -webkit-mask:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linejoin='round'%3E%3Cpath d='M3 6V4h7l2 2h9v14H3z'/%3E%3C/svg%3E") center/contain no-repeat; mask:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linejoin='round'%3E%3Cpath d='M3 6V4h7l2 2h9v14H3z'/%3E%3C/svg%3E") center/contain no-repeat; }
+.file-reference-reveal:hover { background:var(--fill-hover); color:var(--text); }
+.file-reference-reveal:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+.file-reference-chips .file-reference-reveal { margin-left:-7px; }
 .codex-tool-disclosure pre .file-reference-link { white-space:inherit; }
