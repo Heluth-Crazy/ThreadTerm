@@ -7,7 +7,8 @@ import * as remoteBrowser from '../renderer/src/remoteBrowser.ts';
 const ts=createRequire(import.meta.url)('typescript');
 function fixture(remote){
  const states=[],commands=[];let index=0,cancellations=0;
- const react={lazy:()=>()=>null,Suspense:'suspense',useEffect(){},useState(initial){const slot=index++;if(!(slot in states))states[slot]=typeof initial==='function'?initial():initial;return[states[slot],value=>{states[slot]=typeof value==='function'?value(states[slot]):value;}];}};
+ const refs=[];let refIndex=0;
+ const react={lazy:()=>()=>null,Suspense:'suspense',useEffect(){},useRef(initial){const slot=refIndex++;if(!(slot in refs))refs[slot]={current:initial};return refs[slot];},useState(initial){const slot=index++;if(!(slot in states))states[slot]=typeof initial==='function'?initial():initial;return[states[slot],value=>{states[slot]=typeof value==='function'?value(states[slot]):value;}];}};
  const preview={cancel(){cancellations++;},frameName:'tt-preview-address',iframe:{current:null}};
  const require=name=>{
   if(name==='react')return react;
@@ -17,11 +18,12 @@ function fixture(remote){
   if(name==='../remoteBrowser')return remoteBrowser;
   if(name==='./PageComments')return{usePageCommentPreview:()=>preview};
   if(name==='./FileComments')return{useReviewComments:()=>[]};
+  if(name==='./TextSelectionActions')return{useTextSelectionActions:()=>null};
   return{};
  };
  const module={exports:{}};const code=ts.transpileModule(readFileSync('renderer/src/components/FilePreview.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
- vm.runInNewContext(code,{module,exports:module.exports,require,document:{documentElement:{lang:'en'}},URL});
- const render=()=>{index=0;return module.exports.FilePreview({projectId:'host-project',path:'notes.txt',content:'',savedContent:''});};
+ vm.runInNewContext(code,{module,exports:module.exports,require,document:{documentElement:{lang:'en'}},URL,crypto:globalThis.crypto});
+ const render=()=>{index=0;refIndex=0;return module.exports.FilePreview({projectId:'host-project',path:'notes.txt',content:'',savedContent:''});};
  const nodes=tree=>{const out=[];function visit(value){if(Array.isArray(value)){value.forEach(visit);return;}if(value&&typeof value==='object'&&value.props){out.push(value);visit(value.props.children);}}visit(tree);return out;};
  return{render,nodes,commands,get cancellations(){return cancellations;}};
 }

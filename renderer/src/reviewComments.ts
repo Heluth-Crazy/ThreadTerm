@@ -28,7 +28,11 @@ export type PageCommentProvenance = {
   sequence?: number;
 };
 export type PageComment = PagePick & CommentScope & { kind: "page"; id: string; body: string; createdAt: string; provenance?: PageCommentProvenance };
-export type ReviewComment = FileComment | PageComment;
+/** A comment without a line range, for views that have no line numbers: large-file windows, rendered previews, documents
+ * and images. `excerpt` quotes the selected text and is empty for a whole-file comment; `offset` is the selection's byte
+ * position in a large file. */
+export type NoteComment = CommentScope & { kind: "note"; id: string; path: string; excerpt: string; offset?: number; body: string; createdAt: string };
+export type ReviewComment = FileComment | PageComment | NoteComment;
 
 export const MAX_FILE_COMMENTS = 200;
 export const MAX_REVIEW_COMMENT_BODY = 4000;
@@ -58,15 +62,28 @@ function validVersion(value: unknown): value is CommentVersion {
   if (version.kind === "git") return typeof version.staged === "boolean";
   return version.kind === "commit" && typeof version.commit === "string" && !!version.commit;
 }
+/** A workspace-relative path with forward slashes, or an absolute path of a file outside the workspace. */
+function validCommentPath(path: unknown): path is string {
+  return typeof path === "string" && !!path && (isAbsoluteFilePath(path)
+    ? !/[\u0000-\u001f\u007f-\u009f]/.test(path) && new TextEncoder().encode(path).length <= 16_384
+    : !/[\\\u0000]/.test(path) && !/^[a-z]:/i.test(path) && path.split("/").every(part => !!part && part !== "." && part !== ".."));
+}
 function valid(value: unknown, scope: CommentScope): value is FileComment {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>, line = (number: unknown) => Number.isSafeInteger(number) && (number as number) >= 1;
   return typeof item.id === "string" && !!item.id && item.projectId === scope.projectId && typeof item.root === "string" && !!canonicalScopePath(item.root) && canonicalScopePath(item.root) === canonicalScopePath(scope.root)
-    && typeof item.path === "string" && !!item.path && (isAbsoluteFilePath(item.path)
-      ? !/[\u0000-\u001f\u007f-\u009f]/.test(item.path) && new TextEncoder().encode(item.path).length <= 16_384
-      : !/[\\\u0000]/.test(item.path) && !/^[a-z]:/i.test(item.path) && item.path.split("/").every(part => !!part && part !== "." && part !== "..")) && validVersion(item.version)
+    && validCommentPath(item.path) && validVersion(item.version)
     && (item.side === "old" || item.side === "new") && line(item.startLine) && line(item.endLine) && (item.endLine as number) >= (item.startLine as number)
     && typeof item.excerpt === "string" && typeof item.body === "string" && !!item.body.trim() && item.body.length <= MAX_REVIEW_COMMENT_BODY && typeof item.createdAt === "string" && Number.isFinite(Date.parse(item.createdAt));
+}
+
+function validNote(value: unknown, scope: CommentScope): value is NoteComment {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.kind === "note" && typeof item.id === "string" && !!item.id && item.projectId === scope.projectId && typeof item.root === "string" && !!canonicalScopePath(item.root) && canonicalScopePath(item.root) === canonicalScopePath(scope.root)
+    && validCommentPath(item.path) && typeof item.excerpt === "string" && item.excerpt.length <= MAX_EXCERPT + 2
+    && (item.offset === undefined || (Number.isSafeInteger(item.offset) && (item.offset as number) >= 0))
+    && typeof item.body === "string" && !!item.body.trim() && item.body.length <= MAX_REVIEW_COMMENT_BODY && typeof item.createdAt === "string" && Number.isFinite(Date.parse(item.createdAt));
 }
 
 function validPage(value: unknown, scope: CommentScope): value is PageComment {
@@ -134,7 +151,8 @@ function rowsFor(scope: CommentScope, rows: Awaited<ReturnType<typeof request<"r
   const comments: ReviewComment[] = [];
   for (const row of rows) {
     const value = row.draft;
-    if (value && typeof value === "object" && ((value as Record<string, unknown>).kind === "page" ? validPage(value, scope) : valid(value, scope))) { revisions.set(row.draftId, row.revision); comments.push(value as ReviewComment); }
+    const kind = value && typeof value === "object" ? (value as Record<string, unknown>).kind : undefined;
+    if (value && typeof value === "object" && (kind === "page" ? validPage(value, scope) : kind === "note" ? validNote(value, scope) : valid(value, scope))) { revisions.set(row.draftId, row.revision); comments.push(value as ReviewComment); }
   }
   return comments.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
 }
@@ -145,7 +163,7 @@ export async function loadReviewComments(scope: CommentScope): Promise<ReviewCom
   do { const rows = await request("reviewDrafts.list", { scopeProjectId: stored.projectId, scopeRoot: stored.root, ...(after ? { after } : {}) }); all.push(...rows.drafts); after = rows.nextAfter; } while (after);
   return rowsFor(scope, all);
 }
-export async function loadFileComments(scope: CommentScope): Promise<FileComment[]> { return (await loadReviewComments(scope)).filter((comment): comment is FileComment => !isPageComment(comment)); }
+export async function loadFileComments(scope: CommentScope): Promise<FileComment[]> { return (await loadReviewComments(scope)).filter(isLineComment); }
 async function put(scope: CommentScope, comment: ReviewComment, expectedRevision: number): Promise<void> {
   if (isPageComment(comment) && comment.shot) comment = { ...comment, shot: await persistRemotePageShot(comment.shot, comment.provenance?.sessionId, scope.projectId, scope.root) };
   const stored = storedScope(scope), result = await request("reviewDrafts.upsert", { draftId: comment.id, scopeProjectId: stored.projectId, scopeRoot: stored.root, draft: comment, assetPaths: assetPaths(comment), expectedRevision, operationId: operationId() });
@@ -167,6 +185,19 @@ export async function removeFileComments(scope: CommentScope, ids: readonly stri
   await removeIds(scope, files.filter(comment => ids.includes(comment.id)).map(comment => comment.id), expected); return await loadFileComments(scope);
 }
 export function isPageComment(comment: ReviewComment): comment is PageComment { return "kind" in comment && comment.kind === "page"; }
+export function isNoteComment(comment: ReviewComment): comment is NoteComment { return "kind" in comment && comment.kind === "note"; }
+/** Comments anchored to lines: the ones editors mark and reopen at a line. */
+export function isLineComment(comment: ReviewComment): comment is FileComment { return !("kind" in comment); }
+/** A comment on a whole file (no `text`) or on a quoted selection, from a view without line numbers. */
+export async function addNoteComment(input: CommentScope & { path: string; text?: string; offset?: number; body: string }): Promise<ReviewComment[]> {
+  const body = input.body.trim();
+  if (!body) throw new Error("review_comment_empty");
+  if (body.length > MAX_REVIEW_COMMENT_BODY) throw new Error("review_comment_too_long");
+  const scope = { projectId: input.projectId, root: input.root }, comments = await loadReviewComments(scope);
+  if (comments.length >= MAX_FILE_COMMENTS) throw new Error("review_comments_full");
+  const comment: NoteComment = { kind: "note", projectId: input.projectId, root: input.root, path: input.path, excerpt: input.text?.trim() ? reviewExcerpt(input.text) : "", ...(input.offset === undefined ? {} : { offset: input.offset }), body, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+  await put(scope, comment, 0); return await loadReviewComments(scope);
+}
 export async function addPageComment(input: CommentScope & PagePick & { body: string; provenance?: PageCommentProvenance }): Promise<ReviewComment[]> {
   const body = input.body.trim();
   if (!body) throw new Error("review_comment_empty");
@@ -225,11 +256,23 @@ export function fileCommentShortPlace(comment: Pick<FileComment, "path" | "versi
   else if (version.kind === "commit") { const commit = version.commit.slice(0, 7); suffix = comment.side === "old" ? (zh ? `（提交 ${commit} 之前）` : ` (before ${commit})`) : (zh ? `（提交 ${commit}）` : ` (commit ${commit})`); }
   return `${name}:${range(comment)}${suffix}`;
 }
-export function formatFileComments(comments: readonly FileComment[], roots: Roots, zh: boolean): string {
+const mib = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2);
+/** A note's place: the file reference, then its large-file position, or "whole file" when it quotes nothing. */
+export function noteCommentPlace(comment: Pick<NoteComment, "path" | "excerpt" | "offset">, roots: Roots, zh: boolean): string {
+  const reference = formatAgentReference({ path: referencePath(comment.path, roots.fileRoot, roots.sessionRoot) });
+  if (comment.offset !== undefined) return reference + (zh ? `（约 ${mib(comment.offset)} MiB 处）` : ` (around ${mib(comment.offset)} MiB)`);
+  return comment.excerpt ? reference : reference + (zh ? "（整个文件）" : " (whole file)");
+}
+export function noteCommentShortPlace(comment: Pick<NoteComment, "path" | "excerpt" | "offset">, zh: boolean): string {
+  const name = comment.path.slice(Math.max(comment.path.lastIndexOf("/"), comment.path.lastIndexOf("\\")) + 1);
+  if (comment.offset !== undefined) return `${name} · ${zh ? `约 ${mib(comment.offset)} MiB` : `~${mib(comment.offset)} MiB`}`;
+  return `${name} · ${comment.excerpt ? (zh ? "选中内容" : "selection") : (zh ? "整个文件" : "whole file")}`;
+}
+export function formatFileComments(comments: readonly (FileComment | NoteComment)[], roots: Roots, zh: boolean): string {
   const output = [zh ? "审查意见：" : "Review comments:"];
   for (const path of new Set(comments.map(comment => comment.path))) for (const comment of comments.filter(item => item.path === path)) {
     const [first, ...rest] = comment.body.split(/\r?\n/);
-    output.push(`- ${fileCommentPlace(comment, roots, zh)} — ${first}`, ...rest.map(line => `  ${line}`));
+    output.push(`- ${isNoteComment(comment) ? noteCommentPlace(comment, roots, zh) : fileCommentPlace(comment, roots, zh)} — ${first}`, ...rest.map(line => `  ${line}`));
     if (comment.excerpt) output.push(`  > ${comment.excerpt}`);
   }
   return output.join("\n");
@@ -292,7 +335,7 @@ function pageContextIdentity(comment: PageComment, zh: boolean): string[] {
 }
 /** Formats mixed comments while preserving the historic formatter byte-for-byte for file-only input. */
 export function formatReviewComments(comments: readonly ReviewComment[], roots: Roots, zh: boolean): string {
-  const files = comments.filter((comment): comment is FileComment => !isPageComment(comment)), pages = comments.filter(isPageComment);
+  const files = comments.filter((comment): comment is FileComment | NoteComment => !isPageComment(comment)), pages = comments.filter(isPageComment);
   if (!pages.length) return formatFileComments(files, roots, zh);
   const output = files.length ? [formatFileComments(files, roots, zh)] : [];
   const numbered = pages.map((comment, index) => ({ comment, reference: `P${index + 1}` }));

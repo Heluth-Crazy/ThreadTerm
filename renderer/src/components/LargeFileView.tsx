@@ -6,11 +6,14 @@ import { workbenchError } from '../workbench/errors';
 import { Icon } from './PrototypeIcon';
 import { WbIcon } from '../workbench/icons';
 import { createWindowLoader, LARGE_FILE_WINDOW_BYTES, percentOffset, windowOffset, type WindowState } from '../largeFileWindow';
+import { useTextSelectionActions, type TextSelectionHandlers } from './TextSelectionActions';
 import './large-file-view.css';
 
-export function LargeFileView({ projectId, worktreePath, path, externalId, zh, active, onReload }: {
+export function LargeFileView({ projectId, worktreePath, path, externalId, zh, active, onReload, selectionActions }: {
   projectId: string; worktreePath?: string; path: string; externalId?: string; zh: boolean;
   active?: boolean; onReload: () => void;
+  /** Comment / Send selection for text selected in the window; a note records its byte offset in the file. */
+  selectionActions?: TextSelectionHandlers;
 }) {
   const [state, setState] = useState<WindowState>({ busy: true });
   const [percent, setPercent] = useState('0');
@@ -26,6 +29,11 @@ export function LargeFileView({ projectId, worktreePath, path, externalId, zh, a
   }, setState), [projectId, worktreePath, path, externalId]);
   useEffect(() => { void loader.load(0); return () => loader.dispose(); }, [loader]);
   const window = state.window;
+  const shown = useRef(window);
+  shown.current = window;
+  const host = useRef<HTMLElement>(null);
+  const encoder = useMemo(() => new TextEncoder(), []);
+  const selectionStrip = useTextSelectionActions(host, selectionActions, area => shown.current ? shown.current.start + encoder.encode(area.value.slice(0, area.selectionStart)).length : undefined);
   useEffect(() => {
     const activated = active && wasActive.current === false;
     wasActive.current = active;
@@ -45,7 +53,7 @@ export function LargeFileView({ projectId, worktreePath, path, externalId, zh, a
   };
   const mib = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2);
   const position = window ? `${mib(window.start)}–${mib(window.end)} MiB ${t('largeFileOf')} ${mib(window.size)} MiB` : state.busy ? t('loading') : '';
-  return <section className="large-file-view" aria-label={t('largeFileReadOnly')} aria-busy={state.busy}
+  return <section ref={host} className="large-file-view" aria-label={t('largeFileReadOnly')} aria-busy={state.busy}
     data-window-start={window?.start} data-window-end={window?.end} data-file-size={window?.size} data-file-path={path} data-window-source={externalId ? 'external' : 'project'}>
     <div className="large-file-toolbar">
       <span className="large-file-readonly" title={path}>{t('largeFileReadOnly')}</span>
@@ -68,5 +76,6 @@ export function LargeFileView({ projectId, worktreePath, path, externalId, zh, a
       <textarea key={`${window.changeToken}:${window.start}:${window.end}`} ref={text} className="large-file-content" data-testid="large-file-content" aria-label={t('largeFileText')} readOnly spellCheck={false} wrap="off" value={window.content} />
       {window.endsMidLine && <span className="large-file-clipped" role="note">{t('largeFileClipped')} ↓</span>}
     </>}
+    {selectionStrip}
   </section>;
 }

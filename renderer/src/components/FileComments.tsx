@@ -5,12 +5,14 @@ import { MAX_CHAT_IMAGES } from '../chatImages';
 import { flashPageComment } from '../pageComments';
 import { canonicalScopePath } from '../projectScope';
 import { displayPath } from '../displayPath';
-import { addFileComment, fileCommentPlace, fileCommentShortPlace, formatReviewComments, isPageComment, loadReviewComments, pageCommentLabel, pageCommentLocation, releaseReviewComments, removeReviewComments, type ReviewComment, loadFileComments, MAX_FILE_COMMENTS, MAX_REVIEW_COMMENT_BODY, subscribeFileComments, type CommentScope, type CommentVersion, type FileComment } from '../reviewComments';
+import { addFileComment, addNoteComment, fileCommentPlace, fileCommentShortPlace, formatReviewComments, isNoteComment, isPageComment, loadReviewComments, noteCommentPlace, noteCommentShortPlace, pageCommentLabel, pageCommentLocation, releaseReviewComments, removeReviewComments, reviewExcerpt, type ReviewComment, loadFileComments, MAX_FILE_COMMENTS, MAX_REVIEW_COMMENT_BODY, subscribeFileComments, type CommentScope, type CommentVersion, type FileComment, type NoteComment } from '../reviewComments';
 import { Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Select } from './ui/Select';
 
 export type CommentSelection = {side:'old'|'new';startLine:number;endLine:number;text:string};
+/** What a note comments on: selected text (with its byte offset in a large file), or the whole file when empty. */
+export type NoteTarget = {text?:string;offset?:number};
 
 /** One folder's pending comments, shared by every file view and refreshed across windows. */
 export function useFileComments(scope?:CommentScope):FileComment[] {
@@ -48,21 +50,29 @@ function commentError(error:unknown, zh:boolean):string {
 }
 
 export function CommentForm({scope, path, version, selection, zh, onCancel, onAdded}:{scope:CommentScope;path:string;version:CommentVersion;selection:CommentSelection;zh:boolean;onCancel:()=>void;onAdded:()=>void}) {
+ const place = displayPath(fileCommentPlace({path, version, ...selection}, {fileRoot:scope.root, sessionRoot:scope.root}, zh));
+ return <CommentFormShell place={place} title={selection.text} zh={zh} onCancel={onCancel} onSubmit={async body => { await addFileComment({...scope, path, version, ...selection, body}); onAdded(); }}/>;
+}
+
+/** The comment form for views without line numbers: a whole file, or a quoted selection. */
+export function NoteCommentForm({scope, path, target, zh, onCancel, onAdded}:{scope:CommentScope;path:string;target:NoteTarget;zh:boolean;onCancel:()=>void;onAdded:()=>void}) {
+ const excerpt = target.text?.trim() ? reviewExcerpt(target.text) : '';
+ const place = displayPath(noteCommentPlace({path, excerpt, offset:target.offset}, {fileRoot:scope.root, sessionRoot:scope.root}, zh)) + (excerpt ? ` — “${excerpt}”` : '');
+ return <CommentFormShell place={place} title={target.text} zh={zh} onCancel={onCancel} onSubmit={async body => { await addNoteComment({...scope, path, text:target.text, offset:target.offset, body}); onAdded(); }}/>;
+}
+
+function CommentFormShell({place, title, zh, onSubmit, onCancel}:{place:string;title?:string;zh:boolean;onSubmit:(body:string)=>Promise<void>;onCancel:()=>void}) {
  const [body, setBody] = useState('');
  const [saving, setSaving] = useState(false);
  const [issue, setIssue] = useState<string>();
  const copy = (en:string, cn:string) => zh ? cn : en;
- const place = displayPath(fileCommentPlace({path, version, ...selection}, {fileRoot:scope.root, sessionRoot:scope.root}, zh));
  const addComment = async () => {
   if(saving || !body.trim()) return;
   setSaving(true);
-  try {
-   await addFileComment({...scope, path, version, ...selection, body});
-   onAdded();
-  } catch(error) { setIssue(commentError(error, zh)); } finally { setSaving(false); }
+  try { await onSubmit(body); } catch(error) { setIssue(commentError(error, zh)); } finally { setSaving(false); }
  };
  return <div className="wb-review-comment-form">
-  <span className="wb-review-comment-where" title={selection.text}>{place}</span>
+  <span className="wb-review-comment-where" title={title}>{place}</span>
   {issue && <p className="wb-issue" role="alert">{issue}</p>}
   <textarea autoFocus disabled={saving} aria-label={copy('Comment for the agent', '给 Agent 的评论')} maxLength={MAX_REVIEW_COMMENT_BODY} value={body}
    placeholder={copy('What should the agent do here?', '希望 Agent 在这里怎么改？')}
@@ -77,7 +87,8 @@ export function CommentForm({scope, path, version, selection, zh, onCancel, onAd
 /** `previewId` selects one immutable page queue. File callers omit it and retain their batch UI. */
 export function PendingComments({scope, host, comments:providedComments, zh, previewId}:{scope:CommentScope;host:FileCommentsHost;comments:ReviewComment[];zh:boolean;previewId?:string}) {
  const storedComments=useReviewComments(scope);
- const comments=previewId ? storedComments.filter(item=>isPageComment(item)&&item.provenance?.previewId===previewId) : (storedComments.some(isPageComment)?storedComments:providedComments);
+ // Line-only views pass their own line comments; page and note comments come from the folder's store.
+ const comments=previewId ? storedComments.filter(item=>isPageComment(item)&&item.provenance?.previewId===previewId) : (storedComments.some(item=>isPageComment(item)||isNoteComment(item))?storedComments:providedComments);
  const [receiverId, setReceiverId] = useState<string>();
  const [busy, setBusy] = useState(false);
  const [issue, setIssue] = useState<string>();
@@ -96,7 +107,7 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
  const defaultReceiverId=previewId ? (pageOwners.length===1&&!hasUnownedPage?pageOwners[0]:undefined) : (pageOwners.length===1&&!hasUnownedPage?pageOwners[0]:(pageOwners.length||hasUnownedPage?undefined:(host.defaultReceiverId??host.receivers[0]?.id)));
  const receiver = host.receivers.find(item => item.id === (receiverId??defaultReceiverId));
  const roots = {fileRoot:scope.root, sessionRoot:receiver?.root ?? scope.root};
- const files = new Set(comments.filter((item):item is FileComment=>!isPageComment(item)).map(item => item.path)).size;
+ const files = new Set(comments.filter((item):item is FileComment|NoteComment=>!isPageComment(item)).map(item => item.path)).size;
  const pages = new Set(comments.filter(isPageComment).map(item=>item.url)).size;
  useEffect(() => { setIssue(undefined); setIssueCode(undefined); setNotice(undefined); setNoticeCode(undefined); setConfirmClear(false); setTransfer(undefined); }, [scope.projectId, scope.root, previewId]);
  useEffect(() => { if(noticeCode==='page_shots_file_path')host.notice?.(copy('Some screenshots were added by file path only. The receiving session can read those files.', '部分截图仅以文件路径加入，接收会话可以读取这些文件。')); }, [zh, noticeCode]);
@@ -157,7 +168,7 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
   <ul>{comments.map(item => <li key={item.id}>
    {isPageComment(item)?<button type="button" className="wb-page-comment-row" onClick={()=>void flashPageComment(item).catch(()=>{setIssueCode(undefined);setIssue(copy('Could not highlight this page target.', '无法高亮此页面目标。'));})} title={item.url} aria-label={copy(`Highlight ${pageCommentLabel(item.target,zh)}`, `高亮 ${pageCommentLabel(item.target,zh)}`)}>
     {item.shot&&<img src={item.shot.thumbnail} alt={copy('Page screenshot', '页面截图')}/>}<span><b>{pageCommentLabel(item.target,zh)}</b><small>{pageCommentLocation(item.url)}</small></span>
-   </button>:host.openFile?<button type="button" className="wb-review-comment-where wb-review-comment-open" title={`${displayPath(fileCommentPlace(item, roots, zh))}\n${item.excerpt}`} onClick={()=>host.openFile?.({projectId:scope.projectId,root:scope.root,path:item.path,line:item.startLine})}>{/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(item.path)?displayPath(fileCommentPlace(item, roots, zh)):fileCommentShortPlace(item, zh)}</button>:<span className="wb-review-comment-where" title={`${displayPath(fileCommentPlace(item, roots, zh))}\n${item.excerpt}`}>{displayPath(fileCommentShortPlace(item, zh))}</span>}
+   </button>:isNoteComment(item)?<NoteCommentPlace comment={item} scope={scope} host={host} roots={roots} zh={zh}/>:host.openFile?<button type="button" className="wb-review-comment-where wb-review-comment-open" title={`${displayPath(fileCommentPlace(item, roots, zh))}\n${item.excerpt}`} onClick={()=>host.openFile?.({projectId:scope.projectId,root:scope.root,path:item.path,line:item.startLine})}>{/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(item.path)?displayPath(fileCommentPlace(item, roots, zh)):fileCommentShortPlace(item, zh)}</button>:<span className="wb-review-comment-where" title={`${displayPath(fileCommentPlace(item, roots, zh))}\n${item.excerpt}`}>{displayPath(fileCommentShortPlace(item, zh))}</span>}
    <span className="body" title={item.body}>{item.body}</span>
    <button type="button" className="icon-btn" disabled={busy} aria-label={copy('Remove comment', '删除评论')} title={copy('Remove comment', '删除评论')} onClick={() => void removeComments([item.id])}><Icon name="close"/></button>
   </li>)}</ul>
@@ -174,4 +185,13 @@ export function PendingComments({scope, host, comments:providedComments, zh, pre
    <p>{copy('They have not been sent to the agent and cannot be restored.', '这些意见尚未发给 Agent，清除后无法恢复。')}</p>
   </SurfaceDialog>}
  </div>;
+}
+
+/** A pending note's place: file name plus "whole file", "selection" or the large-file position; opens the file. */
+function NoteCommentPlace({comment, scope, host, roots, zh}:{comment:NoteComment;scope:CommentScope;host:FileCommentsHost;roots:{fileRoot:string;sessionRoot?:string};zh:boolean}) {
+ const title = `${displayPath(noteCommentPlace(comment, roots, zh))}${comment.excerpt ? `
+${comment.excerpt}` : ''}`, label = noteCommentShortPlace(comment, zh);
+ return host.openFile
+  ? <button type="button" className="wb-review-comment-where wb-review-comment-open" title={title} onClick={()=>host.openFile?.({projectId:scope.projectId,root:scope.root,path:comment.path,line:1})}>{label}</button>
+  : <span className="wb-review-comment-where" title={title}>{label}</span>;
 }

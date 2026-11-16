@@ -305,9 +305,9 @@ try {
   assert.equal(await visible('iframe[title="Outside workspace HTML preview"]').contentFrame().locator('img').getAttribute('src'), null, 'external HTML remote image URL was removed before preview');
   assert.deepEqual(loopbackRequests, [], 'external HTML preview did not request the loopback fixture resource');
   await assertExternalVisualGeometry();
-  await activateTab('large.ts'); await until(async () => /1 MiB|too large|exceeds/i.test(await text('.pane-tab-surface:not([hidden])')), 'large-file error card');
+  await activateTab('large.ts'); await until(() => visible('[data-testid="large-file-content"]').count(), 'large file opens the read-only window view');
   await activateTab('binary.bin'); await until(async () => /binary|UTF-8|supported/i.test(await text('.pane-tab-surface:not([hidden])')), 'binary-file error card');
-  check('external image and static sandboxed HTML use previews; oversized and binary text get readable in-card errors');
+  check('external image and static sandboxed HTML use previews; oversized text opens the read-only window and binary text gets a readable in-card error');
 
   // The renderer-owned comment/send controls vary by final UI placement.  These role-based assertions deliberately
   // exercise the production controls without depending on a private CSS implementation.
@@ -366,6 +366,69 @@ try {
   await until(async () => (await page.getByTestId('context-preview').allInnerTexts()).some(block => block.split('\n')[0].replace(/^\[ThreadTerm context \d+\/\d+\] /, '').trimEnd() === wholeFileTitle), 'toolbar creates a distinct whole-file context with the absolute path and no line range');
   await page.getByRole('dialog', { name: /Context preview|上下文预览/ }).getByRole('button', { name: /Close|关闭/ }).click();
   check('external selection sends absolute file range plus quote text; toolbar sends the whole file as a context chip');
+
+  // Comment and Send on every outside-file view (owner 2026-11-15). The bar's "Comment…" comments on the selection, or
+  // on the whole file; views without line numbers save a note quoting the selection (large files keep its position).
+  // Each note is removed again: the restart step below expects exactly the one persistent line comment.
+  const barComment = () => visible('.file-workspace-bar').getByRole('button', { name: /^(Comment…|评论…)$/ }).first();
+  const formPlace = () => visible('.wb-review-comment-form .wb-review-comment-where');
+  const addNote = async body => { const form = visible('.wb-review-comment-form'); await form.waitFor(); await form.locator('textarea').fill(body); await form.getByRole('button', { name: /^(Add comment|添加评论)$/ }).click(); await form.waitFor({ state: 'detached' }); };
+  const cancelNote = async () => { const form = visible('.wb-review-comment-form'); await form.getByRole('button', { name: /^(Cancel|取消)$/ }).click(); await form.waitFor({ state: 'detached' }); };
+  const dropNote = async label => { const row = visible('.wb-review-comments li').filter({ hasText: label }).first(); await row.waitFor(); await row.getByRole('button', { name: /^(Remove comment|删除评论)$/ }).click(); await row.waitFor({ state: 'detached' }); };
+  const stripButton = name => visible('.file-selection-actions').getByRole('button', { name });
+
+  await activateTab('outside.ts'); await visible('.cm-line').first().click();
+  await barComment().click(); await formPlace().waitFor();
+  assert.match(await formPlace().innerText(), /outside\.ts \(whole file\)$/, 'with nothing selected the code view comments on the whole file');
+  await addNote('Whole external file note');
+  await until(async () => (await text('.pane-tab-surface:not([hidden]) .wb-review-comments')).includes('Whole external file note'), 'whole-file note is pending');
+  await dropNote('outside.ts · whole file');
+
+  await activateTab('large.ts');
+  const largeText = visible('[data-testid="large-file-content"]'); await largeText.waitFor();
+  assert.equal(await visible('.file-workspace-bar').getByRole('button', { name: /^(Send to agent|发送给 Agent)$/ }).count(), 1, 'large-file bar has Send to agent');
+  const selectLarge = () => largeText.evaluate(area => { area.focus(); area.setSelectionRange(200_000, 200_040); area.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true })); });
+  await selectLarge(); await stripButton(/^(Comment|评论)$/).click();
+  assert.match(await formPlace().innerText(), /large\.ts \(around 0\.19 MiB\)/, 'a large-file note records the selection position');
+  await addNote('Large file selection note');
+  await visible('.wb-review-comments li').filter({ hasText: 'large.ts · ~0.19 MiB' }).waitFor();
+  // The tray folds chips that do not fit into "+N more"; its hidden measuring row holds every chip.
+  const allContexts = () => page.locator(`[data-testid="session-chat-${session.id}"] .context-chip-measure .context-chip`).count();
+  const largeContexts = await allContexts();
+  await selectLarge(); await stripButton(/^(Send selection|发送选中内容)$/).click();
+  await until(() => allContexts().then(count => count === largeContexts + 2), 'large-file selection sends the file and a quote');
+  await dropNote('large.ts · ~0.19 MiB');
+
+  await activateTab('outside.md');
+  const rendered = visible('[data-testid="file-preview-rendered"]'); await rendered.waitFor();
+  // Activating an outside tab re-reads the file, which replaces the rendered text once; select again until it holds.
+  await until(async () => {
+    const box = await rendered.locator('p').first().boundingBox(); if (!box) return false;
+    await page.mouse.move(box.x + 1, box.y + box.height / 2); await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 }); await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 4 }); await page.mouse.up();
+    await new Promise(done => setTimeout(done, 300));
+    return (await stripButton(/^(Comment|评论)$/).count()) > 0;
+  }, 'a Markdown preview selection shows Comment');
+  await stripButton(/^(Comment|评论)$/).click();
+  assert.match(await formPlace().innerText(), /outside\.md — “Read-only preview\.”$/, 'a Markdown preview note quotes the selected text');
+  await addNote('Markdown selection note'); await dropNote('outside.md · selection');
+
+  await activateTab('outside.png'); await barComment().click(); await formPlace().waitFor();
+  assert.match(await formPlace().innerText(), /outside\.png \(whole file\)$/, 'an image comment is about the whole file');
+  await cancelNote();
+
+  await activateTab('outside.html');
+  const htmlHeading = visible('iframe[title="Outside workspace HTML preview"]').contentFrame().getByRole('heading', { name: 'Safe external HTML' });
+  const commentSelection = page.getByRole('menuitem', { name: 'Comment on selection' });
+  await until(async () => {
+    await htmlHeading.selectText(); const headingBox = await htmlHeading.boundingBox(); if (!headingBox) return false;
+    await page.mouse.click(headingBox.x + 8, headingBox.y + headingBox.height / 2, { button: 'right' });
+    try { await commentSelection.waitFor({ timeout: 2000 }); return true; } catch { await page.keyboard.press('Escape'); return false; }
+  }, 'right-click on selected text in the outside HTML preview offers Comment on selection');
+  await commentSelection.click();
+  assert.match(await formPlace().innerText(), /outside\.html — “Safe external HTML”$/, 'right-click in the script-free HTML preview comments on its selection');
+  await cancelNote();
+  check('every outside-file view has Comment and Send: whole-file notes (code, image), quoted notes (large file with its position, Markdown, HTML via right-click) and large-file selection send');
 
   // The fake ACP provider emits two real markdown file links on a genuine Chat turn.  One
   // is a registered outside path; the other proves the link route retains a clear error.
@@ -442,7 +505,7 @@ try {
     ['ts-comments', async () => { await activateTab('outside.ts'); const chip=visible('.external-file-boundary-chip'); if(await chip.getAttribute('aria-expanded')==='true') await chip.click(); }],
     ['markdown-preview', async () => { await activateTab('outside.md'); const preview = visible('button').filter({ hasText: /^(Preview|预览)$/ }).first(); if (await preview.count()) await preview.click(); await until(async () => (await text('.pane-tab-surface:not([hidden])')).includes('Read-only preview.'), 'markdown preview loads for matrix'); }],
     ['image-preview', async () => { await activateTab('outside.png'); await until(async () => (await visible('img').first().evaluate(image => image.naturalWidth > 0)), 'image preview decodes for matrix'); }],
-    ['large-error', async () => { await activateTab('large.ts'); }],
+    ['large-file', async () => { await activateTab('large.ts'); await visible('[data-testid="large-file-content"]').waitFor(); }],
     ['binary-error', async () => { await activateTab('binary.bin'); }],
     ['html-sandbox', async () => { await activateTab('outside.html'); const preview = visible('button').filter({ hasText: /^(Preview|预览)$/ }).first(); const frame = visible('iframe[title="Outside workspace HTML preview"],iframe[title="工作区外 HTML 预览"]'); /* the tab click returns before its surface shows: wait for the preview or its button */ await frame.or(preview).first().waitFor(); if (!await frame.count()) await preview.click(); const heading = frame.contentFrame().getByRole('heading', { name: 'Safe external HTML' }); await heading.waitFor(); await heading.screenshot({ animations: 'disabled' }); await delay(180); }],
     ['quick-open-recents', async () => { await page.evaluate(() => window.dispatchEvent(new CustomEvent('threadterm:workbench', { detail: { view: 'quick-open' } }))); await page.locator('.wb-quick-open').waitFor(); }],
@@ -461,7 +524,8 @@ try {
     if (state === 'ts-comments') { await assertExternalVisualGeometry(); await assertEditorSurfacePixel(`${label}/${locale}/${width} boundary`, '[data-testid="external-file-boundary"]'); }
     if (state === 'html-sandbox' || state === 'quick-open-recents' || state === 'permission-disclosure') await assertExternalVisualGeometry();
     if (state === 'permission-disclosure') await assertEditorSurfacePixel(`${label}/${locale}/${width} permission notice`, '.external-file-boundary-notice', '--raised');
-    if (state === 'large-error' || state === 'binary-error') await assertEditorSurfacePixel(`${label}/${locale}/${width} ${state} card`, '.external-file-error');
+    if (state === 'large-file') await assertEditorSurfacePixel(`${label}/${locale}/${width} large-file window`, '.large-file-view');
+    if (state === 'binary-error') await assertEditorSurfacePixel(`${label}/${locale}/${width} ${state} card`, '.external-file-error');
     await shot(`theme-${label}-${locale}-${width}-${state}.png`);
   }
   check('Tokyo Night, Solarized Light, and custom editor/panel-distinct capture the full 96-state matrix with boundary, notice, error-card, HTML, and recent-row geometry checks');

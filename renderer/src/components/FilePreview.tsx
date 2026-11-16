@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { marked } from 'marked';
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { browserCommand, deletePageShots, onPageContextMenu, openExternal, request } from '../bridge';
@@ -6,7 +6,8 @@ import type { FileCommentsHost } from '../fileCommentsHost';
 import type { CommentScope } from '../reviewComments';
 import { PageCommentControls, PageCommentForm, usePageCommentPreview } from './PageComments';
 import { PendingComments, useReviewComments } from './FileComments';
-import { showContextMenu } from './ContextMenu';
+import { showContextMenu, type ContextMenuItem } from './ContextMenu';
+import { useTextSelectionActions, type TextSelectionHandlers } from './TextSelectionActions';
 import { renderedPreviewMenuItems } from '../fileSurfaceContextMenuItems';
 import { webContextMenuItems } from '../webContextMenuItems';
 import { htmlPreview } from '../htmlPreviewBridge';
@@ -40,7 +41,10 @@ export function relativeAsset(documentPath:string,source:string):string|undefine
   }
   return parts.join('/');
 }
-export function FilePreview({projectId,worktreePath,path,content,savedContent,image,embedded=false,external=false,commentScope,commentsHost,onShowSource,onSendToAgent}:{projectId:string;worktreePath?:string;path:string;content:string;savedContent:string;image?:{mime:string;data:string};embedded?:boolean;external?:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost;onShowSource?:()=>void;onSendToAgent?:()=>void}) {
+export function FilePreview({projectId,worktreePath,path,content,savedContent,image,embedded=false,external=false,commentScope,commentsHost,onShowSource,onSendToAgent,selectionActions}:{projectId:string;worktreePath?:string;path:string;content:string;savedContent:string;image?:{mime:string;data:string};embedded?:boolean;external?:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost;onShowSource?:()=>void;onSendToAgent?:()=>void;
+  /** Comment / Send selection: a strip beside text selected in rendered Markdown, and the right-click menu of an
+   * outside HTML preview (its frame runs no script, so only the menu can read its selection). */
+  selectionActions?:TextSelectionHandlers}) {
   const [html,setHtml]=useState('');const [issue,setIssue]=useState<string>();const [loadedImage,setLoadedImage]=useState<{mime:string;data:string}>();
   const remote=isRemoteFiles();
   const [address,setAddress]=useState('');const [liveUrl,setLiveUrl]=useState<string>();
@@ -48,6 +52,11 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
   const markdown=/\.mdx?$/i.test(path),staticHtml=/\.html?$/i.test(path);
   const imageFile=/\.(?:png|jpe?g|gif|webp)$/i.test(path);
   const zh=document.documentElement.lang==='zh-CN';
+  const host=useRef<HTMLElement>(null), actions=useRef(selectionActions);
+  actions.current=selectionActions;
+  const markdownStrip=useTextSelectionActions(host,markdown?selectionActions:undefined);
+  // A page-frame name lets the desktop's context-menu hook report the selected text of this script-free frame.
+  const externalFrame=useRef(`tt-preview-ext-${crypto.randomUUID().replace(/[^a-z0-9]/g,'')}`).current;
   const pagePreview=usePageCommentPreview(liveUrl??'',commentScope,commentsHost,zh);
   const staticPreview=usePageCommentPreview(staticHtml?`${projectId}\0${worktreePath??''}\0${path}\0${contentKey(savedContent)}`:'',commentScope,commentsHost,zh);
   const comments=useReviewComments(commentScope);
@@ -86,6 +95,17 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
     showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:target,items:renderedPreviewMenuItems({zh,hasSelection:Boolean(selected),send:onSendToAgent,source:onShowSource,copy:()=>selected?navigator.clipboard.writeText(selected):undefined,selectAll:()=>{const range=document.createRange();range.selectNodeContents(target);const selection=window.getSelection();selection?.removeAllRanges();selection?.addRange(range);}})});
   };
   useEffect(()=>onPageContextMenu(({frameName,x,y,pick,selectionText})=>{
+    if(frameName===externalFrame){
+      const handlers=actions.current,selected=selectionText.trim()?selectionText:'';
+      const items:ContextMenuItem[]=[
+        ...(selected&&handlers?.canComment?[{id:'file-preview-comment-selection',label:zh?'评论选中内容':'Comment on selection',onSelect:()=>handlers.onComment({text:selected})}]:[]),
+        ...(selected&&handlers?.onSend?[{id:'file-preview-send-selection',label:zh?'发送选中内容':'Send selection',onSelect:()=>handlers.onSend?.({text:selected})}]:[]),
+        ...(selected&&(handlers?.canComment||handlers?.onSend)?[{id:'file-preview-selection-separator',label:'',separator:true}]:[]),
+        ...renderedPreviewMenuItems({zh,hasSelection:Boolean(selected),send:onSendToAgent,source:onShowSource,copy:()=>navigator.clipboard.writeText(selected)}),
+      ];
+      showContextMenu({x,y,items});
+      return;
+    }
     const saved=frameName===staticPreview.frameName;
     const current=saved?staticPreview:pagePreview;
     if(!pick||(!saved&&frameName!==pagePreview.frameName))return;
@@ -95,5 +115,5 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
     showContextMenu({x,y,restoreFocus:current.iframe.current,onDismiss:selected=>{if(selected?.testId!==commentId&&pick.shot)void deletePageShots([pick.shot.id]).catch(()=>undefined);},items:[...savedItems,...(savedItems.length?[{label:'',separator:true}]:[]),...pageItems]});
   }),[pagePreview,staticPreview,liveUrl,zh,onSendToAgent,onShowSource]);
   const isImage=Boolean(image)||imageFile;const asset=isImage?(image??loadedImage):undefined;
-  return <section className="file-preview">{asset?<div className="file-image-preview"><img alt={path.split(/[\\/]/).at(-1)??'Image'} src={`data:${asset.mime};base64,${asset.data}`}/></div>:markdown?<div className="markdown-preview tt-preview-markdown" data-testid="file-preview-rendered" tabIndex={0} onContextMenu={openPreviewMenu} onClick={event=>{const anchor=(event.target as Element).closest('a');if(!anchor)return;const href=anchor.getAttribute('href');if(href&&/^https?:\/\//i.test(href)){event.preventDefault();void openExternal(href).catch(error=>setIssue(String(error)));}}} dangerouslySetInnerHTML={{__html:html}}/>:staticHtml?<Suspense fallback={<p className="tt-editor-state">{zh?'正在加载沙箱预览…':'Loading sandboxed preview…'}</p>}>{external?<ExternalHtmlPreview content={savedContent} zh={zh}/>:<SandboxedHtmlPreview key={`${projectId}\0${worktreePath??''}\0${path}`} projectId={projectId} worktreePath={worktreePath} path={path} savedContent={savedContent} reload={staticReload} onReload={()=>setStaticReload(value=>value+1)} preview={staticPreview} zh={zh} onIssue={setIssue}/>}</Suspense>:<p className="tt-editor-state">{zh?'此文件不支持文档预览。':'Document preview is unavailable for this file type.'}</p>}{!external&&(!embedded||Boolean(commentScope&&commentsHost))&&!asset&&!isImage&&<div className="preview-address"><div className="input-wrap preview-address-input"><input className="input" aria-label={zh?'开发服务地址':'Development preview address'} placeholder="http://localhost:3000" value={address} onChange={event=>setAddress(event.target.value)}/></div><button type="button" className="btn btn-sm" onClick={previewAddress}>{zh?'预览地址':'Preview address'}</button>{liveUrl&&<PageCommentControls preview={pagePreview} zh={zh}/>}</div>}{!remote&&liveUrl&&<iframe ref={pagePreview.iframe} name={pagePreview.frameName} className="tt-preview-frame" title={zh?'开发服务预览':'Development service preview'} sandbox="allow-scripts allow-forms" src={liveUrl} onLoad={()=>{if(pagePreview.pick||pagePreview.picking)pagePreview.cancel();}}/>}<PageCommentForm preview={staticPreview} scope={commentScope} zh={zh}/><PageCommentForm preview={pagePreview} scope={commentScope} zh={zh}/>{commentScope&&commentsHost&&<PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>} {issue&&<p role="alert">{issue}</p>}{pagePreview.issue&&<p className="wb-issue" role="alert">{pagePreview.issue}</p>}{staticPreview.issue&&<p className="wb-issue" role="alert">{staticPreview.issue}</p>}</section>;
+  return <section ref={host} className="file-preview">{asset?<div className="file-image-preview"><img alt={path.split(/[\\/]/).at(-1)??'Image'} src={`data:${asset.mime};base64,${asset.data}`}/></div>:markdown?<div className="markdown-preview tt-preview-markdown" data-testid="file-preview-rendered" tabIndex={0} onContextMenu={openPreviewMenu} onClick={event=>{const anchor=(event.target as Element).closest('a');if(!anchor)return;const href=anchor.getAttribute('href');if(href&&/^https?:\/\//i.test(href)){event.preventDefault();void openExternal(href).catch(error=>setIssue(String(error)));}}} dangerouslySetInnerHTML={{__html:html}}/>:staticHtml?<Suspense fallback={<p className="tt-editor-state">{zh?'正在加载沙箱预览…':'Loading sandboxed preview…'}</p>}>{external?<ExternalHtmlPreview content={savedContent} zh={zh} frameName={externalFrame}/>:<SandboxedHtmlPreview key={`${projectId}\0${worktreePath??''}\0${path}`} projectId={projectId} worktreePath={worktreePath} path={path} savedContent={savedContent} reload={staticReload} onReload={()=>setStaticReload(value=>value+1)} preview={staticPreview} zh={zh} onIssue={setIssue}/>}</Suspense>:<p className="tt-editor-state">{zh?'此文件不支持文档预览。':'Document preview is unavailable for this file type.'}</p>}{!external&&(!embedded||Boolean(commentScope&&commentsHost))&&!asset&&!isImage&&<div className="preview-address"><div className="input-wrap preview-address-input"><input className="input" aria-label={zh?'开发服务地址':'Development preview address'} placeholder="http://localhost:3000" value={address} onChange={event=>setAddress(event.target.value)}/></div><button type="button" className="btn btn-sm" onClick={previewAddress}>{zh?'预览地址':'Preview address'}</button>{liveUrl&&<PageCommentControls preview={pagePreview} zh={zh}/>}</div>}{!remote&&liveUrl&&<iframe ref={pagePreview.iframe} name={pagePreview.frameName} className="tt-preview-frame" title={zh?'开发服务预览':'Development service preview'} sandbox="allow-scripts allow-forms" src={liveUrl} onLoad={()=>{if(pagePreview.pick||pagePreview.picking)pagePreview.cancel();}}/>}<PageCommentForm preview={staticPreview} scope={commentScope} zh={zh}/><PageCommentForm preview={pagePreview} scope={commentScope} zh={zh}/>{commentScope&&commentsHost&&<PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>} {issue&&<p role="alert">{issue}</p>}{pagePreview.issue&&<p className="wb-issue" role="alert">{pagePreview.issue}</p>}{staticPreview.issue&&<p className="wb-issue" role="alert">{staticPreview.issue}</p>}{markdownStrip}</section>;
 }

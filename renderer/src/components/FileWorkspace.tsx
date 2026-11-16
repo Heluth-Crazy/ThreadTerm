@@ -20,7 +20,8 @@ import { conflictBlocks } from "../workbench/conflictBlocks";
 import { isConflict } from "../workbench/gitDecorations";
 import { notifyFilesChanged } from "../workbench/types";
 import { MergeEditor, type MergeEditorHandle, type MergeSelection } from "./MergeEditor";
-import { CommentForm, PendingComments, useFileComments } from "./FileComments";
+import { CommentForm, NoteCommentForm, PendingComments, useFileComments, type NoteTarget } from "./FileComments";
+import type { TextSelectionHandlers } from "./TextSelectionActions";
 import type { FileCommentsHost } from "../fileCommentsHost";
 import { sameCommentVersion, type CommentVersion } from "../reviewComments";
 import { GitMergeControls } from "./GitMergeControls";
@@ -300,6 +301,9 @@ function FileWorkspaceInstance({
   const fileComments = useFileComments(commentScope);
   const [commentSelection, setCommentSelection] = useState<MergeSelection>();
   const [commentDraft, setCommentDraft] = useState<MergeSelection>();
+  // A comment without lines: the whole file, or text selected in a view that has no line numbers.
+  const [noteDraft, setNoteDraft] = useState<NoteTarget>();
+  const viewSelection = useRef<NoteTarget | undefined>(undefined);
   const [externalNoticeOpen, setExternalNoticeOpen] = useState(false);
   const copy = zh
     ? {
@@ -390,13 +394,15 @@ function FileWorkspaceInstance({
   useEffect(() => {
     setCommentSelection(undefined);
     setCommentDraft(undefined);
-  }, [commentScope?.projectId, commentScope?.root, document?.path, view, staged]);
+    setNoteDraft(undefined);
+    viewSelection.current = undefined;
+  }, [commentScope?.projectId, commentScope?.root, document?.path, largeFile?.path, officeFile?.path, view, staged]);
   useEffect(() => {
     if (dirty) setCommentDraft(undefined);
   }, [dirty]);
   const openEditorContextMenu = (menu: { x: number; y: number; selection: { side?: "old" | "new"; startLine: number; endLine: number; text: string }; hasSelection?: boolean; target: HTMLElement; copy?: () => Promise<void>; cut?: () => Promise<void>; paste?: () => Promise<void>; selectAll?: () => void }, kind: "file" | "diff") => {
     const { selection, x, y, target } = menu;
-    const canComment = Boolean(commentScope && commentsHost && selection && !busy && !dirty && !commentDraft);
+    const canComment = Boolean(commentScope && commentsHost && selection && !busy && !dirty && !commentDraft && !noteDraft);
     const reason = dirty
       ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.")
       : busy
@@ -1127,6 +1133,31 @@ function FileWorkspaceInstance({
   const pinAction = canPin && <button type="button" className="icon-btn icon-btn-sm file-bar-secondary" aria-pressed={Boolean(pinnedDocument)} title={pinLabel} aria-label={pinLabel} onClick={() => void toggleSessionDocument()}><Icon name="bookmark" /></button>;
   const historyAction = document && !external && onOpenHistory && !image && <button type="button" className="icon-btn icon-btn-sm file-bar-secondary" title={zh ? "文件历史" : "File history"} aria-label={zh ? "文件历史" : "File history"} onClick={() => onOpenHistory({ path: document.path })}><Icon name="clock" /></button>;
   const sendAction = document && onSendToAgent && (!image || external) && <button type="button" className="icon-btn icon-btn-sm file-bar-optional" title={zh ? "发送给 Agent（Ctrl+L 发送选中行）" : "Send to agent (Ctrl+L sends the selected lines)"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path: document.path })}><Icon name="send" /></button>;
+  // Comment and Send in every file bar (owner 2026-11-15): previews, large files and Office documents included, inside
+  // the workspace or outside it. With text selected the comment quotes it (code: its lines); otherwise it is about the
+  // whole file.
+  const notePath = officeFile?.path ?? largeFile?.path ?? document?.path;
+  const canNote = Boolean(commentScope && commentsHost && notePath && !busy && !dirty && !commentDraft && !noteDraft);
+  const noteActions: TextSelectionHandlers | undefined = notePath && ((commentScope && commentsHost) || onSendToAgent) ? {
+    zh, canComment: canNote, onComment: target => setNoteDraft(target),
+    onSend: onSendToAgent ? target => onSendToAgent({ path: notePath, ...(target.text ? { selection: target.text } : {}) }) : undefined,
+    onSelection: target => { viewSelection.current = target; },
+  } : undefined;
+  const codeSelection = () => {
+    if (officeFile || largeFile || view !== "file" || image || !commentSelection) return undefined;
+    const element = sourceEditorHost.current?.querySelector<HTMLElement>('.cm-content'), editor = element ? EditorView.findFromDOM(element) : null;
+    return editor && !editor.state.selection.main.empty ? commentSelection : undefined;
+  };
+  const startComment = () => { const lines = codeSelection(); if (lines) setCommentDraft(lines); else setNoteDraft(viewSelection.current ?? {}); };
+  const commentLabel = zh ? "评论…" : "Comment…";
+  const commentTitle = zh ? "评论：选中了内容就评论选区，否则评论整个文件" : "Comment on the selection, or on the whole file when nothing is selected";
+  const commentAction = commentScope && commentsHost && notePath && <button type="button" className="icon-btn icon-btn-sm file-bar-optional" aria-label={commentLabel} title={commentTitle} disabled={!canNote} onMouseDown={event => event.preventDefault()} onClick={startComment}><WbIcon name="comment" /></button>;
+  const fileSendAction = (path: string) => onSendToAgent && <button type="button" className="icon-btn icon-btn-sm file-bar-optional" title={zh ? "发送给 Agent" : "Send to agent"} aria-label={zh ? "发送给 Agent" : "Send to agent"} onClick={() => onSendToAgent({ path })}><Icon name="send" /></button>;
+  const noteMenuItems = (path: string): ContextMenuItem[] => [
+    ...(commentScope && commentsHost ? [{ id: "file-comment", label: commentLabel, icon: <WbIcon name="comment" />, disabled: !canNote, onSelect: startComment }] : []),
+    ...(onSendToAgent ? [{ id: "file-send", label: zh ? "发送给 Agent" : "Send to agent", icon: <Icon name="send" />, onSelect: () => onSendToAgent({ path }) }] : []),
+  ];
+  const noteForm = noteDraft && commentScope && notePath && <NoteCommentForm scope={commentScope} path={notePath} target={noteDraft} zh={zh} onCancel={() => setNoteDraft(undefined)} onAdded={() => setNoteDraft(undefined)} />;
   const dirtyPill = <span className="file-dirty ws-chip" data-testid="editor-dirty" hidden={!dirty} title={zh ? "未保存" : "Unsaved"}>●<span className="file-dirty-label">{zh ? "未保存" : "Unsaved"}</span></span>;
   const fileMenuItems: ContextMenuItem[] = document ? [
     ...navigation.menuItems,
@@ -1137,6 +1168,7 @@ function FileWorkspaceInstance({
     ...(view === "file" && !external && !image && gitState.status && (!dirty || blameOn) ? [{id:"file-blame",label:zh ? "逐行追溯" : "Blame",icon:<WbIcon name="person" />,onSelect:()=>setBlameOn(value=>!value)}] : []),
     ...(!external && onOpenHistory && !image ? [{id:"file-history",label:zh ? "文件历史" : "File history",icon:<Icon name="clock" />,onSelect:()=>onOpenHistory({path:document.path})}] : []),
     ...(canPin ? [{id:"file-plans",label:pinLabel,icon:<Icon name="bookmark" />,onSelect:()=>toggleSessionDocument()}] : []),
+    ...(view !== "diff" && commentScope && commentsHost ? [{id:"file-comment",label:commentLabel,icon:<WbIcon name="comment" />,disabled:!canNote,onSelect:startComment}] : []),
     ...(onSendToAgent && (!image || external) ? [{id:"file-send",label:zh ? "发送给 Agent" : "Send to agent",icon:<Icon name="send" />,onSelect:()=>onSendToAgent({path:document.path})}] : []),
     ...(view === "diff" && !staged && compareEditable && !document.readonly && diff && !diff.binary ? [
       {id:"file-revert-line",label:zh ? "还原当前行" : "Revert current line",icon:<WbIcon name="undo" />,onSelect:()=>{mergeEditor.current?.revertLine();}},
@@ -1218,10 +1250,13 @@ function FileWorkspaceInstance({
               {!embedded && !external && openPaths.length > 1 && <Select className="embedded-file-navigation" value={officeFile.path} aria-label={zh ? "切换文件预览" : "Switch file preview"} onChange={event => choose(event.target.value, "file")}>{openPaths.map(path => <option key={path} value={path}>{path}</option>)}</Select>}
               {!external && <span className="ws-chip">{copy.readOnly}</span>}
               <span className="grow" />
+              {commentAction}
+              {fileSendAction(officeFile.path)}
               <FileBarActions zh={zh} items={[
+                ...noteMenuItems(officeFile.path),
                 { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(officeFile.path) },
                 ...(canOpenWithSystemApp(officeFile.path) ? [{ id: 'file-open-system', label: zh ? '用系统应用打开' : 'Open with system app', onSelect: () => void openWithSystemApp({ ...scope, path: officeFile.path, externalId: officeFile.externalId }, zh, setIssue) }] : []),
-                { id: 'file-reload', label: copy.reload, onSelect: () => open(officeFile.path, 'file', true) },
+                { id: 'file-reload', label: copy.reload, onSelect: () => { void open(officeFile.path, 'file', true); } },
                 ...(!embedded ? [
                   ...(!external ? [{ id: 'file-tools', label: zh ? '文件与 Git' : 'Files & Git', onSelect: () => setToolsOpen(value => !value) }] : []),
                   { id: 'file-close', label: zh ? '关闭当前' : 'Close current', onSelect: () => requestClose('current') },
@@ -1231,10 +1266,13 @@ function FileWorkspaceInstance({
               ]} />
               {embeddedClose()}
             </div>
+            {noteForm}
+            {commentScope && commentsHost && <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />}
             <Suspense fallback={<p className="note" role="status">{officeKind(officeFile.path) === "docx" ? (zh ? '正在加载文档视图…' : 'Loading document view…') : (zh ? '正在加载表格视图…' : 'Loading sheet view…')}</p>}>
               {officeKind(officeFile.path) === "docx"
                 ? <DocxPreview key={officeFile.key} {...scope} path={officeFile.path} externalId={officeFile.externalId} zh={zh} active={active}
-                    onIssue={message => setIssue(message)} onExternalChange={onExternalChange} />
+                    onIssue={message => setIssue(message)} onExternalChange={onExternalChange} selectionActions={noteActions}
+                    onSendFile={onSendToAgent ? () => onSendToAgent({ path: officeFile.path }) : undefined} />
                 : <SheetView key={officeFile.key} {...scope} path={officeFile.path} externalId={officeFile.externalId} zh={zh} active={active}
                     comments={commentsHost} onExternalChange={onExternalChange} />}
             </Suspense>
@@ -1246,10 +1284,13 @@ function FileWorkspaceInstance({
               {!embedded && !external && openPaths.length > 1 && <Select className="embedded-file-navigation" value={largeFile.path} aria-label={zh ? "切换文件预览" : "Switch file preview"} onChange={event => choose(event.target.value, "file")}>{openPaths.map(path => <option key={path} value={path}>{path}</option>)}</Select>}
               {!external && <span className="ws-chip">{copy.readOnly}</span>}
               <span className="grow" />
+              {commentAction}
+              {fileSendAction(largeFile.path)}
               <FileBarActions zh={zh} items={[
+                ...noteMenuItems(largeFile.path),
                 { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(largeFile.path) },
                 ...(canOpenWithSystemApp(largeFile.path) ? [{ id: 'file-open-system', label: zh ? '用系统应用打开' : 'Open with system app', onSelect: () => void openWithSystemApp({ ...scope, path: largeFile.path, externalId: largeFile.externalId }, zh, setIssue) }] : []),
-                { id: 'file-reload', label: copy.reload, onSelect: () => open(largeFile.path, 'file', true) },
+                { id: 'file-reload', label: copy.reload, onSelect: () => { void open(largeFile.path, 'file', true); } },
                 ...(!embedded ? [
                   ...(!external ? [{ id: 'file-tools', label: zh ? '文件与 Git' : 'Files & Git', onSelect: () => setToolsOpen(value => !value) }] : []),
                   { id: 'file-close', label: zh ? '关闭当前' : 'Close current', onSelect: () => requestClose('current') },
@@ -1259,8 +1300,10 @@ function FileWorkspaceInstance({
               ]} />
               {embeddedClose()}
             </div>
+            {noteForm}
+            {commentScope && commentsHost && <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />}
             <LargeFileView key={largeFile.key} {...scope} path={largeFile.path} externalId={largeFile.externalId} zh={zh} active={active}
-              onReload={() => void open(largeFile.path, "file", true)} />
+              onReload={() => void open(largeFile.path, "file", true)} selectionActions={noteActions} />
           </>
         ) : document ? (
           <>
@@ -1278,6 +1321,7 @@ function FileWorkspaceInstance({
                 {view === "file" && !external && !image && gitState.status && (!dirty || blameOn) && <button type="button" className="icon-btn icon-btn-sm file-bar-secondary" aria-label={zh ? "逐行追溯" : "Blame"} title={zh ? "显示每行最后修改的提交" : "Show the last commit for each line"} aria-pressed={blameOn} onClick={() => setBlameOn(value => !value)}><WbIcon name="person" /></button>}
                 {historyAction}
                 {pinAction}
+                {commentAction}
                 {sendAction}
                 {!external && !image && (!conflictedFile || dirty) && <span className="file-bar-save-slot">{dirty && !document.readonly && !busy && <button className="btn btn-sm" aria-label={copy.save} title={`${copy.save} (Ctrl+S)`} onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button>}</span>}
                 {view === "file" && !external && !image && conflictedFile && !busy && !dirty && !document.readonly && !stageReason && <ConflictStageAction key={document.path} scope={scope} path={document.path} revision={document.fingerprint} disabled={false} zh={zh} onStaged={() => void refreshGit()} />}
@@ -1286,6 +1330,7 @@ function FileWorkspaceInstance({
                 {embeddedClose()}
               </div>
             )}
+            {view !== "diff" && noteForm}
             {view === "file" && commentScope && commentsHost && !image && <>
               {commentDraft && !dirty && <CommentForm scope={commentScope} path={document.path} version={plainCommentVersion} selection={commentDraft} zh={zh} onCancel={() => setCommentDraft(undefined)} onAdded={() => setCommentDraft(undefined)} />}
               <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />
@@ -1341,7 +1386,7 @@ function FileWorkspaceInstance({
                     onStageHunk={!compare ? () => void applyHunk() : undefined}
                     stageHunkLabel={staged ? (zh ? "取消暂存此块" : "Unstage hunk") : (zh ? "暂存此块" : "Stage hunk")}
                     stageHunkDisabled={busy || dirty || fileNavigation || Boolean(navigationDisabled) || (!staged && Boolean(stageReason))}
-                    selectionActions={{zh,canComment:Boolean(commentScope && commentsHost && !busy && !dirty && !commentDraft),onComment:selection => setCommentDraft(selection),onSend:onSendToAgent ? lines => onSendToAgent({path:document.path,...lines}) : undefined}}
+                    selectionActions={{zh,canComment:Boolean(commentScope && commentsHost && !busy && !dirty && !commentDraft && !noteDraft),onComment:selection => setCommentDraft(selection),onSend:onSendToAgent ? lines => onSendToAgent({path:document.path,...lines}) : undefined}}
                     onSelection={commentScope ? setCommentSelection : undefined}
                     onContextMenu={(menu) => openEditorContextMenu(menu, "diff")}
                     marks={commentScope ? diffCommentMarks : undefined}
@@ -1365,6 +1410,7 @@ function FileWorkspaceInstance({
                 commentsHost={commentsHost}
                 onShowSource={() => setView("file")}
                 onSendToAgent={onSendToAgent ? () => onSendToAgent({ path: document.path }) : undefined}
+                selectionActions={noteActions}
               />
             ) : (
               <>
@@ -1385,7 +1431,7 @@ function FileWorkspaceInstance({
                     blame={blameOn && !dirty ? blame : undefined}
                     onBlameCommit={onOpenHistory ? (commit) => onOpenHistory({ path: document.path, commit }) : undefined}
                     onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines, ...(external ? { selection: selectedExternalText() } : {}) }) : undefined}
-                    selectionActions={{zh,canComment:Boolean(commentScope && commentsHost && !busy && !dirty && !commentDraft),onComment:selection => setCommentDraft({side:"new",...selection}),onSend:onSendToAgent ? lines => onSendToAgent({path:document.path,...lines,...(external ? {selection:selectedExternalText()} : {})}) : undefined}}
+                    selectionActions={{zh,canComment:Boolean(commentScope && commentsHost && !busy && !dirty && !commentDraft && !noteDraft),onComment:selection => setCommentDraft({side:"new",...selection}),onSend:onSendToAgent ? lines => onSendToAgent({path:document.path,...lines,...(external ? {selection:selectedExternalText()} : {})}) : undefined}}
                     onSelection={external || commentScope ? (selection) => { if (commentScope) setCommentSelection({ side: "new", ...selection }); } : undefined}
                     onContextMenu={(menu) => openEditorContextMenu(menu, "file")}
                     marks={commentScope ? plainCommentMarks : undefined}

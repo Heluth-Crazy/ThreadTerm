@@ -36,3 +36,5 @@
 .cm-git-hunk-removed { background: color-mix(in srgb, var(--wb-deleted) 14%, transparent); }
 .cm-git-hunk-added { background: color-mix(in srgb, var(--wb-added) 14%, transparent); }
 .cm-git-hunk-popup button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+/* The selection strip (Comment / Send selection) is placed inside the preview. */
+.file-preview{position:relative}

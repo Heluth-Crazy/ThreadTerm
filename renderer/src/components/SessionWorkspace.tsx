@@ -439,7 +439,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   const sessionRoot=receiver.worktreePath??data.projects.find(candidate=>candidate.id===receiver.projectId)?.path;
   const reference=formatAgentReference({path:referencePath(target.path,fileRoot,sessionRoot),startLine:target.startLine,endLine:target.endLine});
   if(receiver.mode==='chat'){
-   void insertIntoSession(receiver.id,'',undefined,{kind:'file',id:crypto.randomUUID(),path:referencePath(target.path,fileRoot,sessionRoot),startLine:target.startLine,endLine:target.endLine}).then(async()=>{if(target.externalId&&target.selection)await insertIntoSession(receiver.id,'',undefined,externalSelectionQuote(target.path,target.selection,target.startLine,target.endLine,zh));setIssue(undefined);}).catch(error=>setIssue(String(error)));
+   void insertIntoSession(receiver.id,'',undefined,{kind:'file',id:crypto.randomUUID(),path:referencePath(target.path,fileRoot,sessionRoot),startLine:target.startLine,endLine:target.endLine}).then(async()=>{if(target.selection?.trim())await insertIntoSession(receiver.id,'',undefined,externalSelectionQuote(target.path,target.selection,target.startLine,target.endLine,zh));setIssue(undefined);}).catch(error=>setIssue(String(error)));
    return;
   }
   // Show the receiving session first: only a visible Chat composer or terminal accepts input.

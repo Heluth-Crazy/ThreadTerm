@@ -1,9 +1,11 @@
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { browserCommand, openExternal, request } from '../bridge';
+import { browserCommand, deletePageShots, onPageContextMenu, openExternal, request } from '../bridge';
 import { externalDocumentError, externalFileErrorCode } from '../externalFiles';
 import { htmlPreview, onHtmlPreviewLink } from '../htmlPreviewBridge';
 import { useThemeState } from '../themes';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
+import { showContextMenu, type ContextMenuItem } from './ContextMenu';
+import type { TextSelectionHandlers } from './TextSelectionActions';
 import './sandboxed-html-preview.css';
 
 /** R5: a tab hidden this long releases its document grant and frame. */
@@ -12,7 +14,7 @@ const HIDDEN_RELEASE_MS = 5 * 60 * 1000;
 /** Word preview (`design.md` §4.4): a document grant streamed into the sandboxed viewer.
  * No remote-content switch and no page comments; the frame has scripts only and no origin
  * token. The link row is the same explicit proposal the saved-HTML preview uses. */
-export function DocxPreview({ projectId, worktreePath, path, externalId, zh, active, onIssue, onExternalChange }: {
+export function DocxPreview({ projectId, worktreePath, path, externalId, zh, active, onIssue, onExternalChange, selectionActions, onSendFile }: {
   projectId: string;
   worktreePath?: string;
   path: string;
@@ -21,11 +23,30 @@ export function DocxPreview({ projectId, worktreePath, path, externalId, zh, act
   active?: boolean;
   onIssue: (message?: string) => void;
   onExternalChange?: (file: { externalId: string; path: string }) => void;
+  /** Right-click in the document: comment on or send the selected text, or the whole file. */
+  selectionActions?: TextSelectionHandlers;
+  onSendFile?: () => void;
 }) {
   const surface = useContext(SessionSurfaceContext);
   const { theme } = useThemeState();
   const frameName = useRef(`tt-preview-doc-${crypto.randomUUID().replace(/[^a-z0-9]/g, '')}`).current;
   const iframe = useRef<HTMLIFrameElement>(null);
+  const menuActions = useRef({ selectionActions, onSendFile });
+  menuActions.current = { selectionActions, onSendFile };
+  // The desktop's page-frame hook reports a right-click in this frame with its selected text; the element pick and
+  // screenshot it also captures are not used for a document, so the screenshot is dropped at once.
+  useEffect(() => onPageContextMenu(({ frameName: name, x, y, pick, selectionText }) => {
+    if (name !== frameName) return;
+    if (pick?.shot) void deletePageShots([pick.shot.id]).catch(() => undefined);
+    const { selectionActions: handlers, onSendFile: sendFile } = menuActions.current, selected = selectionText.trim() ? selectionText : '';
+    const items: ContextMenuItem[] = [
+      ...(selected && handlers?.canComment ? [{ id: 'docx-comment-selection', label: zh ? '评论选中内容' : 'Comment on selection', onSelect: () => handlers.onComment({ text: selected }) }] : []),
+      ...(selected && handlers?.onSend ? [{ id: 'docx-send-selection', label: zh ? '发送选中内容' : 'Send selection', onSelect: () => handlers.onSend?.({ text: selected }) }] : []),
+      ...(handlers?.canComment ? [{ id: 'docx-comment-file', label: zh ? '评论整个文件' : 'Comment on file', onSelect: () => handlers.onComment({}) }] : []),
+      ...(sendFile ? [{ id: 'docx-send-file', label: zh ? '将文件发送给 Agent' : 'Send file to agent', onSelect: () => sendFile() }] : []),
+    ];
+    if (items.length) showContextMenu({ x, y, items });
+  }), [frameName, zh]);
   const [grant, setGrant] = useState<{ id: string; url: string }>();
   const [pendingLink, setPendingLink] = useState<{ grantId: string; url: string }>();
   const [viewerState, setViewerState] = useState<'loading' | 'ready' | 'error'>('loading');

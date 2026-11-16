@@ -283,6 +283,20 @@ try{
  assert.ok(String(copied??'').replace(/\s+/g,' ').includes(selected.slice(0,40)),'copy puts the selected text on the clipboard');
  check(`text-300 opens from the Explorer in ${text.ms} ms, ${pages} pages, one grant/frame and its own OS process; link proposal, selection and copy work`);
 
+ // Owner 2026-11-15: a right-click in the document offers Comment / Send for the selected text and for the whole file
+ // (the desktop's page-frame hook reports the frame's selection; the document runs no app script for it).
+ const commentSelection=page.getByRole('menuitem',{name:'Comment on selection'});
+ const sectionBox=await textFrame.locator('.docx-wrapper > section.docx').first().boundingBox();
+ assert.ok(sectionBox,'the first page has a box');
+ await page.mouse.click(sectionBox.x+60,sectionBox.y+80,{button:'right'});
+ await commentSelection.waitFor({timeout:15_000});
+ for(const name of ['Send selection','Comment on file','Send file to agent'])await page.getByRole('menuitem',{name}).waitFor();
+ await commentSelection.click();
+ const docForm=visible('.wb-review-comment-form');await docForm.waitFor();
+ assert.match(await docForm.locator('.wb-review-comment-where').innerText(),/text-300\.docx — “.+”$/,'a Word note quotes the selected text');
+ await docForm.getByRole('button',{name:/^(Cancel|取消)$/}).click();await docForm.waitFor({state:'detached'});
+ check('right-click on selected Word text offers Comment / Send for the selection and the whole file; Comment opens a quoted note');
+
  // R20: the system-app action opens only allow-listed files; the QA seam records the path.
  await resetOpenAppRecords();
  await page.evaluate(([projectId,path])=>window.threadterm.openFileDefaultApp({projectId,path}),[projectId,'text-300.docx']);
