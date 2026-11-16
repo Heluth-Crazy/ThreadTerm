@@ -125,6 +125,7 @@ pub fn relocation_blocks(config: &RuntimeConfig, method: &str) -> Result<bool> {
             | "chat.subagent.read"
             | "terminal.read"
             | "session.lookup"
+            | "system.notificationState"
     );
     let key = relocation_key(config)?;
     relocations()

@@ -77,6 +77,8 @@ pub mod review_drafts;
 pub(crate) mod run_detect;
 pub(crate) mod run_repo_config;
 pub mod service;
+/// `system.notificationState`: full-screen and presentation detection for the desktop's task island.
+pub mod notification_state;
 pub mod session_activity;
 pub mod session_configs;
 pub mod session_metrics;

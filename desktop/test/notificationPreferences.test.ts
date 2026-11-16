@@ -33,3 +33,10 @@ test('a Settings test needs consent only, never the kind or focus rules', () => 
   assert.deepEqual(nativeDelivery({ native: true, attention: false }, 'attention', { appFocused: true, test: true }), { deliver: true, silent: true });
   assert.deepEqual(nativeDelivery(undefined, 'attention', { appFocused: true, test: true }), { deliver: false, reason: 'disabled' });
 });
+
+test('while the task island carries session events their toasts stay quiet; a Settings test still shows', () => {
+  const on = { native: true, attention: true, completed: true };
+  assert.deepEqual(nativeDelivery(on, 'attention', { appFocused: false, island: true }), { deliver: false, reason: 'island' });
+  assert.deepEqual(nativeDelivery(on, 'completed', { appFocused: false, island: false }), { deliver: true, silent: true });
+  assert.deepEqual(nativeDelivery(on, 'attention', { appFocused: true, island: true, test: true }), { deliver: true, silent: true });
+});

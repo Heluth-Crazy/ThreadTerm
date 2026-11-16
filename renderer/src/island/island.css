@@ -1,0 +1,161 @@
+/* The island window's own page: everything drawn on the black island (approved prototype, prototypes/task-island).
+   Colours come from island-tokens.css; the app's renderer/src/styles.css is not loaded here, so the bits of it the
+   tiles need are copied below. */
+
+* { box-sizing: border-box; }
+html.task-island-page,
+.task-island-page body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--island-ink);
+  font: 13px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, "Microsoft YaHei UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.task-island-page button { font: inherit; }
+
+/* Where the island lives inside the transparent window: top centre, fading out slowly after it goes. */
+.ti-stage {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 440px;
+  height: 380px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 40;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .25s ease .5s, visibility 0s linear .75s;
+}
+.ti-stage.is-on { opacity: 1; visibility: visible; transition: opacity .12s ease, visibility 0s; }
+.ti-stage [data-islandcn-hit] { cursor: pointer; }
+
+/* Agent tiles on the island are always on black, so their edge and shadow come from black, not the theme. */
+.ti-stage {
+  --tile-edge: color-mix(in srgb, var(--island-black) 45%, transparent);
+  --tile-drop: color-mix(in srgb, var(--island-black) 50%, transparent);
+  --shell-a: var(--island-shell-a);
+  --shell-b: var(--island-shell-b);
+  --shell-ink: var(--island-shell-ink);
+}
+
+.ti-tile { position: relative; display: inline-grid; place-items: center; width: var(--ts); height: var(--ts); flex: none; }
+.ti-tile .agent-tile { width: var(--ts); height: var(--ts); }
+.ti-ring { position: absolute; inset: -3px; border: 2px solid transparent; border-top-color: var(--island-running); border-right-color: var(--island-running); border-radius: 50%; animation: ti-spin 1.2s linear infinite; }
+.ti-tile-lg .ti-ring { inset: -4px; border-width: 2.5px; }
+@keyframes ti-spin { to { transform: rotate(360deg); } }
+.ti-badge { position: absolute; top: -3px; right: -3px; width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 2px var(--island-black); display: grid; place-items: center; }
+.ti-tile-lg .ti-badge { top: -4px; right: -4px; width: 16px; height: 16px; box-shadow: 0 0 0 2.5px var(--island-black); }
+.ti-badge-needs { background: var(--island-needs); }
+.ti-badge-done { background: var(--island-running); }
+.ti-badge-failed { background: var(--island-failed-badge); }
+.ti-badge .ti-glyph { width: 11px; height: 11px; stroke: var(--island-black); stroke-width: 3.2; display: none; }
+.ti-tile-lg .ti-badge .ti-glyph { display: block; }
+.ti-glyph { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+.ti-lead { display: inline-flex; align-items: center; gap: 8px; height: 22px; max-width: 168px; }
+.ti-label { color: var(--island-ink); font-size: 13px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ti-time { color: color-mix(in srgb, var(--island-ink) 62%, transparent); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; letter-spacing: -.01em; }
+.ti-needs { color: var(--island-needs); }
+.ti-done { color: var(--island-running); }
+.ti-failed { color: var(--island-failed); }
+.ti-mark { display: inline-grid; place-items: center; width: 20px; height: 20px; }
+.ti-mark .ti-glyph { width: 18px; height: 18px; stroke-width: 2.8; }
+.ti-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: color-mix(in srgb, var(--island-running) 20%, transparent); color: var(--island-running); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ti-bars { display: inline-flex; align-items: center; gap: 2.5px; height: 20px; padding: 0 2px; }
+.ti-bars i { width: 3px; height: 14px; border-radius: 2px; background: var(--island-running); transform-origin: 50% 50%; animation: ti-bar 1.1s ease-in-out infinite; }
+.ti-bars i:nth-child(2) { animation-delay: -.35s; }
+.ti-bars i:nth-child(3) { animation-delay: -.7s; }
+@keyframes ti-bar { 0%, 100% { transform: scaleY(.38); } 50% { transform: scaleY(1); } }
+.ti-stack { display: inline-flex; align-items: center; }
+.ti-stack-item { display: inline-flex; border-radius: 6.5px; box-shadow: 0 0 0 1.5px var(--island-black); }
+.ti-stack-item + .ti-stack-item { margin-left: -5px; }
+
+/* Expanded */
+.ti-head { display: inline-flex; align-items: center; gap: 12px; min-height: 40px; min-width: 0; }
+.ti-head-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow: hidden; }
+.ti-h1 { color: var(--island-ink); font-size: 15px; font-weight: 650; letter-spacing: -.015em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ti-h2 { color: color-mix(in srgb, var(--island-ink) 58%, transparent); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 230px; }
+.ti-card-body { display: flex; flex-direction: column; gap: 10px; width: 100%; padding-top: 2px; }
+.ti-detail { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px; border-radius: 12px; background: color-mix(in srgb, var(--island-ink) 9%, transparent); color: color-mix(in srgb, var(--island-ink) 88%, transparent); font-size: 12.5px; min-width: 0; }
+.ti-detail code { font: 12px/1.35 "Cascadia Mono", Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ti-detail-k { color: color-mix(in srgb, var(--island-ink) 50%, transparent); flex: none; }
+.ti-detail-q { font-size: 13px; }
+.ti-more { align-self: flex-start; display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: var(--island-needs); font-size: 12.5px; cursor: pointer; }
+.ti-more .ti-glyph { width: 12px; height: 12px; }
+.ti-actions { display: flex; gap: 8px; }
+.ti-btn { flex: 1; height: 34px; border: 0; border-radius: 17px; padding: 0 16px; background: color-mix(in srgb, var(--island-ink) 15%, transparent); color: var(--island-ink); font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.ti-btn:hover { background: color-mix(in srgb, var(--island-ink) 22%, transparent); }
+.ti-btn-needs { background: var(--island-needs); color: var(--island-needs-ink); }
+.ti-btn-needs:hover { background: var(--island-needs-hover); }
+.ti-btn-light { flex: none; height: 30px; padding: 0 14px; background: color-mix(in srgb, var(--island-ink) 15%, transparent); }
+.ti-summary { display: block; color: color-mix(in srgb, var(--island-ink) 80%, transparent); font-size: 13px; line-height: 1.45; padding: 0 2px 2px; }
+.ti-list-head { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding-left: 4px; }
+.ti-list-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: color-mix(in srgb, var(--island-running) 20%, transparent); color: var(--island-running); font-size: 12px; font-weight: 700; display: inline-grid; place-items: center; }
+.ti-link { height: 28px; border: 0; background: none; color: color-mix(in srgb, var(--island-ink) 62%, transparent); font-size: 12.5px; cursor: pointer; padding: 0 4px; white-space: nowrap; }
+.ti-link:hover { color: var(--island-ink); }
+.ti-list { display: flex; flex-direction: column; gap: 2px; width: 100%; }
+.ti-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 7px 8px; border: 0; border-radius: 14px; background: none; color: var(--island-ink); text-align: left; cursor: pointer; }
+.ti-row:hover { background: color-mix(in srgb, var(--island-ink) 9%, transparent); }
+.ti-row-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ti-row-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ti-row-meta { font-size: 11.5px; color: color-mix(in srgb, var(--island-ink) 52%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ti-row > .ti-glyph { color: color-mix(in srgb, var(--island-ink) 35%, transparent); width: 14px; height: 14px; }
+@media (prefers-reduced-motion: reduce) { .ti-ring, .ti-bars i { animation: none; } }
+
+/* The app's AgentTile (renderer/src/styles.css), scoped: this page does not load that sheet. */
+.task-island-page .agent-tile {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--s, 16px);
+  height: var(--s, 16px);
+  border-radius: calc(var(--s, 16px) * 0.27);
+  background: var(--tile-bg);
+  color: var(--shell-ink);
+  box-shadow:
+    inset 0 0 0 1px var(--tile-edge),
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
+    0 1px 2px var(--tile-drop);
+  vertical-align: -2px;
+}
+.task-island-page .agent-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, white 26%, transparent),
+    color-mix(in srgb, white 4%, transparent) 48%,
+    color-mix(in srgb, black 6%, transparent)
+  );
+}
+.task-island-page .agent-tile svg,
+.task-island-page .agent-tile img {
+  position: relative;
+  width: 72%;
+  height: 72%;
+  display: block;
+  filter: drop-shadow(0 0.5px 0.6px color-mix(in srgb, black 22%, transparent));
+}
+.task-island-page .agent-tile-shell { --tile-bg: linear-gradient(180deg, var(--shell-a), var(--shell-b)); }
+.task-island-page .agent-tile-shell::after { opacity: 0.6; }
+.task-island-page .agent-tile-shell svg,
+.task-island-page .agent-tile-gemini-mark svg { filter: none; }
+.task-island-page .agent-tile-codex-mark svg { width: 84%; height: 84%; }
+.task-island-page .agent-tile-opencode-mark svg { width: 56%; height: 56%; }
+@keyframes agent-tile-pop {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+.task-island-page .agent-tile-pop { animation: agent-tile-pop 280ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .task-island-page .agent-tile-pop { animation: none; }
+}

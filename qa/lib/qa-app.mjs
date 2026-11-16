@@ -10,9 +10,10 @@ import { build as viteBuild } from 'vite';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // desktop/src/main.ts loads each of these from its own directory (join(__dirname, …)), so all of them are built
-// here. The sheet reader is the utility process main mode forks; it is ThreadTerm.exe and opens no files.
+// here. The sheet reader is the utility process main mode forks; it is ThreadTerm.exe and opens no files. The island
+// preload is the task island window's only bridge (desktop/src/taskIsland.ts).
 const mainBundles = [
-  ['main', 'main'], ['preload', 'preload'], ['htmlPreviewSandboxPreload', 'htmlPreviewSandboxPreload'],
+  ['main', 'main'], ['preload', 'preload'], ['islandPreload', 'islandPreload'], ['htmlPreviewSandboxPreload', 'htmlPreviewSandboxPreload'],
   ['local-files/sheet-reader', 'sheet-reader'],
 ];
 

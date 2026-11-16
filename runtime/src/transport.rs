@@ -289,6 +289,7 @@ fn request_lane(method: &str) -> Lane {
         "group.prerequisites"
         | "terminal.read"
         | "runtime.resourceSample"
+        | "system.notificationState"
         | "project.catalog.list"
         | "quickLaunch.detect"
         | "quickLaunch.port.read"

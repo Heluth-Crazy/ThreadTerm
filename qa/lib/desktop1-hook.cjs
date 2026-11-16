@@ -8,6 +8,17 @@ if (process.type === 'browser' && process.env.TT_QA_VDESK) {
   const { execFileSync } = require('node:child_process');
   const desktop = process.env.TT_QA_DESKTOP_INDEX || '0';
   const placed = new WeakSet();
+  const OFF = 20000;
+  const offDisplay = window => {
+    const setBounds = window.setBounds.bind(window), getBounds = window.getBounds.bind(window);
+    const setPosition = window.setPosition.bind(window), getPosition = window.getPosition.bind(window);
+    window.setBounds = (bounds, animate) => setBounds({ ...bounds, ...(bounds.x === undefined ? {} : { x: bounds.x + OFF }), ...(bounds.y === undefined ? {} : { y: bounds.y + OFF }) }, animate);
+    window.getBounds = () => { const bounds = getBounds(); return { ...bounds, x: bounds.x - OFF, y: bounds.y - OFF }; };
+    window.setPosition = (x, y, animate) => setPosition(x + OFF, y + OFF, animate);
+    window.getPosition = () => { const [x, y] = getPosition(); return [x - OFF, y - OFF]; };
+    const [x, y] = getPosition();
+    setPosition(x + OFF, y + OFF);
+  };
   const place = (window, showInactive) => {
     if (placed.has(window) || window.isDestroyed()) return;
     placed.add(window);
@@ -18,7 +29,17 @@ if (process.type === 'browser' && process.env.TT_QA_VDESK) {
     try {
       execFileSync(process.env.TT_QA_VDESK, ['move', hwnd, desktop], { timeout: 10000, windowsHide: true, stdio: 'pipe' });
     } catch (error) {
-      console.error(`[desktop1] could not move the window to desktop ${Number(desktop) + 1}: ${String(error.stderr || error.message).trim()}`);
+      const stderr = String(error?.stderr || error?.message || '');
+      // A window with no shell view (WS_EX_TOOLWINDOW / WS_EX_NOACTIVATE — the task island) cannot be moved to a
+      // virtual desktop at all. Keep it off every display instead, for good: the app places such a window again each
+      // time it shows it, so every position it sets is shifted off screen and read back unshifted. It still renders
+      // for page screenshots, and the user never sees it or gets the desktop switched under them.
+      if (/no shell view/.test(stderr)) {
+        offDisplay(window);
+        window.setOpacity(1);
+        return;
+      }
+      console.error(`[desktop1] could not move the window to desktop ${Number(desktop) + 1}: ${stderr.trim()}`);
       window.hide();
       app.exit(97);
       return;

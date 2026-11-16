@@ -4358,6 +4358,28 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"system.notificationState\">": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "notPresent",
+            "busy",
+            "fullscreen",
+            "presentation",
+            "available",
+            "quietTime",
+            "app",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"runtime.resourceSample\">": {
       "anyOf": [
         {
@@ -13458,6 +13480,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22runtime.health%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "system.notificationState"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22system.notificationState%22%3E"
         }
       },
       "required": [

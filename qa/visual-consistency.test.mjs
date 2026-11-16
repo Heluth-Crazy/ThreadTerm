@@ -216,7 +216,7 @@ test('tokenLintDiff ignores removed and context lines', () => {
 });
 
 // Palette sources may declare literal colours as custom properties; every rule that draws still uses var(--…).
-const TOKEN_FILES = new Set(['reference/prototype/styles.css', 'renderer/src/styles.css', 'renderer/src/viz-tokens.css']);
+const TOKEN_FILES = new Set(['reference/prototype/styles.css', 'renderer/src/styles.css', 'renderer/src/viz-tokens.css', 'renderer/src/island/island-tokens.css']);
 const tokenDeclaration = content => /^--[\w-]+\s*:/.test(content) || /^(?:--[\w-]+\s*:[^;]*;\s*)+$/.test(content);
 
 test('this task adds no new colour literals to CSS', () => {
