@@ -40,6 +40,7 @@ import { BACKGROUND_IMAGE_PRIVILEGED_SCHEME, backgroundImagesFolder, installBack
 import { buildThemeExport, importThemePackImages, qaThemeExportOverride } from './themePackCore.js';
 import { appCspForHtml, buildAppCsp } from './appCsp.js';
 import { MachineTreeStore, type WatchNotice } from './machineWatcher.js';
+import { TaskIsland } from './taskIsland.js';
 import { MachineRegistry } from './machines.js';
 import { MachineBindings, MachineViews } from './machineViews.js';
 import { createAppSessionPreparer } from './appSession.js';
@@ -111,7 +112,7 @@ if (process.env.THREADTERM_V3_USER_DATA) app.setPath('userData', process.env.THR
 if (!app.isPackaged && process.env.THREADTERM_V3_USER_DATA && process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS) app.setPath('downloads', process.env.THREADTERM_V3_BROWSER_QA_DOWNLOADS);
 app.on('window-all-closed', () => undefined);
 app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); void requestQuit(); } });
-app.on('will-quit', () => { machineBrowsers?.close(); machineTree.stop(); adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
+app.on('will-quit', () => { taskIsland?.dispose(); machineBrowsers?.close(); machineTree.stop(); adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
 
 void app.whenReady().then(async () => {
   htmlPreviewPreloadReady = prepareAppSession(session.defaultSession);
@@ -122,6 +123,7 @@ void app.whenReady().then(async () => {
   // the runtime's settings, so it runs alongside instead of keeping the window back until the runtime answers.
   mainWindow = createWindow();
   createTray();
+  startTaskIsland();
   void refreshDesktopPreferences();
   await runScheduledElectronCacheCleanup();
 });
@@ -313,6 +315,41 @@ function createTray(): void {
   tray.on('click', () => showMainWindow());
 }
 
+/** A notification or the task island brings ThreadTerm forward on a session, on whichever computer it runs. */
+function openSessionFromDesktop(machineId: string | undefined, sessionId: string | undefined): void {
+  const remote = machineId !== undefined && machineId !== 'local';
+  if (remote) {
+    // A removed computer, or one hidden by the gate, cannot be reopened by an old notification.
+    if (remoteMachinesEnabled && machines.list().some(item => item.id === machineId)) showMachine(mainWindow, machineId, sessionId);
+    else showMainWindow();
+  } else if (sessionId && remoteMachinesEnabled) showMachine(mainWindow, 'local', sessionId);
+  else if (sessionId) routeMainWindow({ sessionId });
+  else showMainWindow();
+}
+
+let taskIsland: TaskIsland | undefined;
+function startTaskIsland(): void {
+  taskIsland = new TaskIsland({
+    tree: machineTree,
+    mainWindow: () => mainWindow,
+    appFocused: () => {
+      const focused = BrowserWindow.getFocusedWindow();
+      return !!focused && focused.isVisible() && !focused.isMinimized();
+    },
+    openSession: openSessionFromDesktop,
+    openApp: showMainWindow,
+    notificationState: () => adminRuntime.request('system.notificationState', {}),
+    load: async window => {
+      const devUrl = process.env.THREADTERM_V3_DEV_SERVER_URL;
+      if (devUrl) await window.loadURL(new URL('island.html', devUrl.endsWith('/') ? devUrl : `${devUrl}/`).toString());
+      else await window.loadFile(join(__dirname, 'renderer', 'island.html'));
+    },
+    preload: join(__dirname, 'islandPreload.cjs'),
+    configPath: join(app.getPath('userData'), 'task-island.json'),
+  });
+  taskIsland.start();
+}
+
 function showMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
   mainWindow.show();
@@ -339,6 +376,7 @@ async function refreshDesktopPreferences(): Promise<{ shortcuts: Record<string, 
 function isTerminalCompletion(value: unknown): value is { sessionId: string; status: string } { return !!value && typeof value === 'object' && typeof (value as Record<string, unknown>).sessionId === 'string' && ['exited', 'error', 'interrupted'].includes(String((value as Record<string, unknown>).status)); }
 async function notifyMachineEvent(source: WatchNotice): Promise<void> {
   if (stoppingRuntime) return;
+  taskIsland?.notice(source);
   if (source.event.event === 'session.status') await notifyTerminalCompletion(source.event, source);
   else if (source.event.event === 'inbox.created' && isInboxNotification(source.event.data)) await presentInboxNotification(source.event.data, source);
 }
@@ -386,22 +424,13 @@ async function notifyNative(kind: NotificationKind, copy: (locale: NotificationL
     const focused = BrowserWindow.getFocusedWindow();
     const viewedMachineId = focused ? machineViews.get(focused.id)?.currentId
       ?? (machineRenderers.has(focused.webContents.id) ? machineBindings.get(focused.webContents.id).machineId : 'local') : undefined;
-    const delivery = nativeDelivery(settings.notifications, kind, { appFocused: machineNotificationFocused(options.machineId, viewedMachineId, !!focused && focused.isVisible() && !focused.isMinimized()), test: options.test });
+    const delivery = nativeDelivery(settings.notifications, kind, { appFocused: machineNotificationFocused(options.machineId, viewedMachineId, !!focused && focused.isVisible() && !focused.isMinimized()), test: options.test, island: taskIsland?.handlesToasts() === true });
     if (!delivery.deliver) return { sent: false, reason: delivery.reason === 'disabled' ? (zh ? '请先开启“允许系统通知”。' : 'Turn on "Allow system notifications" first.') : delivery.reason };
     const text = options.machineName ? machineNotificationCopy(options.machineName, copy(locale)) : copy(locale);
     const notification = new Notification({ ...text, silent: delivery.silent });
     recentNotifications.push(notification);
     if (recentNotifications.length > 20) recentNotifications.shift();
-    notification.on('click', () => {
-      const remote = options.machineId !== undefined && options.machineId !== 'local';
-      if (remote) {
-        // A removed computer, or one hidden by the gate, cannot be reopened by an old notification.
-        if (remoteMachinesEnabled && machines.list().some(item => item.id === options.machineId)) showMachine(mainWindow, options.machineId!, options.sessionId);
-        else showMainWindow();
-      } else if (options.sessionId && remoteMachinesEnabled) showMachine(mainWindow, 'local', options.sessionId);
-      else if (options.sessionId) routeMainWindow({ sessionId: options.sessionId });
-      else showMainWindow();
-    });
+    notification.on('click', () => openSessionFromDesktop(options.machineId, options.sessionId));
     const shown = new Promise<{ sent: boolean; reason?: string }>((resolvePromise) => {
       const timer = setTimeout(() => resolvePromise({ sent: true }), 4000);
       notification.once('show', () => { clearTimeout(timer); resolvePromise({ sent: true }); });

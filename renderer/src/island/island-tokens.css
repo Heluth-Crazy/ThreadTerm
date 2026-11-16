@@ -1,0 +1,18 @@
+/* Task island palette (token file: qa/visual-consistency.test.mjs). The island is always black, so it uses the app's
+   dark status colours whatever the theme. */
+.task-island-page {
+  --island-ink: #ffffff;
+  --island-running: #30d158;
+  --island-needs: #ff9f0a;
+  --island-needs-hover: #ffb340;
+  --island-needs-ink: #241500;
+  --island-failed: #ff6961;
+  /* A small failed badge reads better a touch stronger than the failed text colour. */
+  --island-failed-badge: #ff453a;
+  --island-black: #000000;
+  --island-hint: #1c1c1e;
+  /* The neutral shell an agent tile falls back to on the black island. */
+  --island-shell-a: #3a3a3c;
+  --island-shell-b: #2c2c2e;
+  --island-shell-ink: #aeaeb2;
+}

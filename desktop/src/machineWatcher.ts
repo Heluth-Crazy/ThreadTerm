@@ -1,4 +1,4 @@
-import { isRecord, type CatalogVisibility, type InboxItem, type Project, type RuntimeEvent, type Session, type Settings, type Snapshot, type Worktree } from '@threadterm/protocol';
+import { isRecord, type CatalogVisibility, type InboxItem, type Method, type Project, type RequestParams, type RequestResult, type RuntimeEvent, type Session, type Settings, type Snapshot, type Worktree } from '@threadterm/protocol';
 import type { MachineInfo, MachineTree, MachineTreeFeed, MachineTreeSession } from '../../renderer/src/machineTypes.js';
 import type { RuntimeClient } from './runtime-client.js';
 
@@ -35,6 +35,8 @@ export class MachineWatcher {
     this.unsubscribe = client.onEvent(event => this.receive(event));
   }
   start(): void { void this.reconcile(); }
+  /** A read on this computer's runtime (the task island reads a pending approval or a finished answer). */
+  readonly request = <M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> => this.client.request(method, params);
   stop(): void {
     this.stopped = true; this.generation++; this.unsubscribe(); this.buffered = [];
     if (this.ownsClient) this.client.dispose();
@@ -165,6 +167,8 @@ export class MachineTreeStore {
   private readonly expanded: Record<string, boolean> = {};
   private timer?: ReturnType<typeof setTimeout>;
   private lastPublished = '';
+  /** Told after each debounced change whether or not the feed is published (the task island watches every computer). */
+  private readonly observers = new Set<() => void>();
   /** `active` false (the gate is off): watchers keep notifying, but no feed is built or sent. */
   constructor(private readonly publish: (feed: MachineTreeFeed) => void,
     private readonly notify: (notice: WatchNotice) => void, private readonly debounceMs = 250,
@@ -173,6 +177,7 @@ export class MachineTreeStore {
     if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
+      for (const observer of this.observers) observer();
       if (!this.active()) return;
       const feed = this.feed(), serialized = JSON.stringify(feed);
       if (serialized !== this.lastPublished) { this.lastPublished = serialized; this.publish(feed); }
@@ -190,6 +195,11 @@ export class MachineTreeStore {
   remove(id: string): void { this.watchers.get(id)?.stop(); this.watchers.delete(id); this.changed(); }
   retain(ids: Set<string>): void { for (const id of this.watchers.keys()) if (!ids.has(id)) this.remove(id); }
   expand(key: string, value: boolean): void { this.expanded[key] = value; this.changed(); }
+  observe(observer: () => void): () => void { this.observers.add(observer); return () => { this.observers.delete(observer); }; }
+  /** Every computer's visible tree with its full session rows, providers and a reader. */
+  entries(): { tree: MachineTree; sessions: readonly Session[]; providers: Snapshot['providers']; request: MachineWatcher['request'] }[] {
+    return [...this.watchers.values()].map(watcher => ({ tree: watcher.tree(), sessions: watcher.state.sessions, providers: watcher.state.providers, request: watcher.request }));
+  }
   feed(): MachineTreeFeed { return { machines: [...this.watchers.values()].map(watcher => watcher.tree()), expanded: { ...this.expanded } }; }
   stop(): void { for (const watcher of this.watchers.values()) watcher.stop(); this.watchers.clear(); clearTimeout(this.timer); this.timer = undefined; }
 }

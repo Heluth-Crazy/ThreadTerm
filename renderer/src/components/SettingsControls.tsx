@@ -77,6 +77,12 @@ export function SettingsControls({ settings, zh, update, counts }: { settings: S
     <button className="btn" disabled={busy} onClick={() => run(async () => { const result = await testNotification(); setTestReceipt(result.sent ? text("测试通知已发送。没有看到的话，请在 Windows 设置 → 系统 → 通知 中允许 ThreadTerm。", "Test notification sent. If it didn't appear, allow ThreadTerm in Windows Settings → System → Notifications.") : `${text("测试未发送", "Test not sent")}: ${result.reason ?? text("通知已关闭", "notifications are off")}`); })}>{text("发送测试通知", "Send test notification")}</button>
     {testReceipt && <p className="hint" role="status">{testReceipt}</p>}
     </section>
+    <section className="settings-card settings-section" aria-label={text("任务岛", "Task island")}>
+    <h4>{text("任务岛", "Task island")}</h4>
+    <p>{text("ThreadTerm 在后台时，在屏幕顶部显示运行中和需要你处理的任务。", "While ThreadTerm is in the background, the top of the screen shows what is running and what needs you.")}</p>
+    {([['island', text('任务岛', 'Task island'), note.island !== false, false], ['islandAlert', text('需要你处理时展开提醒', 'Expand when something needs you'), note.islandAlert !== false, false], ['islandToasts', text('任务岛显示时也弹出系统通知', 'Also show system notifications while the island is on'), note.islandToasts === true, note.native !== true], ['taskbarBadge', text('任务栏图标显示运行和待处理状态', 'Show running and needs-you on the taskbar icon'), note.taskbarBadge !== false, false]] as const).map(([key, label, checked, needsNative]) => <SettingsSwitch key={key} disabled={busy || needsNative} checked={checked} onChange={value => save({ notifications: { ...note, [key]: value } })}>{label}</SettingsSwitch>)}
+    {settings.lightweightMode === true && <p className="hint">{text("轻量模式下不显示任务岛。", "Lightweight mode turns the island off.")}</p>}
+    </section>
     <section className="settings-card settings-section" aria-label={text("轻量模式", "Lightweight mode")}>
     <SettingsSwitch disabled={busy} checked={settings.lightweightMode === true} onChange={value => run(async () => { await update({ lightweightMode: value }); await desktopPreferences(); })}>{text("轻量模式", "Lightweight mode")}</SettingsSwitch>
     <p className="hint">{settings.lightweightMode === true ? text("轻量模式已启用：独立浮窗不可用，热键将在主窗口打开会话。", "Lightweight mode opens the session in the main window instead of a floating window.") : text("浮窗热键", "Floating window hotkey")} <kbd>{displayKey(keys.floatLastSession)}</kbd></p>

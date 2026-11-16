@@ -973,6 +973,8 @@ export interface RequestMap {
 
  'runtime.events.filter': [{preset:'tree'},{preset:'tree';tree:{worktrees:Worktree[];visibility?:CatalogVisibility[]}}];
  'runtime.health': [{},{version:string;epoch:string;contract:number}];
+ /** Whether Windows would show a notification now: `busy`/`fullscreen`/`presentation` mean a full-screen app, game or presentation runs. `unknown` off Windows. Local only; the task island hides on those. */
+ 'system.notificationState': [{},{state:'notPresent'|'busy'|'fullscreen'|'presentation'|'available'|'quietTime'|'app'|'unknown'}];
  'runtime.resourceSample': [{},Array<{pid:number;started:string;cpuSeconds:number;memoryBytes:number}> | null];
  /** Which console host Windows terminals run on: the in-box ConPTY or ThreadTerm's bundled OpenConsole. */
  'terminal.host': [{},{conptyHost:'system'|'bundled';bundledAvailable:boolean;pwshAvailable?:boolean}];
@@ -1315,6 +1317,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'session.releaseResources.bulk',
  'session.releaseIdle','session.processes',
  'runtime.resourceSample',
+ 'system.notificationState',
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {

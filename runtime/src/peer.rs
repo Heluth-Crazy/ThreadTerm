@@ -34,6 +34,8 @@ pub(crate) const DENIED_METHODS: &[&str] = &[
     "device.revoke",
     "runtime.shutdown",
     "runtime.resourceSample",
+    // This PC's full-screen state is for its own desktop only.
+    "system.notificationState",
     "data.status",
     "data.backup",
     "data.backup.verify",

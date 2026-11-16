@@ -25,5 +25,7 @@ export default defineConfig({
   build: {
     outDir: resolve(import.meta.dirname, 'desktop-dist/renderer'),
     emptyOutDir: true,
+    // island.html: the task island's own window (desktop/src/taskIsland.ts).
+    rollupOptions: { input: { main: resolve(import.meta.dirname, 'renderer/index.html'), island: resolve(import.meta.dirname, 'renderer/island.html') } },
   },
 });

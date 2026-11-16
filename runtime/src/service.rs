@@ -1967,6 +1967,8 @@ impl RuntimeService {
                     json!({"version":RUNTIME_VERSION,"epoch":self.db.epoch()?,"contract":crate::PROTOCOL_CONTRACT}),
                 ),
                 "runtime.resourceSample" => self.resource_sample(),
+                // Read-only: whether Windows would show a notification now (a full-screen app or presentation says no).
+                "system.notificationState" => Ok(json!({"state": crate::notification_state::notification_state()})),
                 // The console host actually in use (conpty.rs), so xterm's Windows heuristics match it.
                 "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str(), "bundledAvailable": crate::conpty::bundled_available(), "pwshAvailable": crate::providers::common::find_executable("pwsh.exe").is_some()})),
                 "runtime.snapshot" => {
