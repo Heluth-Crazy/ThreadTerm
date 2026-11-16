@@ -129,13 +129,15 @@ try {
   const ring=page.locator('.session-attention-ring').first();
   const ringFrames=await ring.evaluate(el=>el.getAnimations().flatMap(animation=>animation.effect.getKeyframes()));
   assert.ok(ringFrames.some(frame=>String(frame.transform).includes('rotate')),'progress ring must rotate');
+  // Mac sidebar (mac-style S2): the amber strip and bell fold into the row's status dot at its right end (the prototype's
+  // .status-dot); a running session keeps main's rotating green ring, centred on its Agent icon (owner 2026-11-15).
   const attentionRow=page.locator('.sess-row-wrap[data-session-id="Approval newest"]');
-  const barBox=await attentionRow.locator('.session-attention-bar').boundingBox();
-  const iconBox=await attentionRow.locator('.bico').boundingBox();
-  assert.ok(barBox&&iconBox&&barBox.x+barBox.width<iconBox.x,'attention strip must sit left of the Agent icon');
-  const rowBox=await attentionRow.boundingBox(),bellBox=await attentionRow.locator('.session-attention-icon').boundingBox();
-  assert.ok(rowBox&&bellBox&&bellBox.y>=rowBox.y&&bellBox.y+bellBox.height<=rowBox.y+rowBox.height,'static attention icon must remain inside its own row');
-  report.checks.push('rotating ring and attention strip on the left of retained Agent icon');
+  const rowBox=await attentionRow.locator('.sess-row').boundingBox(),dotBox=await attentionRow.locator('.bico-dot').boundingBox(),iconBox=await attentionRow.locator('.session-agent-icon').boundingBox();
+  assert.ok(rowBox&&dotBox&&iconBox,'attention row, status dot and Agent icon have boxes');
+  assert.ok(dotBox.x>iconBox.x+iconBox.width+40&&dotBox.x+dotBox.width<=rowBox.x+rowBox.width&&dotBox.y>=rowBox.y&&dotBox.y+dotBox.height<=rowBox.y+rowBox.height,`needs-you dot sits at the row's right end, clear of the icon ${JSON.stringify({rowBox,dotBox,iconBox})}`);
+  const ringCentre=await page.locator('.sess-row-wrap[data-session-id="Running newer"]').evaluate(row=>{const icon=row.querySelector('.session-agent-icon').getBoundingClientRect(),ring=row.querySelector('.session-attention-ring').getBoundingClientRect();return{dx:Math.abs(ring.x+ring.width/2-icon.x-icon.width/2),dy:Math.abs(ring.y+ring.height/2-icon.y-icon.height/2),color:getComputedStyle(row.querySelector('.session-attention-ring')).borderTopColor,running:getComputedStyle(document.documentElement).getPropertyValue('--st-running').trim()};});
+  assert.ok(ringCentre.dx<0.5&&ringCentre.dy<0.5,`running ring is centred on the Agent icon ${JSON.stringify(ringCentre)}`);
+  report.checks.push('rotating green ring centred on the Agent icon; needs-you dot at the row end, clear of the icon');
   await page.emulateMedia({reducedMotion:'reduce'});
   await page.waitForTimeout(100);
   const animatedAfter=await page.locator('.project-catalog').evaluate(el=>el.getAnimations({subtree:true}).filter(a=>a.playState==='running').length);

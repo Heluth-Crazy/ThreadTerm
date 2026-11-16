@@ -58,7 +58,9 @@
 .project-catalog .tree-row { padding-left: 30px; }
 .project-catalog .sess-row { position: relative; padding-left: 30px; }
 .project-catalog .sess-row-wrap.is-delegate { padding-left: 14px; }
-.project-catalog .sess-row .bico { flex: 0 0 20px; width: 20px; min-width: 20px; gap: 0; }
+/* Static: the prototype sheet's .bico is position:relative, which pinned the row's status dot (right:9px, top:10px) to
+   the icon's lower left instead of the row's right end. The running ring stays in .session-agent-icon. */
+.project-catalog .sess-row .bico { flex: 0 0 20px; width: 20px; min-width: 20px; gap: 0; position: static; }
 .project-catalog .sess-row .session-agent-icon { width: 16px; height: 16px; }
 .project-catalog .sess-row .session-agent-icon [data-agent-tile] { width: 16px !important; height: 16px !important; }
 .project-catalog .sess-row .bico-dot { position: absolute; right: 9px; top: 10px; width: 7px; height: 7px; }
@@ -66,21 +68,11 @@
 .project-catalog .sess-row .bico-dot.st-ended,
 .project-catalog .sess-row .bico-dot.st-stalled,
 .project-catalog .sess-row .bico-dot.st-running { display: none; }
-.project-catalog .sess-row .session-attention-ring,
 .project-catalog .sess-row .session-attention-icon,
 .project-catalog .session-attention-bar { display: none; }
-.project-catalog .sess-row .session-activity-running::after {
-  content: "";
-  position: absolute;
-  right: 7px;
-  top: 8px;
-  width: 12px;
-  height: 12px;
-  border: 1.6px solid color-mix(in srgb, var(--muted) 30%, transparent);
-  border-top-color: var(--muted);
-  border-radius: 50%;
-  animation: mac-sidebar-spin .9s linear infinite;
-}
+/* A running session keeps main's spinning green arc around its agent icon (project-catalog.css,
+   .session-attention-ring). Owner 2026-11-15: the grey spinner that replaced it sat on the icon's lower left, because
+   the prototype's .bico is position:relative, and the green effect must not be lost. */
 .project-catalog .sess-row .session-activity-running .bico-dot { display: none; }
 .project-catalog .sess-row .grow,
 .project-catalog .proj-row .grow,
@@ -111,8 +103,6 @@
 .machine-rows .machine-more:hover,
 .project-catalog .row-more:hover,
 .project-catalog .tree-new:hover { background: var(--fill-selected); color: var(--text); }
-@keyframes mac-sidebar-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .project-catalog .sess-row .session-activity-running::after { animation: none; } }
 
 .project-catalog .side-label, .machine-rows .machine-add { width:calc(100% - 20px); }
 .machine-rows .machine-dot { border-radius:50%; }
