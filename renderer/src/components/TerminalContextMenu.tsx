@@ -7,6 +7,9 @@ import { sendContextToAgent } from './ContextSendAction';
 import { showContextMenu } from './ContextMenu';
 import { request } from '../bridge';
 import { terminalContextMenuItems } from '../terminalContextMenuItems';
+import { fileLocationMenuItem } from '../fileLocation';
+import { referenceLocationTarget, selectedTerminalFileReference } from '../referenceLocation';
+import { terminalFileReferenceAtCell } from './terminalFileLinks';
 
 /** Keeps terminal pointer handling out of TerminalSurface, whose xterm lifecycle must stay isolated. */
 export function useTerminalContextMenu(host: RefObject<HTMLElement | null>, terminal: RefObject<Terminal | undefined>, session: Session | undefined, zh: boolean): void {
@@ -22,7 +25,18 @@ export function useTerminalContextMenu(host: RefObject<HTMLElement | null>, term
       event.preventDefault();
       const selection = terminal.current?.getSelection() ?? '';
       const copy = (en: string, cn: string) => zh ? cn : en;
-      showContextMenu({ x: event.clientX, y: event.clientY, items: terminalContextMenuItems({ zh, selection, canPaste: !terminal.current?.options.disableStdin, canSend: Boolean(context?.attachContext),
+      const screen = terminal.current?.element?.querySelector<HTMLElement>('.xterm-screen');
+      const rect = screen?.getBoundingClientRect();
+      // Keyboard menus use only the captured selection, not an arbitrary cell at the screen's center.
+      const pointerInside = event.type === 'contextmenu' && rect && rect.width > 0 && rect.height > 0
+        && event.clientX >= rect.left && event.clientX < rect.right && event.clientY >= rect.top && event.clientY < rect.bottom;
+      const pointerReference = pointerInside && terminal.current ? terminalFileReferenceAtCell(terminal.current,
+        Math.floor((event.clientX - rect.left) / rect.width * terminal.current.cols) + 1,
+        terminal.current.buffer.active.viewportY + Math.floor((event.clientY - rect.top) / rect.height * terminal.current.rows) + 1) : undefined;
+      const reference = pointerReference ?? selectedTerminalFileReference(selection);
+      const location = reference && referenceLocationTarget(session?.id, reference);
+      const fileAction = location ? { ...fileLocationMenuItem(location, zh), id: 'terminal-file-reveal', testId: 'terminal-file-reveal' } : undefined;
+      showContextMenu({ x: event.clientX, y: event.clientY, restoreFocus: terminal.current?.textarea ?? element, items: terminalContextMenuItems({ zh, selection, fileAction, canPaste: !terminal.current?.options.disableStdin, canSend: Boolean(context?.attachContext),
         send: async () => {
           if (!selection || !context) return;
           const cwd = session ? request('session.config.read', { sessionId: session.id }).then(value => value.cwd) : undefined;

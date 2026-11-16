@@ -13,3 +13,13 @@ test('terminal context menu callbacks use the selection captured before menu foc
   let copied = ''; const items = terminalContextMenuItems({ zh: false, selection: 'captured output', canPaste: true, canSend: true, copy: () => { copied = 'captured output'; }, paste: noop, send: noop, selectAll: noop });
   await items[2].onSelect?.(); assert.equal(copied, 'captured output'); assert.equal(items[0].disabled, false);
 });
+
+test('a scoped file action is additive and does not replace selection or paste callbacks', async () => {
+  let revealed = 0; let copied = 0;
+  const fileAction = { label: 'Reveal in Explorer', testId: 'terminal-file-reveal', onSelect: () => { revealed++; } };
+  const items = terminalContextMenuItems({ zh: false, selection: 'src/app.ts:9', canPaste: true, canSend: true, fileAction, copy: () => { copied++; }, paste: noop, send: noop, selectAll: noop });
+  assert.equal(items[0], fileAction);
+  await items[0].onSelect?.(); await items.find(item => item.id === 'copy')?.onSelect?.();
+  assert.equal(revealed, 1); assert.equal(copied, 1);
+  assert.equal(items.find(item => item.id === 'paste')?.disabled, false);
+});

@@ -1,3 +1,5 @@
+import { fileLocationMenuItem } from '../fileLocation';
+import { FileLocationButton } from './FileLocationButton';
 import { Select } from "./ui/Select";
 import { Icon } from "./PrototypeIcon";
 import { useEffect, useMemo, useRef, useState, lazy, Suspense, type ReactNode } from "react";
@@ -412,6 +414,7 @@ function FileWorkspaceInstance({
         : (zh ? "此工作区无法添加评论。" : "Comments are unavailable in this workspace.");
     const common = {zh,lines:selection,canComment,commentReason:reason,comment:()=>setCommentDraft(kind === "file" ? {side:"new",...selection} : selection as MergeSelection)};
     const sourceItems = kind === "diff" ? diffSurfaceMenuItems({...common,prefix:"editor",hasSelection:Boolean(menu.hasSelection),sendDiff:!compare&&commentsHost?.attachContext?async()=>sendContextToAgent({host:commentsHost,context:await changedFileContext(scope,document!.path,staged,zh),zh,sourceRoot:worktreePath??rootPath??commentsHost.projectRoot(projectId)}):undefined,copy:menu.copy ?? (()=>navigator.clipboard.writeText(selection.text)),copyPath:()=>navigator.clipboard.writeText(document!.path)}) : sourceEditorMenuItems({...common,hasSelection:Boolean(menu.hasSelection),readOnly:Boolean(external||document?.readonly),send:onSendToAgent?()=>onSendToAgent({path:document!.path,...(menu.hasSelection?{startLine:selection.startLine,endLine:selection.endLine, ...(external?{selection:selectedExternalText()}:{})}:{})}):undefined,plans:external?undefined:sessionDocuments?()=>void toggleSessionDocument():undefined,pinned:Boolean(pinnedDocument),plansDisabled:Boolean(external||sessionDocuments?.loading||documentPinning||sessionDocumentIssue),plansReason:external?(zh?"工作区外文件不能固定到计划与文档。":"Outside-workspace files cannot be pinned to Plans & docs."):sessionDocumentIssue?(zh?"计划与文档当前不可用。":"Plans & docs is unavailable."):undefined,history:external?undefined:onOpenHistory?()=>onOpenHistory({path:document!.path}):undefined,copy:menu.copy??(()=>navigator.clipboard.writeText(selection.text)),cut:menu.cut??(()=>{}),paste:menu.paste??(()=>{}),selectAll:menu.selectAll??(()=>{}),copyPath:()=>navigator.clipboard.writeText(document!.path),copyReference:()=>navigator.clipboard.writeText(`${document!.path}:${selection.startLine}-${selection.endLine}`)});
+    sourceItems.push(fileLocationMenuItem(externalId ? {externalId} : {...scope,path:document!.path},zh,setIssue));
     showContextMenu({ x, y, restoreFocus: target, items: kind === 'file' ? [...navigation.menuItems, ...sourceItems] : sourceItems });
   };
   async function refreshGit() {
@@ -1161,6 +1164,7 @@ function FileWorkspaceInstance({
   const dirtyPill = <span className="file-dirty ws-chip" data-testid="editor-dirty" hidden={!dirty} title={zh ? "未保存" : "Unsaved"}>●<span className="file-dirty-label">{zh ? "未保存" : "Unsaved"}</span></span>;
   const fileMenuItems: ContextMenuItem[] = document ? [
     ...navigation.menuItems,
+    fileLocationMenuItem(externalId ? {externalId} : {...scope,path:document.path},zh,setIssue),
     {id:"file-copy-path",label:zh ? "复制路径" : "Copy path",icon:<WbIcon name="copy" />,onSelect:()=>navigator.clipboard.writeText(document.path)},
     ...(canOpenWithSystemApp(document.path) ? [{id:"file-open-system",label:zh ? "用系统应用打开" : "Open with system app",icon:<Icon name="folder" />,onSelect:()=>void openWithSystemApp({...scope,path:document.path,externalId},zh,setIssue)}] : []),
     ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="folder" />,onSelect:()=>revealInFiles(document.path)}] : []),
@@ -1252,9 +1256,11 @@ function FileWorkspaceInstance({
               <span className="grow" />
               {commentAction}
               {fileSendAction(officeFile.path)}
+              <FileLocationButton target={officeFile.externalId ? {externalId:officeFile.externalId} : {...scope,path:officeFile.path}} zh={zh} onIssue={setIssue} />
               <FileBarActions zh={zh} items={[
                 ...noteMenuItems(officeFile.path),
                 { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(officeFile.path) },
+                fileLocationMenuItem(officeFile.externalId ? {externalId:officeFile.externalId} : {...scope,path:officeFile.path},zh,setIssue),
                 ...(canOpenWithSystemApp(officeFile.path) ? [{ id: 'file-open-system', label: zh ? '用系统应用打开' : 'Open with system app', onSelect: () => void openWithSystemApp({ ...scope, path: officeFile.path, externalId: officeFile.externalId }, zh, setIssue) }] : []),
                 { id: 'file-reload', label: copy.reload, onSelect: () => { void open(officeFile.path, 'file', true); } },
                 ...(!embedded ? [
@@ -1286,9 +1292,11 @@ function FileWorkspaceInstance({
               <span className="grow" />
               {commentAction}
               {fileSendAction(largeFile.path)}
+              <FileLocationButton target={largeFile.externalId ? {externalId:largeFile.externalId} : {...scope,path:largeFile.path}} zh={zh} onIssue={setIssue} />
               <FileBarActions zh={zh} items={[
                 ...noteMenuItems(largeFile.path),
                 { id: 'file-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(largeFile.path) },
+                fileLocationMenuItem(largeFile.externalId ? {externalId:largeFile.externalId} : {...scope,path:largeFile.path},zh,setIssue),
                 ...(canOpenWithSystemApp(largeFile.path) ? [{ id: 'file-open-system', label: zh ? '用系统应用打开' : 'Open with system app', onSelect: () => void openWithSystemApp({ ...scope, path: largeFile.path, externalId: largeFile.externalId }, zh, setIssue) }] : []),
                 { id: 'file-reload', label: copy.reload, onSelect: () => { void open(largeFile.path, 'file', true); } },
                 ...(!embedded ? [
@@ -1326,6 +1334,7 @@ function FileWorkspaceInstance({
                 {!external && !image && (!conflictedFile || dirty) && <span className="file-bar-save-slot">{dirty && !document.readonly && !busy && <button className="btn btn-sm" aria-label={copy.save} title={`${copy.save} (Ctrl+S)`} onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button>}</span>}
                 {view === "file" && !external && !image && conflictedFile && !busy && !dirty && !document.readonly && !stageReason && <ConflictStageAction key={document.path} scope={scope} path={document.path} revision={document.fingerprint} disabled={false} zh={zh} onStaged={() => void refreshGit()} />}
                 {!embedded && !external && <button className="cg-ghost cg-icon cg-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
+                <FileLocationButton target={externalId ? {externalId} : {...scope,path:document.path}} zh={zh} onIssue={setIssue} />
                 <FileBarActions items={fileMenuItems} zh={zh} />
                 {embeddedClose()}
               </div>
@@ -1355,6 +1364,7 @@ function FileWorkspaceInstance({
                   {pinAction}
                   {dirty && !staged && compareEditable && !document.readonly && !busy ? <button className="cg-ghost cg-sm cg-primary" aria-label={zh ? "保存变更" : "Save changes"} title="Ctrl+S" onClick={() => void saveFile()}>{zh ? "保存" : "Save"}</button> : !compare && !dirty && !busy && (staged || !stageReason) && <button className="cg-ghost cg-sm" onClick={() => void changeIndex(staged)}>{staged ? (zh ? "取消暂存" : "Unstage file") : (zh ? "暂存文件" : "Stage file")}</button>}
                   {!embedded && <button className="cg-ghost cg-icon cg-sm file-tools-button" title={zh ? "文件与 Git" : "Files & Git"} aria-label={zh ? "文件与 Git" : "Files & Git"} aria-pressed={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="panel" /></button>}
+                  <FileLocationButton target={externalId ? {externalId} : {...scope,path:document.path}} zh={zh} onIssue={setIssue} />
                   <FileBarActions items={fileMenuItems} zh={zh} />
                   {embeddedClose()}
                 </div>

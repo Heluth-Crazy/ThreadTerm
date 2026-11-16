@@ -4,6 +4,8 @@ import { request, subscribeEvents } from '../bridge';
 import { documentTitle, firstReadyCheckpoint, sessionDocumentError, suggestedDocuments } from '../sessionDocuments';
 import type { useSessionDocuments } from '../useSessionDocuments';
 import { FILES_CHANGED_EVENT } from '../workbench/types';
+import { fileLocationMenuItem } from '../fileLocation';
+import { showContextMenu } from './ContextMenu';
 import { Icon } from './PrototypeIcon';
 import './session-documents.css';
 
@@ -43,6 +45,14 @@ export function SessionDocuments({sessionId, zh, state, onPick, openFile}:Props)
   catch(error) { setIssue(sessionDocumentError(error, zh)); }
   finally { setBusy(false); }
  }, [state.pin, state.unpin, zh]);
+ const locationMenu = (path:string,event:{clientX:number;clientY:number;currentTarget:HTMLElement;preventDefault:()=>void;stopPropagation:()=>void}) => {
+  event.preventDefault();event.stopPropagation();
+  showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget.contains(document.activeElement)?document.activeElement as HTMLElement:event.currentTarget,items:[fileLocationMenuItem({sessionId,path,workspaceRelative:true},zh,setIssue)]});
+ };
+ const locationMenuKey = (path:string,event:React.KeyboardEvent<HTMLElement>) => {
+  if(event.key!=='ContextMenu' && !(event.shiftKey && event.key==='F10'))return;
+  const rect=event.currentTarget.getBoundingClientRect();locationMenu(path,{...event,clientX:rect.left+16,clientY:rect.bottom,preventDefault:()=>event.preventDefault(),stopPropagation:()=>event.stopPropagation()});
+ };
  const suggestions = suggestedDocuments(changes, state.documents);
  const error = issue || state.error || suggestionError;
  return <div className="ins-block session-documents" data-testid="session-documents">
@@ -52,7 +62,7 @@ export function SessionDocuments({sessionId, zh, state, onPick, openFile}:Props)
   {error && <p className="session-documents-error" role="alert">{error}</p>}
   {state.loading && !state.documents.length ? <p className="session-documents-empty" role="status">{text('Loading documents…', '正在读取文档…')}</p> : !state.documents.length && <p className="session-documents-empty" title={text('Add plans or notes to keep them one click away.', '添加计划或笔记，随时一键打开。')}>{text('Add plans or notes to keep them one click away.', '添加计划或笔记，随时一键打开。')}</p>}
   <div role="list" aria-label={text('Plans & docs', '计划与文档')}>
-   {state.documents.map(document => <div role="listitem" className={`session-document-row${document.missing ? ' missing' : ''}`} data-path={document.path} key={document.path}>
+   {state.documents.map(document => <div role="listitem" className={`session-document-row${document.missing ? ' missing' : ''}`} data-path={document.path} key={document.path} onContextMenu={event=>locationMenu(document.path,event)} onKeyDown={event=>locationMenuKey(document.path,event)}>
     <button type="button" className="session-document-open" title={document.path} disabled={document.missing} onClick={() => openFile(document.path)}>
      <Icon name="file"/><span className="session-document-label"><b title={documentTitle(document)}>{documentTitle(document)}</b><span className="mono" title={document.path}>{document.path}</span></span>
     </button>
@@ -61,7 +71,7 @@ export function SessionDocuments({sessionId, zh, state, onPick, openFile}:Props)
    </div>)}
   </div>
   {suggestions.length > 0 && <div className="session-document-suggestions"><h4>{text('Changed in this session', '此会话中的更改')}</h4>
-   {suggestions.map(path => <div className="session-document-row" key={path} data-suggested-path={path}>
+   {suggestions.map(path => <div className="session-document-row" key={path} data-suggested-path={path} onContextMenu={event=>locationMenu(path,event)} onKeyDown={event=>locationMenuKey(path,event)}>
     <button type="button" className="session-document-open" title={path} onClick={() => openFile(path)}><Icon name="file"/><span className="session-document-label"><b>{path.split('/').at(-1)}</b><span className="mono" title={path}>{path}</span></span></button>
     <button type="button" className="btn btn-sm session-document-pin" disabled={busy || state.loading} aria-label={text(`Add ${path}`, `添加 ${path}`)} onClick={() => void mutate(path, true)}>{text('Add', '添加')}</button>
    </div>)}

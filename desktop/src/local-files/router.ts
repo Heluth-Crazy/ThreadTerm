@@ -51,7 +51,8 @@ export class LocalFileRouter {
 
   constructor(private readonly preference: BackendPreference, private readonly main: FileRequestTarget,
     private readonly prepare?: (backend: LocalFileBackend) => Promise<void>,
-    private readonly settleAccess?: () => Promise<void>) {
+    private readonly settleAccess?: () => Promise<void>,
+    private readonly nativeFileAction: <T>(action: () => Promise<T>) => Promise<T> = action => action()) {
     this.gate = preference.load().then(backend => { this.backend = backend; });
     // Keep startup errors observable through the next request without an unhandled rejection.
     void this.gate.catch(() => {});
@@ -103,6 +104,17 @@ export class LocalFileRouter {
   onBackendChanged(listener: (backend: LocalFileBackend) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
+  }
+
+  /** Admit main-only metadata/shell operations alongside file requests. The callback must not
+   * re-enter this router: a queued lifecycle operation may already be waiting for it to settle. */
+  runNativeFileAction<T>(action: () => Promise<T>): Promise<T> {
+    if (this.stopping) return Promise.reject(new Error('ThreadTerm is shutting down'));
+    if (this.pending.size >= 256) return Promise.reject(new Error('local_files_busy: Too many pending file requests'));
+    const operation = this.gate.then(() => this.nativeFileAction(action));
+    this.pending.add(operation);
+    void operation.then(() => this.pending.delete(operation), () => this.pending.delete(operation));
+    return operation;
   }
 
   request<M extends Method>(machineId: string, runtime: FileRequestTarget, method: M, params: RequestParams<M>,

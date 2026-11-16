@@ -1,3 +1,5 @@
+import { fileLocationMenuItem } from '../fileLocation';
+import { FileLocationButton } from './FileLocationButton';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { operationId, request, subscribeEvents } from '../bridge';
 import type { ReviewFile } from '@threadterm/protocol';
@@ -184,12 +186,12 @@ function ReviewFilePane({projectId,worktreePath,path,sessionId,checkpointId,toCh
   const selected_=menu.selection;
   const canComment=Boolean(scope&&comments&&selected_&&!busy&&!dirty&&!draft);
   const reason=dirty?copy('Save or discard your edits first: they move the lines.','请先保存或放弃修改：修改会让行号变化。'):busy?copy('Wait for the current file action to finish.','请等待当前文件操作完成。'):draft?copy('Finish the current comment first.','请先完成当前评论。'):copy('Comments are unavailable in this workspace.','此工作区无法添加评论。');
-  showContextMenu({x:menu.x,y:menu.y,restoreFocus:menu.target,items:diffSurfaceMenuItems({prefix:'review-diff',zh,lines:selected_,canComment,commentReason:reason,comment:()=>setDraft(selected_),hasSelection:menu.hasSelection,copy:menu.copy,copyPath:()=>navigator.clipboard.writeText(path)})});
+  showContextMenu({x:menu.x,y:menu.y,restoreFocus:menu.target,items:diffSurfaceMenuItems({prefix:'review-diff',zh,lines:selected_,canComment,commentReason:reason,comment:()=>setDraft(selected_),hasSelection:menu.hasSelection,copy:menu.copy,copyPath:()=>navigator.clipboard.writeText(path)}).concat(fileLocationMenuItem({projectId,worktreePath,path},zh,setIssue))});
  };
  return <div ref={host} className={`wb-rs-body${navigation ? ' tt-diff-shell wb-review-diff' : ''}`} data-review-path={path} {...(navigation ? {'data-testid':'review-diff-surface'} : {})}>
   {navigation && <div className="wb-rs-location">
    <Icon name="diff"/>
-   <span className="path" title={path}>{path}</span>
+   <span className="path" title={path}>{path}</span><FileLocationButton target={{projectId,worktreePath,path}} zh={zh} onIssue={setIssue}/>
    <span className="dim">{live ? copy('Checkpoint → current file', '检查点 → 当前文件') : copy('Checkpoint → next checkpoint (read-only)', '检查点 → 下一个检查点（只读）')}</span>
    <DiffFileNavigation paths={navigationPaths} path={path} zh={zh} disabled={busy||Boolean(navigationDisabled)} onNavigate={onNavigate}/>
   </div>}

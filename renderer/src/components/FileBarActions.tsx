@@ -7,7 +7,7 @@ import { showContextMenu, type ContextMenuItem } from './ContextMenu';
 export function FileBarActions({items,zh}:{items:ContextMenuItem[];zh:boolean}) {
  const surface=useContext(SessionSurfaceContext);
  if(!surface)return <button type="button" className="cg-ghost cg-icon cg-sm file-bar-more" aria-label={zh?'工作区操作':'Workspace actions'} title={zh?'工作区操作':'Workspace actions'} aria-haspopup="menu" onClick={event=>{const anchor=event.currentTarget,rect=anchor.getBoundingClientRect();showContextMenu({x:rect.right,y:rect.bottom,items,restoreFocus:anchor});}}><Icon name="more"/></button>;
- return <SurfaceActions slot="menu">{items.map(item=><button key={item.id} type="button" className="menu-item" onClick={()=>void item.onSelect?.()}>{item.icon}{item.label}</button>)}</SurfaceActions>;
+ return <SurfaceActions slot="menu">{items.map(item=><button key={item.id} type="button" className="menu-item" disabled={item.disabled} title={item.reason} data-testid={item.testId} onClick={()=>void item.onSelect?.()}>{item.icon}{item.label}</button>)}</SurfaceActions>;
 }
 
 /** Cursor's breadcrumbs: one quiet segment per folder, then the file. A symbol segment is only added when the

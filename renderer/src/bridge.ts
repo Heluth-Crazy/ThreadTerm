@@ -24,6 +24,7 @@ export const scheduleElectronCacheCleanup = (schedule: boolean) => facade().sche
 export const openExternal = (url: string) => facade().openExternal(url);
 export const openPluginsFolder = () => facade().openPluginsFolder();
 export const openDirectory = (projectId: string, worktreeId?: string) => facade().openDirectory(projectId, worktreeId);
+export const revealFileLocation = (target: import('@threadterm/protocol').FileLocationRequest) => facade().revealFileLocation?.(target) ?? Promise.reject(new Error('File location is unavailable'));
 export const revealFile = (sessionId: string, path: string) => facade().revealFile?.(sessionId, path) ?? Promise.reject(new Error('File reveal is unavailable'));
 export const openFileDefaultApp = (request: { projectId: string; worktreePath?: string; path: string } | { externalId: string }) => facade().openFileDefaultApp?.(request) ?? Promise.reject(new Error('Open with system app is unavailable'));
 export const openWindow = (options: { sessionId?: string; workspaceId?: string }) => facade().openWindow(options);

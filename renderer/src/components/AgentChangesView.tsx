@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
 import type { AgentReview, AgentReviewScope, ProviderCapability, ReviewCheckpoint, ReviewFile, ReviewState, Session } from '@threadterm/protocol';
 import { operationId, request, subscribeEvents } from '../bridge';
+import { fileLocationMenuItem } from '../fileLocation';
+import { showContextMenu } from './ContextMenu';
 import { Icon, SessionIcon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { Select } from './ui/Select';
@@ -23,10 +25,15 @@ const kindLabel = (checkpoint:ReviewCheckpoint, zh:boolean) => ({
  baseline:zh ? '标记为已审查' : 'Marked reviewed',
 }[checkpoint.kind]);
 
-function FileRows({files, zh, onOpen, onRevert}:{files:ReviewFile[];zh:boolean;onOpen:(path:string)=>void;onRevert?:(file:ReviewFile)=>void}) {
+function FileRows({files, zh, onOpen, onRevert, locationScope, onIssue}:{files:ReviewFile[];zh:boolean;onOpen:(path:string)=>void;onRevert?:(file:ReviewFile)=>void;locationScope?:{projectId:string;worktreePath?:string};onIssue?:(message:string)=>void}) {
+ const locationMenu = (path:string,event:{clientX:number;clientY:number;currentTarget:HTMLElement;preventDefault:()=>void;stopPropagation:()=>void}) => {
+  if(!locationScope)return;
+  event.preventDefault();event.stopPropagation();
+  showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:[fileLocationMenuItem({...locationScope,path},zh,onIssue)]});
+ };
  if(!files.length) return <p className="wb-empty">{zh ? '没有文件更改。' : 'No file changes.'}</p>;
  return <div role="list">{files.map(file => <div key={file.path} role="listitem" className={`wb-change-row tone-${file.status === 'A' ? 'added' : file.status === 'D' ? 'deleted' : 'modified'}`}>
-  <button type="button" className="wb-change-open" title={file.path} onClick={() => onOpen(file.path)}><Icon name="file"/><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span></button>
+  <button type="button" className="wb-change-open" title={file.path} onClick={() => onOpen(file.path)} onContextMenu={event=>locationMenu(file.path,event)} onKeyDown={event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){const rect=event.currentTarget.getBoundingClientRect();locationMenu(file.path,{...event,clientX:rect.left+16,clientY:rect.bottom,preventDefault:()=>event.preventDefault(),stopPropagation:()=>event.stopPropagation()});}}}><Icon name="file"/><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span></button>
   {(() => { const counts=reviewFileLineCounts(file); return <span className="wb-change-counts">{counts.binary ? <span className="wb-change-binary">{zh ? '二进制' : 'Binary'}</span> : <><span className="wb-change-added">+{counts.added}</span><span className="wb-change-removed">−{counts.removed}</span></>}</span>; })()}
   {onRevert && <span className="wb-row-actions"><button type="button" className="icon-btn" title={zh ? '还原到检查点' : 'Revert to checkpoint'} aria-label={zh ? '还原到检查点' : 'Revert to checkpoint'} onClick={() => onRevert(file)}><WbIcon name="undo"/></button></span>}
   <span className="wb-deco">{file.status}</span>
@@ -213,7 +220,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
    </div>
    <p className="wb-hint">{text('Any edit in this worktree since then counts, whether from this agent, another session or you.', '包含此后此工作树中的所有编辑，可能来自此 Agent、其他会话或你自己。')}</p>
    {newest && latest && <>
-    <FileRows files={latest} zh={zh} onOpen={path => openReview(newest, path)} onRevert={file => void beginRevert(newest, [file])}/>
+    <FileRows files={latest} zh={zh} locationScope={session?.projectId?{projectId:session.projectId,worktreePath:state?.worktreePath??session.worktreePath}:undefined} onIssue={setIssue} onOpen={path => openReview(newest, path)} onRevert={file => void beginRevert(newest, [file])}/>
     {latest.length > 0 && <div className="wb-review-actions">
      <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void beginRevert(newest, latest)}>{text('Revert all…', '全部还原…')}</button>
      <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => void checkpointNow('baseline')}>{text('Mark reviewed', '标记为已审查')}</button>
@@ -235,7 +242,7 @@ export function AgentChangesView({sessions, activeSessionId, actions, zh, visibl
       </button>
       {checkpoint.status === 'failed' && <p className="wb-muted">{text('Snapshot failed: ', '快照失败：')}{checkpoint.error}</p>}
       {checkpoint.skipped.length > 0 && <p className="wb-muted">{text(`${checkpoint.skipped.length} large file(s) were not captured.`, `${checkpoint.skipped.length} 个大文件未被记录。`)}</p>}
-      {expanded && (!files ? <p className="wb-summary">{text('Loading…', '正在读取…')}</p> : files && <FileRows files={files} zh={zh} onOpen={path => openReview(checkpoint, path, next)}/>)}
+      {expanded && (!files ? <p className="wb-summary">{text('Loading…', '正在读取…')}</p> : files && <FileRows files={files} zh={zh} locationScope={session?.projectId?{projectId:session.projectId,worktreePath:state?.worktreePath??session.worktreePath}:undefined} onIssue={setIssue} onOpen={path => openReview(checkpoint, path, next)}/>)}
      </div>;
     })}
    </div>}

@@ -54,5 +54,9 @@ export function createLocalFileBackend(options: {
     // Sheet handles belong to the backend that opened them: after a switch the client
     // reopens (`design.md` §3.4, §3.5).
     main.reset?.();
-  }, () => access.flush());
+  }, () => access.flush(), action => {
+    // Runtime process leases currently exist only on Windows. Other hosts still participate
+    // in router lifecycle/quit admission, preserving their existing native reveal support.
+    return process.platform === 'win32' ? access.run(action) : action();
+  });
 }

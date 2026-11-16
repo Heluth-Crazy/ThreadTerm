@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SearchResult } from '@threadterm/protocol';
 import { request } from '../bridge';
-import { Icon } from './PrototypeIcon';
+import { fileLocationMenuItem } from '../fileLocation';
 import { showContextMenu } from './ContextMenu';
+import { Icon } from './PrototypeIcon';
 import { revealInFilesMenuItem } from '../contextMenuSurfaceItems';
 import { workbenchError } from '../workbench/errors';
 import { baseName, parentPath, scopeParams, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
@@ -41,6 +42,14 @@ export function SearchView({scope, actions, zh, focusKey}:{scope:WorkbenchScope;
   }, 300);
   return () => clearTimeout(timer);
  }, [query, options.regex, options.caseSensitive, options.wholeWord, include, exclude, scope.projectId, scope.worktreePath]);
+ const fileMenu = (path:string,event:{clientX:number;clientY:number;currentTarget:HTMLElement;preventDefault:()=>void;stopPropagation:()=>void}) => {
+  event.preventDefault(); event.stopPropagation();
+  showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:[...(actions.revealFile?[{...revealInFilesMenuItem(zh),onSelect:()=>actions.revealFile?.(path)}]:[]),fileLocationMenuItem({...scopeParams(scope),path},zh,setIssue)]});
+ };
+ const fileMenuKey = (path:string,event:React.KeyboardEvent<HTMLElement>) => {
+  if(event.key!=='ContextMenu' && !(event.shiftKey && event.key==='F10'))return;
+  const rect=event.currentTarget.getBoundingClientRect();fileMenu(path,{...event,clientX:rect.left+16,clientY:rect.top+16,preventDefault:()=>event.preventDefault(),stopPropagation:()=>event.stopPropagation()});
+ };
  const total = result?.files.reduce((sum, file) => sum + file.matches.length, 0) ?? 0;
  const toggle = (key:keyof Options, label:string, glyph:string) => <button type="button" className={`wb-toggle${options[key] ? ' on' : ''}`} aria-pressed={options[key]} title={label} aria-label={label} onClick={() => setOptions(current => ({...current, [key]:!current[key]}))}>{glyph}</button>;
  return <div className="wb-search">
@@ -69,12 +78,12 @@ export function SearchView({scope, actions, zh, focusKey}:{scope:WorkbenchScope;
   <div className="wb-results" role="tree" aria-label={text('Search results', '搜索结果')}>
    {result?.files.map(file => {
     const closed = collapsed.has(file.path);
-    return <div key={file.path} className="wb-result-file" role="treeitem" aria-expanded={!closed} onContextMenu={event => { if(!actions.revealFile) return; event.preventDefault(); showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:[{...revealInFilesMenuItem(zh),onSelect:()=>actions.revealFile?.(file.path)}]}); }}>
-     <button type="button" className="wb-result-head" title={file.path} onClick={() => setCollapsed(current => { const next = new Set(current); if(next.has(file.path)) next.delete(file.path); else next.add(file.path); return next; })}>
+    return <div key={file.path} className="wb-result-file" role="treeitem" aria-expanded={!closed}>
+     <button type="button" className="wb-result-head" title={file.path} onContextMenu={event=>fileMenu(file.path,event)} onKeyDown={event=>fileMenuKey(file.path,event)} onClick={() => setCollapsed(current => { const next = new Set(current); if(next.has(file.path)) next.delete(file.path); else next.add(file.path); return next; })}>
       <span className={`wb-chevron${closed ? '' : ' open'}`} aria-hidden="true"><Icon name="chevR"/></span>
       <Icon name="file"/><span className="wb-name">{baseName(file.path)}</span><span className="wb-dir">{parentPath(file.path)}</span><span className="wb-count">{file.matches.length}</span>
      </button>
-     {!closed && <div role="group">{file.matches.map(match => <button type="button" role="treeitem" key={`${match.line}:${match.column}`} className="wb-result-line" title={`${file.path}:${match.line}:${match.column}`}
+     {!closed && <div role="group">{file.matches.map(match => <button type="button" role="treeitem" key={`${match.line}:${match.column}`} className="wb-result-line" title={`${file.path}:${match.line}:${match.column}`} onContextMenu={event=>fileMenu(file.path,event)} onKeyDown={event=>fileMenuKey(file.path,event)}
       onClick={() => actions.openFile(file.path, {line:match.line, column:match.column})}>
       <span className="wb-line-no">{match.line}</span><Preview preview={match.preview} column={match.previewColumn} length={match.length}/>
      </button>)}</div>}

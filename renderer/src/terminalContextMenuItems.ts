@@ -2,6 +2,7 @@ import type { ContextMenuItem } from './components/ContextMenu';
 
 type Options = {
   zh: boolean; selection: string; canPaste: boolean; canSend: boolean;
+  fileAction?: ContextMenuItem;
   copy: () => void | Promise<void>; paste: () => void | Promise<void>; send: () => void | Promise<void>; selectAll: () => void;
 };
 
@@ -10,6 +11,7 @@ export function terminalContextMenuItems(options: Options): ContextMenuItem[] {
   const text = (en: string, cn: string) => options.zh ? cn : en;
   const selected = Boolean(options.selection);
   return [
+    ...(options.fileAction ? [options.fileAction, { label: '', separator: true }] : []),
     { label: text('Send selection to agent', '将选区发送给 Agent'), disabled: !selected || !options.canSend, reason: !options.canSend ? text('Open a Chat session in this workspace first.', '请先在此工作区打开一个聊天会话。') : text('Select terminal output first.', '请先选中终端输出。'), onSelect: options.send, testId: 'terminal-selection-send-to-agent' },
     { label: '', separator: true },
     { id: 'copy', label: text('Copy', '复制'), disabled: !selected, reason: text('Select terminal output first.', '请先选中终端输出。'), onSelect: options.copy, testId: 'terminal-context-copy' },

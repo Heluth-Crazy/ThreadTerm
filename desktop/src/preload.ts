@@ -154,6 +154,7 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & Backgrou
   },
   openPluginsFolder: () => ipcRenderer.invoke('threadterm:open-plugins-folder') as Promise<void>,
   openDirectory: (projectId, worktreeId) => ipcRenderer.invoke('threadterm:open-directory', projectId, worktreeId) as Promise<void>,
+  revealFileLocation: request => ipcRenderer.invoke('threadterm:reveal-file-location', request) as Promise<import('@threadterm/protocol').FileLocationResult>,
   revealFile: (sessionId, path) => ipcRenderer.invoke('threadterm:reveal-file', sessionId, path) as Promise<void>,
   openFileDefaultApp: (request) => ipcRenderer.invoke('threadterm:open-file-default-app', request) as Promise<void>,
   desktopPreferences: () => ipcRenderer.invoke('threadterm:desktop-preferences') as Promise<{ shortcuts: Record<string, string> }>,

@@ -3,8 +3,26 @@ import type { FileReference, ResolvedFileReference } from '@threadterm/protocol'
 import { request, subscribeEvents } from '../bridge';
 import { extractFileReferences, parseFileReference, parseMarkdownFileReference } from '../fileReferences';
 import { useLocale } from '../i18n';
+import { showContextMenu } from './ContextMenu';
+import { fileLocationMenuItem } from '../fileLocation';
+import { referenceLocationTarget } from '../referenceLocation';
 
 type OpenFile = (reference: FileReference) => void;
+
+function referenceContextMenu(event: MouseEvent<HTMLElement>, reference: FileReference, sessionId: string | undefined, openFile: OpenFile, zh: boolean): void {
+  event.preventDefault();
+  event.stopPropagation();
+  const target = referenceLocationTarget(sessionId, reference);
+  const link = event.target instanceof Element ? event.target.closest<HTMLElement>('button.file-reference-link') : null;
+  const anchor = link && event.currentTarget.contains(link) ? link : event.currentTarget;
+  const rect = anchor.getBoundingClientRect();
+  showContextMenu({ x: event.clientX || rect.left, y: event.clientY || rect.bottom, restoreFocus: anchor, items: [
+    { id: 'file-reference-open', label: zh ? '在编辑器中打开' : 'Open in editor', onSelect: () => openFile(reference) },
+    ...(target ? [{ ...fileLocationMenuItem(target, zh), id: 'file-reference-reveal', testId: 'file-reference-reveal' }] : []),
+    { id: 'file-reference-copy-path', label: zh ? '复制路径' : 'Copy path', onSelect: () => navigator.clipboard.writeText(target?.path ?? reference.path) },
+    { id: 'file-reference-copy', label: zh ? '复制引用' : 'Copy reference', onSelect: () => navigator.clipboard.writeText(`${reference.path}${reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}`) },
+  ] });
+}
 export type FileReferenceScope = { sourceSessionId?: string; canonicalRoot?: string };
 const FileReferenceScopeContext = createContext<FileReferenceScope | undefined>(undefined);
 
@@ -170,6 +188,7 @@ function structuredPath(path: string): string | undefined {
 
 export function FileLinkedText({ text, openFile, sourceSessionId, canonicalRoot }: { text: string; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string }) {
   const scope=useFileReferenceScope(sourceSessionId,canonicalRoot);
+  const zh = useLocale() === 'zh-CN';
   const candidates = useMemo(() => extractFileReferences(text), [text]);
   const interactive=Boolean(openFile);
   const verified=useAutoReferences(text,candidates,interactive,scope.sourceSessionId,scope.canonicalRoot);
@@ -181,15 +200,16 @@ export function FileLinkedText({ text, openFile, sourceSessionId, canonicalRoot 
     if (candidate.start < offset) continue;
     pieces.push(text.slice(offset, candidate.start));
     const reference = { path: candidate.path, ...(candidate.line ? { line: candidate.line } : {}), ...(candidate.column ? { column: candidate.column } : {}) };
-    pieces.push(<button type="button" className="file-reference-link" key={candidate.start} onClick={() => openFile(reference)} title={candidate.path}>{text.slice(candidate.start, candidate.end)}</button>);
+    pieces.push(<button type="button" className="file-reference-link" key={candidate.start} onClick={() => openFile(reference)} onContextMenu={event => referenceContextMenu(event, reference, scope.sourceSessionId, openFile, zh)} title={candidate.path}>{text.slice(candidate.start, candidate.end)}</button>);
     offset = candidate.end;
   }
   pieces.push(text.slice(offset));
   return <Fragment>{pieces}</Fragment>;
 }
 
-export function FileReferenceChips({ references, visibleText, visibleReferences, openFile }: { references?: FileReference[]; visibleText?: string; visibleReferences?:readonly FileReference[]; openFile?: OpenFile }) {
+export function FileReferenceChips({ references, visibleText, visibleReferences, openFile, sourceSessionId }: { references?: FileReference[]; visibleText?: string; visibleReferences?:readonly FileReference[]; openFile?: OpenFile; sourceSessionId?: string }) {
   const locale = useLocale();
+  const scope = useFileReferenceScope(sourceSessionId);
   if (!openFile || !references?.length) return null;
   const unique: FileReference[] = [];
   const visible = visibleReferences ?? (visibleText ? extractFileReferences(visibleText) : []);
@@ -204,7 +224,7 @@ export function FileReferenceChips({ references, visibleText, visibleReferences,
   }
   if (!unique.length) return null;
   return <div className="file-reference-chips" aria-label={locale === 'zh-CN' ? '文件引用' : 'File references'}>{unique.map((reference, index) =>
-    <button type="button" className="file-reference-link" key={`${reference.path}:${index}`} onClick={() => openFile(reference)} title={reference.path}>{reference.path}{reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}</button>
+    <button type="button" className="file-reference-link" key={`${reference.path}:${index}`} onClick={() => openFile(reference)} onContextMenu={event => referenceContextMenu(event, reference, scope.sourceSessionId, openFile, locale === 'zh-CN')} title={reference.path}>{reference.path}{reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}</button>
   )}</div>;
 }
 
@@ -290,6 +310,7 @@ function decorateMarkdown(sanitized: string, interactive: boolean, accepted:Read
 
 export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, sourceSessionId, canonicalRoot, renderHtml }: { sanitizedHtml: string; references?: FileReference[]; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string; renderHtml?: (html: string) => ReactNode }) {
   const scope=useFileReferenceScope(sourceSessionId,canonicalRoot);
+  const zh = useLocale() === 'zh-CN';
   const interactive = Boolean(openFile);
   const candidates=useMemo(()=>markdownAutoReferences(sanitizedHtml),[sanitizedHtml]);
   const anchors=useMemo(()=>markdownAnchorReferences(sanitizedHtml),[sanitizedHtml]);
@@ -311,8 +332,16 @@ export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, source
       if (parseFileReference(reference.path)) openFile(reference);
     } catch { /* Ignore malformed display metadata. */ }
   };
+  const onContextMenu = (event: MouseEvent<HTMLDivElement>) => {
+    const target = event.target instanceof Element ? event.target.closest('button[data-file-reference]') : null;
+    if (!target || !event.currentTarget.contains(target) || !openFile) return;
+    try {
+      const reference = JSON.parse((target as HTMLElement).dataset.fileReference ?? '') as FileReference;
+      if (typeof reference.path === 'string' && parseFileReference(reference.path)) referenceContextMenu(event, reference, scope.sourceSessionId, openFile, zh);
+    } catch { /* Ignore malformed display metadata. */ }
+  };
   return <>
-    {renderHtml ? <div className="v3-message-text codex-markdown" onClick={onClick}>{rich}</div> : <div className="v3-message-text codex-markdown" dangerouslySetInnerHTML={rendered.innerHtml} onClick={onClick} />}
-    <FileReferenceChips references={references} visibleReferences={visibleReferences} openFile={openFile} />
+    {renderHtml ? <div className="v3-message-text codex-markdown" onClick={onClick} onContextMenu={onContextMenu}>{rich}</div> : <div className="v3-message-text codex-markdown" dangerouslySetInnerHTML={rendered.innerHtml} onClick={onClick} onContextMenu={onContextMenu} />}
+    <FileReferenceChips references={references} visibleReferences={visibleReferences} openFile={openFile} sourceSessionId={scope.sourceSessionId} />
   </>;
 }

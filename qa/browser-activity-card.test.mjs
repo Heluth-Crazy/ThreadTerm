@@ -8,7 +8,7 @@ import { buildSync } from 'esbuild';
 const require = createRequire(resolve('package.json'));
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
-const code = buildSync({ entryPoints: ['renderer/src/components/ToolCards.tsx'], bundle: true, platform: 'node', format: 'cjs', packages: 'external', write: false, logLevel: 'silent' }).outputFiles[0].text;
+const code = buildSync({ entryPoints: ['renderer/src/components/ToolCards.tsx'], bundle: true, platform: 'node', format: 'cjs', packages: 'external', loader: { '.css': 'empty' }, write: false, logLevel: 'silent' }).outputFiles[0].text;
 const module = { exports: {} };
 vm.runInNewContext(code, { module, exports: module.exports, require, TextEncoder, URL });
 const { ToolCard } = module.exports;

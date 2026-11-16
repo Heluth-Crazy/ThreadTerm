@@ -12,7 +12,7 @@ const { Terminal } = createRequire(import.meta.url)('@xterm/xterm');
 const bundle = await build({ entryPoints: [resolve('renderer/src/components/terminalFileLinks.ts')], bundle: true, format: 'esm', platform: 'node', write: false, external: ['@xterm/xterm'] });
 const modulePath = join(await mkdtemp(join(tmpdir(), 'threadterm-terminal-links-')), 'terminalFileLinks.mjs');
 await writeFile(modulePath, bundle.outputFiles[0].text);
-const { createFileLinkValidator, fileLinkStatusOf, provideTerminalFileLinks, terminalFileLinks } = await import(pathToFileURL(modulePath).href);
+const { createFileLinkValidator, fileLinkStatusOf, provideTerminalFileLinks, terminalFileLinks, terminalFileReferenceAtCell } = await import(pathToFileURL(modulePath).href);
 
 const terminalWith = async (cols, text) => {
   const terminal = new Terminal({ cols, rows: 12, allowProposedApi: true });
@@ -26,6 +26,26 @@ const provided = async (terminal, line, validator, opened = []) =>
     link.activate({ ctrlKey: true, metaKey: false }, link.text);
     return shape(link);
   });
+
+test('context-menu cell targeting preserves Windows and UNC paths and removes line suffixes', async () => {
+  const terminal = await terminalWith(100, 'D:\\repo\\file.ts:12:4\r\n\\\\server\\share\\file.ts:7');
+  try {
+    assert.deepEqual(terminalFileReferenceAtCell(terminal, 6, 1), { path: 'D:\\repo\\file.ts', line: 12, column: 4 });
+    assert.deepEqual(terminalFileReferenceAtCell(terminal, 12, 2), { path: '\\\\server\\share\\file.ts', line: 7 });
+    assert.equal(terminalFileReferenceAtCell(terminal, 80, 1), undefined);
+    assert.equal(terminalFileReferenceAtCell(terminal, 0, 1), undefined);
+    assert.equal(terminalFileReferenceAtCell(terminal, 5, 0), undefined);
+  } finally { terminal.dispose(); }
+});
+
+test('context-menu cell targeting follows soft wraps without rewriting output', async () => {
+  const path = 'D:/project/long-folder/src/application.ts';
+  const terminal = await terminalWith(20, path + ':8');
+  try {
+    assert.deepEqual(terminalFileReferenceAtCell(terminal, 4, 2), { path, line: 8 });
+    assert.equal(terminalFileReferenceAtCell(terminal, 18, 3), undefined);
+  } finally { terminal.dispose(); }
+});
 
 test('a tool-call wrapper is not part of the link', async () => {
   const terminal = await terminalWith(60, 'Update(src/tool.tsx)');

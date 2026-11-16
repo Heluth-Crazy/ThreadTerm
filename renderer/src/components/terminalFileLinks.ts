@@ -318,6 +318,18 @@ function pick(group: Reading[], status: (reference: FileReference) => FileLinkSt
   return undefined;
 }
 
+/** Context-menu target from the same bounded cell parser as links. Coordinates are 1-based
+ * buffer cells, not CSS pixels. Speculative hard wraps are not guessed without validation. */
+export function terminalFileReferenceAtCell(terminal: Terminal, column: number, lineNumber: number): FileReference | undefined {
+  if (!Number.isInteger(column) || column < 1 || column > terminal.cols || !Number.isInteger(lineNumber) || lineNumber < 1) return;
+  for (const group of readings(terminal, lineNumber)) {
+    const reading = pick(group, () => 'unknown');
+    if (reading?.segments.some(({ range }) => lineNumber >= range.start.y && lineNumber <= range.end.y
+      && (lineNumber !== range.start.y || column >= range.start.x)
+      && (lineNumber !== range.end.y || column <= range.end.x))) return reading.reference;
+  }
+}
+
 function toLinks(chosen: (Reading | null | undefined)[], lineNumber: number, openFile: (reference: FileReference) => void, interaction?: TerminalFileLinkInteraction): ILink[] {
   const kept: Reading[] = [];
   for (const reading of chosen.filter((item): item is Reading => Boolean(item)).sort((a, b) => a.span[0] - b.span[0])) {

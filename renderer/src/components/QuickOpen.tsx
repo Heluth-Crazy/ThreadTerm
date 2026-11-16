@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError as externalFilesError } from '../externalFiles';
 import { displayPath } from '../displayPath';
-import { Icon } from './PrototypeIcon';
+import { fileLocationMenuItem } from '../fileLocation';
 import { showContextMenu } from './ContextMenu';
+import { Icon } from './PrototypeIcon';
 import { revealInFilesMenuItem } from '../contextMenuSurfaceItems';
 import { fuzzyFilter, splitQuickOpenQuery } from '../workbench/fuzzy';
 import { workbenchError } from '../workbench/errors';
@@ -110,6 +111,16 @@ export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onReveal, on
    }).catch(() => undefined);
   });
  };
+ const locationMenu = (item:QuickOpenItem,event:{clientX:number;clientY:number;currentTarget:HTMLElement;preventDefault:()=>void;stopPropagation:()=>void}) => {
+  if(item.kind==='dialog' || mode==='pick')return;
+  event.preventDefault();event.stopPropagation();
+  const target=item.kind==='external'?{externalId:item.file.id}:{...scopeParams(scope),path:item.path};
+  showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget.contains(document.activeElement)?document.activeElement as HTMLElement:event.currentTarget,items:[...(item.kind==='workspace'&&onReveal?[{...revealInFilesMenuItem(zh),onSelect:()=>{onClose();onReveal(item.path);}}]:[]),fileLocationMenuItem(target,zh,setIssue)]});
+ };
+ const locationMenuKey = (item:QuickOpenItem|undefined,event:React.KeyboardEvent<HTMLElement>) => {
+  if(!item || (event.key!=='ContextMenu' && !(event.shiftKey && event.key==='F10')))return;
+  const rect=event.currentTarget.getBoundingClientRect();locationMenu(item,{...event,clientX:rect.left+16,clientY:rect.bottom,preventDefault:()=>event.preventDefault(),stopPropagation:()=>event.stopPropagation()});
+ };
  const select = (item:QuickOpenItem) => {
   if(item.kind === 'dialog') openDialog();
   else if(item.kind === 'workspace') choose(item.path);
@@ -121,7 +132,8 @@ export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onReveal, on
     aria-label={text('File name', '文件名')} aria-controls="wb-quick-open-results" aria-activedescendant={items[active] ? `wb-qo-${active}` : undefined}
     onChange={event => setQuery(event.target.value)}
     onKeyDown={event => {
-     if(event.key === 'Escape') { event.preventDefault(); onClose(); }
+     if(event.key==='ContextMenu' || (event.shiftKey && event.key==='F10')) { locationMenuKey(items[active],event); }
+     else if(event.key === 'Escape') { event.preventDefault(); onClose(); }
      else if(event.key === 'ArrowDown') { event.preventDefault(); setActive(value => Math.min(items.length - 1, value + 1)); }
      else if(event.key === 'ArrowUp') { event.preventDefault(); setActive(value => Math.max(0, value - 1)); }
      else if(event.key === 'Enter' && items[active]) { event.preventDefault(); select(items[active]); }
@@ -133,11 +145,11 @@ export function QuickOpen({scope, zh, onOpen, onClose, mode='open', onReveal, on
      <Icon name="file"/><b>{text('Open file outside workspace…', '打开工作区外文件…')}</b><span>Ctrl+O</span>
     </button>}
     {matches.map((match, index) => { const itemIndex = (externalEnabled ? 1 : 0) + index; return <button type="button" role="option" aria-selected={itemIndex === active} id={`wb-qo-${itemIndex}`} key={match.path}
-     className={`cmd-row${itemIndex === active ? ' active' : ''}`} onMouseEnter={() => setActive(itemIndex)} onClick={() => choose(match.path)} onContextMenu={event => { if(!onReveal || mode !== 'open') return; event.preventDefault(); showContextMenu({x:event.clientX,y:event.clientY,restoreFocus:event.currentTarget,items:[{...revealInFilesMenuItem(zh),onSelect:()=>{onClose();onReveal(match.path);}}]}); }} title={match.path}>
+     className={`cmd-row${itemIndex === active ? ' active' : ''}`} onMouseEnter={() => setActive(itemIndex)} onClick={() => choose(match.path)} title={match.path} onContextMenu={event=>locationMenu(items[itemIndex],event)} onKeyDown={event=>locationMenuKey(items[itemIndex],event)}>
      <Icon name="file"/><Highlighted path={match.path} positions={match.positions}/>
     </button>; })}
     {externalEnabled && <><p className="external-file-section-label">{text('Outside workspace', '工作区外')}</p>{externalMatches.map((match, index) => { const itemIndex = 1 + matches.length + index; return <div role="option" aria-selected={itemIndex === active} id={`wb-qo-${itemIndex}`} key={match.file.id}
-     className={`cmd-row external-file-recent${!match.file.exists ? ' external-file-missing' : ''}${itemIndex === active ? ' active' : ''}`} onMouseEnter={() => setActive(itemIndex)}>
+     className={`cmd-row external-file-recent${!match.file.exists ? ' external-file-missing' : ''}${itemIndex === active ? ' active' : ''}`} onMouseEnter={() => setActive(itemIndex)} onContextMenu={event=>locationMenu(items[itemIndex],event)} onKeyDown={event=>locationMenuKey(items[itemIndex],event)}>
      <button type="button" className="external-file-open-row" disabled={!!externalDisabledReason} onClick={() => chooseExternal([match.file.path], 'recent', parsed.line ? {line:parsed.line, column:parsed.column} : undefined)} title={externalDisabledReason ?? displayPath(match.file.path)}>
       <Icon name="file"/><Highlighted path={match.file.path} positions={match.positions} compactParent/>{!match.file.exists && <small>{text('Missing', '缺失')}</small>}
      </button><button type="button" className="icon-btn external-file-forget" aria-label={text('Remove from recent external files', '从最近工作区外文件中移除')} title={text('Remove from recent external files', '从最近工作区外文件中移除')} onClick={() => forgetExternal(match.file)}><Icon name="close"/></button>

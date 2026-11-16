@@ -1239,6 +1239,9 @@ export type Method = keyof RequestMap;
 export type RequestParams<M extends Method> = RequestMap[M][0];
 export type RequestResult<M extends Method> = RequestMap[M][1];
 export interface OutputChunk { sessionId:string; cursor:number; data:Uint8Array; gap?:boolean }
+export type FileLocationRequest = {projectId:string;worktreePath?:string;path:string}|{sessionId:string;path:string;workspaceRelative?:true}|{externalId:string};
+export type FileLocationResult = {kind:'file'|'parent'};
+
 export interface ThreadTermBridge {
  /** Optional, local desktop compatibility module; not part of portable Runtime settings. */
  localFiles?:{getBackend():Promise<'runtime'|'main'>;setBackend(backend:'runtime'|'main'):Promise<'runtime'|'main'>;onBackendChanged?(listener:(backend:'runtime'|'main')=>void):()=>void};
@@ -1282,6 +1285,7 @@ export interface ThreadTermBridge {
   onPageContextMenu(listener:(value:{frameName:string;x:number;y:number;pick?:PagePick;staticFrame?:boolean;selectionText:string})=>void):()=>void;
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
  revealFile?(sessionId:string,path:string):Promise<void>;
+ revealFileLocation?(request:FileLocationRequest):Promise<FileLocationResult>;
  /** Open a document with the system default application (desktop, local machine only). */
  openFileDefaultApp?(request:{projectId:string;worktreePath?:string;path:string}|{externalId:string}):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;

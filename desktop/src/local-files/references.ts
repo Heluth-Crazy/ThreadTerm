@@ -46,6 +46,16 @@ export async function registeredExternalFilePath(coordination:LocalFileCoordinat
   return (await registeredFile(registrationRow(await coordination('desktop.files.external.get', {id})))).canonical;
 }
 
+/** Original registered identity, without following a replaced junction/symlink.
+ * Native location callers canonicalize this themselves and must reject a changed identity. */
+export async function registeredExternalFileIdentityPath(coordination:LocalFileCoordination, id:string):Promise<string> {
+  if (!nonEmptyText(id)) fail('invalid_request');
+  const row = registrationRow(await coordination('desktop.files.external.get', {id}));
+  if (row.id !== id) fail('desktop_files_invalid_external');
+  validateExternalPath(row.canonicalPath);
+  return row.canonicalPath;
+}
+
 /** A main-only private coordination channel. It never accepts a renderer-selected root. */
 export function createLocalFileReferenceTarget(options:{service:LocalFileService; coordination:Coordination}):FileRequestTarget {
   const context = async (sessionId:unknown):Promise<SessionContext> => {

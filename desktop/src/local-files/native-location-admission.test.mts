@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { LocalFileRouter, type FileRequestTarget } from './router.ts';
+import { createLocalFileBackend } from './index.ts';
+const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(done=>{resolve=done});return {resolve,promise}};
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+const noop={request:async()=>null} as FileRequestTarget;
+test('native actions hold lifecycle/quit admission and start only after earlier exclusive work',async()=>{
+ const log:string[]=[],a=deferred(),b=deferred();
+ const router=new LocalFileRouter({load:async()=>'runtime',save:async()=>{}},noop,undefined,async()=>{log.push('flush')},async action=>{log.push('lease');return action()});
+ const first=router.runNativeFileAction(async()=>{log.push('native');await a.promise});
+ const runtime={request:async()=>{log.push('remove');await b.promise;return null}} as FileRequestTarget;
+ const removal=router.request('local',runtime,'project.remove',{id:'p',operationId:'op'});
+ const second=router.runNativeFileAction(async()=>{log.push('later')});
+ await tick();assert.deepEqual(log,['lease','native']);
+ a.resolve();await first;await tick();assert.deepEqual(log,['lease','native','flush','remove']);
+ b.resolve();await Promise.all([removal,second]);assert.deepEqual(log,['lease','native','flush','remove','lease','later']);
+ const block=deferred();let quitDone=false;
+ const running=router.runNativeFileAction(()=>block.promise);await tick();
+ const quit=router.prepareToQuit().then(()=>{quitDone=true});await tick();assert.equal(quitDone,false);
+ await assert.rejects(router.runNativeFileAction(async()=>null),/shutting down/);
+ block.resolve();await Promise.all([running,quit]);assert.equal(quitDone,true);
+});
+test('native failures release pending capacity and preserve admission bounds',async()=>{
+ const router=new LocalFileRouter({load:async()=>'runtime',save:async()=>{}},noop);
+ await assert.rejects(router.runNativeFileAction(async()=>{throw Error('failure')}),/failure/);
+ const block=deferred(),pending=Array.from({length:256},()=>router.runNativeFileAction(()=>block.promise));
+ await assert.rejects(router.runNativeFileAction(async()=>null),/Too many pending/);
+ block.resolve();await Promise.all(pending);assert.equal(await router.runNativeFileAction(async()=>42),42);
+ await router.prepareToQuit();
+});
+test('factory native actions reuse Windows access leases and release on failure; other platforms skip unsupported leases',async()=>{
+ const folder=await mkdtemp(join(tmpdir(),'tt-native-location-admission-'));const calls:string[]=[];
+ const backend=createLocalFileBackend({configPath:join(folder,'config.json'),trashItem:async()=>{},coordination:async(command,params)=>{calls.push(command);return command==='desktop.files.access.begin'?{accessId:params.accessId}:null}});
+ assert.equal(await backend.runNativeFileAction(async()=>17),17);
+ await assert.rejects(backend.runNativeFileAction(async()=>{throw Error('native failure')}),/native failure/);
+ assert.deepEqual(calls,process.platform==='win32'?['desktop.files.access.begin','desktop.files.access.release','desktop.files.access.begin','desktop.files.access.release']:[]);
+ await backend.prepareToQuit();
+});

@@ -1,6 +1,7 @@
+import { FileLocationButton } from './FileLocationButton';
 import { lazy, Suspense, useId, useRef, useState } from 'react';
 import type { ChatItem, FileReference, ReviewFile, Session } from '@threadterm/protocol';
-import { request, revealFile } from '../bridge';
+import { request } from '../bridge';
 import { createTurnChangesCache, turnFooterSegmentProps, turnFooterSegments, turnReview } from '../turnFooter';
 import { SurfaceDialog } from './SurfaceDialog';
 import './turn-footer.css';
@@ -48,7 +49,7 @@ export function TurnFooter({ items, elapsedMs, session, zh, copy, cache, openFil
           <div className="chat-turn-file-actions">
             {session.projectId && <button type="button" className="btn btn-sm" onClick={() => setDiff(file.path)}>{copy('Open diff', '查看差异')}</button>}
             {openFile && file.status !== 'D' && <button type="button" className="btn btn-sm" onClick={() => openFile({ path: file.path })}>{copy('Open in editor', '在编辑器中打开')}</button>}
-            <button type="button" className="btn btn-sm" aria-label={copy('Reveal in Explorer', '在资源管理器中显示')} onClick={() => void revealFile(session.id, file.path).catch(() => setIssue(copy('File could not be revealed.', '无法在文件管理器中显示文件。')))}>{copy('Reveal', '显示位置')}</button>
+            <FileLocationButton target={{sessionId:session.id,path:file.path,workspaceRelative:true}} zh={zh} onIssue={setIssue}/>
           </div>
         </div>)}
       </div>}

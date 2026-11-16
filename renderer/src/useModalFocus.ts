@@ -10,6 +10,8 @@ export function useModalFocus(panel:RefObject<HTMLElement|null>,onClose:()=>void
   if(!panel.current?.contains(document.activeElement))(focusable()[0]??panel.current)?.focus();
   const key=(event:KeyboardEvent)=>{
    if(stack.at(-1)!==token)return;
+   // A portalled context menu owns the first Escape/Tab before its parent modal.
+   if(event.target instanceof Element && event.target.closest('.app-context-menu'))return;
    if(event.key==='Escape'){
     // A candidate window owns Escape until the IME cancels or commits it.
     if(event.isComposing||event.keyCode===229)return;

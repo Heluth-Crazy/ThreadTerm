@@ -11,6 +11,7 @@ import { FILE_DRAG_TYPE, fileDragData } from '../fileDrag';
 import { absolutePath, baseName, coveredBy, joinPath, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { isDocumentPinned, sessionDocumentError } from '../sessionDocuments';
 import { showContextMenu } from './ContextMenu';
+import { fileLocationMenuItem } from '../fileLocation';
 import { explorerFileMenuItems } from '../contextMenuSurfaceItems';
 import { resolveFilesReveal, sameFilesScope, type FilesRevealRequest } from '../workbench/revealInFiles';
 
@@ -254,6 +255,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
     ...(isFile && actions.openBeside ? [{id:'explorer-open-beside', label:text('Open beside session', '在会话旁打开'), icon:<Icon name="split"/>, onSelect:() => actions.openBeside?.(entry.path), testId:'explorer-open-beside'}] : []),
     ...(isFile && changed ? [{id:'explorer-open-changes', label:text('Open changes', '查看更改'), icon:<Icon name="split"/>, onSelect:() => actions.openDiff(entry.path, false), testId:'explorer-open-changes'}] : []),
     ...explorerFileMenuItems({zh,canHistory:Boolean(isFile && actions.openHistory),canSend:Boolean(isFile && actions.sendToAgent),plansLabel:isFile && sessionDocuments ? text(pinned ? 'Remove from Plans & docs' : 'Add to Plans & docs', pinned ? '从计划与文档中移除' : '添加到计划与文档') : undefined}).map(item=>({...item,disabled:item.id==='explorer-plans-docs'&&(busy || sessionDocuments?.loading || Boolean(sessionDocumentIssue)),reason:item.id==='explorer-plans-docs'?sessionDocumentIssue:undefined,onSelect:item.id==='explorer-file-history'?()=>actions.openHistory?.(entry.path):item.id==='explorer-send-to-agent'?()=>actions.sendToAgent?.({path:entry.path}):item.id==='explorer-plans-docs'?()=>void toggleSessionDocument(entry.path):item.id==='explorer-copy-path'?()=>copy(absolutePath(scope.rootPath,entry.path)):undefined,testId:item.id})),
+    {...fileLocationMenuItem({...params,path:entry.path},zh,setIssue),id:'explorer-reveal-location',testId:'explorer-reveal-location'},
     {id:'explorer-copy-relative-path', label:text('Copy relative path', '复制相对路径'), icon:<Icon name="export"/>, onSelect:() => copy(entry.path), testId:'explorer-copy-relative-path'},
     {separator:true, label:''},
     {id:'explorer-rename', label:text('Rename…', '重命名…'), icon:<Icon name="file"/>, shortcut:'F2', onSelect:() => beginRename(entry), testId:'explorer-rename'},

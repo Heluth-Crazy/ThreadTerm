@@ -22,6 +22,7 @@ import { externalLinkOpensInPanel } from './loopbackProxy.js';
 import { nativeMarkdownExportFiles, saveChatMarkdown, writeChatMarkdownAtomic } from './chatMarkdownExport.js';
 import { applicationIconPng, trayIconPng } from '../assets/icon-data.js';
 import { hostingQuitContext, hostingQuitChoice, hostingQuitOptions, hostingQuitQaChoice, quitConfirmationOptions, quitConfirmationPreapproved } from './quitConfirmation.js';
+import { parseFileLocationRequest, revealLocalFileLocation, remoteLocationPath, remoteLocationRootEquals } from './fileLocation.js';
 import { deletedRevealScope, isWithinScope, revealTarget } from './revealFile.js';
 import { qaAttachPathsOverride, readAttachFiles, uploadAttachFile, validAttachPath, MAX_ATTACH_FILES } from './attachFiles.js';
 import { readHostPageShot, reviewShotSession } from './remoteFiles.js';
@@ -29,7 +30,7 @@ import { HostFilePickers, hostRevealTarget } from './hostFiles.js';
 import { localPageShotPath } from './pageComments.js';
 import { qaOpenExternalPathsOverride } from './externalFiles.js';
 import { createLocalFileBackend, registerLocalFileBackendIpc } from './local-files/index.js';
-import { registeredExternalFilePath } from './local-files/references.js';
+import { registeredExternalFilePath, registeredExternalFileIdentityPath } from './local-files/references.js';
 import { resolveHtmlPreviewRoot } from './htmlPreviewRoot.js';
 import { createOpenFileDefaultAppHandler, qaOpenFileAppRecordPath } from './openFileApp.js';
 
@@ -792,6 +793,55 @@ function registerIpc(): void {
         return shell.openPath(path);
       },
     }, assertTrustedRenderer, assertLocalMachine)(event, input);
+  });
+  ipcMain.handle('threadterm:reveal-file-location', async (event, input: unknown) => {
+    assertTrustedRenderer(event);
+    const runtime = runtimeFor(event), machineId = machineBindings.get(event.sender.id).machineId;
+    let target = parseFileLocationRequest(input);
+    if ('sessionId' in target) {
+      if (target.workspaceRelative) {
+        const sessionId=target.sessionId;
+        const session = (await runtime.request('runtime.snapshot', {})).sessions.find(item => item.id === sessionId);
+        if (!session?.projectId) throw new Error('File project scope is unavailable');
+        target = parseFileLocationRequest({projectId:session.projectId, ...(session.worktreePath ? {worktreePath:session.worktreePath} : {}), path:target.path});
+      } else if (machineId !== 'local') {
+        // Resolve on the host, not with this Windows client's cwd or path implementation.
+        const resolved = await runtime.request('filesystem.resolve', {sessionId:target.sessionId, path:target.path});
+        target = {projectId:resolved.projectId, worktreePath:resolved.worktreePath, path:resolved.path};
+      } else {
+        // Registration occurs only on this explicit user action; never while rendering references.
+        const result = await localFiles.request(machineId, runtime, 'filesystem.external.open', {sessionId:target.sessionId, path:target.path, source:'link'});
+        target = 'file' in result ? {externalId:result.file.id} : result.inWorkspace;
+      }
+    }
+    if ('sessionId' in target) throw new Error('Unresolved file reference');
+    if (machineId !== 'local') {
+      if ('externalId' in target) throw new Error('External files are local only');
+      const request = target;
+      const snapshot = await runtime.request('runtime.snapshot', {});
+      const project = snapshot.projects.find(item => item.id === request.projectId);
+      if (!project) throw new Error('File project scope is unavailable');
+      let root = project.path;
+      if (request.worktreePath && !remoteLocationRootEquals(request.worktreePath,project.path)) {
+        const tree = (await runtime.request('worktree.list', {projectId:project.id})).find(item => item.projectId === project.id && remoteLocationRootEquals(item.path,request.worktreePath!) && !item.missing);
+        if (!tree) throw new Error('File worktree is unavailable');
+        root = tree.path;
+      }
+      const relative = request.path.replaceAll('\\','/'), parent = relative.split('/').slice(0,-1).join('/');
+      const entries = await runtime.request('filesystem.list', {...request, path:parent});
+      const exists = entries.some(item => item.path.replaceAll('\\','/') === relative);
+      event.sender.send('threadterm:host-files', {id:randomUUID(),mode:'reveal',path:parent ? remoteLocationPath(root,parent) : root,...(exists ? {selectedPath:remoteLocationPath(root,relative)} : {})});
+      return {kind:exists ? 'file' : 'parent'};
+    }
+    assertLocalMachine(event);
+    return localFiles.runNativeFileAction(() => revealLocalFileLocation(target, {
+      workspaceRoot: request => resolveHtmlPreviewRoot({projects:async () => (await runtime.request('runtime.snapshot', {})).projects,worktrees:projectId => runtime.request('worktree.list', {projectId})},request),
+      externalPath: id => registeredExternalFileIdentityPath((command,params) => runtime.localFileRequest(command,params),id),
+      canonical: path => realpath(path),
+      kind: async path => {const value=await stat(path);return value.isFile()?'file':value.isDirectory()?'directory':'other';},
+      showItem: path => shell.showItemInFolder(path),
+      openDirectory: path => shell.openPath(path),
+    }));
   });
   ipcMain.handle('threadterm:reveal-file', async (event, sessionId: unknown, path: unknown) => {
     assertTrustedRenderer(event);
