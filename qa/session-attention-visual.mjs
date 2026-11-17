@@ -80,19 +80,22 @@ try {
   await page.locator('.sess-row-wrap[data-session-id="Plain needs"]').waitFor();
   const branch=page.locator('.catalog-tree-group').first();
   const order=()=>branch.locator('.sess-row-wrap').evaluateAll(rows=>rows.map(row=>row.dataset.sessionId));
-  assert.deepEqual(await order(),['Approval newest','Needs older','Running newer','Running older','Idle newest','Terminal unknown','Idle oldest']);
+  // Sidebar tidy R6 (owner-approved 2026-11-16): only an approval moves up; everything else keeps creation order, so a
+  // turn starting or ending never moves a row. An unread reply (awaiting_input) stays shown with its dot.
+  const initial=['Approval newest','Idle newest','Terminal unknown','Running newer','Needs older','Running older','Idle oldest'];
+  assert.deepEqual(await order(),initial);
   const plain=page.locator('.proj-group').last();
-  assert.deepEqual(await plain.locator('.sess-row-wrap').evaluateAll(rows=>rows.map(row=>row.dataset.sessionId)),['Plain needs','Plain idle']);
+  assert.deepEqual(await plain.locator('.sess-row-wrap').evaluateAll(rows=>rows.map(row=>row.dataset.sessionId)),['Plain idle','Plain needs']);
   report.checks.push('branch-local priorities, newest-first within groups, plain-directory parity');
   const selected=page.locator('.sess-row-wrap[data-session-id="Running newer"] .sess-row');
   assert.ok((await selected.getAttribute('class')).includes('active'));
   await page.evaluate(()=>window.qaSessionAttention.set('Running newer','awaiting_input'));
   await page.waitForFunction(()=>document.querySelector('[data-session-id="Running newer"]')?.getAttribute('data-activity')==='awaiting_input'||document.querySelector('[data-session-id="Running newer"] [data-activity="awaiting_input"]'));
-  assert.deepEqual((await order()).slice(0,3),['Approval newest','Running newer','Needs older']);
+  assert.deepEqual(await order(),initial,'a finished turn keeps its row in place');
   assert.ok((await selected.getAttribute('class')).includes('active'),'selected identity survives reorder');
   await selected.click();
   assert.equal((await page.evaluate(()=>window.qaSessionAttention.calls())).length,0,'viewing must not acknowledge');
-  report.checks.push('completion reorders without changing selection; viewing does not acknowledge');
+  report.checks.push('completion keeps the row in place and the selection; viewing does not acknowledge');
 
   const row=page.locator('.sess-row-wrap[data-session-id="Needs older"]');
   await row.hover();await row.locator('.row-more').click();

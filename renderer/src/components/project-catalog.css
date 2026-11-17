@@ -13,8 +13,8 @@
 .project-catalog .proj-row-wrap .proj-row, .project-catalog .tree-row-wrap .tree-row, .project-catalog .sess-row-wrap .sess-row { flex:1; min-width:0; }
 .project-catalog .tree-list { margin:1px 0 4px; }
 .project-catalog .catalog-tree-group { display:contents; }
-.project-catalog .tree-row { padding-left:26px; }
-.project-catalog .sess-row { padding-left:44px; }
+.project-catalog .tree-row { padding-left:22px; }
+.project-catalog .sess-row { padding-left:48px; }
 .project-catalog .row-more { position:absolute; right:2px; top:50%; z-index:2; width:22px; height:22px; padding:0; transform:translateY(-50%); opacity:0; pointer-events:none; }
 .project-catalog .row-more .ico { width:14px; height:14px; }
 .project-catalog .proj-row-wrap:hover .row-more, .project-catalog .tree-row-wrap:hover .row-more, .project-catalog .sess-row-wrap:hover .row-more, .project-catalog .proj-row-wrap:focus-within .row-more, .project-catalog .tree-row-wrap:focus-within .row-more, .project-catalog .sess-row-wrap:focus-within .row-more, .project-catalog .row-more:focus-visible, .project-catalog .row-more[aria-expanded="true"] { opacity:1; pointer-events:auto; }
@@ -47,8 +47,39 @@
 .project-catalog .branch-split .branch-prefix { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); }
 .project-catalog .tree-row:hover .branch-prefix, .project-catalog .tree-row.active .branch-prefix, .project-catalog .tree-row.contains-active .branch-prefix { color:var(--muted); }
 /* Agent delegation: a delegate sits indented under the session that started it. */
-.project-catalog .sess-row-wrap.is-delegate { padding-left:14px; }
-.project-catalog .sess-row-wrap.is-delegate::before { content:""; position:absolute; left:9px; top:5px; bottom:5px; width:1px; background:var(--border); }
+.project-catalog .sess-row-wrap.is-delegate { padding-left:0; }
+.project-catalog .sess-row-wrap.is-delegate .sess-row { padding-left:64px; }
+.project-catalog .sess-row-wrap.is-delegate::before { content:""; position:absolute; left:66px; top:5px; bottom:5px; width:1px; background:var(--border); }
+.project-catalog .sess-row-wrap.has-children { position:relative; }
+.project-catalog .sess-row-wrap > .parent-disclosure { position:absolute; z-index:2; left:44px; top:50%; margin:0; transform:translateY(-50%); }
+.project-catalog .sess-row-wrap.is-delegate.has-children > .parent-disclosure { left:60px; }
+.project-catalog .sess-row-wrap > .parent-disclosure.open .chev { transform:rotate(0); }
+/* R5: ended sessions read muted with their icon at ~55% opacity; a failed row keeps its red dot. */
+.project-catalog .sess-row-wrap.is-ended .sess-row .grow { color:var(--muted); }
+.project-catalog .sess-row-wrap.is-ended .sess-row .bico { opacity:.55; }
+/* R3: a deleted worktree tag, and the folded rows for other branches and older sessions. */
+.project-catalog .row-tag { flex:none; margin-left:4px; color:var(--faint); font-size:11px; }
+.project-catalog .tree-row.gone .branch { color:var(--faint); text-decoration:line-through; text-decoration-color:var(--border); }
+.project-catalog .catalog-fold-row { display:flex; align-items:center; gap:7px; height:28px; margin:0 10px; padding:0 8px; border:0; border-radius:6px; background:transparent; color:var(--muted); font-size:12px; text-align:left; white-space:nowrap; }
+.project-catalog .catalog-fold-row:hover { background:var(--fill-hover); }
+.project-catalog .catalog-fold-row .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.project-catalog .catalog-fold-row .fold-chev { width:13px; height:13px; flex:none; color:var(--faint); transition:transform .15s; }
+.project-catalog .catalog-fold-row[aria-expanded="true"] .fold-chev { transform:rotate(180deg); }
+.project-catalog .other-fold-row { padding-left:14px; }
+.project-catalog .older-fold-row { padding-left:48px; }
+.project-catalog .catalog-recent-all { width:calc(100% - 20px); padding-left:10px; color:var(--faint); }
+/* R1: the folded summary's running spinner. */
+.project-catalog .fold-spin { flex:none; width:11px; height:11px; border-radius:50%; border:1.6px solid var(--border); border-top-color:var(--st-running); animation:fold-spin .9s linear infinite; }
+@keyframes fold-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .project-catalog .fold-spin { animation:none; } }
+/* R7: the Recent view. */
+.project-catalog .catalog-recent-day { height:24px; margin:8px 10px 0; padding:0 8px; display:flex; align-items:center; color:var(--faint); font-size:11px; font-weight:600; }
+.project-catalog .catalog-recent-row { height:40px; min-height:40px; align-items:center; }
+.project-catalog .catalog-recent-row .catalog-recent-two { flex:1; min-width:0; display:flex; flex-direction:column; line-height:1.25; }
+.project-catalog .catalog-recent-row .catalog-recent-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.project-catalog .catalog-recent-row .catalog-recent-where { color:var(--faint); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.project-catalog .catalog-recent-row .catalog-recent-when { flex:none; align-self:flex-start; margin-top:5px; color:var(--faint); font-size:11px; font-variant-numeric:tabular-nums; }
+.project-catalog .catalog-recent-row .bico-dot { top:16px; right:10px; }
 .project-catalog .delegate-fold-row { color:var(--muted); white-space:nowrap; }
 .project-catalog .delegate-fold-row .chev { width:12px; height:12px; transform:rotate(-90deg); }
 .project-catalog .delegate-fold-row[aria-expanded="true"] .chev { transform:rotate(0); }

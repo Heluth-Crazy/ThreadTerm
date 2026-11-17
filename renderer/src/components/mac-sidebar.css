@@ -47,6 +47,8 @@
   margin-right: -2px;
   color: var(--faint);
 }
+/* R2: the chevron sits inside the row's 10 px margin, at the level it controls. */
+.project-catalog .proj-disclosure { margin-left: 10px; }
 .project-catalog .proj-disclosure .chev,
 .machine-rows .machine-disclosure .chev { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform .15s; }
 .project-catalog .proj-disclosure.open .chev,
@@ -55,9 +57,20 @@
 .project-catalog .tree-row > .bico > .ico,
 .machine-rows .machine-add > .ico { width: 16px; height: 16px; color: var(--primary); }
 .project-catalog .tree-list { margin: 0; }
-.project-catalog .tree-row { padding-left: 30px; }
-.project-catalog .sess-row { position: relative; padding-left: 30px; }
-.project-catalog .sess-row-wrap.is-delegate { padding-left: 14px; }
+/* R2: project 8 px (the base row padding), branch 22 px, session 40 px, delegate 56 px. */
+.project-catalog .tree-row { padding-left: 22px; }
+.project-catalog .tree-row-wrap > .proj-disclosure { margin-left: 24px; }
+.project-catalog .tree-row-wrap > .proj-disclosure + .tree-row { padding-left: 6px; }
+.project-catalog .tree-row-wrap > .proj-disclosure.is-empty { visibility: hidden; }
+.project-catalog .catalog-tree-group.in-other > .tree-row-wrap > .proj-disclosure + .tree-row { padding-left: 22px; }
+.project-catalog .sess-row { position: relative; padding-left: 48px; }
+.project-catalog .sess-row-wrap.is-delegate { padding-left: 0; }
+.project-catalog .sess-row-wrap.is-delegate .sess-row { padding-left: 64px; }
+/* A branch icon's dot only speaks up for running, waiting or failed work; ended and deleted say nothing. */
+.project-catalog .tree-row .bico-dot.st-ended,
+.project-catalog .tree-row .bico-dot.st-stalled { display: none; }
+/* R7: Recent rows are two lines and start at the left edge. */
+.project-catalog .sess-row.catalog-recent-row { height: 40px; min-height: 40px; padding-left: 10px; }
 /* Static: the prototype sheet's .bico is position:relative, which pinned the row's status dot (right:9px, top:10px) to
    the icon's lower left instead of the row's right end. The running ring stays in .session-agent-icon. */
 .project-catalog .sess-row .bico { flex: 0 0 20px; width: 20px; min-width: 20px; gap: 0; position: static; }
@@ -109,3 +122,13 @@
 
 .project-catalog .side-tree { padding:0; gap:0; }
 .project-catalog .side-label { letter-spacing:normal; }
+/* R2: project names carry the weight; the branch icon is quiet so the tree reads by indent, not by colour. */
+.project-catalog .proj-row .grow { font-weight: 600; }
+.project-catalog .tree-row > .bico > .ico { width: 14px; height: 14px; color: var(--muted); }
+/* R8: header = label, Projects/Recent control, the existing ⋯ menu opener. */
+.project-catalog .catalog-head { display:flex; align-items:center; gap:6px; padding:0 10px; }
+.project-catalog .catalog-head-label { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--faint); font-size:11px; font-weight:600; }
+.project-catalog .catalog-head .side-scope { flex:none; width:auto; margin:0; padding:0 4px; height:26px; }
+.project-catalog .catalog-view-seg { display:inline-flex; flex:none; padding:1px; border-radius:6px; background:var(--soft); }
+.project-catalog .catalog-view-seg button { height:18px; padding:0 7px; border:0; border-radius:5px; background:transparent; color:var(--muted); font-size:11px; font-weight:600; }
+.project-catalog .catalog-view-seg button.on { background:var(--surface); color:var(--text); box-shadow:0 1px 2px var(--border); }
