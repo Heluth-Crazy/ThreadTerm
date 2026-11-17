@@ -38,7 +38,11 @@ export function taskbarBadge(items: readonly IslandItem[]): TaskbarBadge {
 
 export const islandKey = (machineId: string, sessionId: string) => `${machineId}\u0000${sessionId}`;
 
-/** What a session is doing now, for the island. Ended, read-only and plain idle sessions show nothing. */
+/**
+ * What a session is doing now, for the island. Ended, read-only and plain idle sessions show nothing. `input` is the
+ * runtime's `awaiting_input`, which also means "a Chat turn finished and its reply is unread": the tracker shows it only
+ * once a pending request for the user is read from the transcript (see `IslandTracker.items`).
+ */
 export function liveState(session: Pick<Session, 'readOnly' | 'status' | 'activity' | 'mode'>): IslandLiveState | undefined {
   if (session.readOnly || ['exited', 'interrupted', 'error'].includes(session.status)) return undefined;
   const state = session.activity?.state ?? (session.mode !== 'chat' ? undefined : session.status === 'waiting' ? 'awaiting_approval' : session.status === 'running' ? 'running' : undefined);
@@ -105,17 +109,19 @@ export class IslandTracker {
         this.recent.delete(source.key); this.modes.delete(source.key);
         this.live.set(source.key, { state: source.state, since: source.state === 'running' ? started : now, started, source });
         // A finished announcement is over once the session works again. A reply can reach the island before the
-        // activity update that ends the turn, so an unchanged `updatedAt` is not a new turn; needing the user always is.
+        // activity update that ends the turn, so an unchanged `updatedAt` is not a new turn; an approval always is. A
+        // finished turn itself reads as `input`, so `input` replaces the card only once a request is read (`setApproval`).
         const announced = this.finished.get(source.key);
-        if (announced && (source.state !== 'running' || source.updatedAt > announced.since + 1000)) this.finished.delete(source.key);
+        if (announced && (source.state === 'approval' || (source.state === 'running' && source.updatedAt > announced.since + 1000))) this.finished.delete(source.key);
         if (source.state !== 'running') fresh.push(source.key);
         continue;
       }
       entry.source = source;
       if (entry.state === source.state) continue;
-      // A request for the user outranks the finished card that may still hide this entry (see `items`).
-      if (source.state !== 'running') { fresh.push(source.key); this.finished.delete(source.key); }
-      else this.approvals.delete(source.key);
+      // The request read for the old state no longer describes the session; a new wait is read again.
+      this.approvals.delete(source.key);
+      // An approval outranks the finished card that may still hide this entry (see `items`); `input` waits for its read.
+      if (source.state !== 'running') { fresh.push(source.key); if (source.state === 'approval') this.finished.delete(source.key); }
       entry.state = source.state;
       entry.since = source.state === 'running' ? entry.started : now;
     }
@@ -123,11 +129,18 @@ export class IslandTracker {
     return fresh;
   }
 
+  /** The pending request read for a waiting session. For `input` it is what makes the session need the user at all. */
   setApproval(key: string, part: ChatPart | undefined): boolean {
     const entry = this.live.get(key);
     if (!entry || entry.state === 'running') return false;
-    if (part) this.approvals.set(key, part); else this.approvals.delete(key);
+    if (part) { this.approvals.set(key, part); this.finished.delete(key); } else this.approvals.delete(key);
     return true;
+  }
+
+  /** Whether a live session asks something of the user: an approval, or an `input` wait with a request read for it. */
+  needsUser(key: string): boolean {
+    const entry = this.live.get(key);
+    return !!entry && (entry.state === 'approval' || entry.state === 'input' && this.approvals.has(key));
   }
 
   /** Announces a finished turn of a session the island saw working; false for any other session. */
@@ -169,7 +182,8 @@ export class IslandTracker {
   }
 
   items(): IslandItem[] {
-    const live = [...this.live.values()].filter(entry => !this.finished.has(entry.source.key)).map(({ state, since, started, source }): IslandItem => ({
+    // `input` without a request is a finished turn whose reply is unread: the Inbox does not count it, nor does the island.
+    const live = [...this.live.values()].filter(entry => !this.finished.has(entry.source.key) && (entry.state !== 'input' || this.approvals.has(entry.source.key))).map(({ state, since, started, source }): IslandItem => ({
       key: source.key, machineId: source.machineId, sessionId: source.sessionId, machineName: source.machineName, title: source.title, project: source.project,
       provider: source.provider, providerName: source.providerName, state, since, started, approval: this.approvals.get(source.key),
     }));

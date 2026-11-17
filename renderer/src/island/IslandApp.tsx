@@ -101,10 +101,11 @@ function Stage({ visible, zh }: { visible: boolean; zh: boolean }) {
       const target = state.current.on ? document.elementFromPoint(event.clientX, event.clientY) : null;
       report(!!target && target !== document.documentElement && target !== document.body && target.id !== 'island-root');
     };
-    const out = (event: MouseEvent) => { if (!event.relatedTarget && !drag.current) report(false); };
+    // Leaving the window is decided by main, not by a `mouseout`: Windows hands the page a stale "mouse left" the moment
+    // the window starts catching clicks, which would let the click through again (desktop/src/taskIsland.ts `interactive`).
     window.addEventListener('mousemove', move);
-    document.addEventListener('mouseout', out);
-    return () => { window.removeEventListener('mousemove', move); document.removeEventListener('mouseout', out); };
+    const unsubscribe = bridge?.onPointerLeft(() => { if (!drag.current) report(false); });
+    return () => { window.removeEventListener('mousemove', move); unsubscribe?.(); };
   }, [island]);
 
   useEffect(() => {

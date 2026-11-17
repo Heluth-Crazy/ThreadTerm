@@ -29,6 +29,8 @@ export interface IslandBridge {
   onModel(listener: (model: IslandModel) => void): () => void;
   /** The pointer is over the island (clicks land) or over the transparent rest (clicks pass through). */
   setInteractive(on: boolean): void;
+  /** Main saw the pointer leave the window while the island caught clicks; clicks pass through again. */
+  onPointerLeft(listener: () => void): () => void;
   open(key: string): void;
   openApp(): void;
   /** `dx`: CSS px since the drag started. */

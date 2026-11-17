@@ -14,6 +14,8 @@ export const ISLAND_WIDTH = 440;
 export const ISLAND_HEIGHT = 380;
 const SNAP = 28;
 const POLL_MS = 2500;
+/** While the island catches clicks, how often main checks that the pointer is still over its window. */
+const POINTER_WATCH_MS = 100;
 
 export interface TaskIslandHost {
   tree: MachineTreeStore;
@@ -43,6 +45,7 @@ export class TaskIsland {
   private pollTimer?: ReturnType<typeof setInterval>;
   private expiryTimer?: ReturnType<typeof setTimeout>;
   private hideTimer?: ReturnType<typeof setTimeout>;
+  private pointerTimer?: ReturnType<typeof setInterval>;
   private badge: TaskbarBadge;
   private model?: IslandModel;
   private readonly cleanup: (() => void)[] = [];
@@ -68,7 +71,7 @@ export class TaskIsland {
       ipcMain.on(channel, guarded); this.cleanup.push(() => ipcMain.off(channel, guarded));
     };
     on('task-island:ready', () => { this.ready = true; this.send(); });
-    on('task-island:interactive', (_event, value) => this.window?.setIgnoreMouseEvents(value !== true, { forward: true }));
+    on('task-island:interactive', (_event, value) => this.interactive(value === true));
     on('task-island:open', (_event, key) => {
       const item = this.model?.items.find(row => row.key === key);
       if (item) this.host.openSession(item.machineId, item.sessionId);
@@ -80,7 +83,7 @@ export class TaskIsland {
 
   dispose(): void {
     for (const undo of this.cleanup.splice(0)) undo();
-    this.stopPolling(); clearTimeout(this.expiryTimer); clearTimeout(this.hideTimer);
+    this.stopPolling(); this.stopPointerWatch(); clearTimeout(this.expiryTimer); clearTimeout(this.hideTimer);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = undefined;
   }
@@ -116,12 +119,41 @@ export class TaskIsland {
     for (const key of fresh) {
       const item = sources.find(source => source.key === key);
       if (item?.mode === 'chat') void this.read(key, item.sessionId, 65_536).then(items => {
-        if (items && this.tracker.setApproval(key, pendingApproval(items))) this.publish();
+        if (!items || !this.tracker.setApproval(key, pendingApproval(items))) return;
+        // An `input` wait needs the user only once its request is read: that is when it may flash the taskbar.
+        if (item.state === 'input' && this.tracker.needsUser(key)) this.flash();
+        this.publish();
       });
     }
-    if (fresh.length && this.preferences.badge && !this.host.appFocused()) this.host.mainWindow()?.flashFrame(true);
+    if (fresh.some(key => this.tracker.needsUser(key))) this.flash();
     this.publish();
   }
+
+  private flash(): void {
+    if (this.preferences.badge && !this.host.appFocused()) this.host.mainWindow()?.flashFrame(true);
+  }
+
+  /**
+   * The page reports the pointer over the island (catch clicks) or over the transparent rest (let them through). While
+   * clicks are caught, main decides when the pointer has left the window: the moment Windows stops forwarding, it
+   * delivers a stale "mouse left" to the page, so the page cannot tell that from a real exit and would let the click
+   * through again (owner report 2026-11-16: the island could not be clicked).
+   */
+  private interactive(on: boolean): void {
+    const window = this.window;
+    if (!window || window.isDestroyed()) return;
+    window.setIgnoreMouseEvents(!on, { forward: true });
+    if (!on) { this.stopPointerWatch(); return; }
+    if (this.pointerTimer) return;
+    this.pointerTimer = setInterval(() => {
+      const current = this.window;
+      const point = screen.getCursorScreenPoint(), bounds = current && !current.isDestroyed() && current.isVisible() ? current.getBounds() : undefined;
+      if (bounds && point.x >= bounds.x && point.x < bounds.x + bounds.width && point.y >= bounds.y && point.y < bounds.y + bounds.height) return;
+      this.stopPointerWatch();
+      if (current && !current.isDestroyed()) { current.setIgnoreMouseEvents(true, { forward: true }); current.webContents.send('task-island:pointer-left'); }
+    }, POINTER_WATCH_MS);
+  }
+  private stopPointerWatch(): void { clearInterval(this.pointerTimer); this.pointerTimer = undefined; }
 
   private async read(key: string, sessionId: string, maxBytes: number) {
     const machineId = key.slice(0, key.indexOf('\u0000'));
@@ -153,7 +185,7 @@ export class TaskIsland {
       this.hideTimer = setTimeout(() => {
         this.hideTimer = undefined;
         if (this.model?.visible) return;
-        this.window?.hide(); this.window?.setIgnoreMouseEvents(true, { forward: true }); this.shown = false;
+        this.stopPointerWatch(); this.window?.hide(); this.window?.setIgnoreMouseEvents(true, { forward: true }); this.shown = false;
       }, items.length ? 450 : 1200);
     }
     this.send();
@@ -182,7 +214,7 @@ export class TaskIsland {
   }
 
   private destroyWindow(): void {
-    clearTimeout(this.hideTimer); this.hideTimer = undefined;
+    clearTimeout(this.hideTimer); this.hideTimer = undefined; this.stopPointerWatch();
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = undefined; this.ready = false; this.shown = false;
   }

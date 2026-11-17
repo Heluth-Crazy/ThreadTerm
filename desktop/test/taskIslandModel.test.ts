@@ -214,13 +214,46 @@ test('a reply that arrives before the activity goes idle keeps its finished card
   assert.deepEqual(tracker.items().map(entry => entry.state), ['approval']);
 });
 
-test('a session that asks for the user right after finishing replaces its finished card', () => {
+test('a session that asks the user something right after finishing replaces its finished card', () => {
   const tracker = new IslandTracker();
   tracker.update([source({ updatedAt: 500 })], 0);
   tracker.finish(source().key, 'done', 1000, 5000);
   tracker.update([], 1100);
-  assert.deepEqual(tracker.update([source({ updatedAt: 900, state: 'input' })], 1300), [source().key]);
+  assert.deepEqual(tracker.update([source({ updatedAt: 900, state: 'input' })], 1300), [source().key], 'worth reading for a question');
+  assert.deepEqual(tracker.items().map(entry => entry.state), ['done'], 'until a question is read the card stays');
+  const question: ChatPart = { type: 'approval', approvalId: 'q1', status: 'pending', data: { approvalId: 'q1', title: 'Which branch?' } };
+  assert.equal(tracker.setApproval(source().key, question), true);
+  assert.equal(tracker.needsUser(source().key), true);
   assert.deepEqual(tracker.items().map(entry => entry.state), ['input']);
+});
+
+// Owner report 2026-11-16: the island said "3 need you" while the Inbox had nothing. `awaiting_input` is also the state
+// of a Chat turn that finished with an unread reply, which the Inbox does not count either.
+test('a finished Chat turn waiting for the next message does not need the user', () => {
+  const tracker = new IslandTracker();
+  tracker.update([source()], 0);
+  tracker.finish(source().key, 'done', 1000, 5000);
+  assert.deepEqual(tracker.update([source({ state: 'input', updatedAt: 900 })], 1200), [source().key]);
+  assert.deepEqual(tracker.items().map(entry => entry.state), ['done'], 'the finished card stays');
+  assert.equal(tracker.setApproval(source().key, undefined), true, 'the transcript holds no request');
+  assert.equal(tracker.needsUser(source().key), false);
+  assert.equal(tracker.expire(6000), true);
+  assert.deepEqual(tracker.items(), [], 'once the card expires nothing is left to handle');
+  const cold = new IslandTracker();
+  assert.deepEqual(cold.update([source({ state: 'input' })], 0), [source().key]);
+  assert.equal(cold.needsUser(source().key), false);
+  assert.deepEqual(cold.items(), [], 'an island that meets such a session at start shows nothing either');
+});
+
+test('an approval needs the user at once, and the request read for one wait is not reused for the next', () => {
+  const tracker = new IslandTracker();
+  const approval: ChatPart = { type: 'approval', approvalId: 'a1', status: 'pending', data: { approvalId: 'a1', title: 'Run tests' } };
+  tracker.update([source({ state: 'approval' })], 1000);
+  assert.equal(tracker.needsUser(source().key), true, 'before its wording is read');
+  tracker.setApproval(source().key, approval);
+  assert.deepEqual(tracker.update([source({ state: 'input' })], 2000), [source().key]);
+  assert.equal(tracker.needsUser(source().key), false);
+  assert.deepEqual(tracker.items(), [], 'the old approval does not make the new wait look like a question');
 });
 
 test('remembers whether a finished session was a Chat or a terminal', () => {
