@@ -421,6 +421,18 @@ pub(crate) struct NativeChatMessage {
     pub(crate) role: NativeChatMessageRole,
     pub(crate) phase: Option<String>,
     pub(crate) text: String,
+    /// How the message's native turn ended: completed, interrupted or failed.
+    pub(crate) turn_status: crate::domain::NativeTurnStatus,
+}
+
+/// The finished turns of a native thread, for cross-client refresh: the
+/// messages bind local rows to native turns, and `transcript` holds each
+/// turn's full presentation (messages, progress notes, tools, reasoning and
+/// the turn boundary) with native item and turn IDs, as `history_read` has it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NativeChatHistory {
+    pub(crate) messages: Vec<NativeChatMessage>,
+    pub(crate) transcript: Vec<crate::domain::ChatItem>,
 }
 
 pub trait ProviderRuntime: Send + Sync {
@@ -545,16 +557,16 @@ pub(crate) trait ProviderAdapter: Send + Sync {
         cwd: Option<&str>,
     ) -> Result<Value, ProviderError>;
     fn history_read(&self, native_id: &str) -> Result<Value, ProviderError>;
-    /// Completed user and assistant messages for append-only cross-client
-    /// refresh. This deliberately stays separate from the public history
-    /// projection, which also preserves tools, reasoning, and turn boundaries.
-    fn completed_chat_messages(
+    /// Finished turns (completed, interrupted or failed) for append-only
+    /// cross-client refresh: their user and assistant messages to bind local
+    /// rows, and their full transcript to show what the other client did.
+    fn finished_chat_history(
         &self,
         _native_id: &str,
-    ) -> Result<Vec<NativeChatMessage>, ProviderError> {
+    ) -> Result<NativeChatHistory, ProviderError> {
         Err(ProviderError::new(
             "unsupported",
-            "This agent does not expose completed native chat messages",
+            "This agent does not expose finished native chat turns",
         ))
     }
     fn subagent_transcript(
@@ -1983,18 +1995,18 @@ impl Providers {
         Ok(())
     }
 
-    pub(crate) fn completed_chat_messages(
+    pub(crate) fn finished_chat_history(
         &self,
         provider: &str,
         native_id: &str,
-    ) -> Result<Vec<NativeChatMessage>, ProviderError> {
+    ) -> Result<NativeChatHistory, ProviderError> {
         if native_id.trim().is_empty() {
             return Err(ProviderError::new(
                 "invalid_native_id",
                 "native session id is required",
             ));
         }
-        self.adapter(provider)?.completed_chat_messages(native_id)
+        self.adapter(provider)?.finished_chat_history(native_id)
     }
 
     pub(crate) fn registered_chat_sessions(&self) -> Vec<String> {

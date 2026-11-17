@@ -1179,7 +1179,7 @@ impl RuntimeService {
             return Ok(result);
         }
         let complete_empty = || {
-            self.db.transaction(|tx| refresh::commit(tx, session_id, &p.operation_id, Vec::new()))
+            self.db.transaction(|tx| refresh::commit(tx, session_id, &p.operation_id, Default::default()))
         };
         let session = self.db.session_by_id(session_id)?.ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
         let Some(native_id) = session.native_id.as_deref() else { return complete_empty() };
@@ -1194,7 +1194,7 @@ impl RuntimeService {
             return complete_empty();
         }
         drop(admitted);
-        let messages = self.providers.completed_chat_messages("codex", native_id)?;
+        let history = self.providers.finished_chat_history("codex", native_id)?;
 
         // Provider I/O finished before taking the lease fence. Recheck
         // authority and native identity after allowing concurrent chat work.
@@ -1216,13 +1216,13 @@ impl RuntimeService {
         // Codex cannot reopen the native thread. Reload before the next send.
         self.providers.commit_chat_history_refresh(session_id, &worker, |unchanged| {
             self.db.transaction(|tx| {
-                let additions = if unchanged {
-                    refresh::plan(tx, session_id, native_id, &messages)?
+                let changes = if unchanged {
+                    refresh::plan(tx, session_id, native_id, &history)?
                 } else {
-                    Vec::new()
+                    Default::default()
                 };
-                let changed = !additions.is_empty();
-                let result = refresh::commit(tx, session_id, &p.operation_id, additions)?;
+                let changed = !changes.is_empty();
+                let result = refresh::commit(tx, session_id, &p.operation_id, changes)?;
                 Ok((result, changed))
             })
         })
@@ -4923,7 +4923,7 @@ mod plugin_tests;
 mod tests {
     use super::*;
     use crate::providers::{
-        ChatSession, NativeChatMessage, NativeChatMessageRole, ProviderAdapter, ProviderCapability,
+        ChatSession, NativeChatHistory, NativeChatMessage, NativeChatMessageRole, ProviderAdapter, ProviderCapability,
         ProviderError, TerminalCommand,
     };
     use std::sync::atomic::AtomicUsize;
@@ -5256,12 +5256,12 @@ mod tests {
         }
         fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> { Ok(json!({"items":[]})) }
         fn history_read(&self, _: &str) -> Result<Value, ProviderError> { Ok(json!([])) }
-        fn completed_chat_messages(&self, native_id: &str) -> Result<Vec<NativeChatMessage>, ProviderError> {
+        fn finished_chat_history(&self, native_id: &str) -> Result<NativeChatHistory, ProviderError> {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![
-                NativeChatMessage { thread_id: native_id.into(), turn_id: "external-turn".into(), item_id: "external-user".into(), client_id: None, role: NativeChatMessageRole::User, phase: None, text: "external prompt".into() },
-                NativeChatMessage { thread_id: native_id.into(), turn_id: "external-turn".into(), item_id: "external-answer".into(), client_id: None, role: NativeChatMessageRole::Assistant, phase: Some("final_answer".into()), text: "external reply".into() },
-            ])
+            Ok(NativeChatHistory { messages: vec![
+                NativeChatMessage { thread_id: native_id.into(), turn_id: "external-turn".into(), item_id: "external-user".into(), client_id: None, role: NativeChatMessageRole::User, phase: None, text: "external prompt".into(), turn_status: crate::domain::NativeTurnStatus::Completed },
+                NativeChatMessage { thread_id: native_id.into(), turn_id: "external-turn".into(), item_id: "external-answer".into(), client_id: None, role: NativeChatMessageRole::Assistant, phase: Some("final_answer".into()), text: "external reply".into(), turn_status: crate::domain::NativeTurnStatus::Completed },
+            ], transcript: Vec::new() })
         }
         fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
             Err(ProviderError::new("fixture_unexpected_open", "history refresh must not open a worker"))
