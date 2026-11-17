@@ -2,6 +2,7 @@
 // samples every process in its tree while idle and after terminal load.
 // Usage: node qa/memory-baseline.mjs [--exe=release/win-unpacked/ThreadTerm.exe] [--dev-server=http://127.0.0.1:5173]
 import {spawn,execFile} from 'node:child_process';
+import { openCatalogPage } from './catalog-page.mjs';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -79,7 +80,7 @@ try {
   const added=await rpc('project.add',{path:project,name:'Memory baseline',operationId:randomUUID()});
   for (let i=1;i<=terminals;i++) await rpc('session.create',{projectId:added.id,cwd:project,provider:'shell',mode:'terminal',title:`Mem shell ${i}`,executable:'cmd.exe',args:['/Q','/K'],operationId:randomUUID()});
   await page.reload(); await page.waitForFunction(()=>!!window.threadterm); await page.locator('.app-shell').waitFor();
-  await page.locator('.proj-row').filter({hasText:'Memory baseline'}).first().click();
+  await openCatalogPage(page.locator('.proj-row').filter({hasText:'Memory baseline'}).first());
   for (let i=1;i<=terminals;i++) {
     const marker=`MEM_DONE_${i}_${randomUUID().slice(0,8)}`;
     await page.locator('.sess-row').filter({hasText:`Mem shell ${i}`}).first().click(); await page.locator('.terminal-host:visible').waitFor();

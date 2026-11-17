@@ -118,6 +118,25 @@ try{
  await page.screenshot({path:join(out,'en-light-collapsed.png')});report.screenshots.push('en-light-collapsed.png');
  report.checks.push('Enter/Space toggle the fold row, preserve focus, and expansion keeps the finished delegates after the visible delegates');
 
+ // Option A: a parent's delegates fold from the "⤷ N" tag at the row's end; nothing sits on the agent icon.
+ const parentWrap=gitScope.locator(`.sess-row-wrap.has-children[data-session-id="${git.parent}"]`);
+ const pill=parentWrap.locator('.kid-pill');
+ assert.equal(await page.locator('.project-catalog .parent-disclosure, .project-catalog .proj-disclosure').count(),0,'no chevron sits on an agent icon');
+ assert.equal(await pill.getAttribute('aria-expanded'),'true');
+ assert.equal((await pill.innerText()).trim(),'6','the tag counts the parent\'s delegated agents');
+ const iconBox=await parentWrap.locator('.session-agent-icon').boundingBox(),pillBox=await pill.boundingBox();
+ assert.ok(pillBox.x>iconBox.x+iconBox.width+60,'the tag sits at the row end, clear of the agent icon');
+ await pill.click();
+ await page.waitForFunction(id=>document.querySelector(`.sess-row-wrap[data-session-id="${id}"] .kid-pill`)?.getAttribute('aria-expanded')==='false',git.parent);
+ assert.deepEqual(await ids(gitScope),[git.parent],'folding the parent hides its delegates');
+ assert.match(await pill.getAttribute('class'),/is-running/,'folded with running delegates, the tag shows a spinner');
+ await page.mouse.move(900,600);
+ await page.screenshot({path:join(out,'en-light-parent-folded.png')});report.screenshots.push('en-light-parent-folded.png');
+ await pill.click();
+ await page.waitForFunction(id=>document.querySelector(`.sess-row-wrap[data-session-id="${id}"] .kid-pill`)?.getAttribute('aria-expanded')==='true',git.parent);
+ assert.deepEqual(await ids(gitScope),[git.parent,...git.running],'unfolding brings the delegates back');
+ report.checks.push('the ⤷ tag folds and unfolds a parent\'s delegates, clear of the agent icon');
+
  await row(git.parent).click();await page.reload();await row(git.parent).waitFor();
  assert.equal(await row(git.parent).getAttribute('aria-expanded'),'true','expanded choice persists after reload');
  await row(plain.parent).click();

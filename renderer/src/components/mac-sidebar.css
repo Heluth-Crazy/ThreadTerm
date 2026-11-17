@@ -37,7 +37,6 @@
 .project-catalog .tree-row-wrap,
 .project-catalog .sess-row-wrap,
 .machine-rows .machine-row-wrap { min-height: 28px; }
-.project-catalog .proj-disclosure,
 .machine-rows .machine-disclosure {
   display: grid;
   place-items: center;
@@ -47,25 +46,18 @@
   margin-right: -2px;
   color: var(--faint);
 }
-/* R2: the chevron sits inside the row's 10 px margin, at the level it controls. */
-.project-catalog .proj-disclosure { margin-left: 10px; }
-.project-catalog .proj-disclosure .chev,
 .machine-rows .machine-disclosure .chev { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform .15s; }
-.project-catalog .proj-disclosure.open .chev,
 .machine-rows .machine-disclosure.open .chev { transform: rotate(0); }
 .project-catalog .proj-row > .ico,
 .project-catalog .tree-row > .bico > .ico,
 .machine-rows .machine-add > .ico { width: 16px; height: 16px; color: var(--primary); }
 .project-catalog .tree-list { margin: 0; }
-/* R2: project 8 px (the base row padding), branch 22 px, session 40 px, delegate 56 px. */
+/* Option A (owner 2026-11-17): no chevron column. Project and branch rows fold on click, so every level is one
+   14 px step: project 8 px (the base row padding), branch 22 px, session 36 px, delegate 52 px. */
 .project-catalog .tree-row { padding-left: 22px; }
-.project-catalog .tree-row-wrap > .proj-disclosure { margin-left: 24px; }
-.project-catalog .tree-row-wrap > .proj-disclosure + .tree-row { padding-left: 6px; }
-.project-catalog .tree-row-wrap > .proj-disclosure.is-empty { visibility: hidden; }
-.project-catalog .catalog-tree-group.in-other > .tree-row-wrap > .proj-disclosure + .tree-row { padding-left: 22px; }
-.project-catalog .sess-row { position: relative; padding-left: 48px; }
+.project-catalog .sess-row { position: relative; padding-left: 36px; }
 .project-catalog .sess-row-wrap.is-delegate { padding-left: 0; }
-.project-catalog .sess-row-wrap.is-delegate .sess-row { padding-left: 64px; }
+.project-catalog .sess-row-wrap.is-delegate .sess-row { padding-left: 52px; }
 /* A branch icon's dot only speaks up for running, waiting or failed work; ended and deleted say nothing. */
 .project-catalog .tree-row .bico-dot.st-ended,
 .project-catalog .tree-row .bico-dot.st-stalled { display: none; }
@@ -112,7 +104,7 @@
 .machine-rows .machine-add > .ico { color: var(--primary); }
 .machine-rows .machine-more,
 .project-catalog .row-more,
-.project-catalog .tree-new { border-radius: 5px; color: var(--muted); }
+.project-catalog .tree-new { border-radius: 5px; background: transparent; color: var(--muted); }
 .machine-rows .machine-more:hover,
 .project-catalog .row-more:hover,
 .project-catalog .tree-new:hover { background: var(--fill-selected); color: var(--text); }

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { openCatalogPage } from './catalog-page.mjs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,7 +39,7 @@ async function referenceRoute(page,route,theme){
   if(route==='worktree')await page.locator('[data-action="new-tree"]').first().click();
 }
 async function productionRoute(page,route){
-  if(route==='project'||route.startsWith('settings')||['usage','follow','worktree','creator'].includes(route))await diagnosticClick(page,page.locator('.proj-row').filter({hasText:'orbit-web'}));
+  if(route==='project'||route.startsWith('settings')||['usage','follow','worktree','creator'].includes(route))await openCatalogPage(page.locator('.proj-row').filter({hasText:'orbit-web'}).first());
   if(route==='terminals')await page.locator('.side-nav button').filter({hasText:'所有终端'}).click();
   if(route==='inbox')await diagnosticClick(page,page.locator('.side-nav button').filter({hasText:/收件箱|待处理/}).first());
   if(route.startsWith('settings')){await page.locator('.user-row').click();await page.locator('.account-menu .menu-item').filter({hasText:'设置'}).click();await page.locator('.settings-panel').waitFor();if(route.includes('-')){const names={controls:'快捷键',data:'数据',mobile:'移动',tools:'工具'};await page.locator('.settings-layout nav button').filter({hasText:names[route.split('-')[1]]}).click();}}

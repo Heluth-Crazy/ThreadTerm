@@ -2,6 +2,7 @@
 // outside a session: the project Files/Changes page and Settings → Tools → "Open files & changes".
 // Isolated data/profile/pipe and a temporary Git repository; read-only (no file or Git mutations).
 import assert from 'node:assert/strict';
+import { openCatalogPage } from './catalog-page.mjs';
 import {spawn,spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
@@ -50,7 +51,7 @@ try {
  await page.reload();await page.waitForFunction(()=>!!window.threadterm);await page.locator('.app-shell').waitFor();
 
  // ---- Project page → Files / Changes (FileWorkspace standalone with shared Explorer + Source Control) ----
- await page.locator('.proj-row',{hasText:'Standalone QA'}).click();
+ await openCatalogPage(page.locator('.proj-row',{hasText:'Standalone QA'}).first());
  await page.getByRole('button',{name:'Project actions',exact:true}).click();await page.getByRole('button',{name:'Files',exact:true}).click();
  // The page opens with Files & Git visible when no file is selected.
  await page.locator('.project-file-page .wb-tools-head',{hasText:'Source Control'}).waitFor();
@@ -70,7 +71,7 @@ try {
 
  // ---- Branch home → Git card (real git.status + git.log: no upstream, one edit, one untracked, one commit) ----
  await page.locator('.project-file-page .ws-back').click();
- await page.locator('.tree-row',{hasText:'main'}).first().click();
+ await openCatalogPage(page.locator('.tree-row',{hasText:'main'}).first());
  const gitCard=page.locator('[data-testid="home-git"]');
  await gitCard.locator('.ov-git-commit').first().waitFor();
  assert.match(await gitCard.locator('[data-testid="home-git-sync"]').innerText(),/Not published/);

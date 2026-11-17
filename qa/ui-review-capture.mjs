@@ -4,6 +4,7 @@
 //        [--sizes=1280x800,1920x1080] [--langs=zh,en] [--usage] [--label=name]
 //        [--css=file] [--script=file]   (preview a proposal: extra stylesheet / DOM script before each shot)
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { openCatalogPage } from './catalog-page.mjs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,9 +31,9 @@ await mkdir(out, { recursive: true });
 const text = (zh, en) => new RegExp(`^\\s*(${zh}|${en})`);
 async function route(page, name) {
   const sideNav = label => page.locator('.side-nav button').filter({ hasText: label }).first().click();
-  if (name === 'branch') await page.locator('.tree-row').filter({ hasText: 'feature/checkout-a11y' }).first().click();
-  if (name === 'branch-main') await page.locator('.tree-row').filter({ hasText: /^\s*main(\d|\s|$)/ }).first().click();
-  if (name === 'project') await page.locator('.proj-row').filter({ hasText: 'orbit-web' }).first().click();
+  if (name === 'branch') await openCatalogPage(page.locator('.tree-row').filter({ hasText: 'feature/checkout-a11y' }).first());
+  if (name === 'branch-main') await openCatalogPage(page.locator('.tree-row').filter({ hasText: /^\s*main(\d|\s|$)/ }).first());
+  if (name === 'project') await openCatalogPage(page.locator('.proj-row').filter({ hasText: 'orbit-web' }).first());
   if (name === 'terminals') await sideNav(text('所有终端', 'All terminals'));
   if (name === 'inbox') await sideNav(text('待处理|收件箱', 'Inbox'));
   if (name === 'settings') {

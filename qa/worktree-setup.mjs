@@ -3,6 +3,7 @@
 // and System32, so installed agent CLIs cannot be launched.  Do not run this
 // while developing: it requires runtime/target-qa and a Desktop 1 environment.
 import assert from 'node:assert/strict';
+import { openCatalogPage } from './catalog-page.mjs';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -94,7 +95,8 @@ async function saveSetupInDialog(commands) {
  await dialog.waitFor({ state: 'hidden' });
  const setup = await request('quickLaunch.setup.read', { projectId: project.id });
  assert.deepEqual(setup.commandIds, commands.map(command => command.id), 'dialog saved setup commands in fixture order');
- await page.locator('.ws-top .ws-chip.branch').click();await page.getByTestId('project-home').waitFor();
+ // The Mac session toolbar's branch link (older builds: the header's branch chip) opens the branch page.
+ await page.locator('.session-branch-crumb, .ws-top .ws-chip.branch').first().click();await page.getByTestId('project-home').waitFor();
 }
 async function createWorktreeViaUi() {
  await page.getByRole('button', { name: /^(New worktree|新建工作树)$/ }).click();
@@ -107,7 +109,7 @@ async function createWorktreeViaUi() {
 }
 async function showCreatedWorktree() {
  const row = page.locator('.tree-row').filter({ hasText: 'qa-worktree-setup' }).first();
- if (await row.count()) { await row.click(); await page.getByTestId('project-home').waitFor(); }
+ if (await row.count()) { await openCatalogPage(row); await page.getByTestId('project-home').waitFor(); }
 }
 async function openRunSetupAgain() {
  await showRun(created);
@@ -148,7 +150,7 @@ try {
  const initial = await snapshot();
  await request('settings.update', { patch: { language: 'en', theme: 'light', notifications: { native: false, attention: false, completed: false, sound: false } }, expectedRevision: initial.settings?.revision ?? 0, operationId: randomUUID() });
  project = await request('project.add', { path: work, name: 'Worktree Setup QA', operationId: randomUUID() });
- await page.reload(); await page.waitForFunction(() => Boolean(window.threadterm)); await page.locator('.proj-row').filter({ hasText: 'Worktree Setup QA' }).click(); await page.getByTestId('project-home').waitFor();
+ await page.reload(); await page.waitForFunction(() => Boolean(window.threadterm)); await openCatalogPage(page.locator('.proj-row').filter({ hasText: 'Worktree Setup QA' }).first()); await page.getByTestId('project-home').waitFor();
  const commands = [];
  for (const [name, command] of [['step 1', 'node step1.mjs'], ['step 2', 'node step2.mjs'], ['step 3', 'node step3.mjs']]) commands.push(await request('quickLaunch.save', { projectId: project.id, name, command, shell: 'cmd', cwd: '', kind: 'task', env: [], operationId: randomUUID() }));
  await saveSetupInDialog(commands);

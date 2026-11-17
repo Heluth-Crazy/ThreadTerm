@@ -166,7 +166,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     <div className="sess-row-wrap is-delegate">
       <button type="button" className="sess-row delegate-fold-row" data-parent-id={row.parentId} aria-expanded={row.expanded}
         onClick={() => setExpandedDelegates(current => row.expanded ? current.filter(id => id !== row.parentId) : boundedExpandedParents([...current, row.parentId]))}>
-        <span className="bico"><Icon name="chevron" className="chev" /></span>
+        <span className="bico" aria-hidden="true" />
         <span className="grow">{label(`${row.count} finished`, `${row.count} 个已结束`)}</span>
       </button>
       {row.sessionIds.length > 0 && <DelegateGroupActions parentTitle={catalogSessions.find(session => session.id === row.parentId)?.title ?? ""}
@@ -184,7 +184,9 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     if(target.kind==="project"&&scopeProjectId===target.id){setScopeProjectId(undefined);onScopeChange?.();}
   };
   const onCatalogMenuOpenChange=useCallback((open:boolean)=>setFrozenOrder(current=>open?current??activityOrder(catalogSessions):undefined),[catalogSessions]);
-  const actions=(target:CatalogTarget)=><CatalogActions target={target} projects={items} trees={trees[target.projectId]??[]} sessions={catalogSessions} providers={providers} visibility={visibility} onChanged={changed} onHidden={()=>hide(target)} onWorktree={onWorktree} onNewSession={onNewSession} onMenuOpenChange={onCatalogMenuOpenChange}/>;
+  // Project and branch rows fold on click; ＋ beside ⋯ starts a session there in one click.
+  const newIn=(projectId:string,path:string|undefined,name:string)=>onNewSession&&<button type="button" className="icon-btn tree-new" aria-label={label(`New terminal in ${name}`,`在 ${name} 中新建终端`)} title={label("New terminal","新建终端")} onClick={()=>onNewSession(projectId,path)}><Icon name="plus"/></button>;
+  const actions=(target:CatalogTarget)=><CatalogActions target={target} projects={items} trees={trees[target.projectId]??[]} sessions={catalogSessions} providers={providers} visibility={visibility} onChanged={changed} onHidden={()=>hide(target)} onWorktree={(id,path)=>path===undefined?onProject(id):onWorktree?.(id,path)} onNewSession={onNewSession} onMenuOpenChange={onCatalogMenuOpenChange}/>;
   const projectTarget=(item:ProjectCatalogItem):CatalogTarget=>({kind:"project",id:item.id,name:item.name,path:item.path,projectId:item.id});
   const closeMenu=()=>setMenuAnchor(undefined);
   const selectScope=(id?:string)=>{setScopeProjectId(id);closeMenu();onScopeChange?.(id);};
@@ -231,17 +233,23 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     return base;
   };
 
-  const renderSessionRow=(row:Extract<DelegateCatalogRow,{kind:'session'}>,treeTarget:CatalogTarget,options:{hasChildren?:boolean;open?:boolean;summary?:FoldSummary;onToggleChildren?:(event:React.MouseEvent)=>void}={})=>{
+  const renderSessionRow=(row:Extract<DelegateCatalogRow,{kind:'session'}>,treeTarget:CatalogTarget,options:{hasChildren?:boolean;childCount?:number;open?:boolean;summary?:FoldSummary;onToggleChildren?:(event:React.MouseEvent)=>void}={})=>{
     const session=row.session,activity=sessionActivity(session),quiet=delegationQuiet(session);
     const activityLabel=quiet?delegationQuietLabel(quiet.since,label):isTerminalAttentionSession(session)?sessionStateLabel(sessionState(session),zh,session.readOnly,Boolean(session.released)):sessionActivityLabel(activity,zh);
     const needsAttention=activity==="awaiting_approval"||activity==="awaiting_input";
     const ended=isTerminalAttentionSession(session);
     const hasChildren=Boolean(options.hasChildren);
+    // A parent's delegates fold from the tag at the row's end, never over its agent icon. Folded, the tag carries
+    // what the delegates are doing: amber when one needs you, a spinner while one runs.
+    const count=options.childCount??0,summary=options.open?undefined:options.summary;
+    const kidState=summary?.kind==="needs"?" is-needs":summary?.kind==="running"?" is-running":"";
+    const kidLabel=label(`${count} delegated agents`,`${count} 个子智能体`)+(summary?" · "+foldedSummaryLabel(summary,zh):"");
     return <Fragment key={session.id}>
       <div className={"sess-row-wrap"+(row.nested?" is-delegate":"")+(hasChildren?" has-children":"")+(ended?" is-ended":"")} data-session-id={session.id} data-activity={activity}>
-        {hasChildren&&<button type="button" className={"proj-disclosure parent-disclosure"+(options.open?" open":"")} aria-expanded={Boolean(options.open)} aria-label={label("Toggle delegates","展开或收起委派")+" "+session.title} onClick={options.onToggleChildren}><Icon name="chevron" className="chev"/></button>}
         {needsAttention&&<i className="session-attention-bar" aria-hidden="true"/>}
-        <button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} data-session-id={session.id} data-activity={activity} title={session.title+" · "+activityLabel} onClick={()=>onSession?.(session.id)}><span className={`bico session-activity-${activity}`} aria-label={activityLabel} title={activityLabel}><span className="session-agent-icon"><SessionIcon session={session}/>{activity==="running"&&<i className="session-attention-ring"/>}</span>{needsAttention&&<Icon name="bell" className="session-attention-icon" aria-hidden="true"/>}<i className={"bico-dot st-"+attentionStateClass(session)}/></span><span className="grow">{session.title}</span><DelegateChip session={session} nested={row.nested} zh={zh}/>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}{!options.open&&options.summary&&<FoldMark summary={options.summary} zh={zh}/>}</button>{actions({...treeTarget,kind:"session",id:session.id,name:session.title})}</div>
+        <button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} data-session-id={session.id} data-activity={activity} title={session.title+" · "+activityLabel} onClick={()=>onSession?.(session.id)}><span className={`bico session-activity-${activity}`} aria-label={activityLabel} title={activityLabel}><span className="session-agent-icon"><SessionIcon session={session}/>{activity==="running"&&<i className="session-attention-ring"/>}</span>{needsAttention&&<Icon name="bell" className="session-attention-icon" aria-hidden="true"/>}<i className={"bico-dot st-"+attentionStateClass(session)}/></span><span className="grow">{session.title}</span><DelegateChip session={session} nested={row.nested} zh={zh}/>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}</button>
+        {hasChildren&&<button type="button" className={"kid-pill"+(options.open?" open":"")+kidState} aria-expanded={Boolean(options.open)} aria-label={kidLabel+" · "+session.title} title={(options.open?label("Hide delegated agents","收起子智能体"):label("Show delegated agents","展开子智能体"))+" · "+kidLabel} onClick={options.onToggleChildren}>{summary?.kind==="running"?<i className="fold-spin" aria-hidden="true"/>:<Icon name="nest"/>}<span className="kid-count">{count}</span></button>}
+        {actions({...treeTarget,kind:"session",id:session.id,name:session.title})}</div>
       {options.open!==false&&renderRunningSubagents(row)}
     </Fragment>;
   };
@@ -252,7 +260,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
       const parentId=group.parent.session.id,hasChildren=group.children.length>0,open=expanded('parent',parentId);
       const children=descendantSessions(parentId,allSessions);
       return <Fragment key={parentId}>
-        {renderSessionRow(group.parent,treeTarget,{hasChildren,open,summary:hasChildren?summaryOf(children,parentId):undefined,onToggleChildren:event=>onToggleParent(group.parent.session,event)})}
+        {renderSessionRow(group.parent,treeTarget,{hasChildren,childCount:children.filter(child=>child.delegation?.parentSessionId===parentId).length||children.length,open,summary:hasChildren?summaryOf(children,parentId):undefined,onToggleChildren:event=>onToggleParent(group.parent.session,event)})}
         {hasChildren&&open&&group.children.map(row=>row.kind==='fold'?renderDelegateFold(row):renderSessionRow(row,treeTarget))}
       </Fragment>;
     });
@@ -290,16 +298,15 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
       const next=!expanded('parent',session.id);
       if(event.altKey)setManyFolds('parent',parentIds,next);else setFold('parent',session.id,next);
     };
-    // A branch with nothing under it has nothing to fold: its chevron keeps the column but is not shown.
+    // The row is the fold switch. A branch with nothing under it has nothing to fold, so it opens its page instead.
     const empty=treeAllSessions.length===0&&treeGroups.length===0;
     return <div className={"catalog-tree-group"+(context.inOther?" in-other":"")} key={tree.id}><div className={"tree-row-wrap"+(selected?" current":"")+(tree.missing?" gone":"")}>
-      <button type="button" className={"proj-disclosure"+(open?" open":"")+(empty?" is-empty":"")} disabled={empty} aria-expanded={open} aria-label={label("Toggle branch","展开或收起分支")+" "+branchName} onClick={toggleBranch}><Icon name="chevron" className="chev"/></button>
-      <button type="button" className={"tree-row"+(selected&&!holdsSelection?" active":"")+(holdsSelection?" contains-active":"")+(tree.missing?" gone":"")} title={`${branchName}\n${displayPath(tree.path)}`} onClick={()=>onWorktree?.(item.id,tree.path)}><span className="bico"><Icon name="branch"/><i className={"bico-dot st-"+treeState(tree,treeAllSessions)}/></span><BranchName name={branchName}/>{tree.missing&&<span className="row-tag">{label("Deleted","已删除")}</span>}{!open&&<FoldMark summary={summaryOf(treeAllSessions)} zh={zh}/>}</button>{actions(target)}
+      <button type="button" className={"tree-row"+(selected&&!holdsSelection?" active":"")+(holdsSelection?" contains-active":"")+(tree.missing?" gone":"")} aria-expanded={empty?undefined:open} title={`${branchName}\n${displayPath(tree.path)}`} onClick={event=>empty?onWorktree?.(item.id,tree.path):toggleBranch(event)}><span className="bico"><Icon name="branch"/><i className={"bico-dot st-"+treeState(tree,treeAllSessions)}/></span><BranchName name={branchName}/>{tree.missing&&<span className="row-tag">{label("Deleted","已删除")}</span>}{!open&&<FoldMark summary={summaryOf(treeAllSessions)} zh={zh}/>}</button>{newIn(item.id,tree.path,branchName)}{actions(target)}
     </div>
       {open&&<>
         {renderGroups(treeGroups)}
         {renderRows(rows,target,allSessions,parentIds,toggleParent)}
-        {older.length>0&&<button type="button" className="catalog-fold-row older-fold-row" aria-expanded={olderOpen} onClick={()=>setFold('older',tree.path,!olderOpen)}><Icon name="chevD" className="fold-chev"/><span className="grow">{olderOpen?label("Hide older sessions","收起较早的会话"):label(`${older.length} older sessions`,`更早的 ${older.length} 个会话`)}</span></button>}
+        {older.length>0&&<button type="button" className="catalog-fold-row older-fold-row" aria-expanded={olderOpen} onClick={()=>setFold('older',tree.path,!olderOpen)}><span className="grow">{olderOpen?label("Hide older sessions","收起较早的会话"):label(`${older.length} older sessions`,`更早的 ${older.length} 个会话`)}</span></button>}
       </>}
     </div>;
   };
@@ -376,18 +383,19 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
       const next=!expanded('parent',session.id);
       if(event.altKey)setManyFolds('parent',plainParentIds,next);else setFold('parent',session.id,next);
     };
+    // The row is the fold switch, like a source list's group; the folder opens and closes with it. The project page
+    // is in the row's ⋯ menu, and ＋ starts a session here.
     return <div className="proj-group" key={item.id}><div className={"proj-row-wrap"+(selectedProjectId===item.id&&!selectedWorktreePath?" active":"")}>
-      <button type="button" className={"proj-disclosure"+(open?" open":"")} aria-expanded={open} aria-label={label(open?"Collapse":"Expand",open?"收起":"展开")+" "+item.name} onClick={toggleProject}><Icon name="chevron" className="chev"/></button>
-      <button type="button" className="proj-row" title={displayPath(item.path)} onClick={()=>onProject(item.id)}><Icon name="folder"/><span className="grow">{item.name}</span>{item.pinned&&<span className="follow-star">★</span>}{!open&&<FoldMark summary={summaryOf(projectSessions)} zh={zh}/>}</button>{actions(projectTarget(item))}
+      <button type="button" className="proj-row" aria-expanded={open} title={displayPath(item.path)} onClick={toggleProject}><Icon name={open?"folderOpen":"folder"}/><span className="grow">{item.name}</span>{item.pinned&&<span className="follow-star">★</span>}{!open&&<FoldMark summary={summaryOf(projectSessions)} zh={zh}/>}</button>{newIn(item.id,undefined,item.name)}{actions(projectTarget(item))}
     </div>{open&&<div className="tree-list">
       {listed.map(tree=>renderBranch(item,tree,{projectSessions,allSessions:visibleProjectSessions,projectGroups,memberIds,siblings}))}
       {other.length>0&&<>
-        <button type="button" className="catalog-fold-row other-fold-row" aria-expanded={otherOpen} onClick={()=>setFold('other',item.id,!otherOpen)}><Icon name="chevD" className="fold-chev"/><span className="grow">{otherOpen?label("Hide other branches","收起其他分支"):label(`${other.length} other branches`,`其他 ${other.length} 个分支`)}</span></button>
+        <button type="button" className="catalog-fold-row other-fold-row" aria-expanded={otherOpen} onClick={()=>setFold('other',item.id,!otherOpen)}><span className="grow">{otherOpen?label("Hide other branches","收起其他分支"):label(`${other.length} other branches`,`其他 ${other.length} 个分支`)}</span></button>
         {otherOpen&&other.map(tree=>renderBranch(item,tree,{projectSessions,allSessions:visibleProjectSessions,projectGroups,memberIds,siblings,inOther:true}))}
       </>}
       {!ordered.length&&renderGroups(projectGroups)}
       {plainRows.length>0&&renderRows(plainRows,plainTarget,plainDirectorySessions,plainParentIds,togglePlainParent)}
-      {plainSplit.older.length>0&&<button type="button" className="catalog-fold-row older-fold-row" aria-expanded={plainOlderOpen} onClick={()=>setFold('older',item.id,!plainOlderOpen)}><Icon name="chevD" className="fold-chev"/><span className="grow">{plainOlderOpen?label("Hide older sessions","收起较早的会话"):label(`${plainSplit.older.length} older sessions`,`更早的 ${plainSplit.older.length} 个会话`)}</span></button>}
+      {plainSplit.older.length>0&&<button type="button" className="catalog-fold-row older-fold-row" aria-expanded={plainOlderOpen} onClick={()=>setFold('older',item.id,!plainOlderOpen)}><span className="grow">{plainOlderOpen?label("Hide older sessions","收起较早的会话"):label(`${plainSplit.older.length} older sessions`,`更早的 ${plainSplit.older.length} 个会话`)}</span></button>}
     </div>}</div>;
   };
 

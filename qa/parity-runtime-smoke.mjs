@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { openCatalogPage } from './catalog-page.mjs';
 import {spawn} from 'node:child_process';
 import {mkdtemp,mkdir,writeFile,access} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
@@ -39,7 +40,7 @@ try {
  assert.equal(report.styles.shellDisplay,'grid');assert.equal(report.styles.sidebarWidth,240);report.checks.push('packaged CSS loaded: production asset rules, grid shell and 240px sidebar');
  stage('adding project'); const added=await rpc('project.add',{path:project,name:'Runtime smoke',operationId:randomUUID()}); stage('project added');
  report.checks.push('project.add real Git root');
- await page.locator('.proj-row').filter({hasText:'Runtime smoke'}).first().click();
+ await openCatalogPage(page.locator('.proj-row').filter({hasText:'Runtime smoke'}).first());
  await page.getByRole('button',{name:/new worktree|新建工作树/i}).click();
  await page.locator('#new-tree-branch').fill('qa/runtime-smoke');
  await page.locator('#new-tree-path').fill(tree);
