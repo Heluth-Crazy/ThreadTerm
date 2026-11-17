@@ -36,6 +36,7 @@ pub(crate) mod data_backup;
 pub mod db;
 pub mod delegation;
 mod delegation_authority;
+pub(crate) mod delegation_wake;
 pub mod devices;
 pub mod domain;
 pub mod environment;

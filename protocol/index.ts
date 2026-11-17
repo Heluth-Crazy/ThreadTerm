@@ -45,7 +45,7 @@ export interface SessionActivity { state:'running'|'awaiting_approval'|'awaiting
 // before the delegated turn finished (startup reconciliation); its partial answer is kept.
 export type SessionDelegationState = 'starting'|'running'|'awaiting_parent'|'awaiting_user'|'cancelling'|'cancel_failed'|'completed'|'failed'|'cancelled'|'interrupted';
 // Present on a Chat session that another agent started through ThreadTerm delegation.
-export interface SessionDelegation { id:string; parentSessionId:string; workspace:'shared'|'worktree'; branch?:string; state:SessionDelegationState; /** How many of the user's messages from the parent chat were attached to the delegate's first message; absent when none. */ userMessages?:number; /** The authority this delegate was fitted to under its parent (never broader than the parent's own); absent for links from before F07. */ authority?:'read_only'|'ask_before_writes'|'writes_in_workspace'|'full_access'; /** Preview of the delegated turn's outcome; present only for terminal states when there is text. */ outcome?:string; /** The delegate's last activity; present only while the runtime reports it quiet, so the UI never infers quiet itself. */ lastActivityAt?:string; /** The tool call an open quiet episode waits on; present only while one is open. */ openTool?:{ name:string; since:string } }
+export interface SessionDelegation { id:string; parentSessionId:string; workspace:'shared'|'worktree'; branch?:string; state:SessionDelegationState; /** How many of the user's messages from the parent chat were attached to the delegate's first message; absent when none. */ userMessages?:number; /** The authority this delegate was fitted to under its parent (never broader than the parent's own); absent for links from before F07. */ authority?:'read_only'|'ask_before_writes'|'writes_in_workspace'|'full_access'; /** Preview of the delegated turn's outcome; present only for terminal states when there is text. */ outcome?:string; /** The delegate's last activity; present only while the runtime reports it quiet, so the UI never infers quiet itself. */ lastActivityAt?:string; /** The tool call an open quiet episode waits on; present only while one is open. */ openTool?:{ name:string; since:string }; /** R12: the user's decision on a finished delegate; absent until the user decides. */ acceptance?:'accepted'|'sent_back' }
 export interface SessionForkOrigin { sessionId:string; itemId?:string; title?:string }
 /** Present on a Chat session linked to a group. */
 export interface SessionGroup { /** Owning group id. */ id:string; /** This session's unique `@handle` within its group. */ handle:string }
@@ -242,7 +242,7 @@ export interface TerminalIconRule { id:string; match:string; /** A built-in mark
 /** A user's icon: only ever drawn as an <img> data URL (png, svg+xml, webp, jpeg or gif), at most about 64 KB. */
 export interface TerminalIconImage { id:string; name:string; src:string }
 export interface TerminalIconSettings { rules:TerminalIconRule[]; images:TerminalIconImage[] }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; /** Minutes before a hidden idle chat worker is released; 0 disables it (default 30). */ 'sessions.idleReleaseMinutes'?:number; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; /** Wake the parent agent automatically when a delegate finishes, needs a decision or goes quiet (missing means on). */ 'chatTools.autoWake'?:boolean; /** Minutes before a hidden idle chat worker is released; 0 disables it (default 30). */ 'sessions.idleReleaseMinutes'?:number; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export type ExternalFileSource = 'dialog'|'drop'|'link'|'recent';
@@ -270,7 +270,7 @@ export type ChatPlanEntryPriority = 'high'|'medium'|'low';
 export interface ChatPlanEntry { content:string; status:ChatPlanEntryStatus; priority?:ChatPlanEntryPriority }
 export interface ChatPlanData { entries:ChatPlanEntry[]; explanation?:string }
 /** The legacy, provider-defined chat part shapes. Their data remains opaque. */
-export interface ChatPartBase { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'|'subagent'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[]; phase?:'commentary'|'final_answer' }
+export interface ChatPartBase { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'|'subagent'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[]; phase?:'commentary'|'final_answer'; /** A message ThreadTerm wrote on the parent agent's behalf (an automatic delegate update), not the user's words. */ automatic?:boolean }
 /** A plan snapshot is the one chat-part payload with a protocol-owned shape. Empty entries deliberately clear a prior plan. */
 export interface ChatPlanPart { type:'plan'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data:ChatPlanData; fileReferences?:FileReference[]; phase?:'commentary'|'final_answer' }
 /** Additive union: persisted non-plan provider rows retain their opaque data contract. */
@@ -1236,6 +1236,8 @@ export interface RequestMap {
  'workspace.save': [WorkspaceSave,Workspace];
  'workspace.delete': [{id:string;expectedRevision:number;operationId:string},null];
  'inbox.read': [{ids:string[];operationId:string},null];
+ /** R13: the user accepts a finished delegate, or sends it back with a note the parent agent receives. */
+ 'delegation.decide': [{delegationId:string;decision:'accept'|'send_back';note?:string;operationId:string},{delegationId:string;acceptance:'accepted'|'sent_back'}];
 }
 export type Method = keyof RequestMap;
 export type RequestParams<M extends Method> = RequestMap[M][0];
@@ -1312,6 +1314,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'git.undo','git.undo.list',
  'reviewDrafts.list','reviewDrafts.upsert','reviewDrafts.delete',
  'reviewDrafts.importLegacy','reviewDrafts.assetReferences',
+ 'delegation.decide',
  'quickLaunch.sequence.cancel','quickLaunch.port.read',
  'quickLaunch.recent','quickLaunch.proposals.list','quickLaunch.proposals.accept','quickLaunch.proposals.reject','chat.tool.run.propose',
  'session.releaseResources.bulk',
@@ -1378,6 +1381,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'worktree.list':['projectId'],'worktree.create':['projectId','path','branch','operationId'],
  'worktree.remove':['id','operationId'],'workspace.save':['name','operationId'],
  'workspace.delete':['id','operationId'],'inbox.read':['operationId'],
+ 'delegation.decide':['delegationId','decision','operationId'],
  'git.index.write':['projectId','path','operationId'],'git.fingerprints':['projectId'],'git.discard':['projectId','operationId'],'git.checkout':['projectId','branch','operationId'],'git.branch.delete':['projectId','branch','operationId'],
  'git.push.preview':['projectId'],'git.branches':['projectId'],'git.stash.list':['projectId'],'git.stash.show':['projectId','oid'],'git.stash.push':['projectId','operationId'],'git.stash.apply':['projectId','oid','operationId'],'git.stash.drop':['projectId','oid','operationId'],'git.log':['projectId'],'git.commit.show':['projectId','commit'],'git.commit.diff':['projectId','commit','path'],'git.blame':['projectId','path'],
  'git.compare.files':['projectId'],'git.compare.diff':['projectId','path','mergeBase'],
@@ -1546,6 +1550,11 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   if(name.length===0||[...name].length>80) throw new Error('Invalid device name');
  }
  if(m==='session.stop'&&params.force!==undefined&&typeof params.force!=='boolean') throw new Error('Invalid force');
+ if(m==='delegation.decide') {
+  if(!['accept','send_back'].includes(String(params.decision))) throw new Error('Invalid delegation decision');
+  if(params.note!==undefined&&(typeof params.note!=='string'||[...String(params.note).trim()].length>2000)) throw new Error('Invalid delegation note');
+  if(params.decision==='send_back'&&(typeof params.note!=='string'||!params.note.trim())) throw new Error('A send back needs a note');
+ }
  if('leaseEpoch' in params && (!Number.isSafeInteger(params.leaseEpoch)||Number(params.leaseEpoch)<1)) throw new Error('Invalid leaseEpoch');
  if(m==='browser.approval.read'||m==='browser.approval.resolve') {
   if(!Number.isSafeInteger(params.leaseEpoch)||Number(params.leaseEpoch)<1)throw new Error('Invalid browser approval lease');
@@ -2084,7 +2093,7 @@ export interface DataStatus { root:string;database:{path:string;sizeBytes:number
 export interface ThemeBackgroundLayer { image:string;opacity:number;blur:number;overlay:number;fit:'cover'|'contain'|'tile';focusX:number;focusY:number;scale:number }
 export interface ThemeBackgrounds { window?:ThemeBackgroundLayer;sidebar?:ThemeBackgroundLayer;sidebar2?:ThemeBackgroundLayer;chat?:ThemeBackgroundLayer;editor?:ThemeBackgroundLayer;terminal?:ThemeBackgroundLayer;browser?:ThemeBackgroundLayer }
 export interface ThemeTokens { background:string;surface:string;text:string;muted:string;accent:string;border:string;sidebar?:string;editor?:string;base?:string;backgrounds?:ThemeBackgrounds }
-export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.run'?:boolean;'chatTools.delegation'?:boolean;'sessions.idleReleaseMinutes'?:number} }
+export interface SettingsBundle { marker:'threadterm-v3-settings';version:1;exportedAt:string;settings:{theme?:'light'|'dark'|'system';language?:'zh-CN'|'en';shortcuts?:Record<string,string>;notifications?:Record<string,boolean>;customThemes?:Record<string,ThemeTokens>;themeSelection?:string;terminalCompatibility?:{aiCompletionHints:boolean};quickMessages?:QuickMessage[];'chatTools.ask'?:boolean;'chatTools.sessionInfo'?:boolean;'chatTools.feedback'?:boolean;'chatTools.run'?:boolean;'chatTools.delegation'?:boolean;'chatTools.autoWake'?:boolean;'sessions.idleReleaseMinutes'?:number} }
 export interface UsageRecord { source?:UsageSource;status?:SessionStatus;sessionId:string;provider:ProviderId;recordedAt:string;inputTokens?:number;outputTokens?:number;estimatedCost?:number;currency?:string;model?:string }
 export type UsageSource = 'created'|'native-history'|'rerun';
 export interface SessionLifecycleMetric { sessionId:string;projectId?:string;provider:ProviderId;mode:SessionMode;status:SessionStatus;source?:UsageSource;sourceSessionId?:string;startedAt:string;endedAt?:string;sessionLifetimeSeconds?:number;durationKind:'session_lifetime';history:{status:SessionStatus;recordedAt:string}[] }

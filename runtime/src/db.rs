@@ -173,7 +173,7 @@ impl Database {
             .prepare("PRAGMA table_info(delegations)")?
             .query_map([], |r| r.get::<_, String>(1))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for column in ["quiet_since", "quiet_tool"] {
+        for column in ["quiet_since", "quiet_tool", "reported_state", "reported_request", "reported_quiet", "acceptance", "acceptance_at"] {
             if !quiet_columns.iter().any(|name| name == column) {
                 connection.execute(&format!("ALTER TABLE delegations ADD COLUMN {column} TEXT"), [])?;
             }
@@ -2397,6 +2397,9 @@ pub(crate) fn scoped_history_item(session_id: &str, source: &ChatItem) -> ChatIt
         .as_deref()
         .map(|turn_id| format!("{session_id}:history:{turn_id}"));
     item.turn_origin = Some(ChatTurnOrigin::History);
+    // R8: native history still contains the automatic delegate updates the
+    // runtime sent, and repair/import rebuild their parts from it.
+    crate::delegation_wake::mark_automatic_parts(&mut item);
     item
 }
 
@@ -2782,7 +2785,7 @@ pub(crate) fn complete<T: serde::Serialize>(
     )?;
     Ok(())
 }
-fn operation_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
+pub(crate) fn operation_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>> {
     let raw: Option<String> = tx
         .query_row("SELECT result FROM operations WHERE id=?", [id], |r| {
             r.get(0)
@@ -3049,9 +3052,9 @@ const DELEGATION_OUTCOME_CHARS: usize = 280;
 const DELEGATION_OUTCOME_ITEM_BOUND: i64 = 32;
 
 fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDelegation>> {
-    let Some((delegation_id, parent_session_id, workspace, branch, state, user_messages, authority, turn_id, result, error, quiet_since, quiet_tool)) =
+    let Some((delegation_id, parent_session_id, workspace, branch, state, user_messages, authority, turn_id, result, error, quiet_since, quiet_tool, acceptance)) =
         conn.query_row(
-            "SELECT id,parent_session_id,workspace,branch,state,user_messages,authority,turn_id,result,error,quiet_since,quiet_tool FROM delegations WHERE child_session_id=?",
+            "SELECT id,parent_session_id,workspace,branch,state,user_messages,authority,turn_id,result,error,quiet_since,quiet_tool,acceptance FROM delegations WHERE child_session_id=?",
             [id],
             |row| {
                 Ok((
@@ -3067,6 +3070,7 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             },
         )
@@ -3089,6 +3093,7 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
         outcome,
         last_activity_at: quiet_since,
         open_tool,
+        acceptance,
     }))
 }
 

@@ -322,6 +322,10 @@ fn project(
     if let Some(phase) = &message.phase {
         part["phase"] = json!(phase);
     }
+    // R8: this fallback rebuilds the turn from native messages alone.
+    if !assistant && crate::delegation_wake::is_automatic_text(&message.text) {
+        part["automatic"] = json!(true);
+    }
     ChatItem {
         id: format!("{session_id}:history-refresh:{}:{index}", message.turn_id),
         role: if assistant { "assistant" } else { "user" }.into(),

@@ -37,6 +37,8 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "chatTools.feedback",
     "chatTools.run",
     "chatTools.delegation",
+    // R1: wake the parent agent automatically when a delegate has news.
+    "chatTools.autoWake",
     "sessions.idleReleaseMinutes",
 ];
 const RUNTIME_SETTINGS: &[&str] = &[
@@ -64,6 +66,7 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "chatTools.feedback",
     "chatTools.run",
     "chatTools.delegation",
+    "chatTools.autoWake",
     "chatTools",
     // Minutes before a hidden, idle chat worker is released; 0 disables it.
     "sessions.idleReleaseMinutes",
@@ -1122,6 +1125,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         | "chatTools.feedback"
         | "chatTools.run"
         | "chatTools.delegation"
+        | "chatTools.autoWake"
             if value.is_boolean() =>
         {
             Ok(())

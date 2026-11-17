@@ -44,23 +44,40 @@ pub(crate) struct ChatToolSettings {
     /// Caller-scoped Run tools (`run_list`, `run_start`, ...). On by default, like Ask.
     pub run: bool,
     pub delegation: bool,
+    /// R1: wake the parent agent with an automatic message when a delegate
+    /// finishes, needs a decision or goes quiet. On by default.
+    pub auto_wake: bool,
 }
 
 impl Default for ChatToolSettings {
     fn default() -> Self {
-        Self { ask: true, session_info: true, feedback: true, run: true, delegation: true }
+        Self { ask: true, session_info: true, feedback: true, run: true, delegation: true, auto_wake: true }
     }
 }
 
 pub(crate) fn chat_tool_settings(db: &Database) -> Result<ChatToolSettings> {
+    db.transaction(chat_tool_settings_tx)
+}
+
+/// R5: the projection and the quiet sweep only have a transaction, so the same
+/// settings are read through it (an absent row means the defaults).
+pub(crate) fn chat_tool_settings_tx(tx: &Transaction<'_>) -> Result<ChatToolSettings> {
+    let raw: Option<String> = tx
+        .query_row("SELECT value FROM settings WHERE singleton=1", [], |row| row.get(0))
+        .optional()?;
+    let settings = raw.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()).unwrap_or(Value::Null);
+    Ok(chat_tool_settings_value(&settings))
+}
+
+fn chat_tool_settings_value(settings: &Value) -> ChatToolSettings {
     let mut result = ChatToolSettings::default();
-    let settings = db.settings_value()?;
     if let Some(value) = settings.get("chatTools.ask").and_then(Value::as_bool) { result.ask = value; }
     if let Some(value) = settings.get("chatTools.sessionInfo").and_then(Value::as_bool) { result.session_info = value; }
     if let Some(value) = settings.get("chatTools.feedback").and_then(Value::as_bool) { result.feedback = value; }
     if let Some(value) = settings.get("chatTools.run").and_then(Value::as_bool) { result.run = value; }
     if let Some(value) = settings.get("chatTools.delegation").and_then(Value::as_bool) { result.delegation = value; }
-    Ok(result)
+    if let Some(value) = settings.get("chatTools.autoWake").and_then(Value::as_bool) { result.auto_wake = value; }
+    result
 }
 /// The `delegation` profile's tools (`mcp_delegation::tools`). Adapters
 /// auto-approve the parent's calls to exactly these names and nothing else.
@@ -90,7 +107,7 @@ pub(crate) const QUIET_TOOL_SECS: i64 = 3600;
 /// R8: how often the sweep looks for delegates that became or stopped being quiet.
 pub(crate) const QUIET_SWEEP: Duration = Duration::from_secs(30);
 /// Error messages that are also the RPC error code the MCP host reports.
-pub const ERROR_CODES: [&str; 19] = [
+pub const ERROR_CODES: [&str; 21] = [
     "delegation_unauthorized",
     // F07: the child provider cannot be made to fit under the parent's ceiling.
     "delegation_authority_exceeded",
@@ -112,6 +129,10 @@ pub const ERROR_CODES: [&str; 19] = [
     "worktree_requires_project",
     "worktree_requires_git",
     "worktree_unavailable",
+    // R13: the user may accept only a delegate whose turn finished.
+    "delegation_not_completed",
+    // R13: a send back carries the user's note.
+    "note_required",
 ];
 const MAX_PROMPT_BYTES: usize = 256 * 1024;
 const MAX_RESULT_CHARS: usize = 64 * 1024;
@@ -244,17 +265,22 @@ pub fn tool_server_resolver(
             _ => return None,
         }
         let token = delegations.issue_token(session_id);
+        let mut env = vec![
+            ("THREADTERM_MCP_PROFILE".into(), "delegation".into()),
+            ("THREADTERM_SESSION_ID".into(), session_id.into()),
+            ("THREADTERM_SESSION_TOKEN".into(), token),
+            ("THREADTERM_V3_DATA".into(), config.data_dir.to_string_lossy().into_owned()),
+            ("THREADTERM_V3_PIPE".into(), config.pipe_base.clone()),
+        ];
+        // R10: the server tells the agent it may end its turn. Only when wake is on.
+        if settings.auto_wake {
+            env.push(("THREADTERM_AUTO_WAKE".into(), "1".into()));
+        }
         Some(ChatToolServer {
             name: TOOL_SERVER_NAME.into(),
             command: command.to_string_lossy().into_owned(),
             args: Vec::new(),
-            env: vec![
-                ("THREADTERM_MCP_PROFILE".into(), "delegation".into()),
-                ("THREADTERM_SESSION_ID".into(), session_id.into()),
-                ("THREADTERM_SESSION_TOKEN".into(), token),
-                ("THREADTERM_V3_DATA".into(), config.data_dir.to_string_lossy().into_owned()),
-                ("THREADTERM_V3_PIPE".into(), config.pipe_base.clone()),
-            ],
+            env,
         })
     })
 }
@@ -269,13 +295,15 @@ pub(crate) struct ChildLink {
     pub state: String,
     /// The turn this link started: only its events settle the link (F08).
     pub turn_id: Option<String>,
+    /// R7: the request the parent was already told about, if any.
+    pub reported_request: Option<String>,
 }
 
 pub(crate) fn active_link(tx: &Transaction<'_>, child_session_id: &str) -> Result<Option<ChildLink>> {
     tx.query_row(
-        &format!("SELECT id,parent_session_id,state,turn_id FROM delegations WHERE child_session_id=? AND state IN {ACTIVE_STATES}"),
+        &format!("SELECT id,parent_session_id,state,turn_id,reported_request FROM delegations WHERE child_session_id=? AND state IN {ACTIVE_STATES}"),
         [child_session_id],
-        |row| Ok(ChildLink { id: row.get(0)?, parent_session_id: row.get(1)?, state: row.get(2)?, turn_id: row.get(3)? }),
+        |row| Ok(ChildLink { id: row.get(0)?, parent_session_id: row.get(1)?, state: row.get(2)?, turn_id: row.get(3)?, reported_request: row.get(4)? }),
     )
     .optional()
     .map_err(Into::into)
@@ -287,6 +315,81 @@ pub(crate) fn active_children(tx: &Transaction<'_>, parent_session_id: &str) -> 
     ))?;
     let rows = statement.query_map([parent_session_id], |row| row.get::<_, String>(0))?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// R9: the live delegates of a chat, read without an open transaction.
+pub(crate) fn live_children(db: &Database, parent_session_id: &str) -> Result<Vec<String>> {
+    db.transaction(|tx| active_children(tx, parent_session_id))
+}
+
+/// R4: the parent a delegated session belongs to (the row outlives the link).
+pub(crate) fn parent_of(db: &Database, child_session_id: &str) -> Result<Option<String>> {
+    db.transaction(|tx| {
+        tx.query_row(
+            "SELECT parent_session_id FROM delegations WHERE child_session_id=?",
+            [child_session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    })
+}
+
+/// R2: records what the parent has been told about one delegation, so a tool
+/// response and an automatic wake never say the same thing twice.
+/// `state` is the state it was shown, `request` the pending request id, `quiet`
+/// the quiet episode's `quiet_since`. `None` leaves a column alone.
+pub(crate) fn mark_reported(
+    tx: &Transaction<'_>,
+    delegation_id: &str,
+    state: Option<&str>,
+    request: Option<&str>,
+    quiet: Option<&str>,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE delegations SET \
+         reported_state=CASE WHEN ?1 IS NOT NULL AND (reported_state IS NULL OR reported_state<>?1) THEN ?1 ELSE reported_state END, \
+         reported_request=CASE WHEN ?2 IS NOT NULL AND (reported_request IS NULL OR reported_request<>?2) THEN ?2 ELSE reported_request END, \
+         reported_quiet=CASE WHEN ?3 IS NOT NULL AND (reported_quiet IS NULL OR reported_quiet<>?3) THEN ?3 ELSE reported_quiet END \
+         WHERE id=?4",
+        params![state, request, quiet, delegation_id],
+    )?;
+    Ok(())
+}
+
+/// R3: the states a parent is woken for. `cancelled` is not one of them: the
+/// parent asked for it.
+pub(crate) const REPORTABLE_STATES: [&str; 4] = ["completed", "failed", "interrupted", "cancel_failed"];
+
+/// R13: the longest note a send back may carry.
+pub const MAX_DECISION_NOTE_CHARS: usize = 2000;
+
+/// R13: the row a user decision applies to.
+pub(crate) struct DecisionRow {
+    pub id: String,
+    pub parent: String,
+    pub child: String,
+    pub title: String,
+    pub state: String,
+}
+
+pub(crate) fn decision_row(tx: &Transaction<'_>, delegation_id: &str) -> Result<Option<DecisionRow>> {
+    tx.query_row(
+        "SELECT d.id,d.parent_session_id,d.child_session_id,s.title,d.state \
+         FROM delegations d JOIN sessions s ON s.id=d.child_session_id WHERE d.id=?",
+        [delegation_id],
+        |row| {
+            Ok(DecisionRow {
+                id: row.get(0)?,
+                parent: row.get(1)?,
+                child: row.get(2)?,
+                title: row.get(3)?,
+                state: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 // ---- quiet activity (R1, R2, R8) --------------------------------------------
@@ -461,8 +564,9 @@ struct QuietRow {
 
 /// R8: writes only transitions — one row (plus one `state.changed`) when an
 /// episode starts and one when it ends, never one per event. `now` is a
-/// parameter so tests drive the clock.
-pub(crate) fn sweep_quiet(db: &Database, now: i64) -> Result<usize> {
+/// parameter so tests drive the clock. Returns the parents whose episodes
+/// changed, so the caller can run the wake pass for them (R4).
+pub(crate) fn sweep_quiet(db: &Database, now: i64) -> Result<Vec<String>> {
     let rows = db.transaction(|tx| {
         let mut statement = tx.prepare(&format!(
             "SELECT id,parent_session_id,child_session_id,state,quiet_since FROM delegations WHERE state IN {ACTIVE_STATES} OR quiet_since IS NOT NULL"
@@ -479,7 +583,7 @@ pub(crate) fn sweep_quiet(db: &Database, now: i64) -> Result<usize> {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     })?;
     let at = rfc3339(now);
-    let mut transitions = 0;
+    let mut parents: Vec<String> = Vec::new();
     for row in rows {
         let activity = activity_of(&row.id);
         let quiet = activity.as_ref().and_then(|activity| activity.quiet_seconds(&row.state, now));
@@ -499,15 +603,17 @@ pub(crate) fn sweep_quiet(db: &Database, now: i64) -> Result<usize> {
                         params![serde_json::to_string(&json!({"kind":"delegation","sessionId":child}))?, at],
                     )?;
                     // R5: one notice per episode, and only when no parent agent
-                    // is inside a turn to handle it itself.
-                    if !parent_turn_active(tx, &parent)? {
+                    // is inside a turn to handle it itself. With wake on, a parent
+                    // that could be woken gets the episode in the wake instead
+                    // (R11), so the sweep leaves the notice to the wake pass.
+                    if !parent_turn_active(tx, &parent)? && !crate::delegation_wake::can_wake_tx(tx, &parent)? {
                         let data = json!({"delegationId": id, "quietSeconds": seconds, "openTool": tool});
                         // Its own kind: `waiting` reads "is waiting for your approval" everywhere.
                         crate::chat_projection::insert_attention(tx, &notice, &child, None, "quiet", &data, &at)?;
                     }
                     Ok(())
                 })?;
-                transitions += 1;
+                parents.push(row.parent.clone());
             }
             (None, Some(_)) => {
                 let (id, child) = (row.id.clone(), row.child.clone());
@@ -522,22 +628,35 @@ pub(crate) fn sweep_quiet(db: &Database, now: i64) -> Result<usize> {
                 if !live(&row.state) {
                     forget_activity(&row.id);
                 }
-                transitions += 1;
+                parents.push(row.parent.clone());
             }
             _ => {}
         }
     }
-    Ok(transitions)
+    parents.sort();
+    parents.dedup();
+    Ok(parents)
 }
 
-/// R8: the sweep runs on its own thread, on the same clock as the rule.
-pub fn spawn_quiet_sweeper(db: Arc<Database>) {
+/// R8: the sweep runs on its own thread, on the same clock as the rule. After a
+/// sweep that changed episodes it runs the wake pass for every affected parent
+/// (R4): those handles are what the projection and the sweep cannot reach.
+pub fn spawn_quiet_sweeper(
+    db: Arc<Database>,
+    providers: Arc<Providers>,
+    queues: Arc<crate::chat_queue::ChatQueues>,
+) {
     std::thread::Builder::new()
         .name("delegation-quiet".into())
         .spawn(move || loop {
             std::thread::sleep(QUIET_SWEEP);
-            if let Err(error) = sweep_quiet(&db, now_seconds()) {
-                eprintln!("delegation quiet sweep failed: {error}");
+            match sweep_quiet(&db, now_seconds()) {
+                Ok(parents) => {
+                    for parent in parents {
+                        crate::delegation_wake::pass(&db, &providers, &queues, &parent);
+                    }
+                }
+                Err(error) => eprintln!("delegation quiet sweep failed: {error}"),
             }
         })
         .ok();
@@ -765,12 +884,14 @@ struct Row {
     error: Option<String>,
     created_at: String,
     updated_at: String,
+    /// The open quiet episode, if any (`quiet_since`).
+    quiet_since: Option<String>,
 }
 
 fn rows(db: &Database, parent_session_id: &str) -> Result<Vec<Row>> {
     db.transaction(|tx| {
         let mut statement = tx.prepare(
-            "SELECT id,child_session_id,agent,workspace,workspace_path,branch,operation_id,turn_id,authority,state,result,error,created_at,updated_at FROM delegations WHERE parent_session_id=? ORDER BY created_at",
+            "SELECT id,child_session_id,agent,workspace,workspace_path,branch,operation_id,turn_id,authority,state,result,error,created_at,updated_at,quiet_since FROM delegations WHERE parent_session_id=? ORDER BY created_at",
         )?;
         let rows = statement.query_map([parent_session_id], |row| {
             Ok(Row {
@@ -788,6 +909,7 @@ fn rows(db: &Database, parent_session_id: &str) -> Result<Vec<Row>> {
                 error: row.get(11)?,
                 created_at: row.get(12)?,
                 updated_at: row.get(13)?,
+                quiet_since: row.get(14)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -1126,7 +1248,8 @@ pub(crate) fn user_words_from_chat(
 pub(crate) fn user_words(items: &[crate::domain::ChatItem], count: u32) -> (Vec<String>, usize) {
     let messages: Vec<Option<String>> = items
         .iter()
-        .filter(|item| item.role == "user")
+        // R8: an automatic delegate update is ThreadTerm's text, never the user's.
+        .filter(|item| item.role == "user" && !crate::delegation_wake::is_automatic_item(item))
         .map(|item| {
             let text = item
                 .parts
@@ -1484,6 +1607,9 @@ pub(crate) fn dispatch(
 
 fn status(db: &Database, providers: &Providers, parent: &Session, ids: &[String]) -> Result<Value> {
     let now = now_seconds();
+    // R2: everything this response tells the parent is recorded, so a wake never
+    // repeats it and R7 may escalate a request the parent saw and did not answer.
+    let mut reported: Vec<(String, Option<String>, Option<String>, Option<String>)> = Vec::new();
     let delegates = rows(db, &parent.id)?
         .into_iter()
         .filter(|row| ids.is_empty() || ids.contains(&row.id) || ids.contains(&row.child))
@@ -1491,6 +1617,9 @@ fn status(db: &Database, providers: &Providers, parent: &Session, ids: &[String]
             let title = db.session_by_id(&row.child)?.map(|session| session.title).unwrap_or_default();
             let pending = if row.state == "awaiting_parent" { pending_requests(db, &row.child)? } else { Vec::new() };
             let activity = activity_fields(activity_of(&row.id).as_ref(), &row.state, now);
+            let shown_state = REPORTABLE_STATES.contains(&row.state.as_str()).then(|| row.state.clone());
+            let shown_request = pending.last().and_then(|request| request.get("requestId")).and_then(Value::as_str).map(str::to_owned);
+            reported.push((row.id.clone(), shown_state, shown_request, row.quiet_since.clone()));
             let mut delegate = json!({
                 "delegationId": row.id,
                 "sessionId": row.child,
@@ -1514,7 +1643,23 @@ fn status(db: &Database, providers: &Providers, parent: &Session, ids: &[String]
             Ok(delegate)
         })
         .collect::<Result<Vec<_>>>()?;
+    mark_status_reported(db, &reported)?;
     Ok(json!({"delegates": delegates, "availableAgents": available_agents(providers), "maxActive": MAX_ACTIVE_DELEGATES}))
+}
+
+fn mark_status_reported(
+    db: &Database,
+    reported: &[(String, Option<String>, Option<String>, Option<String>)],
+) -> Result<()> {
+    if reported.is_empty() {
+        return Ok(());
+    }
+    db.transaction(|tx| {
+        for (id, state, request, quiet) in reported {
+            mark_reported(tx, id, state.as_deref(), request.as_deref(), quiet.as_deref())?;
+        }
+        Ok(())
+    })
 }
 
 /// Requests routed to the parent and still pending, without the choices the
@@ -1594,6 +1739,8 @@ fn respond(db: &Database, providers: &Providers, parent: &Session, request: &Res
 fn result(db: &Database, parent: &Session, id: &str) -> Result<Value> {
     let row = owned_row(db, &parent.id, id)?;
     let changed_files = changed_files(db, &row.child, &row.operation_id);
+    // R2: the answer and the state it returned are now reported.
+    db.transaction(|tx| mark_reported(tx, &row.id, Some(&row.state), None, None))?;
     Ok(json!({
         "delegationId": row.id,
         "sessionId": row.child,
@@ -1682,7 +1829,11 @@ fn cancel(delegations: &Delegations, db: &Database, providers: &Providers, paren
                 db.transaction(|tx| set_state(tx, &row.id, "cancelled", None, None))?;
             }
             Err(error) => {
-                db.transaction(|tx| set_state(tx, &row.id, "cancel_failed", None, Some(&error.message)))?;
+                // R2: this response tells the parent, so no wake repeats it.
+                db.transaction(|tx| {
+                    set_state(tx, &row.id, "cancel_failed", None, Some(&error.message))?;
+                    mark_reported(tx, &row.id, Some("cancel_failed"), None, None)
+                })?;
                 return Ok(json!({"delegationId": row.id, "state": "cancel_failed", "error": error.message}));
             }
         },
@@ -1801,6 +1952,7 @@ mod tests {
             parent_session_id: "parent".into(),
             state: state.into(),
             turn_id: turn.map(str::to_owned),
+            reported_request: None,
         }
     }
 
@@ -1899,9 +2051,16 @@ mod tests {
     // ---- the sweep and the Inbox notice (R5, R8) ---------------------------
 
     fn quiet_fixture(parent_watching: bool) -> (Database, String) {
+        quiet_fixture_with(parent_watching, false)
+    }
+
+    /// `auto_wake` decides whether the sweep may leave the notice to the wake pass.
+    fn quiet_fixture_with(parent_watching: bool, auto_wake: bool) -> (Database, String) {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open(&dir.keep().join("quiet.sqlite")).unwrap();
+        crate::chat_queue::initialize(&db).unwrap();
         db.transaction(|tx| {
+            tx.execute("UPDATE settings SET value=? WHERE singleton=1", [serde_json::to_string(&json!({"chatTools.autoWake":auto_wake}))?])?;
             tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('p','Parent','codex','chat','running','now','now')", [])?;
             tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('c','Spike B','pi','chat','running','now','now')", [])?;
             tx.execute("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,created_at,updated_at) VALUES ('d','p','c','pi','shared','C:/fixture',NULL,'work',0,'op','turn','running','now','now')", [])?;
@@ -1937,30 +2096,30 @@ mod tests {
         forget_activity(&id);
         note_event(&link, Some("turn"), &json!({"text":"work"}), 1_000);
         // 599 s of silence: nothing happens, and nothing is written.
-        assert_eq!(sweep_quiet(&db, 1_599).unwrap(), 0);
+        assert!(sweep_quiet(&db, 1_599).unwrap().is_empty());
         assert_eq!(episode(&db), (None, None));
         assert_eq!(quiet_count(&db), 0);
         // 600 s: one transition row and exactly one `waiting` notice.
-        assert_eq!(sweep_quiet(&db, 1_600).unwrap(), 1);
+        assert_eq!(sweep_quiet(&db, 1_600).unwrap(), ["p"]);
         let (since, tool) = episode(&db);
         assert_eq!(since.as_deref(), Some(rfc3339(1_000).as_str()));
         assert_eq!(tool, None);
         assert_eq!(quiet_count(&db), 1);
         // The same episode never notifies (or writes) again, however long it lasts.
-        assert_eq!(sweep_quiet(&db, 1_601).unwrap(), 0);
-        assert_eq!(sweep_quiet(&db, 4_000).unwrap(), 0);
+        assert!(sweep_quiet(&db, 1_601).unwrap().is_empty());
+        assert!(sweep_quiet(&db, 4_000).unwrap().is_empty());
         assert_eq!(quiet_count(&db), 1);
         // An event ends the episode: the columns are cleared.
         note_event(&link, Some("turn"), &json!({"text":"still here"}), 4_001);
-        assert_eq!(sweep_quiet(&db, 4_002).unwrap(), 1);
+        assert_eq!(sweep_quiet(&db, 4_002).unwrap().len(), 1);
         assert_eq!(episode(&db), (None, None));
         assert_eq!(quiet_count(&db), 1);
         // A second episode gets its own notice.
-        assert_eq!(sweep_quiet(&db, 4_001 + 600).unwrap(), 1);
+        assert_eq!(sweep_quiet(&db, 4_001 + 600).unwrap().len(), 1);
         assert_eq!(quiet_count(&db), 2);
         // A settled link keeps no quiet episode.
         db.transaction(|tx| set_state(tx, "d", "completed", None, None)).unwrap();
-        assert_eq!(sweep_quiet(&db, 9_999).unwrap(), 1);
+        assert_eq!(sweep_quiet(&db, 9_999).unwrap().len(), 1);
         assert_eq!(episode(&db), (None, None));
         forget_activity(&id);
     }
@@ -1972,12 +2131,115 @@ mod tests {
         forget_activity(&id);
         note_event(&link, Some("turn"), &json!({"part":{"type":"tool","toolId":"t1","toolName":"bash","status":"running"}}), 1_000);
         // The 60-minute tool rule applies; the parent can still answer, so no notice.
-        assert_eq!(sweep_quiet(&db, 4_599).unwrap(), 0);
-        assert_eq!(sweep_quiet(&db, 4_600).unwrap(), 1);
+        assert!(sweep_quiet(&db, 4_599).unwrap().is_empty());
+        assert_eq!(sweep_quiet(&db, 4_600).unwrap(), ["p"]);
         assert_eq!(quiet_count(&db), 0, "a live parent turn handles it, so the user is not told");
         let (since, tool) = episode(&db);
         assert_eq!(since.as_deref(), Some(rfc3339(1_000).as_str()));
         assert!(tool.unwrap_or_default().contains("bash"));
         forget_activity(&id);
+    }
+
+    #[test]
+    fn an_episode_a_wake_can_carry_gets_no_inbox_notice() {
+        // R11: with wake on and a wakeable parent, the episode travels in the wake
+        // instead of an Inbox notice. With wake off, today's notice is kept.
+        let (db, id) = quiet_fixture_with(false, true);
+        let link = link(&id, "running", Some("turn"));
+        forget_activity(&id);
+        note_event(&link, Some("turn"), &json!({"text":"work"}), 1_000);
+        assert_eq!(sweep_quiet(&db, 1_600).unwrap(), ["p"]);
+        assert!(episode(&db).0.is_some(), "the episode itself is written");
+        assert_eq!(quiet_count(&db), 0, "a woken parent tells the user nothing");
+        forget_activity(&id);
+    }
+
+    // ---- R2: what the parent has been told ---------------------------------
+
+    fn reporting_fixture() -> (Database, crate::domain::Session) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.keep().join("reporting.sqlite")).unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('p','Parent','codex','chat','idle','now','now')", [])?;
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('c','Spike B','pi','chat','idle','now','now')", [])?;
+            tx.execute("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,created_at,updated_at) VALUES ('d','p','c','pi','shared','C:/fixture',NULL,'work',0,'op','turn','completed','now','now')", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let parent = db.session_by_id("p").unwrap().unwrap();
+        (db, parent)
+    }
+
+    fn reported_columns(db: &Database) -> (Option<String>, Option<String>, Option<String>) {
+        db.transaction(|tx| {
+            tx.query_row(
+                "SELECT reported_state,reported_request,reported_quiet FROM delegations WHERE id='d'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn status_and_result_mark_the_state_and_the_quiet_episode_as_reported() {
+        let (db, parent) = reporting_fixture();
+        db.transaction(|tx| {
+            tx.execute("UPDATE delegations SET quiet_since=? WHERE id='d'", [rfc3339(1_000)])?;
+            Ok(())
+        })
+        .unwrap();
+        let providers = crate::providers::Providers::new();
+        let shown = status(&db, &providers, &parent, &[]).unwrap();
+        assert_eq!(shown["delegates"][0]["state"], json!("completed"));
+        assert_eq!(reported_columns(&db).0.as_deref(), Some("completed"));
+        assert_eq!(reported_columns(&db).2.as_deref(), Some(rfc3339(1_000).as_str()));
+        // A second poll writes nothing new (the values already match).
+        let again = status(&db, &providers, &parent, &[]).unwrap();
+        assert_eq!(again["delegates"][0]["state"], json!("completed"));
+        assert_eq!(reported_columns(&db).0.as_deref(), Some("completed"));
+        // `delegate_result` reports the state it returned.
+        db.transaction(|tx| {
+            tx.execute("UPDATE delegations SET reported_state=NULL WHERE id='d'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let answer = result(&db, &parent, "d").unwrap();
+        assert_eq!(answer["state"], json!("completed"));
+        assert_eq!(reported_columns(&db).0.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn status_reports_a_pending_request_it_lists() {
+        let (db, parent) = reporting_fixture();
+        db.transaction(|tx| {
+            tx.execute("UPDATE delegations SET state='awaiting_parent' WHERE id='d'", [])?;
+            tx.execute(
+                "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES ('c:approval:a1','c','turn','message',?,'now')",
+                [serde_json::to_string(&json!({"id":"c:approval:a1","role":"assistant","parts":[{"type":"approval","approvalId":"a1","status":"pending","data":{"title":"Run npm test?","choices":[{"choiceId":"allow","label":"Allow","scope":"once"}],"delegation":{"parentSessionId":"p","route":"parent"}}}],"createdAt":"now","turnId":"turn"}))?],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let providers = crate::providers::Providers::new();
+        let shown = status(&db, &providers, &parent, &[]).unwrap();
+        assert_eq!(shown["delegates"][0]["pendingRequests"][0]["requestId"], json!("a1"));
+        assert_eq!(reported_columns(&db).1.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn user_words_never_quote_an_automatic_delegate_update() {
+        let text = format!("{}\n- \"x\" completed.", crate::delegation_wake::AUTOMATIC_FIRST_LINE);
+        let automatic = json!([{"type":"text","text":text,"automatic":true}]);
+        let items = [
+            item("user", json!([{"type":"text","text":"Please fix the parser."}])),
+            item("user", automatic),
+        ];
+        let (words, left_out) = user_words(&items, 1);
+        assert_eq!(left_out, 0);
+        assert_eq!(words, ["Please fix the parser."], "the wake is ThreadTerm's text, not the user's");
+        let (both, _) = user_words(&items, 2);
+        assert_eq!(both, ["Please fix the parser."]);
     }
 }

@@ -350,6 +350,13 @@ fn record_tx(
   // their replies and errors raise no notices either; approvals still do.
   let delegation=crate::delegation::active_link(tx,session_id)?;
   let quiet=match &delegation {Some(link)=>crate::delegation::parent_turn_active(tx,&link.parent_session_id)?,None=>false};
+  // R5: a request also goes to the parent when a wake could be delivered to it;
+  // the post-commit pass escalates it at once when the chat turns out closed.
+  // Asked only for an approval event: a streamed delta pays nothing for it.
+  let parent_wakeable=match &delegation {
+   Some(link) if !quiet && kind=="chat.approval" => crate::delegation_wake::can_wake_tx(tx,&link.parent_session_id)?,
+   _ => false,
+  };
   let mut routed_to_parent=false;
   match kind {
    "chat.subagent" => {
@@ -367,6 +374,8 @@ fn record_tx(
     let steered=data.get("steered").and_then(Value::as_bool)==Some(true);
     if !steered { complete_streaming_items(tx,session_id,&now)?; }
     let mut part=json!({"type":"text","text":data.get("text").and_then(Value::as_str).unwrap_or("")});
+    // R8: an automatic delegate update is ThreadTerm's text, not the user's.
+    if part.get("text").and_then(Value::as_str).is_some_and(crate::delegation_wake::is_automatic_text) { part["automatic"]=json!(true); }
     if steered {
      let mut extra=json!({"steered":true});
      if let Some(turn)=data.get("turnId") { extra["turnId"]=turn.clone(); }
@@ -412,7 +421,7 @@ fn record_tx(
      let mut payload=data.get("part").and_then(|part|part.get("data")).cloned().unwrap_or_else(||data.clone());
      if let Some(link)=&delegation {
       // Requests ThreadTerm cannot answer by choice always stay with the user.
-      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false)&&!matches!(payload.get("interaction").and_then(Value::as_str),Some("question"|"plan"))&&payload.get("choices").and_then(Value::as_array).is_some_and(|choices|choices.iter().any(|choice|choice.get("scope").and_then(Value::as_str)!=Some("persistent")));
+      routed_to_parent=(quiet||parent_wakeable)&&payload.get("submittable").and_then(Value::as_bool)!=Some(false)&&!matches!(payload.get("interaction").and_then(Value::as_str),Some("question"|"plan"))&&payload.get("choices").and_then(Value::as_array).is_some_and(|choices|choices.iter().any(|choice|choice.get("scope").and_then(Value::as_str)!=Some("persistent")));
       if let Some(object)=payload.as_object_mut() {object.insert("delegation".into(),json!({"parentSessionId":link.parent_session_id,"route":if routed_to_parent{"parent"}else{"user"}}));}
      }
      item.parts=vec![json!({"type":"approval","approvalId":approval,"status":"pending","data":payload})];changed=true;
@@ -576,7 +585,7 @@ fn record_tx(
   if let Some(link)=&delegation {crate::delegation::project_child_event(tx,link,turn,kind,data)?;}
   crate::group_chat::project_event(tx,session_id,turn,kind,data)?;
   // A parent whose turn ends can no longer answer: its delegates' requests go to the user.
-  if matches!(kind,"chat.turn.completed"|"chat.error") {escalate_parent_requests(tx,session_id,&now)?;}
+  if matches!(kind,"chat.turn.completed"|"chat.error") {escalate_parent_requests(tx,session_id,&now,true)?;}
   let usage=data.get("usage").or_else(||data.pointer("/raw/params/usage")).or_else(||data.pointer("/raw/params/tokenUsage/last"));
   if let Some(usage)=usage {
    let input=usage.get("inputTokens").or_else(||usage.get("input_tokens")).or_else(||usage.get("prompt_tokens")).and_then(Value::as_u64);
@@ -1113,12 +1122,23 @@ pub(crate) fn pending_approval_route(
 /// Hands every request a parent agent was asked to answer back to the user,
 /// as a normal approval with an Inbox notice. Called when the parent's turn
 /// ends or the parent stops; escalation is one-way.
+///
+/// R7: `reported_only` escalates just the requests the parent was already told
+/// about (`reported_request` is that approval id). At a turn end the unreported
+/// ones stay routed to the parent: the wake pass that follows either wakes it
+/// for them or escalates them then. The fallback (no wake possible) and a
+/// parent stop escalate everything.
 pub(crate) fn escalate_parent_requests(
     tx: &rusqlite::Transaction<'_>,
     parent_session_id: &str,
     now: &str,
+    reported_only: bool,
 ) -> Result<()> {
     for child in crate::delegation::active_children(tx, parent_session_id)? {
+        let reported_request = match crate::delegation::active_link(tx, &child)? {
+            Some(link) => link.reported_request,
+            None => None,
+        };
         let mut statement =
             tx.prepare("SELECT id, turn_id, data FROM chat_items WHERE session_id=?")?;
         let rows = statement
@@ -1145,6 +1165,10 @@ pub(crate) fn escalate_parent_requests(
                     )
                     && part.pointer("/data/delegation/route").and_then(Value::as_str)
                         == Some("parent")
+                    && (!reported_only
+                        || part.get("approvalId").and_then(Value::as_str).is_some_and(|id| {
+                            reported_request.as_deref() == Some(id)
+                        }))
                 {
                     if let Some(delegation) = part
                         .pointer_mut("/data/delegation")
@@ -1210,7 +1234,7 @@ pub(crate) fn escalate_parent_requests(
 /// Parent-stop hook (`session.stop`): escalate outside a provider event.
 pub fn escalate_parent_requests_now(db: &Database, parent_session_id: &str) -> Result<()> {
     let now = Utc::now().to_rfc3339();
-    db.transaction(|tx| escalate_parent_requests(tx, parent_session_id, &now))
+    db.transaction(|tx| escalate_parent_requests(tx, parent_session_id, &now, false))
 }
 
 pub fn expire_pending_approvals(db: &Database, session_id: &str) -> Result<()> {
@@ -1885,6 +1909,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.keep().join("usage.sqlite");
         let db = Database::open(&path).unwrap();
+        crate::chat_queue::initialize(&db).unwrap();
         db.transaction(|tx| { tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('s','test','codex','chat','idle','now','now')",[])?; Ok(()) }).unwrap();
         db
     }
@@ -1898,6 +1923,23 @@ mod tests {
         .unwrap();
         db
     }
+    #[test]
+    fn an_automatic_delegate_update_is_projected_as_the_runtimes_text() {
+        // R8: the fixed first line marks a `message.user` the parent agent did not
+        // write; the user's own message stays an ordinary user part.
+        let db = db();
+        let wake = format!("{}\n- \"Fix it\" (grok, d1) completed. Read it with delegate_result.", crate::delegation_wake::AUTOMATIC_FIRST_LINE);
+        record(&db, "s", Some("turn"), "message.user", &json!({"text": wake})).unwrap();
+        record(&db, "s", Some("turn-2"), "message.user", &json!({"text": "Please fix the parser."})).unwrap();
+        let items = db.chat_items("s").unwrap();
+        let automatic = items.iter().find(|item| item.role == "user" && item.parts[0]["text"] == json!(wake)).unwrap();
+        assert_eq!(automatic.parts[0]["automatic"], json!(true));
+        let own = items.iter().find(|item| item.role == "user" && item.parts[0]["text"] == json!("Please fix the parser.")).unwrap();
+        assert!(own.parts[0].get("automatic").is_none());
+        assert!(crate::delegation_wake::is_automatic_item(automatic));
+        assert!(!crate::delegation_wake::is_automatic_item(own));
+    }
+
     #[test]
     fn a_delegates_streamed_events_write_no_quiet_episode() {
         // AC5: the quiet tracker is memory only. A burst of deltas and tool updates

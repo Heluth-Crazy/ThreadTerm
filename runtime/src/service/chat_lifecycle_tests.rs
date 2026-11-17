@@ -2201,7 +2201,7 @@ fn delegate_approvals_go_to_an_active_parent_which_answers_without_user_only_cho
 }
 
 #[test]
-fn a_parent_turn_ending_escalates_its_delegates_requests_to_the_user() {
+fn a_parent_turn_ending_escalates_the_requests_it_was_told_about() {
     let fixture = Fixture::for_delegation();
     let (parent, token) = delegation_parent(&fixture, "parent-create");
     let child = running_delegate(&fixture, &parent, &token, "start-1");
@@ -2209,11 +2209,31 @@ fn a_parent_turn_ending_escalates_its_delegates_requests_to_the_user() {
     child_approval(&fixture, &child, "a1");
     assert_eq!(approval_inbox_rows(&fixture, &child), 0);
 
+    // R7: the parent's turn end escalates only what the parent was told about.
+    // An unreported request stays with the parent, which the wake pass handles.
     fixture
         .db
         .record_provider_event(
             &parent,
             Some("parent-turn"),
+            "chat.turn.completed",
+            &json!({"status":"completed"}),
+        )
+        .unwrap();
+    assert_eq!(
+        approval_inbox_rows(&fixture, &child),
+        0,
+        "an unreported request is not escalated"
+    );
+    assert_eq!(delegation_state(&fixture, &child), "awaiting_parent");
+
+    // The parent read it in delegate_status; its next turn end hands it over.
+    status_of(&fixture, &parent, &token);
+    fixture
+        .db
+        .record_provider_event(
+            &parent,
+            Some("parent-turn-2"),
             "chat.turn.completed",
             &json!({"status":"completed"}),
         )
@@ -2230,14 +2250,7 @@ fn a_parent_turn_ending_escalates_its_delegates_requests_to_the_user() {
     assert_eq!(part["data"]["delegation"]["route"], "user");
     assert_eq!(part["data"]["delegation"]["escalated"], true);
     // Escalation is one-way: the parent can no longer answer.
-    let id = fixture
-        .db
-        .session_by_id(&child)
-        .unwrap()
-        .unwrap()
-        .delegation
-        .unwrap()
-        .id;
+    let id = delegation_id(&fixture, &child);
     let late = rpc(
         &fixture,
         "delegation.respond",
@@ -2248,8 +2261,35 @@ fn a_parent_turn_ending_escalates_its_delegates_requests_to_the_user() {
 }
 
 #[test]
-fn delegate_requests_go_straight_to_the_user_while_the_parent_is_idle() {
+fn an_idle_parent_is_woken_instead_of_interrupting_the_user() {
     let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    child_approval(&fixture, &child, "a1");
+    // R5: the parent can be woken, so its delegate's request waits for it.
+    assert_eq!(approval_inbox_rows(&fixture, &child), 0);
+    assert_eq!(activity_state(&fixture, &child), "awaiting_parent");
+    assert_eq!(delegation_state(&fixture, &child), "awaiting_parent");
+    assert_eq!(
+        approval_part(&fixture, &child, "a1")["data"]["delegation"]["route"],
+        "parent"
+    );
+}
+
+#[test]
+fn with_automatic_wake_off_an_idle_parent_leaves_requests_to_the_user() {
+    // R1: off means today's behaviour, unchanged.
+    let fixture = Fixture::for_delegation();
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE settings SET value=? WHERE singleton=1",
+                [json!({"chatTools.autoWake":false}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     let (parent, token) = delegation_parent(&fixture, "parent-create");
     let child = running_delegate(&fixture, &parent, &token, "start-1");
     child_approval(&fixture, &child, "a1");
@@ -4056,4 +4096,187 @@ fn delegation_status_and_turn_completion_do_not_load_whole_transcripts() {
         0,
         "delegated turn completion loaded a whole transcript"
     );
+}
+
+#[test]
+fn a_chat_with_live_delegates_is_not_released() {
+    // R9: the parent is the agent that must wake for its delegates.
+    let fixture = Fixture::new(false, None);
+    let (parent, _) = connected_chat(&fixture, "release-delegates");
+    fixture
+        .db
+        .transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('live-child','Delegate','grok','chat','running','now','now')", [])?;
+            tx.execute("INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,created_at,updated_at) VALUES ('live-delegation',?,'live-child','grok','shared','C:/fixture',NULL,'work',0,'op','turn','running','now','now')", [&parent])?;
+            Ok(())
+        })
+        .unwrap();
+    let refused = rpc(
+        &fixture,
+        "session.releaseResources",
+        json!({"sessionId":parent,"operationId":"release-parent"}),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{refused:?}").contains("delegates are still running"),
+        "{refused:?}"
+    );
+    assert!(!fixture.db.session_by_id(&parent).unwrap().unwrap().released);
+    // The refusal is part of the one blocked-reason predicate the UI shows.
+    let session = fixture.db.session_by_id(&parent).unwrap().unwrap();
+    assert_eq!(
+        fixture.service.release_blocked_reason(&session).unwrap().as_deref(),
+        Some("its delegates are still running")
+    );
+    // Once the delegate finished, that reason is gone.
+    fixture
+        .db
+        .transaction(|tx| crate::delegation::set_state(tx, "live-delegation", "completed", Some("done"), None))
+        .unwrap();
+    let session = fixture.db.session_by_id(&parent).unwrap().unwrap();
+    assert_ne!(
+        fixture.service.release_blocked_reason(&session).unwrap().as_deref(),
+        Some("its delegates are still running")
+    );
+}
+
+fn completed_delegate(fixture: &Fixture) -> (String, String, String) {
+    let (parent, token) = delegation_parent(fixture, "parent-create");
+    let child = running_delegate(fixture, &parent, &token, "start-1");
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({"status":"completed"}),
+        )
+        .unwrap();
+    assert_eq!(delegation_state(fixture, &child), "completed");
+    let id = delegation_id(fixture, &child);
+    (parent, child, id)
+}
+
+fn acceptance(fixture: &Fixture, child: &str) -> Option<String> {
+    fixture
+        .db
+        .session_by_id(child)
+        .unwrap()
+        .unwrap()
+        .delegation
+        .unwrap()
+        .acceptance
+}
+
+#[test]
+fn a_user_acceptance_is_recorded_once_and_a_send_back_reaches_the_parent() {
+    // R13: only a completed delegation can be accepted or sent back.
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    let id = delegation_id(&fixture, &child);
+    let early = rpc(
+        &fixture,
+        "delegation.decide",
+        json!({"delegationId":id,"decision":"accept","operationId":"decide-early"}),
+    )
+    .unwrap_err();
+    assert_eq!(early.code, "delegation_not_completed");
+
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({"status":"completed"}),
+        )
+        .unwrap();
+    let accepted = rpc(
+        &fixture,
+        "delegation.decide",
+        json!({"delegationId":id,"decision":"accept","operationId":"decide-accept"}),
+    )
+    .unwrap();
+    assert_eq!(accepted["acceptance"], "accepted");
+    assert_eq!(accepted["delegationId"], id.as_str());
+    assert_eq!(acceptance(&fixture, &child).as_deref(), Some("accepted"));
+    // Idempotent: the same operationId replays the recorded answer.
+    let replay = rpc(
+        &fixture,
+        "delegation.decide",
+        json!({"delegationId":id,"decision":"accept","operationId":"decide-accept"}),
+    )
+    .unwrap();
+    assert_eq!(replay, accepted);
+
+    // Accept after send back is allowed, and the note reaches the parent as the
+    // user's own message (not an automatic one).
+    let sent_back = rpc(
+        &fixture,
+        "delegation.decide",
+        json!({"delegationId":id,"decision":"send_back","note":"Please add a test for the empty case.","operationId":"decide-send-back"}),
+    )
+    .unwrap();
+    assert_eq!(sent_back["acceptance"], "sent_back");
+    assert_eq!(acceptance(&fixture, &child).as_deref(), Some("sent_back"));
+    let queue = crate::chat_queue::read(&fixture.db, &parent).unwrap();
+    let item = queue["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str().unwrap_or_default().starts_with("sendback-"))
+        .expect("the send back is queued on the parent");
+    let text = item["text"].as_str().unwrap();
+    assert_eq!(
+        text,
+        format!("The user sent back \"Summarise the README\" (delegation {id}):\nPlease add a test for the empty case."),
+    );
+    assert!(!crate::delegation_wake::is_automatic_text(text));
+
+    // A send back needs a note, and the note is bounded.
+    let missing = rpc(
+        &fixture,
+        "delegation.decide",
+        json!({"delegationId":id,"decision":"send_back","operationId":"decide-no-note"}),
+    )
+    .unwrap_err();
+    assert_eq!(missing.code, "note_required");
+    let too_long = rpc(
+        &fixture,
+        "delegation.decide",
+        json!({"delegationId":id,"decision":"send_back","note":"x".repeat(2001),"operationId":"decide-long-note"}),
+    )
+    .unwrap_err();
+    assert_eq!(too_long.code, "invalid_request");
+}
+
+#[test]
+fn a_send_back_that_cannot_be_queued_records_no_decision() {
+    // R13: the acceptance row and the queued send back share one transaction.
+    let fixture = Fixture::for_delegation();
+    let (parent, child, id) = completed_delegate(&fixture);
+    for index in 0..20 {
+        crate::chat_queue::mutate(
+            &fixture.db,
+            "chat.queue.add",
+            &json!({"sessionId":parent,"text":format!("filler {index}"),"images":[],"operationId":format!("fill-{index}")}),
+        )
+        .unwrap();
+    }
+    let refused = rpc(
+        &fixture,
+        "delegation.decide",
+        json!({"delegationId":id,"decision":"send_back","note":"look again","operationId":"decide-full"}),
+    )
+    .unwrap_err();
+    assert!(format!("{refused:?}").contains("queue_full"), "{refused:?}");
+    assert_eq!(acceptance(&fixture, &child), None, "no decision was recorded");
+    assert_eq!(
+        crate::chat_queue::read(&fixture.db, &parent).unwrap()["items"].as_array().unwrap().len(),
+        20,
+        "no send back item was added"
+    );
+    // The same operationId is not burned: the decision can be retried.
+    assert!(fixture.db.operation("decide-full").unwrap().is_none());
 }

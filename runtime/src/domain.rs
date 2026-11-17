@@ -109,6 +109,10 @@ pub struct SessionDelegation {
     /// The tool call an open quiet episode waits on, present only while one is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_tool: Option<SessionOpenTool>,
+    /// R12: the user's acceptance of a finished delegate (`accepted` | `sent_back`);
+    /// absent until the user decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance: Option<String>,
 }
 
 /// The still-open tool call of a quiet delegate (R8).

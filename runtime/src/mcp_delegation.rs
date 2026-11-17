@@ -38,8 +38,8 @@ const BROWSER_RPC_TIMEOUT: Duration = Duration::from_secs(12);
 const BROWSER_CANCEL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How to brief a delegate (guidance only; nothing checks it). Shared by
-/// `INSTRUCTIONS` and the `delegate_start` `prompt` description: agents that
-/// ignore server instructions still read tool descriptions.
+/// the delegation instructions and the `delegate_start` `prompt` description:
+/// agents that ignore server instructions still read tool descriptions.
 macro_rules! handoff_guide {
     () => {
         "A delegate sees only its prompt, not your conversation. ThreadTerm puts the user's own words above your \
@@ -62,16 +62,29 @@ elsewhere."
     };
 }
 
-/// Claude Code truncates server instructions after 2048 characters.
-const INSTRUCTIONS: &str = concat!(
-    "ThreadTerm delegation: start other coding agents as visible ThreadTerm Chat sessions \
+/// R10: the workflow a parent reads. Its first part is shared; the workflow
+/// sentences differ when ThreadTerm can wake the parent (the MCP host learns
+/// that from `THREADTERM_AUTO_WAKE=1`). Both variants stay under Claude Code's
+/// 2048-character cut.
+const DELEGATION_INSTRUCTIONS_HEAD: &str = "ThreadTerm delegation: start other coding agents as visible ThreadTerm Chat sessions \
 and follow them. In ThreadTerm these tools are the way to hand work to another agent: do not also check or use other \
-delegation plugins, MCP servers or agent CLIs started from a shell, unless the user names that tool. Workflow: delegate_start (one call per task; up to 4 at once) → delegate_wait repeatedly until \
-every delegate is completed, failed, cancelled or interrupted → delegate_result for each answer. When a delegate is \
+delegation plugins, MCP servers or agent CLIs started from a shell, unless the user names that tool. Workflow: delegate_start (one call per task; up to 4 at once) → ";
+const DELEGATION_WORKFLOW_STAY: &str = "delegate_wait repeatedly until every delegate is completed, failed, cancelled or interrupted → delegate_result for each answer. When a delegate is \
 awaiting_parent it needs your decision: answer its pendingRequests with delegate_respond. Stay in your turn while \
-delegates run; if your turn ends, their requests go to the user instead. Delegates cannot delegate further.\n\n",
-    handoff_guide!()
-);
+delegates run; if your turn ends, their requests go to the user instead. Delegates cannot delegate further.\n\n";
+const DELEGATION_WORKFLOW_WAKE: &str = "delegate_result for each answer. When a delegate is \
+awaiting_parent it needs your decision: answer its pendingRequests with delegate_respond. After starting delegates \
+you can end your turn: ThreadTerm wakes you with an automatic message when a delegate finishes, needs your decision \
+or goes quiet. Call delegate_wait only when you need a result before you can go on. Delegates cannot delegate further.\n\n";
+
+/// R10: the delegation instructions for the current setting.
+fn instructions(auto_wake: bool) -> String {
+    format!(
+        "{DELEGATION_INSTRUCTIONS_HEAD}{}{}",
+        if auto_wake { DELEGATION_WORKFLOW_WAKE } else { DELEGATION_WORKFLOW_STAY },
+        handoff_guide!()
+    )
+}
 const GENERATED_UI_INSTRUCTIONS: &str = "ThreadTerm generated UI: when a compact visual answer helps, emit one fenced ```threadterm-ui block containing JSON. The root has version, components, and buttons; for example, {\"version\":1,\"components\":[],\"buttons\":[{\"label\":\"Example\",\"text\":\"Example text\"}]}. version is always 1. Source is at most 64 KiB, the component tree has at most 256 nodes and depth 6, and buttons has at most 12 entries with label/text only and text at most 4000 characters. Components are: card {\"type\":\"card\",\"title\"?:string,\"children\"?:components[]}; stat {\"type\":\"stat\",\"label\":string,\"value\":string|number}; table {\"type\":\"table\",\"columns\":string[],\"rows\":(string|number)[][]} with at most 100 rows and 20 columns; list {\"type\":\"list\",\"items\":string[]}; badge {\"type\":\"badge\",\"text\":string,\"tone\"?:\"neutral\"|\"success\"|\"warning\"|\"danger\"}; progress {\"type\":\"progress\",\"value\":number,\"max\"?:number,\"label\"?:string}, where max defaults to 100; chart {\"type\":\"chart\",\"kind\":\"bar\"|\"line\"|\"pie\",\"title\"?:string,\"data\":[{\"label\":string,\"value\":number}]}, with at most 200 nonnegative data values. ThreadTerm renders charts as handwritten SVG. Buttons only insert their given text into the composer. Do not include URLs, scripts, event handlers, or any executable content.\n";
 
 #[derive(Clone)]
@@ -330,8 +343,9 @@ fn composed_tools(
     preview: bool,
     chat: Option<&ChatCaller>,
     browser: bool,
+    auto_wake: bool,
 ) -> Vec<Value> {
-    let mut catalog = if delegation { tools() } else { vec![] };
+    let mut catalog = if delegation { tools(auto_wake) } else { vec![] };
     if preview {
         catalog.extend(crate::preview::tools())
     }
@@ -346,12 +360,20 @@ fn composed_tools(
 fn generated_ui_from_env() -> bool {
     std::env::var("THREADTERM_GENERATED_UI").as_deref() == Ok("1")
 }
+
+/// R10: the runtime sets `THREADTERM_AUTO_WAKE=1` only when `chatTools.autoWake`
+/// is on, so this is the one switch for every delegated working text.
+fn auto_wake_from_env() -> bool {
+    std::env::var("THREADTERM_AUTO_WAKE").as_deref() == Ok("1")
+}
+
 fn composed_instructions(
     delegation: bool,
     preview: bool,
     chat: Option<&ChatCaller>,
     generated_ui: bool,
     browser: bool,
+    auto_wake: bool,
 ) -> String {
     let mut text=format!("ThreadTerm capabilities: delegation={} (delegate_start/wait/result); local preview={} (preview_present/status). Preview: verify the server URL first; presentation/load events never prove application readiness. Browser and delegation permissions are independent.\n",delegation,preview);
     // Claude Code keeps only the first 2048 characters. Generated UI has no tool
@@ -368,7 +390,7 @@ fn composed_instructions(
         text.push('\n');
     }
     if delegation {
-        text.push_str(INSTRUCTIONS)
+        text.push_str(&instructions(auto_wake))
     }
     if let Some(chat) = chat {
         if chat.ask {
@@ -969,6 +991,7 @@ pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
         chat.as_ref(),
         generated_ui_from_env(),
         browser.is_some(),
+        auto_wake_from_env(),
     );
     let output: Output = Arc::new(Mutex::new(std::io::stdout()));
     let inflight: Inflight = Arc::default();
@@ -1067,7 +1090,7 @@ pub async fn run_stdio(config: RuntimeConfig) -> Result<()> {
                 &output,
                 &ok(
                     &id,
-                    json!({"tools": composed_tools(caller.is_some(),preview.is_some(),chat.as_ref(),browser.is_some())}),
+                    json!({"tools": composed_tools(caller.is_some(),preview.is_some(),chat.as_ref(),browser.is_some(),auto_wake_from_env())}),
                 ),
             ),
             "tools/call" => {
@@ -1167,13 +1190,29 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
     json!({"name": name, "description": description, "inputSchema": schema})
 }
 
-fn tools() -> Vec<Value> {
+fn tools(auto_wake: bool) -> Vec<Value> {
+    // R10: with automatic wake the parent may end its turn after a start, so
+    // both tool descriptions say so instead of asking for a stay-in-turn poll.
+    let start_tail = if auto_wake {
+        "Returns at once with a delegationId; you can then end your turn, because ThreadTerm wakes you when a delegate has news."
+    } else {
+        "Returns at once with a delegationId; then call delegate_wait."
+    };
+    let wait_description = format!(
+        "Wait up to timeoutSeconds (default 30, max 45) for your delegates (or the given ids) to change state; returns early on any change or as soon as one needs you. {}A delegate in awaiting_parent needs your decision: answer its pendingRequests with delegate_respond. A delegate can also go quiet (no activity for 10 min, or 60 min while one tool call stays open): it is then named in `quiet` and the hint says how long and what it is running. {}",
+        if auto_wake { "" } else { "Call it repeatedly until every delegate is completed, failed, cancelled or interrupted. " },
+        if auto_wake {
+            "After starting delegates you can end your turn: ThreadTerm wakes you with an automatic message when a delegate finishes, needs your decision or goes quiet. Call delegate_wait only when you need a result before you can go on."
+        } else {
+            "Stay in your turn while delegates run; if your turn ends, their requests go to the user."
+        }
+    );
     vec![
         tool(
             "delegate_start",
-            "Start another coding agent as a visible ThreadTerm Chat session that works on `prompt`. Use this (not \
+            &format!("Start another coding agent as a visible ThreadTerm Chat session that works on `prompt`. Use this (not \
 another delegation plugin, MCP server or agent CLI run from a shell, unless the user names that tool) whenever the \
-user asks for another agent. The delegate does not see your conversation, so make the prompt self-contained (its description gives the recommended brief). Returns at once with a delegationId; then call delegate_wait. workspace `shared` (default) works in your folder; `worktree` gives the delegate its own git branch and folder created from your current commit (your uncommitted changes are not included) — use it when several delegates edit files in parallel. At most 4 active delegates; delegates cannot delegate. A delegate never gets broader permission than this chat: ThreadTerm starts it in the strongest of its own modes that fits under yours, and when none fits it asks the user to allow the wider access instead of starting (you then get `delegation_authority_exceeded`, or `awaiting_user` on a retry with the same operationId).",
+user asks for another agent. The delegate does not see your conversation, so make the prompt self-contained (its description gives the recommended brief). {start_tail} workspace `shared` (default) works in your folder; `worktree` gives the delegate its own git branch and folder created from your current commit (your uncommitted changes are not included) — use it when several delegates edit files in parallel. At most 4 active delegates; delegates cannot delegate. A delegate never gets broader permission than this chat: ThreadTerm starts it in the strongest of its own modes that fits under yours, and when none fits it asks the user to allow the wider access instead of starting (you then get `delegation_authority_exceeded`, or `awaiting_user` on a retry with the same operationId)."),
             json!({"type":"object","additionalProperties":false,"required":["agent","prompt"],"properties":{
                 "agent":{"type":"string","enum":AGENTS,"description":"Agent to delegate to; delegate_status lists the available ones."},
                 "prompt":{"type":"string","minLength":1,"description":concat!("Self-contained task for the delegate. ", handoff_guide!())},
@@ -1190,7 +1229,7 @@ checking.",
         ),
         tool(
             "delegate_wait",
-            "Wait up to timeoutSeconds (default 30, max 45) for your delegates (or the given ids) to change state; returns early on any change or as soon as one needs you. Call it repeatedly until every delegate is completed, failed, cancelled or interrupted. A delegate in awaiting_parent needs your decision: answer its pendingRequests with delegate_respond. A delegate can also go quiet (no activity for 10 min, or 60 min while one tool call stays open): it is then named in `quiet` and the hint says how long and what it is running. Stay in your turn while delegates run; if your turn ends, their requests go to the user.",
+            &wait_description,
             json!({"type":"object","additionalProperties":false,"properties":{
                 "ids":{"type":"array","items":{"type":"string"}},
                 "timeoutSeconds":{"type":"integer","minimum":1,"maximum":MAX_WAIT_SECONDS}
@@ -1623,8 +1662,8 @@ mod tests {
     fn browser_catalogue_and_instructions_compose_without_other_authorities() {
         for delegation in [false, true] {
             for preview in [false, true] {
-                let with_browser = composed_tools(delegation, preview, None, true);
-                let without_browser = composed_tools(delegation, preview, None, false);
+                let with_browser = composed_tools(delegation, preview, None, true, false);
+                let without_browser = composed_tools(delegation, preview, None, false, false);
                 assert_eq!(&with_browser[..without_browser.len()], without_browser);
                 let browser = &with_browser[without_browser.len()..];
                 assert_eq!(browser, crate::browser_tools::tool_catalogue());
@@ -1639,11 +1678,11 @@ mod tests {
                     .iter()
                     .all(|tool| tool["inputSchema"]["additionalProperties"] == false));
                 assert!(
-                    composed_instructions(delegation, preview, None, false, true)
+                    composed_instructions(delegation, preview, None, false, true, false)
                         .contains(crate::browser_tools::INSTRUCTIONS)
                 );
                 assert!(
-                    !composed_instructions(delegation, preview, None, false, false)
+                    !composed_instructions(delegation, preview, None, false, false, false)
                         .contains(crate::browser_tools::INSTRUCTIONS)
                 );
             }
@@ -2245,7 +2284,7 @@ mod tests {
 
     #[test]
     fn exposes_only_delegation_tools() {
-        let names: Vec<_> = tools()
+        let names: Vec<_> = tools(false)
             .iter()
             .map(|tool| tool["name"].as_str().unwrap().to_owned())
             .collect();
@@ -2261,7 +2300,7 @@ mod tests {
             session_id: "runtime-owned-session".into(),
             token: "runtime-owned-token".into(),
         };
-        let names = composed_tools(true, true, None, true)
+        let names = composed_tools(true, true, None, true, false)
             .into_iter()
             .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
@@ -2305,7 +2344,7 @@ mod tests {
     #[test]
     fn composed_catalogs_keep_preview_and_delegation_authorities_separate() {
         let names = |delegation, preview| {
-            composed_tools(delegation, preview, None, false)
+            composed_tools(delegation, preview, None, false, false)
                 .into_iter()
                 .map(|tool| tool["name"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
@@ -2317,7 +2356,7 @@ mod tests {
         assert_eq!(&combined[..6], crate::delegation::TOOL_NAMES);
         assert_eq!(&combined[6..], crate::preview::TOOL_NAMES);
 
-        let preview = composed_tools(false, true, None, false);
+        let preview = composed_tools(false, true, None, false, false);
         assert_eq!(
             preview[0]["inputSchema"]["required"],
             json!(["requestId", "url"])
@@ -2326,7 +2365,7 @@ mod tests {
         assert_eq!(preview[1]["inputSchema"]["required"], json!(["requestId"]));
         assert_eq!(preview[1]["inputSchema"]["additionalProperties"], false);
 
-        let instructions = composed_instructions(true, true, None, false, false);
+        let instructions = composed_instructions(true, true, None, false, false, false);
         let prefix = instructions.chars().take(512).collect::<String>();
         assert!(prefix.contains("delegation=true") && prefix.contains("local preview=true"));
         assert!(instructions.contains(crate::preview::INSTRUCTIONS));
@@ -2335,15 +2374,15 @@ mod tests {
 
     #[test]
     fn generated_ui_instructions_add_no_tools_or_authority() {
-        let instructions = composed_instructions(false, false, None, true, false);
+        let instructions = composed_instructions(false, false, None, true, false, false);
         assert!(instructions.contains(GENERATED_UI_INSTRUCTIONS));
         assert!(instructions.contains("{\"version\":1,\"components\":[],\"buttons\":[{\"label\":\"Example\",\"text\":\"Example text\"}]}"));
         assert!(instructions.contains("at most 256 nodes and depth 6"));
         assert_eq!(
-            composed_tools(false, false, None, false),
+            composed_tools(false, false, None, false, false),
             Vec::<Value>::new()
         );
-        assert!(!composed_instructions(false, false, None, false, false)
+        assert!(!composed_instructions(false, false, None, false, false, false)
             .contains(GENERATED_UI_INSTRUCTIONS));
     }
 
@@ -2358,7 +2397,7 @@ mod tests {
             feedback: true,
             run: true,
         };
-        let instructions = composed_instructions(true, true, Some(&chat), true, false);
+        let instructions = composed_instructions(true, true, Some(&chat), true, false, false);
         let kept = instructions.chars().take(2048).collect::<String>();
         assert!(
             kept.contains(GENERATED_UI_INSTRUCTIONS),
@@ -2404,7 +2443,7 @@ mod tests {
             feedback: true,
             run: false,
         };
-        let names: Vec<_> = composed_tools(false, false, Some(&chat), false)
+        let names: Vec<_> = composed_tools(false, false, Some(&chat), false, false)
             .into_iter()
             .map(|tool| tool["name"].as_str().unwrap().to_owned())
             .collect();
@@ -2483,11 +2522,11 @@ mod tests {
             .unwrap()
             .contains("do not start duplicates")));
         // The one instruction line is short and disappears with the switch.
-        let instructions = composed_instructions(false, false, Some(&chat(true)), false, false);
+        let instructions = composed_instructions(false, false, Some(&chat(true)), false, false, false);
         assert!(instructions.contains("run_list to see this worktree's Run entries"));
         assert!(instructions.contains("read run_logs instead of starting duplicates"));
         assert!(RUN_INSTRUCTIONS.len() < 200, "{}", RUN_INSTRUCTIONS.len());
-        assert!(!composed_instructions(false, false, Some(&chat(false)), false, false)
+        assert!(!composed_instructions(false, false, Some(&chat(false)), false, false, false)
             .contains("run_list"));
     }
 
@@ -2595,20 +2634,21 @@ mod tests {
     fn steers_agents_away_from_other_delegation_systems() {
         // Live 2026-10-20: a Codex parent asked to delegate also called a third-party
         // delegation plugin, whose daemon flashed a console window.
-        let catalog = tools();
+        let catalog = tools(false);
         let start = catalog[0]["description"].as_str().unwrap();
         let status = catalog[1]["description"].as_str().unwrap();
-        assert!(INSTRUCTIONS.contains("do not also check or use other delegation plugins"));
+        let stay = instructions(false);
+        assert!(stay.contains("do not also check or use other delegation plugins"));
         assert!(start.contains("not another delegation plugin, MCP server or agent CLI"));
         assert!(status.contains("no other delegation system needs checking"));
-        for text in [INSTRUCTIONS, start] {
+        for text in [stay.as_str(), start] {
             assert!(text.contains("unless the user names that tool"), "{text}");
         }
     }
 
     #[test]
     fn recommends_the_handoff_brief_and_leaves_the_users_words_to_the_runtime() {
-        let start = &tools()[0];
+        let start = &tools(false)[0];
         let prompt = start["inputSchema"]["properties"]["prompt"]["description"]
             .as_str()
             .unwrap();
@@ -2621,7 +2661,7 @@ mod tests {
             "## Open questions",
         ] {
             assert!(
-                INSTRUCTIONS.contains(heading) && prompt.contains(heading),
+                instructions(false).contains(heading) && prompt.contains(heading),
                 "{heading}"
             );
         }
@@ -2633,11 +2673,14 @@ mod tests {
         );
         // Live run: a parent sent 0 for a conversation whose later message corrected an earlier one.
         assert!(prompt.contains("corrections included"));
-        assert!(
-            INSTRUCTIONS.chars().count() <= 2048,
-            "{} chars would be truncated",
-            INSTRUCTIONS.chars().count()
-        );
+        for auto_wake in [false, true] {
+            let text = instructions(auto_wake);
+            assert!(
+                text.chars().count() <= 2048,
+                "{} chars would be truncated (autoWake {auto_wake})",
+                text.chars().count()
+            );
+        }
         // `prompt` stays one free-form string; `userMessages` is optional.
         assert_eq!(start["inputSchema"]["required"], json!(["agent", "prompt"]));
         assert_eq!(
@@ -2658,6 +2701,49 @@ mod tests {
             fields,
             ["agent", "prompt", "title", "userMessages", "workspace"]
         );
+    }
+
+    #[test]
+    fn automatic_wake_wording_switches_on_the_runtime_flag() {
+        // R10: with automatic wake a parent may end its turn, and the wording says
+        // so; without it the tool descriptions and instructions ask for the poll.
+        let stay = instructions(false);
+        let wake = instructions(true);
+        assert!(stay.contains("Stay in your turn while delegates run"));
+        assert!(!stay.contains("ThreadTerm wakes you with an automatic message"));
+        assert!(wake.contains("After starting delegates you can end your turn"));
+        assert!(wake.contains("Call delegate_wait only when you need a result"));
+        assert!(!wake.contains("Stay in your turn"));
+        assert!(!wake.contains("repeatedly until every delegate is completed"));
+        // Both variants keep the handoff brief and Claude Code's 2048-char cut.
+        for text in [&stay, &wake] {
+            assert!(text.chars().count() <= 2048, "{} chars would be truncated", text.chars().count());
+            assert!(text.contains("## Assignment"));
+            assert!(text.contains("do not also check or use other delegation plugins"));
+        }
+        let catalog_stay = tools(false);
+        let catalog_wake = tools(true);
+        let start_stay = catalog_stay[0]["description"].as_str().unwrap();
+        let start_wake = catalog_wake[0]["description"].as_str().unwrap();
+        assert!(start_stay.contains("then call delegate_wait"));
+        assert!(start_wake.contains("you can then end your turn"));
+        let wait_stay = catalog_stay[2]["description"].as_str().unwrap();
+        let wait_wake = catalog_wake[2]["description"].as_str().unwrap();
+        assert!(wait_stay.contains("Call it repeatedly until every delegate is completed"));
+        assert!(wait_stay.contains("Stay in your turn while delegates run"));
+        assert!(!wait_wake.contains("Call it repeatedly"));
+        assert!(wait_wake.contains("After starting delegates you can end your turn"));
+        // The switch itself: only the runtime's `THREADTERM_AUTO_WAKE=1` turns it on.
+        std::env::set_var("THREADTERM_AUTO_WAKE", "1");
+        assert!(auto_wake_from_env());
+        assert!(composed_instructions(true, false, None, false, false, auto_wake_from_env())
+            .contains("After starting delegates you can end your turn"));
+        std::env::set_var("THREADTERM_AUTO_WAKE", "0");
+        assert!(!auto_wake_from_env());
+        assert!(!composed_instructions(true, false, None, false, false, auto_wake_from_env())
+            .contains("After starting delegates you can end your turn"));
+        std::env::remove_var("THREADTERM_AUTO_WAKE");
+        assert!(!auto_wake_from_env());
     }
 
     #[test]

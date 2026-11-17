@@ -6907,6 +6907,33 @@
         "operationId"
       ],
       "additionalProperties": false
+    },
+    "RequestParams<\"delegation.decide\">": {
+      "type": "object",
+      "properties": {
+        "delegationId": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "accept",
+            "send_back"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "delegationId",
+        "decision",
+        "operationId"
+      ],
+      "additionalProperties": false
     }
   },
   "oneOf": [
@@ -13790,6 +13817,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22inbox.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "delegation.decide"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22delegation.decide%22%3E"
         }
       },
       "required": [

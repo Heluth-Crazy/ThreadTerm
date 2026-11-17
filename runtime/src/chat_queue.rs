@@ -373,6 +373,25 @@ pub(crate) fn add_owned(tx:&Transaction<'_>,session:&str,item:&str,text:&str)->R
     changed(tx,session)
 }
 
+/// R4: rewrite a runtime-owned item that is still `queued` (coalescing a wake
+/// into it). Returns `false` when dispatch reserved it as `sending` meanwhile:
+/// a wake never rewrites an item that is on its way out.
+pub(crate) fn rewrite_owned(tx: &Transaction<'_>, session: &str, item: &str, text: &str) -> Result<bool> {
+    require_chat(tx, session, true)?;
+    if text.trim() != "/fork" {
+        validate_message(text, &[])?;
+    }
+    let rewritten = tx.execute(
+        "UPDATE chat_queue_items SET text=?,revision=revision+1,updated_at=? WHERE session_id=? AND id=? AND state='queued'",
+        params![text, Utc::now().to_rfc3339(), session, item],
+    )?;
+    if rewritten == 0 {
+        return Ok(false);
+    }
+    changed(tx, session)?;
+    Ok(true)
+}
+
 pub(crate) struct ChatQueues {
     gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     healthy: AtomicBool,

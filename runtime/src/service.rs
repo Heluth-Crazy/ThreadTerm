@@ -995,6 +995,15 @@ pub(crate) fn spawn_projection_pump(
                             }
                             event_queues.provider_event(&event_db, &event_providers, &event);
                             crate::group_chat::provider_event(&event_db, &event_providers, &event_queues, &event);
+                            // R4: the push wake. The projection, the state machine
+                            // and the sweep are database-only, so the post-commit
+                            // pass is where a parent is actually woken.
+                            crate::delegation_wake::after_event(
+                                &event_db,
+                                &event_providers,
+                                &event_queues,
+                                &event,
+                            );
                             if matches!(event.kind.as_str(), "chat.turn.completed" | "chat.error" | "chat.approval.resolved") {
                                 // Only the turn that settled a delegation may release its
                                 // child. A turnless event (a Codex compaction, a worker
@@ -1416,6 +1425,15 @@ impl RuntimeService {
             eprintln!("terminal agent startup clear failed: {error}");
         }
         crate::terminal_agents::spawn(&self.db, &self.pty);
+    }
+    /// R4/R8: the quiet sweep also runs the wake pass, so it needs the same
+    /// `Providers` and `ChatQueues` handles the projection has.
+    pub fn start_quiet_sweeper(&self) {
+        crate::delegation::spawn_quiet_sweeper(
+            Arc::clone(&self.db),
+            Arc::clone(&self.providers),
+            Arc::clone(&self.chat_queues),
+        );
     }
     fn dispatch_retry_attempt(&self, attempt: &crate::retry_scheduler::RetryAttempt) {
         let Ok(_relocation) = self.relocation_gate.read() else {
@@ -1922,6 +1940,10 @@ impl RuntimeService {
             // Agent delegation, called by the MCP host on a parent's behalf.
             if request.method == "delegation.start" {
                 return self.start_delegation(&request.params);
+            }
+            // R13: the user's acceptance of a finished delegate (待处理 page).
+            if request.method == "delegation.decide" {
+                return self.decide_delegation(&request.params);
             }
             if let Some(result) = crate::delegation::dispatch(
                 &self.delegations,
@@ -2711,6 +2733,86 @@ impl RuntimeService {
         self.begin_delegation(&p, &parent, &fit)
     }
 
+    /// R13 `delegation.decide`: the user accepts a finished delegate, or sends
+    /// it back with a note the parent agent receives as its own user message.
+    /// No lease: it is a user action on the user's own records, and the queued
+    /// send back is runtime-owned.
+    fn decide_delegation(&self, params: &Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Decide {
+            delegation_id: String,
+            decision: String,
+            note: Option<String>,
+            operation_id: String,
+        }
+        let p: Decide = parse(params)?;
+        if p.delegation_id.is_empty() || p.operation_id.is_empty() || !matches!(p.decision.as_str(), "accept" | "send_back") {
+            return Err(anyhow::anyhow!("invalid_request"));
+        }
+        let note = p.note.as_deref().map(str::trim).filter(|note| !note.is_empty()).map(str::to_owned);
+        if note.as_ref().is_some_and(|note| note.chars().count() > crate::delegation::MAX_DECISION_NOTE_CHARS) {
+            return Err(anyhow::anyhow!("invalid_request"));
+        }
+        if p.decision == "send_back" && note.is_none() {
+            return Err(anyhow::anyhow!("note_required"));
+        }
+        // A replay of a decision that is already recorded answers with it.
+        if let Some(result) = self.db.operation(&p.operation_id)? {
+            return Ok(result);
+        }
+        let Some(row) = self.db.transaction(|tx| crate::delegation::decision_row(tx, &p.delegation_id))? else {
+            return Err(anyhow::anyhow!("delegation_not_found"));
+        };
+        // R13: only a turn that finished successfully can be accepted or sent back.
+        if row.state != "completed" {
+            return Err(anyhow::anyhow!("delegation_not_completed"));
+        }
+        self.db.bind_operation(&p.operation_id, "delegation.decide", params)?;
+        if let Some(result) = self.db.operation(&p.operation_id)? {
+            return Ok(result);
+        }
+        let acceptance = if p.decision == "accept" { "accepted" } else { "sent_back" };
+        let send_back = p.decision == "send_back";
+        let note = note.unwrap_or_default();
+        let item = crate::delegation_wake::new_sendback_id();
+        let text = crate::delegation_wake::sendback_text(&row.title, &row.id, &note);
+        let parent = row.parent.clone();
+        let child = row.child.clone();
+        let decision_id = row.id.clone();
+        let operation_id = p.operation_id.clone();
+        // The acceptance row and the queued send back share one transaction, so
+        // a full queue records no decision at all.
+        let result = self.chat_queues.group_control(&self.db, &parent, |tx| {
+            if let Some(result) = crate::db::operation_tx(tx, &operation_id)? {
+                return Ok(result);
+            }
+            let now = chrono::Utc::now().to_rfc3339();
+            let changed = tx.execute(
+                "UPDATE delegations SET acceptance=?,acceptance_at=?,updated_at=? WHERE id=? AND state='completed'",
+                rusqlite::params![acceptance, now, now, decision_id],
+            )?;
+            if changed == 0 {
+                return Err(anyhow::anyhow!("delegation_not_completed"));
+            }
+            if send_back {
+                crate::chat_queue::add_owned(tx, &parent, &item, &text)?;
+            }
+            tx.execute(
+                "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
+                rusqlite::params![serde_json::to_string(&json!({"kind":"delegation","sessionId":child}))?, now],
+            )?;
+            let result = json!({"delegationId": decision_id, "acceptance": acceptance});
+            crate::db::complete(tx, &operation_id, "delegation.decide", &result)?;
+            Ok(result)
+        })?;
+        // After the commit only: `schedule` spawns the dispatch thread.
+        if send_back {
+            self.chat_queues.schedule(&self.db, &self.providers, &parent);
+        }
+        Ok(result)
+    }
+
     /// The user's answer to a widening card (F07). `Ok(None)` means the card is
     /// not ours and the provider approval path handles it.
     fn approve_delegation_authority(&self, p: &ChatApprove) -> Result<Option<Value>> {
@@ -3343,6 +3445,11 @@ impl RuntimeService {
         if session.mode == "chat" {
             if matches!(session.status.as_str(), "running" | "waiting") {
                 return Ok(Some(("session_release_blocked", "the session is working or waiting for your answer".into())));
+            }
+            // R9: a parent whose delegates are still running must not be released:
+            // they would lose the agent that is supposed to wake for them.
+            if !crate::delegation::live_children(&self.db, session_id)?.is_empty() {
+                return Ok(Some(("session_release_blocked", "its delegates are still running".into())));
             }
             if crate::chat_projection::has_pending_request(&self.db, session_id)? {
                 return Ok(Some(("session_release_blocked", "answer or dismiss the pending request first".into())));

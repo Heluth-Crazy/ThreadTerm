@@ -1345,6 +1345,26 @@ mod tests {
     }
 
     #[test]
+    fn prepare_keeps_an_automatic_delegate_update_marked() {
+        // R8: repair rebuilds user items from native history, which still has the
+        // text the runtime sent; the marker must survive the rebuild.
+        let fixture = Fixture::new();
+        let mut automatic = text_item(
+            "native-wake",
+            "user",
+            &format!("{}\n- \"Fix\" (grok, d1) completed. Read it with delegate_result.", crate::delegation_wake::AUTOMATIC_FIRST_LINE),
+        );
+        automatic.turn_id = Some("provider-turn".to_owned());
+        let capture = fixture.capture();
+        let plan = prepare(&capture, &[automatic]).unwrap();
+        assert_eq!(
+            plan.items[0].parts[0].get("automatic").and_then(Value::as_bool),
+            Some(true),
+            "an automatic update stays automatic after repair"
+        );
+    }
+
+    #[test]
     fn prepare_scopes_repaired_native_turn_ids() {
         let fixture = Fixture::new();
         let mut source = text_item("native-item", "assistant", "repaired");

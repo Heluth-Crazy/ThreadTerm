@@ -2411,6 +2411,13 @@
             "since"
           ],
           "additionalProperties": false
+        },
+        "acceptance": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "sent_back"
+          ]
         }
       },
       "required": [
@@ -2763,6 +2770,9 @@
             "commentary",
             "final_answer"
           ]
+        },
+        "automatic": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -3733,6 +3743,9 @@
             "chatTools.delegation": {
               "type": "boolean"
             },
+            "chatTools.autoWake": {
+              "type": "boolean"
+            },
             "sessions.idleReleaseMinutes": {
               "type": "number"
             }
@@ -3965,6 +3978,9 @@
           "type": "boolean"
         },
         "chatTools.delegation": {
+          "type": "boolean"
+        },
+        "chatTools.autoWake": {
           "type": "boolean"
         },
         "sessions.idleReleaseMinutes": {
@@ -11488,6 +11504,26 @@
     },
     "RequestResult<\"inbox.read\">": {
       "type": "null"
+    },
+    "RequestResult<\"delegation.decide\">": {
+      "type": "object",
+      "properties": {
+        "delegationId": {
+          "type": "string"
+        },
+        "acceptance": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "sent_back"
+          ]
+        }
+      },
+      "required": [
+        "delegationId",
+        "acceptance"
+      ],
+      "additionalProperties": false
     }
   },
   "oneOf": [
@@ -18371,6 +18407,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22inbox.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "delegation.decide"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22delegation.decide%22%3E"
         }
       },
       "required": [
