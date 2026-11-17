@@ -1794,6 +1794,30 @@ fn upsert_worktree(
     tx.execute("INSERT INTO worktrees(id,project_id,path,branch,head,is_main,locked) VALUES(?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET project_id=excluded.project_id,branch=excluded.branch,head=excluded.head,is_main=excluded.is_main,locked=excluded.locked",params![&id,project_id,path,branch,head,i64::from(is_main),i64::from(locked)])?;
     Ok(id)
 }
+/// A worktree path compared the way Windows compares folders: no `\\?\` prefix, backslashes, no trailing separator,
+/// any case.
+fn worktree_path_key(path: &str) -> String {
+    let path = path.replace('/', "\\");
+    let path = match (path.strip_prefix(r"\\?\UNC\"), path.strip_prefix(r"\\?\")) {
+        (Some(rest), _) => format!(r"\\{rest}"),
+        (None, Some(rest)) => rest.to_owned(),
+        (None, None) => path.clone(),
+    };
+    path.trim_end_matches('\\').to_lowercase()
+}
+/// The path this project already records for the folder `path` names, if any.
+fn known_worktree_path(tx: &Transaction<'_>, project_id: &str, path: &str) -> Result<Option<String>> {
+    let key = worktree_path_key(path);
+    let mut statement = tx.prepare("SELECT path FROM worktrees WHERE project_id=? ORDER BY rowid")?;
+    let rows = statement.query_map([project_id], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let known = row?;
+        if worktree_path_key(&known) == key {
+            return Ok(Some(known));
+        }
+    }
+    Ok(None)
+}
 fn reconcile_worktrees(tx: &Transaction<'_>, project_id: &str, root: &Path, raw: &str) -> Result<Value> {
     let canonical_root = root
         .canonicalize()
@@ -1807,11 +1831,13 @@ fn reconcile_worktrees(tx: &Transaction<'_>, project_id: &str, root: &Path, raw:
         else {
             continue;
         };
-        let path = Path::new(path)
-            .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from(path))
-            .to_string_lossy()
-            .to_string();
+        let path = match Path::new(path).canonicalize() {
+            Ok(canonical) => canonical.to_string_lossy().to_string(),
+            // Git still lists a worktree whose folder was deleted ("prunable"), in its own spelling of the path. Keep
+            // the row the folder already has (recorded canonically while it existed) rather than adding a second row
+            // for the same folder, which the sidebar showed as the same deleted branch twice.
+            Err(_) => known_worktree_path(tx, project_id, path)?.unwrap_or_else(|| path.to_owned()),
+        };
         let branch = block
             .lines()
             .find_map(|line| line.strip_prefix("branch refs/heads/"));
@@ -4003,6 +4029,49 @@ mod tests {
         .unwrap();
         assert_eq!(removed, Some(Value::Null));
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn a_worktree_folder_deleted_by_hand_keeps_one_row() {
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init"]).unwrap();
+        git(&repo, &["config", "user.email", "tests@threadterm.invalid"]).unwrap();
+        git(&repo, &["config", "user.name", "ThreadTerm Tests"]).unwrap();
+        fs::write(repo.join("README.md"), "initial").unwrap();
+        git(&repo, &["add", "README.md"]).unwrap();
+        git(&repo, &["commit", "-m", "initial"]).unwrap();
+        let linked = parent.path().join("linked");
+        git(&repo, &["worktree", "add", "-b", "feature", linked.to_str().unwrap()]).unwrap();
+        let db = Database::open(&parent.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(repo.to_str().unwrap(), Some("p"), "project-op")
+            .unwrap();
+        let list = || {
+            dispatch(&db, "worktree.list", &json!({"projectId":project.id}))
+                .unwrap()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let before = list();
+        assert_eq!(before.len(), 2);
+        let feature = before.iter().find(|row| row["branch"] == "feature").unwrap().clone();
+        assert_eq!(feature["missing"], false);
+        // Deleted by hand: Git keeps listing it (prunable) under its own spelling of the path.
+        fs::remove_dir_all(&linked).unwrap();
+        assert!(git(&repo, &["worktree", "list", "--porcelain"]).unwrap().contains("feature"));
+        let after = list();
+        assert_eq!(after.len(), 2, "one row per folder: {after:?}");
+        let gone = after.iter().find(|row| row["branch"] == "feature").unwrap();
+        assert_eq!(gone["id"], feature["id"]);
+        assert_eq!(gone["path"], feature["path"]);
+        assert_eq!(gone["missing"], true);
+        assert_eq!(worktree_path_key(r"\\?\D:\Work\Tree\"), worktree_path_key("d:/work/tree"));
+        assert_eq!(worktree_path_key(r"\\?\UNC\server\share\x"), worktree_path_key(r"\\server\share\x"));
     }
 
     #[test]
