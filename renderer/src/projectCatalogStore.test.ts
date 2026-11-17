@@ -50,6 +50,24 @@ test('a failed first catalog load retries without waiting for a reconnect event'
   stop();
 });
 
+// Owner report 2026-11-16: Git made project.catalog.list run past the request timeout and the sidebar lost every project.
+// The runtime now answers within its Git budget and marks a repository it is still reading as pending.
+test('a project whose Git facts are still being read is listed at once and the list is asked for again', async () => {
+  let calls = 0;
+  const { store, pending, tick } = setup(async method => {
+    if (method !== 'project.catalog.list') return [];
+    calls += 1;
+    return [{ ...project('repo'), git: calls === 1 ? { available: false, pending: true } : { available: true, branch: 'main' } } as ProjectCatalogItem];
+  });
+  const stop = store.activate(); await flush();
+  assert.equal(store.getSnapshot().items[0].id, 'repo'); assert.equal(store.getSnapshot().issue, undefined);
+  assert.equal(pending.size, 1, 'a follow-up list is scheduled');
+  tick(); await flush();
+  assert.equal(calls, 2); assert.equal(store.getSnapshot().items[0].git.branch, 'main');
+  assert.equal(pending.size, 0, 'nothing pending, nothing scheduled');
+  stop();
+});
+
 test('a cancelled first load retries, ignores its late response, and reconnect reloads immediately', async () => {
   const first = deferred<ProjectCatalogItem[]>(); let calls = 0;
   const { store, tick } = setup(async method => method === 'project.catalog.list' ? (++calls === 1 ? first.promise : [project('current')]) : []);

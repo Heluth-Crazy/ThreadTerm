@@ -69,6 +69,9 @@ export function createProjectCatalogStore(request: CatalogRequest, retryClock: R
         void detail('trees', item.id, current, currentGroup);
         void detail('groups', item.id, current, currentGroup);
       }
+      // A repository Git was still reading shows its last known facts: list again until every read is in.
+      if (items.some(item => item.git?.pending)) retry('pending', () => { void reload(); });
+      else attempts.delete('pending');
     } catch (error) {
       if (!users || current !== generation) return;
       issues.set('catalog', error instanceof Error ? error.message : String(error)); publish({ loading: false });

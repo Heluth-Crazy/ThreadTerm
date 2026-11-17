@@ -8,7 +8,10 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 pub fn initialize(db: &Database) -> Result<()> {
     db.transaction(|tx| { tx.execute_batch("CREATE TABLE IF NOT EXISTS project_catalog_metadata (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS catalog_visibility (kind TEXT NOT NULL, item_id TEXT NOT NULL, visibility TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(kind,item_id));")?; Ok(()) })
@@ -27,7 +30,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
         .as_object()
         .ok_or_else(|| anyhow!("invalid_request"))?;
     let value = match method {
-        "project.catalog.list" => catalog_with_git(db, git_catalog),
+        "project.catalog.list" => catalog_with_git(db, read_catalog_git),
         "project.update" => update_with_git(db, object, method, git_catalog),
         _ => db.transaction(|tx| match method {
             "catalog.visibility.list" => visibility_list(tx),
@@ -298,17 +301,95 @@ fn catalog(tx: &Transaction<'_>) -> Result<Vec<Value>> {
     }
     Ok(out)
 }
-fn catalog_with_git(db: &Database, mut read_git: impl FnMut(&Path) -> Value) -> Result<Value> {
+fn catalog_with_git(db: &Database, read_git: impl FnOnce(&[String]) -> Vec<Value>) -> Result<Value> {
     // Capture one coherent metadata snapshot, then release SQLite before Git.
     let mut entries = db.transaction(catalog)?;
-    for entry in &mut entries {
-        let path = entry["path"]
-            .as_str()
-            .ok_or_else(|| anyhow!("invalid_project"))?;
-        let git = read_git(Path::new(path));
+    let paths = entries
+        .iter()
+        .map(|entry| entry["path"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("invalid_project")))
+        .collect::<Result<Vec<_>>>()?;
+    for (entry, git) in entries.iter_mut().zip(read_git(&paths)) {
         entry["git"] = git;
     }
     Ok(json!(entries))
+}
+
+/// How long a project list waits for Git. Reading a project's Git facts starts a few Git processes; one after another
+/// for every project, on a busy machine (a first start under an antivirus scan, a repository on an unreachable drive)
+/// that ran past the desktop's 30 s request timeout and the sidebar lost every project (owner report 2026-11-16).
+const CATALOG_GIT_BUDGET: Duration = Duration::from_secs(4);
+/// Projects read side by side by one list.
+const CATALOG_GIT_READERS: usize = 6;
+
+#[derive(Default)]
+struct CatalogGit {
+    /// The last finished read per project folder, and when it finished.
+    facts: HashMap<String, (Instant, Value)>,
+    /// Folders a reader is still working on: a later list waits for that read instead of starting another.
+    reading: HashSet<String>,
+}
+fn catalog_git() -> &'static (Mutex<CatalogGit>, Condvar) {
+    static STATE: OnceLock<(Mutex<CatalogGit>, Condvar)> = OnceLock::new();
+    STATE.get_or_init(Default::default)
+}
+fn read_catalog_git(paths: &[String]) -> Vec<Value> {
+    read_git_bounded(paths, CATALOG_GIT_BUDGET, git_catalog)
+}
+/// Every project's Git facts, read side by side and waited for at most `budget`. A project still being read then
+/// shows its last known facts marked `pending`, or `{available:false,pending:true}` before its first read finishes;
+/// the read carries on and the desktop lists again.
+fn read_git_bounded(paths: &[String], budget: Duration, read: fn(&Path) -> Value) -> Vec<Value> {
+    let (lock, ready) = catalog_git();
+    let started = Instant::now();
+    let queue: Vec<String> = {
+        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        paths.iter().filter(|path| state.reading.insert((*path).clone())).cloned().collect()
+    };
+    let workers = CATALOG_GIT_READERS.min(queue.len());
+    let queue = Arc::new(Mutex::new(queue));
+    for _ in 0..workers {
+        let queue = Arc::clone(&queue);
+        let work = move || loop {
+            let Some(path) = queue.lock().unwrap_or_else(PoisonError::into_inner).pop() else {
+                return;
+            };
+            let value = read(Path::new(&path));
+            let (lock, ready) = catalog_git();
+            let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            state.reading.remove(&path);
+            state.facts.insert(path, (Instant::now(), value));
+            ready.notify_all();
+        };
+        if let Err(error) = std::thread::Builder::new().name("catalog-git".into()).spawn(work.clone()) {
+            eprintln!("catalog git reader did not start ({error}); reading in place");
+            work();
+        }
+    }
+    let deadline = started + budget;
+    let fresh = |state: &CatalogGit, path: &String| state.facts.get(path).is_some_and(|(at, _)| *at >= started);
+    let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        let now = Instant::now();
+        if paths.iter().all(|path| fresh(&state, path)) || now >= deadline {
+            break;
+        }
+        state = ready
+            .wait_timeout(state, deadline - now)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+    paths
+        .iter()
+        .map(|path| match state.facts.get(path) {
+            Some((_, value)) if fresh(&state, path) => value.clone(),
+            Some((_, value)) => {
+                let mut value = value.clone();
+                value["pending"] = json!(true);
+                value
+            }
+            None => json!({"available":false,"pending":true}),
+        })
+        .collect()
 }
 fn expected_revision(p: &serde_json::Map<String, Value>) -> Result<i64> {
     p.get("expectedRevision")
@@ -516,10 +597,10 @@ mod tests {
         std::thread::scope(|scope| {
             let db_ref = &db;
             let reader = scope.spawn(move || {
-                catalog_with_git(db_ref, |_| {
+                catalog_with_git(db_ref, |paths| {
                     entered_tx.send(()).unwrap();
                     release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                    json!({"available":true,"branch":"main"})
+                    paths.iter().map(|_| json!({"available":true,"branch":"main"})).collect()
                 })
             });
             entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -543,7 +624,7 @@ mod tests {
             assert_eq!(snapshot[0]["name"], "Project");
             assert_eq!(snapshot[0]["git"]["branch"], "main");
         });
-        let latest = catalog_with_git(&db, |_| json!({"available":false})).unwrap();
+        let latest = catalog_with_git(&db, |paths| paths.iter().map(|_| json!({"available":false})).collect()).unwrap();
         assert_eq!(latest[0]["name"], "Updated during Git");
     }
 
@@ -607,6 +688,53 @@ mod tests {
         assert!(catalog["lastCommit"]["id"]
             .as_str()
             .is_some_and(|id| !id.is_empty()));
+    }
+
+    fn slow_read(path: &Path) -> Value {
+        if path.to_string_lossy().ends_with("slow") {
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+        json!({"available":true,"branch":path.file_name().unwrap().to_string_lossy()})
+    }
+
+    #[test]
+    fn a_slow_repository_does_not_hold_up_the_project_list() {
+        let id = uuid::Uuid::new_v4();
+        let fast = format!("D:/catalog-{id}/fast");
+        let slow = format!("D:/catalog-{id}/slow");
+        let paths = [fast.clone(), slow.clone()];
+        let started = Instant::now();
+        let first = read_git_bounded(&paths, Duration::from_millis(300), slow_read);
+        assert!(started.elapsed() < Duration::from_millis(1200), "the list waited for the slow read: {:?}", started.elapsed());
+        assert_eq!(first[0], json!({"available":true,"branch":"fast"}));
+        assert_eq!(first[1], json!({"available":false,"pending":true}), "nothing known yet");
+        // The read carried on; the next list shows what it found while a fresh read runs.
+        std::thread::sleep(Duration::from_millis(1600));
+        let second = read_git_bounded(&paths, Duration::from_millis(300), slow_read);
+        assert_eq!(second[1], json!({"available":true,"branch":"slow","pending":true}));
+        let third = read_git_bounded(&paths, Duration::from_secs(5), slow_read);
+        assert_eq!(third[1], json!({"available":true,"branch":"slow"}), "a list that can wait gets the fresh facts");
+    }
+
+    #[test]
+    fn a_list_waits_for_a_read_already_running_instead_of_starting_another() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn counted(path: &Path) -> Value {
+            READS.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(400));
+            json!({"available":true,"branch":path.file_name().unwrap().to_string_lossy()})
+        }
+        let paths = [format!("D:/catalog-{}/shared", uuid::Uuid::new_v4())];
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| read_git_bounded(&paths, Duration::from_secs(5), counted));
+            std::thread::sleep(Duration::from_millis(50));
+            let b = scope.spawn(|| read_git_bounded(&paths, Duration::from_secs(5), counted));
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!(a, b);
+        assert_eq!(a[0]["branch"], "shared");
+        assert_eq!(READS.load(Ordering::SeqCst), 1);
     }
 
     #[test]

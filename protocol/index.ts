@@ -34,7 +34,7 @@ export type SessionMode = 'terminal'|'chat';
 export type SessionStatus = 'starting'|'running'|'idle'|'waiting'|'exited'|'interrupted'|'error';
 export interface Project { id:string; name:string; path:string; createdAt:string }
 export interface CommitSummary { id:string; subject:string; committedAt:string }
-export interface ProjectCatalogItem extends Project { revision:number; pinned:boolean; sortOrder:number; git:{available:boolean;branch?:string;upstream?:string;lastCommit?:CommitSummary} }
+export interface ProjectCatalogItem extends Project { revision:number; pinned:boolean; sortOrder:number; git:{available:boolean;branch?:string;upstream?:string;lastCommit?:CommitSummary;/** Git was still being read when the list was answered: these are the last known facts (or none yet); list again shortly. */pending?:boolean} }
 export interface CatalogVisibility { kind:'project'|'worktree'|'session'; id:string; visibility:'active'|'archived'|'removed'; revision:number; projectId?:string; worktreePath?:string }
 export interface LocalBranch { name:string; current:boolean; upstream?:string; lastCommit:CommitSummary }
 // awaiting_parent: a delegated session's request is waiting for the agent that delegated it, not the user.

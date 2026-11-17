@@ -5250,6 +5250,9 @@
             },
             "lastCommit": {
               "$ref": "#/definitions/CommitSummary"
+            },
+            "pending": {
+              "type": "boolean"
             }
           },
           "required": [
