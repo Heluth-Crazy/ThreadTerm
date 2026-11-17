@@ -167,12 +167,28 @@ try {
   await request('session.present', { sessionId: alpha.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
   const projectScope = () => page.locator('.proj-group').first();
   const branchGroup = name => page.locator('.catalog-tree-group').filter({ hasText: name }).first();
-  const branchChevron = name => branchGroup(name).locator('.tree-row-wrap > .proj-disclosure');
+  // Option A: the branch row itself is the fold switch.
+  const branchToggle = name => branchGroup(name).locator('.tree-row-wrap > .tree-row');
   const branchRows = () => projectScope().locator('.tree-list .tree-row');
   const sessionRows = name => branchGroup(name).locator('.sess-row-wrap[data-session-id]');
   await projectScope().waitFor();
   await until(async () => (await branchRows().count()) >= 5, 'the one-PC branch rows are visible');
-  check('branch chevrons exist on one computer');
+  check('branch rows are fold switches on one computer');
+
+  // Option A: no chevron column anywhere in the tree; the project row folds and its folder opens and closes.
+  assert.equal(await page.locator('.project-catalog .proj-disclosure, .project-catalog .parent-disclosure, .project-catalog .fold-chev').count(), 0, 'no chevron column');
+  const projectRow = projectScope().locator('.proj-row');
+  const folderPath = async () => projectRow.locator('svg.ico').first().innerHTML();
+  assert.equal(await projectRow.getAttribute('aria-expanded'), 'true');
+  assert.match(await folderPath(), /M3 20 6 11/, 'an open project shows an open folder');
+  await projectRow.click();
+  await until(async () => (await projectRow.getAttribute('aria-expanded')) === 'false' && (await projectScope().locator('.tree-list').count()) === 0, 'clicking the project row folds it');
+  assert.doesNotMatch(await folderPath(), /M3 20 6 11/, 'a folded project shows a closed folder');
+  await projectRow.click();
+  await until(async () => (await projectRow.getAttribute('aria-expanded')) === 'true' && (await branchRows().count()) >= 5, 'clicking it again unfolds it');
+  await projectScope().locator('.proj-row-wrap').hover();
+  assert.equal(await projectScope().locator('.proj-row-wrap > .tree-new').count(), 1, 'the project row offers ＋ on hover');
+  check('project row folds on click, the folder opens and closes, ＋ on hover, no chevrons');
 
   // Header: label + Projects/Recent control + the existing ⋯ menu opener with exactly one icon.
   const head = page.locator('.catalog-head');
@@ -216,11 +232,11 @@ try {
   check('main shows pinned + 3 newest and "更早的 4 个会话"; opening it shows all seven');
 
   // R1: a folded branch keeps an amber needs count or a green running spinner.
-  await branchChevron('beta').click();
-  await until(async () => (await branchChevron('beta').getAttribute('aria-expanded')) === 'false', 'beta folds');
+  await branchToggle('beta').click();
+  await until(async () => (await branchToggle('beta').getAttribute('aria-expanded')) === 'false', 'beta folds');
   assert.equal((await branchGroup('beta').locator('.badge.amber').textContent())?.trim(), '1');
-  await branchChevron('gamma').click();
-  await until(async () => (await branchChevron('gamma').getAttribute('aria-expanded')) === 'false', 'gamma folds');
+  await branchToggle('gamma').click();
+  await until(async () => (await branchToggle('gamma').getAttribute('aria-expanded')) === 'false', 'gamma folds');
   assert.equal(await branchGroup('gamma').locator('.fold-spin').count(), 1);
   check('a folded branch shows the amber count and the running spinner');
 
@@ -234,11 +250,11 @@ try {
   await until(async () => (await page.locator('.catalog-view-seg [data-view="recent"]').getAttribute('class'))?.includes('on'), 'Recent stays selected after reload');
   await page.locator('.catalog-view-seg [data-view="tree"]').click();
   await projectScope().waitFor();
-  await until(async () => (await branchChevron('gamma').getAttribute('aria-expanded')) === 'false', 'the folded branch stays folded after reload');
-  await branchChevron('gamma').click();
-  await branchChevron('beta').click();
+  await until(async () => (await branchToggle('gamma').getAttribute('aria-expanded')) === 'false', 'the folded branch stays folded after reload');
+  await branchToggle('gamma').click();
+  await branchToggle('beta').click();
   await request('session.present', { sessionId: alpha.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
-  await until(async () => (await branchChevron('alpha').getAttribute('aria-expanded')) === 'true', 'alpha is the current branch again');
+  await until(async () => (await branchToggle('alpha').getAttribute('aria-expanded')) === 'true', 'alpha is the current branch again');
   check('branch folds and the Recent/Projects choice survive page.reload()');
 
   // R8/R1: the menu collapses, expands and keeps only the current branch unfolded.
@@ -255,32 +271,39 @@ try {
   const otherFold = () => page.locator('.other-fold-row');
   const otherOpenBefore = await otherFold().getAttribute('aria-expanded');
   await until(async () => (await projectScope().locator('.tree-list').count()) === 1
-    && (await page.locator('.catalog-tree-group > .tree-row-wrap > .proj-disclosure[aria-expanded="false"]').count()) === 0, 'Expand all opens every listed branch');
+    && (await page.locator('.catalog-tree-group > .tree-row-wrap > .tree-row[aria-expanded="false"]').count()) === 0, 'Expand all opens every listed branch');
   assert.equal(await otherFold().getAttribute('aria-expanded'), otherOpenBefore, 'Expand all leaves the other-branches fold as it was');
   await page.locator('.side-scope').click();
   await page.locator('.catalogue-popover').getByRole('menuitem', { name: '只展开当前' }).click();
-  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .proj-disclosure[aria-expanded="true"]').count()) === 1, 'only the current branch stays expanded');
-  assert.equal(await branchChevron('alpha').getAttribute('aria-expanded'), 'true');
+  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .tree-row[aria-expanded="true"]').count()) === 1, 'only the current branch stays expanded');
+  assert.equal(await branchToggle('alpha').getAttribute('aria-expanded'), 'true');
   check('menu 全部收起 / 全部展开 / 只展开当前 work');
 
   // Alt+click folds every sibling branch, then opens them again.
   await page.locator('.side-scope').click();
   await page.locator('.catalogue-popover').getByRole('menuitem', { name: '全部展开' }).click();
-  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .proj-disclosure[aria-expanded="false"]').count()) === 0, 'all listed branches are open again');
-  await branchChevron('main').click({ modifiers: ['Alt'] });
-  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .proj-disclosure[aria-expanded="true"]').count()) === 0, 'Alt+click folds all siblings');
-  await branchChevron('main').click({ modifiers: ['Alt'] });
-  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .proj-disclosure[aria-expanded="false"]').count()) === 0, 'Alt+click opens all siblings');
+  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .tree-row[aria-expanded="false"]').count()) === 0, 'all listed branches are open again');
+  await branchToggle('main').click({ modifiers: ['Alt'] });
+  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .tree-row[aria-expanded="true"]').count()) === 0, 'Alt+click folds all siblings');
+  await branchToggle('main').click({ modifiers: ['Alt'] });
+  await until(async () => (await page.locator('.catalog-tree-group > .tree-row-wrap > .tree-row[aria-expanded="false"]').count()) === 0, 'Alt+click opens all siblings');
   check('Alt+click folds and unfolds every branch sibling');
 
+  // Option A: the project page moved from the row click to the row's ⋯ menu.
+  await projectScope().locator('.proj-row-wrap').hover();
+  await projectScope().locator('.proj-row-wrap > .row-more').click();
+  await page.locator('.catalogue-popover').getByRole('menuitem', { name: '打开项目页' }).click();
+  await page.getByTestId('project-home').waitFor();
+  check('the ⋯ menu opens the project page');
+
   // R9: selecting a session inside a folded branch unfolds it.
-  await branchChevron('alpha').click();
-  await until(async () => (await branchChevron('alpha').getAttribute('aria-expanded')) === 'false', 'alpha folds before selection');
+  await branchToggle('alpha').click();
+  await until(async () => (await branchToggle('alpha').getAttribute('aria-expanded')) === 'false', 'alpha folds before selection');
   await request('session.present', { sessionId: thetaOne.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
   await until(async () => (await page.locator('.sess-row.active[data-session-id]').first().getAttribute('data-session-id')) === thetaOne.id, 'theta becomes the selected session');
-  assert.equal(await branchChevron('alpha').getAttribute('aria-expanded'), 'false', 'selecting another branch leaves alpha folded');
+  assert.equal(await branchToggle('alpha').getAttribute('aria-expanded'), 'false', 'selecting another branch leaves alpha folded');
   await request('session.present', { sessionId: alpha.id, placement: 'workspace', presentation: 'focused', operationId: randomUUID() });
-  await until(async () => (await branchChevron('alpha').getAttribute('aria-expanded')) === 'true', 'the newly selected session unfolds its branch');
+  await until(async () => (await branchToggle('alpha').getAttribute('aria-expanded')) === 'true', 'the newly selected session unfolds its branch');
   assert.equal(await branchGroup('alpha').locator(`.sess-row-wrap[data-session-id="${alpha.id}"]`).count(), 1);
   check('selecting a session inside a folded branch unfolds it and shows the row');
 
@@ -291,9 +314,11 @@ try {
   await shot(page, '02-tree-dark.png');
   await settings({ theme: 'light' });
   await page.waitForFunction(() => document.documentElement.dataset.theme !== 'dark');
-  await branchChevron('beta').click();
-  await branchChevron('gamma').click();
+  await branchToggle('beta').click();
+  await branchToggle('gamma').click();
   await shot(page, '03-folded-summary-light.png');
+  await projectScope().locator('.proj-row-wrap').hover();
+  await shot(page, '03b-project-hover-light.png');
   await page.locator('.side-scope').click();
   await page.locator('.catalogue-popover').waitFor();
   await shot(page, '04-menu-light.png');

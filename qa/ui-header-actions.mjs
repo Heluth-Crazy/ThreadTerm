@@ -2,6 +2,7 @@
 // The app uses a read-only prototype seed and a protocol-shaped renderer fixture;
 // no provider, native runtime, user profile, database, or user desktop is used.
 import assert from 'node:assert/strict';
+import { openCatalogPage } from './catalog-page.mjs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -85,7 +86,7 @@ async function openSession(page) {
 }
 async function openProject(page) {
   const projectRow = page.locator('.proj-row').first();
-  if (await projectRow.isVisible()) await projectRow.click();
+  if (await projectRow.isVisible()) await openCatalogPage(projectRow);
   else await page.locator('.ws-top .ws-chip').first().click();
   await page.locator('.ov-page-head').waitFor();
 }

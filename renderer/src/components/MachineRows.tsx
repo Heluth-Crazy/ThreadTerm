@@ -68,7 +68,7 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
     const rendered = foldedDelegateRows(visible, allSessions, undefined, expandedParents, session => byId.get(session.id)!.needsYou > 0).map(row => {
       if (row.kind === 'fold') {
         const key = machineTreeKey(tree.machine.id, 'delegate-fold', row.parentId);
-        return <div className="sess-row-wrap is-delegate" key={key} data-machine-id={tree.machine.id}><button type="button" className="sess-row delegate-fold-row" data-parent-id={row.parentId} aria-expanded={row.expanded} onClick={() => setExpandedDelegates(current => row.expanded ? current.filter(id => id !== key) : boundedExpandedParents([...current, key]))}><span className="bico"><Icon name="chevron" className="chev" /></span><span className="grow">{zh ? `${row.count} 个已结束` : `${row.count} finished`}</span></button></div>;
+        return <div className="sess-row-wrap is-delegate" key={key} data-machine-id={tree.machine.id}><button type="button" className="sess-row delegate-fold-row" data-parent-id={row.parentId} aria-expanded={row.expanded} onClick={() => setExpandedDelegates(current => row.expanded ? current.filter(id => id !== key) : boundedExpandedParents([...current, key]))}><span className="bico" aria-hidden="true" /><span className="grow">{zh ? `${row.count} 个已结束` : `${row.count} finished`}</span></button></div>;
       }
       const session = row.session;
       const needs = byId.get(session.id)!.needsYou, activity = sessionActivity(session), terminal = isTerminalAttentionSession(session);
@@ -82,7 +82,7 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
         </button>
       </div>;
     });
-    return <>{rendered}{olderKey && split.older.length > 0 && <button type="button" className="catalog-fold-row older-fold-row" aria-expanded={olderOpen} onClick={() => setFolds(current => setCatalogFold(current, 'older', olderKey, !olderOpen))}><Icon name="chevD" className="fold-chev" /><span className="grow">{olderOpen ? (zh ? '收起较早的会话' : 'Hide older sessions') : (zh ? `更早的 ${split.older.length} 个会话` : `${split.older.length} older sessions`)}</span></button>}</>;
+    return <>{rendered}{olderKey && split.older.length > 0 && <button type="button" className="catalog-fold-row older-fold-row" aria-expanded={olderOpen} onClick={() => setFolds(current => setCatalogFold(current, 'older', olderKey, !olderOpen))}><span className="grow">{olderOpen ? (zh ? '收起较早的会话' : 'Hide older sessions') : (zh ? `更早的 ${split.older.length} 个会话` : `${split.older.length} older sessions`)}</span></button>}</>;
   };
   const remoteTree = (tree: MachineTree) => <section className="project-catalog remote-project-catalog" aria-label={zh ? '项目目录' : 'Project catalog'}>
     <div className="side-tree">{tree.projects.map(project => {
@@ -96,8 +96,8 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
       // directly under the project.
       const loose = rows.filter(row => !branches.some(branch => sameCanonicalScope(branch.path, row.session.worktreePath ?? project.path)));
       return <div className="proj-group" key={key}>
-        <div className="proj-row-wrap"><button type="button" className={`proj-disclosure${expanded(key) ? ' open' : ''}`} aria-expanded={expanded(key)} aria-label={`${expanded(key) ? (zh ? '收起' : 'Collapse') : (zh ? '展开' : 'Expand')} ${project.name}`} onClick={() => toggle(key)}><Icon name="chevron" className="chev" /></button>
-          <button type="button" className="proj-row" onClick={() => toggle(key)}><Icon name="folder" /><span className="grow">{project.name}</span>{!expanded(key) && foldMark(remoteSummary(rows))}</button>
+        <div className="proj-row-wrap">
+          <button type="button" className="proj-row" aria-expanded={expanded(key)} onClick={() => toggle(key)}><Icon name={expanded(key) ? 'folderOpen' : 'folder'} /><span className="grow">{project.name}</span>{!expanded(key) && foldMark(remoteSummary(rows))}</button>
           <button type="button" className="tree-new" aria-label={zh ? `在 ${project.name} 中新建终端` : `New terminal in ${project.name}`} onClick={() => start(tree.machine.id, project.id, project.path)}><Icon name="plus" /></button>
           <button type="button" className="icon-btn row-more" aria-label={zh ? `${project.name} 操作` : `${project.name} actions`} aria-haspopup="menu" aria-expanded={menu?.key === key} onClick={event => setMenu(menu?.key === key ? undefined : {key,anchor:event.currentTarget})}><Icon name="more" /></button>
           {menu?.key === key && <CatalogPopover anchor={menu.anchor} onClose={closeMenu} label={project.name}><button type="button" role="menuitem" className="menu-item" onClick={() => start(tree.machine.id, project.id, project.path)}><Icon name="plus" />{zh ? '新建终端' : 'New terminal'}</button></CatalogPopover>}

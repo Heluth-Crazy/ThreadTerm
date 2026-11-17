@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { openCatalogPage } from './catalog-page.mjs';
 import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
@@ -85,7 +86,7 @@ try{
     await page.locator('.side-scope').click();await menu().getByRole('menuitem').filter({hasText:'docs-site'}).click();await page.locator('.proj-row').filter({hasText:'docs-site'}).waitFor();
   });
   await caseOf('dirty-project-archive-preserves-draft',async()=>{
-    await page.locator('.proj-row').filter({hasText:'docs-site'}).click();await page.getByRole('button',{name:'项目操作',exact:true}).click();await page.locator('.project-tools-menu').getByRole('button',{name:'浏览文件',exact:true}).click();
+    await openCatalogPage(page.locator('.proj-row').filter({hasText:'docs-site'}));await page.getByRole('button',{name:'项目操作',exact:true}).click();await page.locator('.project-tools-menu').getByRole('button',{name:'浏览文件',exact:true}).click();
     // Standalone Files opens with its tools column (the shared workbench Explorer), so there is no empty-state
     // Browse files button any more; tree rows are treeitems and folders carry aria-expanded.
     const tree=page.locator('.tt-file-tree .wb-tree');await tree.locator('[role=treeitem]').first().waitFor();

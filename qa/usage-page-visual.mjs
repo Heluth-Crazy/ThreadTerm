@@ -8,6 +8,7 @@
 // unpriced-only range → no $0), the paged sessions list with search/sort and the drawer, the Sources panel and its
 // rebuild confirmation, Settings → Usage (price override, outside switch) and a two-year month axis that names the year.
 import assert from 'node:assert/strict';
+import { openCatalogPage } from './catalog-page.mjs';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -330,7 +331,7 @@ try {
   check(`summary tiles, a year of heatmap cells (${cells}) and a stacked trend render from fixture history`);
 
   // Project overview is another ledger consumer. Its Details target must agree with its own seven-day total.
-  await page.locator('.proj-row', { hasText: 'Usage QA' }).first().click();
+  await openCatalogPage(page.locator('.proj-row', { hasText: 'Usage QA' }).first());
   await page.getByTestId('project-home').waitFor();
   await until(async () => (await page.locator('.ov-usage .tnum').count()) >= 2, 'project overview ledger metrics', 60_000);
   const overviewWeekTokens = (await page.locator('.ov-usage .tnum').nth(1).innerText()).trim();

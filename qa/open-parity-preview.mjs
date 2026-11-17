@@ -1,4 +1,5 @@
 import {_electron as electron} from '@playwright/test';
+import { openCatalogPage } from './catalog-page.mjs';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 
@@ -14,7 +15,7 @@ const app=await electron.launch({executablePath:meta.executable,args:[],env,time
 const page=await app.firstWindow();
 await page.locator('.app-shell').waitFor();
 const project=page.getByTitle(meta.project.path,{exact:true}).and(page.locator('.proj-row')).first();
-await project.waitFor();await project.click();
+await project.waitFor();await openCatalogPage(project);
 await app.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows()[0];window.setTitle('ThreadTerm · 原型对齐预览');window.show();window.focus();});
 meta.previousPreviewPid=meta.pid;meta.launcherPid=app.process().pid;meta.pid=await app.evaluate(()=>process.pid);meta.profile=profile;
 meta.styles=await page.evaluate(()=>({stylesheets:[...document.styleSheets].map(sheet=>({href:sheet.href,rules:sheet.cssRules.length})),shellDisplay:getComputedStyle(document.querySelector('.app-shell')).display,sidebarWidth:document.querySelector('.sidebar').getBoundingClientRect().width}));

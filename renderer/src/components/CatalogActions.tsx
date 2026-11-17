@@ -134,6 +134,8 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
     <button type="button" className="icon-btn row-more" aria-label={`${target.name} ${text('Manage','管理')}`} aria-expanded={Boolean(anchor)} onClick={event=>{const next=anchor?undefined:event.currentTarget;ownsOpenMenu.current=Boolean(next);setAnchor(next);onMenuOpenChange?.(Boolean(next));}}><Icon name="more"/></button>
     {anchor&&<CatalogPopover anchor={anchor} onClose={close} label={target.name}>
       <div className="menu-label">{target.name}</div>
+      {/* The sidebar row folds on click, so its page opens from here. */}
+      {target.kind!=='session'&&onWorktree&&item(target.kind==='project'?text('Open project page','打开项目页'):text('Open branch page','打开分支页'),'home',()=>{close();onWorktree(target.projectId,target.kind==='project'?undefined:target.path);})}
       {item(text('Copy directory path','复制目录路径'),'file',()=>void run(async()=>{await navigator.clipboard.writeText(displayPath(target.path));close();}))}
       {item(text('Open directory','查看目录'),'folder',()=>void run(async()=>{await openDirectory(target.projectId,target.worktreeId);close();}))}
       {target.kind!=='session'&&item(text('Refresh directory status','刷新目录状态'),'refresh',()=>{onChanged();close();})}
