@@ -9,7 +9,8 @@ use super::{
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
     emit_scoped, ChatBackgroundTask, ChatSession, ChatToolServer, NativeForkAnchor, ProviderAdapter,
-    NativeChatMessage, NativeChatMessageRole, ProviderCapability, ProviderError, TerminalCommand,
+    NativeChatHistory, NativeChatMessage, NativeChatMessageRole, ProviderCapability, ProviderError,
+    TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
 use crate::chat_questions::answer_summary;
@@ -750,13 +751,13 @@ impl ProviderAdapter for CodexAdapter {
         Ok(Value::Array(codex_transcript_items(thread)))
     }
 
-    fn completed_chat_messages(
+    fn finished_chat_history(
         &self,
         native_id: &str,
-    ) -> Result<Vec<NativeChatMessage>, ProviderError> {
+    ) -> Result<NativeChatHistory, ProviderError> {
         let response = self.read_history_response(native_id)?;
         let thread = codex_history_thread(&response, native_id)?;
-        Ok(codex_completed_chat_messages(thread))
+        codex_finished_chat_history(thread)
     }
 
     fn fork_session(
@@ -5128,15 +5129,39 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
     transcript
 }
 
-fn codex_completed_chat_messages(thread: &Value) -> Vec<NativeChatMessage> {
+/// How a finished native turn ended. A turn still running has no place in a
+/// refresh: the other client may add to it.
+fn codex_finished_turn_status(turn: &Value) -> Option<crate::domain::NativeTurnStatus> {
+    use crate::domain::NativeTurnStatus;
+    match turn.get("status").and_then(Value::as_str) {
+        Some("completed") => Some(NativeTurnStatus::Completed),
+        Some("interrupted") => Some(NativeTurnStatus::Interrupted),
+        Some("failed") => Some(NativeTurnStatus::Failed),
+        _ => None,
+    }
+}
+
+/// The finished turns of a thread: a stopped or failed turn in the other
+/// client is part of the conversation too, prompt and progress included.
+fn codex_finished_chat_history(thread: &Value) -> Result<NativeChatHistory, ProviderError> {
+    let mut finished = thread.clone();
+    if let Some(turns) = finished.get_mut("turns").and_then(Value::as_array_mut) {
+        turns.retain(|turn| codex_finished_turn_status(turn).is_some());
+    }
+    let transcript = serde_json::from_value(Value::Array(codex_transcript_items(&finished)))
+        .map_err(|error| ProviderError::new("invalid_history_transcript", error.to_string()))?;
+    Ok(NativeChatHistory { messages: codex_finished_chat_messages(thread), transcript })
+}
+
+fn codex_finished_chat_messages(thread: &Value) -> Vec<NativeChatMessage> {
     let Some(thread_id) = thread.get("id").and_then(Value::as_str) else {
         return Vec::new();
     };
     let mut messages = Vec::new();
     for turn in thread["turns"].as_array().into_iter().flatten() {
-        if turn.get("status").and_then(Value::as_str) != Some("completed") {
+        let Some(turn_status) = codex_finished_turn_status(turn) else {
             continue;
-        }
+        };
         let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
             continue;
         };
@@ -5157,6 +5182,7 @@ fn codex_completed_chat_messages(thread: &Value) -> Vec<NativeChatMessage> {
                 role,
                 phase,
                 text: extract_text(item),
+                turn_status,
             });
         }
     }
@@ -7090,8 +7116,9 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
     }
 
     #[test]
-    fn completed_messages_keep_native_coordinates_and_skip_incomplete_and_non_message_items() {
-        let messages = codex_completed_chat_messages(&json!({
+    fn finished_history_keeps_native_coordinates_and_every_finished_turn_but_not_a_running_one() {
+        use crate::domain::NativeTurnStatus;
+        let history = codex_finished_chat_history(&json!({
             "id":"thread-1",
             "turns":[
                 {"id":"turn-local","status":"completed","items":[
@@ -7111,9 +7138,18 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                     {"id":"assistant-external","type":"agentMessage","phase":"commentary","content":[
                         {"type":"text","text":"same "},{"type":"text","text":"text"}
                     ]}
+                ]},
+                {"id":"turn-stopped","status":"interrupted","items":[
+                    {"id":"user-stopped","type":"userMessage","text":"fix the bug"},
+                    {"id":"note-stopped","type":"agentMessage","phase":"commentary","text":"looking at the parser"},
+                    {"id":"command-stopped","type":"commandExecution","status":"completed","command":"cargo test"}
+                ]},
+                {"id":"turn-failed","status":"failed","error":{"message":"stream disconnected"},"items":[
+                    {"id":"user-failed","type":"userMessage","text":"try again"}
                 ]}
             ]
-        }));
+        })).unwrap();
+        let messages = &history.messages;
         assert_eq!(
             messages
                 .iter()
@@ -7124,6 +7160,9 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
                 ("turn-local", "assistant-local", "first reply"),
                 ("turn-external", "user-external", "same text"),
                 ("turn-external", "assistant-external", "same text"),
+                ("turn-stopped", "user-stopped", "fix the bug"),
+                ("turn-stopped", "note-stopped", "looking at the parser"),
+                ("turn-failed", "user-failed", "try again"),
             ]
         );
         assert_eq!(messages[0].thread_id, "thread-1");
@@ -7132,6 +7171,25 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         assert_eq!(messages[1].role, NativeChatMessageRole::Assistant);
         assert_eq!(messages[1].phase.as_deref(), Some("final_answer"));
         assert_eq!(messages[3].phase.as_deref(), Some("commentary"));
+        assert_eq!(messages[0].turn_status, NativeTurnStatus::Completed);
+        assert_eq!(messages[4].turn_status, NativeTurnStatus::Interrupted);
+        assert_eq!(messages[6].turn_status, NativeTurnStatus::Failed);
+
+        // The transcript is the history projection of the finished turns only:
+        // tools, reasoning and progress notes included, the running turn left out.
+        let transcript = &history.transcript;
+        assert!(transcript.iter().all(|item| item.turn_id.as_deref() != Some("turn-running")));
+        let ids = transcript.iter().map(|item| item.id.as_str()).collect::<Vec<_>>();
+        for id in ["tool-local", "reasoning-external", "assistant-external", "note-stopped", "command-stopped", "user-failed"] {
+            assert!(ids.contains(&id), "{id} missing from {ids:?}");
+        }
+        let stopped = transcript.iter().filter(|item| item.turn_id.as_deref() == Some("turn-stopped")).collect::<Vec<_>>();
+        // Without an error the boundary folds into the turn's last reply.
+        let stopped_reply = stopped.iter().rev().find(|item| item.role == "assistant").unwrap();
+        assert_eq!(stopped_reply.turn_status, Some(NativeTurnStatus::Interrupted));
+        let failed = transcript.iter().filter(|item| item.turn_id.as_deref() == Some("turn-failed")).collect::<Vec<_>>();
+        assert_eq!(failed.last().unwrap().turn_status, Some(NativeTurnStatus::Failed));
+        assert!(failed.last().unwrap().parts.iter().any(|part| part["type"] == "error"));
     }
 
     #[test]

@@ -43,9 +43,10 @@ const texts = items => messages(items).map(message);
 function externalTurn(id, prompt, reply, status = 'completed') {
   return { id, status, items: [
     { id: id + '-user', type: 'userMessage', content: [{ type: 'text', text: prompt, text_elements: [] }] },
+    { id: id + '-note', type: 'agentMessage', phase: 'commentary', text: 'external progress note' },
     { id: id + '-tool', type: 'commandExecution', command: 'echo external tool', status: 'completed' },
-    { id: id + '-plan', type: 'plan', text: 'external plan must stay out of Chat' },
-    { id: id + '-answer', type: 'agentMessage', phase: 'final_answer', text: reply },
+    { id: id + '-plan', type: 'plan', text: 'external plan' },
+    ...(reply ? [{ id: id + '-answer', type: 'agentMessage', phase: 'final_answer', text: reply }] : []),
   ] };
 }
 
@@ -68,7 +69,7 @@ try {
   const seed = externalTurn('imported-at-create', 'original imported prompt', 'original imported reply');
   // Keep the historical seed to user/assistant text. Later turns exercise
   // filtering external plan and tool items.
-  seed.items = seed.items.filter(item => ['userMessage', 'agentMessage'].includes(item.type));
+  seed.items = seed.items.filter(item => item.type === 'userMessage' || item.phase === 'final_answer');
   await writeFile(historyFile, JSON.stringify([seed]));
   child = spawn(runtime, [], { cwd, env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   child.stderr.on('data', bytes => { diagnostics = (diagnostics + bytes).slice(-4000); });
@@ -119,8 +120,10 @@ try {
   const sameText = ['repeat external prompt', 'repeat external reply'];
   const between = externalTurn('external-between', ...sameText);
   const latest = externalTurn('external-latest', ...sameText);
+  // A turn stopped in the other client is part of the conversation too.
+  const stopped = externalTurn('external-stopped', 'stopped external prompt', '', 'interrupted');
   const unfinished = externalTurn('external-open', 'unfinished prompt', 'unfinished reply', 'inProgress');
-  await writeFile(historyFile, JSON.stringify([imported, first, between, second, latest, unfinished]));
+  await writeFile(historyFile, JSON.stringify([imported, first, between, second, latest, stopped, unfinished]));
   const native = await peer.request('history.read', { provider: 'codex', nativeId });
   assert.equal(texts(native).filter(text => text === sameText[1]).length, 2, 'the native reader sees both external turns');
 
@@ -135,23 +138,29 @@ try {
     await rm(historyFile + '.fail-read');
     assert.deepEqual(messages((await snapshot()).items), originalMessages);
     await writeFile(historyFile + '.fail-resume', '');
-    assert.deepEqual(await mutation('chat.refreshHistory', { operationId: refreshOperation }), { added: 4 });
+    assert.deepEqual(await mutation('chat.refreshHistory', { operationId: refreshOperation }), { added: 14 });
     const refreshed = await connection();
     assert.equal(refreshed.phase, 'ready');
     assert.equal(refreshed.connectionGeneration, warm.connectionGeneration,
       'history refresh keeps the existing worker when a replacement would fail');
   }
   const after = await snapshot();
+  const externalTexts = [sameText[0], 'external progress note', 'external plan', sameText[1]];
   const expected = [
     'original imported prompt', 'original imported reply',
-    'first local prompt', 'local answer for first local prompt', ...sameText,
-    'second local prompt', 'local answer for second local prompt', ...sameText,
+    'first local prompt', 'local answer for first local prompt', ...externalTexts,
+    'second local prompt', 'local answer for second local prompt', ...externalTexts,
+    'stopped external prompt', 'external progress note', 'external plan',
   ];
-  assert.deepEqual(texts(after.items), expected, 'returning imports completed messages once and in native order');
+  assert.deepEqual(texts(after.items), expected,
+    'returning imports finished turns once, in native order, progress notes and stopped turns included');
   assert.deepEqual(messages(after.items).filter(item => originalMessages.some(original => original.id === item.id)),
     originalMessages, 'all original message records survive byte-for-byte');
-  assert.ok(!after.items.some(item => item.parts.some(part => part.toolName === 'commandExecution')),
-    'external tool activity stays out of Chat');
+  assert.equal(after.items.filter(item => item.parts.some(part => part.toolName === 'commandExecution')).length, 3,
+    'the other client\'s commands show as tool activity');
+  const stoppedEnd = after.items.findLast(item => item.turnId === sessionId + ':history:external-stopped' && item.role === 'assistant');
+  assert.equal(stoppedEnd?.turnStatus, 'interrupted', 'a stopped external turn says it was stopped');
+  assert.ok(!texts(after.items).some(text => text.startsWith('unfinished')), 'a turn still running stays out');
 
   const paged = [];
   let beforeCursor;
@@ -163,7 +172,7 @@ try {
   assert.deepEqual(texts(paged), expected, 'paginated Chat uses the same merged order');
 
   await present();
-  assert.deepEqual(await mutation('chat.refreshHistory', { operationId: refreshOperation }), { added: 4 }, 'refresh receipt is replay-safe');
+  assert.deepEqual(await mutation('chat.refreshHistory', { operationId: refreshOperation }), { added: 14 }, 'refresh receipt is replay-safe');
   assert.deepEqual(await mutation('chat.refreshHistory'), { added: 0 });
   assert.deepEqual(messages((await snapshot()).items), messages(after.items), 'repeated return is a no-op');
   const send = { text: 'use external context', operationId: randomUUID() };

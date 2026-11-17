@@ -30,12 +30,19 @@ const env = {
   TT_QA_HISTORY_FILE: historyFile, TT_QA_HISTORY_CWD: cwd, TT_QA_HISTORY_LOG: log,
 };
 
-function turn(id, prompt, reply) {
-  return { id, status: 'completed', items: [
+function turn(id, prompt, reply, steps = [], status = 'completed') {
+  return { id, status, items: [
     { id: id + '-prompt', type: 'userMessage', content: [{ type: 'text', text: prompt, text_elements: [] }] },
-    { id: id + '-reply', type: 'agentMessage', phase: 'final_answer', text: reply },
+    ...steps.map((step, index) => ({ id: id + '-step-' + index, ...step })),
+    ...(reply ? [{ id: id + '-reply', type: 'agentMessage', phase: 'final_answer', text: reply }] : []),
   ] };
 }
+// What a bug-fixing turn in the Codex app leaves: progress notes between commands.
+const work = [
+  { type: 'agentMessage', phase: 'commentary', text: 'Checking the parser first' },
+  { type: 'commandExecution', command: 'cargo test parser', status: 'completed', exitCode: 0, aggregatedOutput: 'test result: ok' },
+  { type: 'agentMessage', phase: 'commentary', text: 'The parser passes; the bug is in the loader' },
+];
 
 async function until(check, label) {
   const deadline = Date.now() + 20_000;
@@ -79,8 +86,9 @@ try {
   await composer.fill('Keep this unsent draft');
   await until(async () => (await rpc('chat.draft.read', { sessionId: session.id })).text === 'Keep this unsent draft', 'draft saved');
 
-  const external = turn('external-latest', 'External Codex prompt', 'External Codex reply');
-  await writeFile(historyFile, JSON.stringify([local, external]));
+  const external = turn('external-latest', 'External Codex prompt', 'External Codex reply', work);
+  const stopped = turn('external-stopped', 'External stopped prompt', '', work.slice(0, 2), 'interrupted');
+  await writeFile(historyFile, JSON.stringify([local, external, stopped]));
   // The fixture window stays on the QA virtual desktop. Deliver the same focus
   // event as an OS return without taking focus from the user's active desktop.
   const returnToWindow = () => page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -89,6 +97,8 @@ try {
   await reply.waitFor();
   assert.equal(await chat.getByText('External Codex prompt', { exact: true }).count(), 1);
   assert.equal(await reply.count(), 1);
+  await chat.getByText('External stopped prompt', { exact: true }).waitFor();
+  assert.equal(await chat.getByText('External stopped prompt', { exact: true }).count(), 1);
   assert.equal(await composer.inputValue(), 'Keep this unsent draft');
   const readCount = async () => (await readFile(log, 'utf8')).trim().split(/\r?\n/u)
     .map(JSON.parse).filter(row => row.method === 'thread/read').length;
