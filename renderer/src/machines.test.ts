@@ -111,7 +111,7 @@ test('other computers nest delegates under parents across branches and fold fini
     session: { ...parent, id, title: `Delegate ${id}`, worktreePath: 'C:/host-child',
       delegation: { parentSessionId: 'parent', state } }, needsYou,
   });
-  tree.worktrees.push({ ...tree.worktrees[0], id: 'child-branch', branch: 'child-folder', path: 'C:/host-child' });
+  tree.worktrees.push({ ...tree.worktrees[0], id: 'child-branch', branch: 'child-folder', path: 'C:/host-child', isMain: false });
   tree.sessions = [child('finished', 'completed'), child('active', 'running', 2), { session: parent, needsYou: 0 }];
   const render = (zh: boolean) => renderToStaticMarkup(createElement(MachineRowsView, { zh, snapshot, feed }));
   for (const zh of [false, true]) {

@@ -12,7 +12,7 @@ const out=join(here,'results/parity-catalog-actions',new Date().toISOString().re
 const report={startedAt:new Date().toISOString(),staticFixture:true,checks:[],errors:[]};
 function extendCatalog(){
   const prior=window.threadterm.request.bind(window.threadterm),priorSubscribe=window.threadterm.onEvent.bind(window.threadterm);
-  const listeners=new Set(),visibility=[],metadata=new Map();let sequence=0;
+  const listeners=new Set(),visibility=[],metadata=new Map(),released=new Set();let sequence=0;
   window.threadterm.onEvent=fn=>{listeners.add(fn);const unsubscribe=priorSubscribe(fn);return()=>{listeners.delete(fn);unsubscribe();};};
   const changed=()=>listeners.forEach(fn=>fn({v:1,event:'state.changed',epoch:'visual-fixture',seq:++sequence,data:{kind:'catalog.visibility'}}));
   window.threadterm.request=async(method,params)=>{
@@ -23,9 +23,14 @@ function extendCatalog(){
       assertRevision(params.expectedRevision,current.revision);
       const next={...current,...params,revision:current.revision+1};metadata.set(params.id,next);changed();return next;
     }
+    if(method==='session.releaseResources.bulk'){
+      window.__parityFixture.calls.push({method,params});
+      for(const id of params.sessionIds)released.add(id);
+      return {released:[...params.sessionIds],refused:[]};
+    }
     if(method==='catalog.visibility.update'){
       window.__parityFixture.calls.push({method,params});
-      const current=visibility.find(row=>row.id===params.id&&row.kind===params.kind),data=await prior('runtime.snapshot',{});
+      const current=visibility.find(row=>row.id===params.id&&row.kind===params.kind),data=await window.threadterm.request('runtime.snapshot',{});
       assertRevision(params.expectedRevision,current?.revision??0);
       const session=data.sessions.find(row=>row.id===params.id),trees=(await Promise.all(data.projects.map(project=>prior('worktree.list',{projectId:project.id})))).flat(),tree=trees.find(row=>row.id===params.id);
       const scope=params.kind==='session'?[session]:params.kind==='project'?data.sessions.filter(row=>row.projectId===params.id):data.sessions.filter(row=>row.projectId===tree?.projectId&&row.worktreePath===tree?.path);
@@ -35,7 +40,7 @@ function extendCatalog(){
     }
     const result=await prior(method,params);
     if(method==='project.catalog.list')return result.map(row=>({...row,...metadata.get(row.id)}));
-    if(method==='runtime.snapshot')return {...result,projects:result.projects.map(row=>({...row,...metadata.get(row.id)}))};
+    if(method==='runtime.snapshot')return {...result,projects:result.projects.map(row=>({...row,...metadata.get(row.id)})),sessions:result.sessions.map(row=>released.has(row.id)?{...row,status:'exited',readOnly:true,activity:undefined}:row)};
     return result;
   };
   function assertRevision(expected,current){if(expected!==current)throw new Error('revision_conflict');}
@@ -62,8 +67,9 @@ try{
     await more('.proj-row-wrap','orbit-web');await page.keyboard.press('ArrowDown');assert.ok(await menu().locator(':focus').count());await page.keyboard.press('Escape');assert.equal(await menu().count(),0);assert.ok(await page.locator('.row-more:focus').count());
     await more('.proj-row-wrap','orbit-web');await choose('重命名项目');await page.getByRole('dialog').locator('input').fill('orbit-renamed');await confirm('保存');await page.locator('.proj-row').filter({hasText:'orbit-renamed'}).waitFor();
   });
-  await caseOf('active-session-archive-rejected',async()=>{
-    await more('.sess-row-wrap','开发服务器');await choose('归档');await confirm('确认归档');await page.getByRole('dialog').getByRole('alert').filter({hasText:'请先结束'}).waitFor();await confirm('取消');assert.equal(await page.locator('.sess-row').filter({hasText:'开发服务器'}).count(),1);
+  await caseOf('active-session-archive-stops-first',async()=>{
+    await more('.sess-row-wrap','开发服务器');await choose('归档');await confirm('确认归档');await page.locator('.sess-row').filter({hasText:'开发服务器'}).waitFor({state:'detached'});
+    const calls=await page.evaluate(()=>window.__parityFixture.calls);assert.ok(calls.some(call=>call.method==='session.releaseResources.bulk'&&call.params.sessionIds.includes('orbit-shell')),'archive stops the active session first');
   });
   await caseOf('session-archive-and-parent-restore',async()=>{
     await more('.sess-row-wrap','依赖升级巡检');await choose('归档');await confirm('确认归档');await page.locator('.sess-row').filter({hasText:'依赖升级巡检'}).waitFor({state:'detached'});
@@ -75,7 +81,7 @@ try{
   });
   await caseOf('project-archive-global-filter-and-scope-restore',async()=>{
     await more('.proj-row-wrap','docs-site');await choose('归档');await confirm('确认归档');await page.locator('.proj-row').filter({hasText:'docs-site'}).waitFor({state:'detached'});
-    await page.locator('.side-nav button').filter({hasText:'所有终端'}).click();await page.getByRole('button',{name:'终端页选项',exact:true}).click();await page.locator('.terminals-page-menu [role="combobox"]').click();await page.locator('.tt-select-menu [role="option"][data-value="archived"]').click();await page.getByRole('button',{name:'终端页选项',exact:true}).click();await page.locator('.t-card').filter({hasText:'navigation information architecture'}).waitFor();assert.equal(await page.locator('.t-card').filter({hasText:'navigation information architecture'}).count(),1);
+    await page.locator('.side-nav button').filter({hasText:'所有终端'}).click();await page.getByRole('button',{name:'终端页选项',exact:true}).click();await page.locator('.app-context-menu [role="menuitem"]').filter({hasText:'已归档'}).click();await page.locator('.t-card').filter({hasText:'navigation information architecture'}).waitFor();assert.equal(await page.locator('.t-card').filter({hasText:'navigation information architecture'}).count(),1);
     await page.locator('.side-scope').click();await menu().getByRole('menuitem').filter({hasText:'docs-site'}).click();await page.locator('.proj-row').filter({hasText:'docs-site'}).waitFor();
   });
   await caseOf('dirty-project-archive-preserves-draft',async()=>{

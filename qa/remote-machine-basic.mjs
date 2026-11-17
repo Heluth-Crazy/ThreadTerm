@@ -93,7 +93,7 @@ try {
   await localPage.waitForFunction(() => !!window.threadterm);
   const localSnapshot = await rpc(localPage, 'runtime.snapshot');
   await localPage.getByRole('button', { name: 'Local user', exact: true }).click();
-  await localPage.getByRole('button', { name: 'Settings', exact: true }).click();
+  await localPage.getByRole('complementary', { name: 'Local account', exact: true }).getByRole('button', { name: 'Settings', exact: true }).click();
   await localPage.getByRole('tab', { name: 'Computers', exact: true }).click();
   const gated = localPage.getByRole('region', { name: 'Computers', exact: true });
   await gated.getByText('Enable Computers preview', { exact: true }).waitFor();
@@ -126,7 +126,7 @@ try {
   }, { slowId: slowProject.id, badId: badProject.id });
   await until(async () => (await localPage.evaluate(() => window.threadterm.machineList())).enabled, 'client preview enabled');
   await localPage.getByRole('button', { name: 'Local user', exact: true }).click();
-  await localPage.getByRole('button', { name: 'Settings', exact: true }).click();
+  await localPage.getByRole('complementary', { name: 'Local account', exact: true }).getByRole('button', { name: 'Settings', exact: true }).click();
   await localPage.getByRole('tab', { name: 'Computers', exact: true }).click();
   const settings = localPage.getByRole('region', { name: 'Computers', exact: true });
   await settings.getByLabel('Paste pairing text from the other computer', { exact: true }).fill(offer.qrPayload);
@@ -219,9 +219,16 @@ try {
   await until(async () => await remotePage.locator('.machine-group[data-machine-id="local"]').getByText('Client-only project', { exact: true }).count() > 0, 'the host view lists This PC projects', 15000);
   pass('a computer view lists This PC projects under This PC');
   if (!treeProbe) {
-    assert.equal(await remotePage.getByRole('dialog').count(), 0);
+    // The project plus is a fresh new-session action: it must open the creator for the clicked host project and
+    // directory, not a retained dialog from an earlier navigation.
+    const fresh = remotePage.getByRole('dialog');
+    await fresh.getByRole('textbox', { name: 'Local path', exact: true }).waitFor();
+    assert.equal((await fresh.getByRole('textbox', { name: 'Local path', exact: true }).inputValue()).replaceAll('\\', '/'), hostWork.replaceAll('\\', '/'));
+    assert.equal(await fresh.getByRole('combobox').first().getAttribute('data-value'), hostProject.id);
     await remotePage.getByText('Host-only project', { exact: true }).first().waitFor();
-    pass('remote project plus creates the host view at its current start page without opening a stale New session dialog');
+    await fresh.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await fresh.waitFor({ state: 'hidden' });
+    pass('remote project plus opens a fresh New session for the clicked host project, not a stale dialog');
   }
   if (treeProbe) {
     await remotePage.getByTestId(`session-chat-${delegatedChild.id}`).waitFor();
@@ -262,7 +269,7 @@ try {
   await remotePage.evaluate(() => localStorage.setItem('machine-partition-proof', 'remote'));
   assert.equal(await localPage.evaluate(() => localStorage.getItem('machine-partition-proof')), 'local');
   await remotePage.getByRole('button', { name: 'Local user', exact: true }).click();
-  await remotePage.getByRole('button', { name: 'Settings', exact: true }).click();
+  await remotePage.getByRole('complementary', { name: 'Local account', exact: true }).getByRole('button', { name: 'Settings', exact: true }).click();
   for (const name of ['Computers', 'Phones', 'Data']) assert.equal(await remotePage.getByRole('tab', { name, exact: true }).count(), 0);
   await remotePage.getByRole('button', { name: 'Close settings', exact: true }).click();
   pass('remote settings hide host administration pages and machine partitions isolate localStorage');
