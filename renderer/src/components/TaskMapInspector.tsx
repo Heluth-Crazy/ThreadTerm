@@ -8,6 +8,7 @@ import { formatChatDuration } from '../chatPresentation';
 import { planDataOf, planEntryLabel, planProgress } from '../chatPlan';
 import { approvalData, choiceLabel } from '../chatApproval';
 import { delegationStateLabel } from '../delegation';
+import { isAutomaticItem } from '../automaticUpdate';
 import { providerLabel } from '../chatConnection';
 import { elapsedMs as subagentElapsedMs, subagentToolCount } from '../subagentActivity';
 import { ChatMarkdown } from './ChatMarkdownExtras';
@@ -148,7 +149,7 @@ export function TaskMapDetails({ node, lane, sessions, items, zh, visible, targe
 function DelegateDetails({ node, sessions, items, copy, zh }: { node: TaskMapNode; sessions: readonly Session[]; items: ReadonlyMap<string, readonly ChatItem[]>; copy: Copy; zh: boolean }) {
   const [all, setAll] = useState(false), child = sessions.find(session => session.id === node.childSessionId);
   if (!child) return <p className="note">{copy('Delegate details are unavailable.', '委派详情不可用。')}</p>;
-  const prompt = (items.get(child.id) ?? []).find(item => item.role === 'user')?.parts.map(part => part.text ?? '').join('\n');
+  const prompt = (items.get(child.id) ?? []).find(item => item.role === 'user' && !isAutomaticItem(item))?.parts.map(part => part.text ?? '').join('\n');
   const outcome = child.delegation?.outcome;
   return <>
     <Field label={copy('Delegate', '委派代理')}><p><AgentTile provider={child.provider} size={16} /> {providerLabel(child.provider)} · {delegationStateLabel(child.delegation?.state ?? 'running', zh)}</p><p>{copy('Workspace', '工作区')}: {child.delegation?.workspace === 'worktree' ? copy('Worktree', '工作树') : copy('Shared', '共享')}{child.delegation?.branch && ` · ${child.delegation.branch}`}</p></Field>

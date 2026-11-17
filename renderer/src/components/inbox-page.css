@@ -1,8 +1,128 @@
-.inbox-menu-anchor { position:relative; }
-.inbox-menu { position:absolute; right:0; top:100%; z-index:12; min-width:200px; }
-.inbox-page .inbox-list { overflow:visible; }
-.inbox-rules { display:grid; gap:16px; padding:16px; }
-.inbox-rules label { display:flex; align-items:center; gap:8px; font-size:12px; }
-.inbox-rules input[type=number] { width:70px; border:1px solid var(--border); border-radius:var(--radius); color:var(--text); background:var(--bg); padding:6px; }
-.inbox-rules p, .inbox-record p { font-size:12px; line-height:1.6; color:var(--muted); }
-.inbox-record { display:grid; gap:12px; padding:16px; }
+/* R15: 待处理 as the workbench. Mac grammar of this branch; every colour is an existing token. */
+.inbox-page { max-width: 1100px; }
+.inbox-wrap { max-width: 800px; margin: 0 auto; display: grid; gap: 0; }
+.inbox-page .page-head { margin-bottom: 14px; }
+.inbox-page .page-title .count { color: var(--faint); font-weight: 400; margin-left: 6px; }
+
+/* New goal (R16) */
+.inbox-page .newgoal { display: grid; margin-bottom: 18px; border-radius: 12px; background: var(--control); box-shadow: 0 0 0 .5px var(--separator-strong), 0 2px 10px -4px var(--control-drop); }
+[data-theme="dark"] .inbox-page .newgoal { background: var(--raised); }
+.inbox-page .newgoal-input { width: 100%; min-height: 38px; padding: 10px 14px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; }
+.inbox-page .newgoal-input::placeholder { color: var(--faint); }
+.inbox-page .newgoal-row { display: flex; align-items: center; gap: 4px; padding: 2px 8px 8px; }
+.inbox-page .newgoal .surface-error { margin: 0 14px 10px; }
+
+/* Nothing to do */
+.inbox-page .calm { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; padding: 12px 14px; border-radius: 12px; background: var(--fill-hover); color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.inbox-page .calm .ok { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--st-running) 14%, transparent); color: var(--st-running-text); flex: none; }
+.inbox-page .calm .ok .ico { width: 15px; height: 15px; stroke-width: 2.2; }
+.inbox-page .calm b { display: block; color: var(--text); font-weight: 600; font-size: 13px; }
+
+/* Goal */
+.inbox-page .goal { margin-bottom: 20px; }
+.inbox-page .goal-head { display: flex; align-items: center; gap: 9px; min-height: 30px; padding: 0 2px; }
+.inbox-page .goal-head .gt { position: relative; display: inline-grid; place-items: center; flex: none; color: var(--muted); }
+.inbox-page .goal-head .gt.ring::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 1.6px solid transparent; border-top-color: var(--st-running); border-right-color: var(--st-running); animation: inbox-spin 1s linear infinite; }
+@keyframes inbox-spin { to { transform: rotate(360deg); } }
+.inbox-page .goal-head .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14px; }
+.inbox-page .chip-br { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; height: 20px; padding: 0 7px; border-radius: 10px; background: var(--fill-hover); color: var(--muted); font: 11.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
+.inbox-page .chip-br .ico { width: 11px; height: 11px; flex: none; }
+.inbox-page .goal-head .prog { margin-left: auto; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; flex: none; }
+.inbox-page .kidstack { display: inline-flex; align-items: center; }
+.inbox-page .kidstack .k { position: relative; display: inline-grid; border-radius: 5px; box-shadow: 0 0 0 1.5px var(--surface); }
+.inbox-page .kidstack .k + .k { margin-left: -4px; }
+.inbox-page .kidstack .k.off { opacity: .4; }
+.inbox-page .goal-head .open { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 12px; flex: none; }
+.inbox-page .goal-head .open:hover { background: var(--fill-hover); color: var(--muted); }
+.inbox-page .goal-head .open .ico { width: 11px; height: 11px; }
+.inbox-page .goal-act { display: flex; align-items: center; gap: 6px; padding: 2px 2px 8px 33px; color: var(--faint); font-size: 12px; }
+.inbox-page .goal-act .tm { flex: none; font-variant-numeric: tabular-nums; }
+.inbox-page .goal-act .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+
+/* Items */
+.inbox-page .items { margin-left: 31px; border-radius: 12px; background: var(--surface); box-shadow: inset 0 0 0 .5px var(--separator-strong), 0 1px 3px var(--control-drop); overflow: hidden; }
+[data-theme="dark"] .inbox-page .items { background: var(--group); }
+.inbox-page .items-bar { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.inbox-page .items-bar .grow { flex: 1; min-width: 0; }
+/* After a decision the bar starts the acceptance rows it accepts. */
+.inbox-page .it + .items-bar { border-top: 1px solid var(--border); }
+.inbox-page .items-bar + .it { border-top: 0; }
+.inbox-page .it { position: relative; padding: 12px 14px; }
+.inbox-page .it + .it { border-top: 1px solid var(--border); }
+.inbox-page .it-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.inbox-page .kindtag { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px 0 6px; border-radius: 10px; font-size: 11.5px; font-weight: 600; flex: none; }
+.inbox-page .kindtag .ico { width: 12px; height: 12px; stroke-width: 2; }
+.inbox-page .kindtag.decide { background: color-mix(in srgb, var(--st-needs) 16%, transparent); color: var(--st-needs-text); }
+.inbox-page .it-head .it-from { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-page .it-head .tm { margin-left: auto; color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
+.inbox-page .it.decide .chat-approval-card, .inbox-page .it.decide .chat-question-wrapper { margin-top: 8px; }
+/* The inline card is Chat's own ChatApprovalCard. Its Mac geometry lives in mac-chat.css under
+   `.chat-view.v3-session-chat`, which a page is not; these are those rules, re-scoped, so the card
+   reads exactly as it does in Chat (kept in one place here rather than wrapping a chat view). */
+/* One row in the list, as in the prototype: neither Chat's tool-card frame around the card nor the card's own
+   surface. Only the layout below is borrowed from mac-chat.css. */
+.inbox-page .it.decide > .chat-part.approval { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.inbox-page .it.decide .chat-approval-card { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 0 12px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.inbox-page .it.decide .chat-approval-heading { display: contents; }
+.inbox-page .it.decide .chat-approval-heading svg { grid-column: 1; grid-row: 1 / span 20; width: 32px; height: 32px; flex: none; padding: 7px; border-radius: 8px; background: color-mix(in srgb, var(--st-needs) 16%, transparent); color: var(--st-needs); }
+.inbox-page .it.decide .chat-approval-heading strong, .inbox-page .it.decide .chat-approval-card > :not(.chat-approval-heading) { grid-column: 2; }
+.inbox-page .it.decide .chat-approval-actions { justify-content: flex-end; margin-top: 2px; gap: 8px; }
+.inbox-page .it.decide .chat-approval-choice.kind-allow:not([data-scope="persistent"]) { background: var(--primary); color: var(--primary-fg); }
+.inbox-page .it.decide .chat-approval-choice.kind-deny, .inbox-page .it.decide .chat-approval-choice.kind-allow[data-scope="persistent"] { background: var(--control); }
+.inbox-page .it.decide .chat-approval-command { margin: 8px 0 12px; padding: 7px 10px; border: 0; border-radius: 7px; background: var(--raised); box-shadow: inset 0 0 0 .5px var(--border); font: 12px var(--mono); white-space: pre-wrap; }
+.inbox-page .inbox-item-error { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 0; color: var(--st-failed-text); font-size: 12px; }
+
+/* Acceptance row */
+.inbox-page .acc-grid { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 2px 10px; align-items: start; }
+.inbox-page .acc-grid > .agent-tile { margin-top: 2px; }
+.inbox-page .acc-main { min-width: 0; }
+.inbox-page .acc-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-weight: 600; font-size: 13px; }
+.inbox-page .acc-title .stat { font-weight: 400; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.inbox-page .acc-ev { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12.5px; color: var(--text); min-width: 0; flex-wrap: wrap; }
+.inbox-page .acc-cmd { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; }
+.inbox-page .acc-ev code { padding: 1px 5px; border-radius: 5px; background: var(--fill-hover); font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+.inbox-page .acc-exit { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.inbox-page .acc-empty { color: var(--muted); }
+.inbox-page .acc-note { margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.inbox-page .proof { display: inline-flex; align-items: center; gap: 3px; height: 19px; padding: 0 7px 0 5px; border-radius: 10px; background: color-mix(in srgb, var(--st-running) 14%, transparent); color: var(--st-running-text); font-size: 11px; font-weight: 600; white-space: nowrap; flex: none; }
+.inbox-page .proof .ico { width: 11px; height: 11px; stroke-width: 2.4; }
+.inbox-page .proof.warn { background: color-mix(in srgb, var(--st-needs) 22%, transparent); color: var(--st-needs-text); }
+.inbox-page .acc-btns { display: flex; gap: 6px; align-self: center; }
+.inbox-page .acc-back { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.inbox-page .acc-back input { flex: 1; min-width: 160px; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
+.inbox-page .acc-back input:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary) 45%, transparent); outline-offset: 1px; }
+
+/* 已处理 */
+.inbox-page .donebar { display: flex; align-items: center; gap: 6px; margin: 6px 0 0 33px; color: var(--faint); font-size: 12px; }
+.inbox-page .donebar .ico { width: 12px; height: 12px; }
+
+/* 其他会话 */
+.inbox-page .other-goal .goal-head { padding: 0 2px; }
+.inbox-page .other-session + .other-session { border-top: 1px solid var(--border); }
+.inbox-page .other-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px 0; font-size: 12.5px; }
+.inbox-page .other-head .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.inbox-page .other-head .open { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; height: 22px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 12px; flex: none; }
+.inbox-page .other-head .open:hover { background: var(--fill-hover); color: var(--muted); }
+.inbox-page .other-head .open .ico { width: 11px; height: 11px; }
+.inbox-page .other-session .it { padding: 10px 14px; }
+.inbox-page .other-session .it:first-of-type { border-top: 1px solid var(--border); }
+
+/* One-line notice rows (quiet, error, retry_exhausted, autowake_exhausted) */
+.inbox-page .it.notice { display: flex; align-items: center; gap: 8px; }
+.inbox-page .it.notice .chip { flex: none; }
+.inbox-page .it.notice .notice-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 12.5px; }
+.inbox-page .it.notice .tm { color: var(--faint); font-variant-numeric: tabular-nums; flex: none; font-size: 12px; }
+
+/* Row menu, rules and record dialogs (kept from the previous page) */
+.inbox-page .inbox-menu-anchor { position: relative; flex: none; }
+.inbox-page .inbox-menu { position: absolute; right: 0; top: 100%; z-index: 12; min-width: 200px; }
+.inbox-rules { display: grid; gap: 16px; padding: 16px; }
+.inbox-rules label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.inbox-rules input[type=number] { width: 70px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--bg); padding: 6px; }
+.inbox-rules p, .inbox-record p { font-size: 12px; line-height: 1.6; color: var(--muted); }
+.inbox-record { display: grid; gap: 12px; padding: 16px; }
+.inbox-page .stalled-note { margin: 0 0 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-page .goal-head .gt.ring::after { animation: none; }
+}

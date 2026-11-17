@@ -3,6 +3,7 @@ import { agentName } from './agents';
 import { approvalData } from './chatApproval';
 import { planDataOf, planProgress } from './chatPlan';
 import { activeTurnId } from './chatPresentation';
+import { isAutomaticItem } from './automaticUpdate';
 import { isStreamingChatItem } from './codexStream';
 import { groupCodexTranscript } from './codexTranscript';
 import { delegationActive, delegationTool, delegationToolLabel, type DelegationTool } from './delegation';
@@ -181,7 +182,7 @@ export function buildTaskMap(input: TaskMapInput): TaskMapGraph {
     rootTurns.at(-1)!.items.push(item);
   }
   const allPhases: TaskMapPhase[] = rootTurns.map((turn, index) => {
-    const prompt = turn.items.find(item => item.role === 'user');
+    const prompt = turn.items.find(item => item.role === 'user' && !isAutomaticItem(item));
     return { id: `phase:${turn.key}`, index, turnId: turn.items.find(item => item.turnId)?.turnId,
       label: input.zh ? `第 ${index + 1} 轮` : `Turn ${index + 1}`, prompt: prompt ? firstLine(textOf(prompt), 80) : undefined,
       promptItemId: prompt?.id, status: turnState(turn.items, root, index === rootTurns.length - 1),
@@ -291,13 +292,15 @@ export function buildTaskMap(input: TaskMapInput): TaskMapGraph {
             entry.lane.title = entry.node.label; entry.lane.status = entry.node.status; entry.lane.subtitle = info.agentType;
             continue;
           }
-          if (!visible) { if (item.role === 'user' && part.type === 'text' && part.text?.trim()) firstPrompt = false; previous = undefined; continue; }
+          if (!visible) { if (item.role === 'user' && !isAutomaticItem(item) && part.type === 'text' && part.text?.trim()) firstPrompt = false; previous = undefined; continue; }
           if (part.type === 'usage' || part.type === 'status' || part.type === 'thinking') continue;
           if (part.type === 'text') {
             if (!part.text?.trim()) continue;
             const prior = previous;
             previous = undefined;
             if (item.role === 'user') {
+              // R14: an automatic delegate update is not a task prompt.
+              if (isAutomaticItem(item)) continue;
               const existing = messages.get(item.id);
               if (existing) { existing.parts.push(ref); if (prior === existing) previous = existing; continue; }
               const parentProvider = depth && session.delegation ? byId.get(session.delegation.parentSessionId)?.provider : undefined;

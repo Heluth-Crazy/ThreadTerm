@@ -1,4 +1,5 @@
 import type { ChatItem, ChatSkill, GitCommitInfo, ProviderCapability, Session } from '@threadterm/protocol';
+import { isAutomaticItem } from './automaticUpdate';
 import type { ContextItem, SessionContextItem } from './chatContext';
 
 export type MentionGroupId = 'files' | 'sessions' | 'commits' | 'agents' | 'skills';
@@ -211,6 +212,8 @@ export function sessionSummary(items: readonly ChatItem[], limit = MAX_SESSION_S
   const lines: string[] = [];
   for (const item of items) {
     if (item.role !== 'user' && item.role !== 'assistant') continue;
+    // R14: ThreadTerm's own delegate updates are not the user's words in the digest.
+    if (item.role === 'user' && isAutomaticItem(item)) continue;
     for (const part of item.parts) {
       if (part.type !== 'text' || !part.text?.trim()) continue;
       lines.push(`${item.role === 'user' ? 'User' : 'Assistant'}: ${part.text.trim()}`);

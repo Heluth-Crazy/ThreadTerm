@@ -576,6 +576,7 @@ function MachineApp() {
               data={scopedData??data}
               onSession={(id) => void navigate({ kind: "session", id })}
               onRead={() => void refresh()}
+              onCreate={defaults=>{setCreatorDefaults(defaults);setCreatorOpen(true);}}
               supervision={supervision}
               onSupervision={async value=>{await request("settings.update",{patch:{supervision:value},expectedRevision:data.settings.revision,operationId:operationId()});await refresh();}}
               supervisionAlerts={supervisionState.alerts}

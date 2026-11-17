@@ -1,9 +1,11 @@
 import type { ChatItem } from '@threadterm/protocol';
+import { isAutomaticItem } from './automaticUpdate';
 
 export type MessageDestination = { id: string; preview: string; createdAt: string; turnId?: string; additions?: number; deletions?: number };
 /** Cached turn statistics can be supplied by F1; navigation never fetches them. */
 export function messageDestinations(items: readonly ChatItem[], stats?: ReadonlyMap<string, { additions: number; deletions: number }>): MessageDestination[] {
-  return items.filter(item => item.role === 'user').map(item => ({
+  // R14: an automatic delegate update is not one of the user's messages, so it is not a jump target.
+  return items.filter(item => item.role === 'user' && !isAutomaticItem(item)).map(item => ({
     id: item.id, createdAt: item.createdAt, turnId: item.turnId,
     preview: item.parts.filter(part => part.type === 'text').map(part => part.text ?? '').join('\n').split(/\r?\n/).find(line => line.trim())?.trim() ?? '',
     ...(item.turnId ? stats?.get(item.turnId) : undefined),

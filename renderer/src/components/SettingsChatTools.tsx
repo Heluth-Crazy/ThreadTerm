@@ -31,6 +31,7 @@ const tools: ToolSpec[] = [
   flatTool("chatTools.feedback", "Feedback", "反馈", "Check for your notes between steps of a long task.", "在长任务的步骤之间查看你发送的反馈。"),
   flatTool("chatTools.run", "Run", "运行", "Start, stop and read the Run entries of this worktree. Detected entries ask you first.", "启动、停止并读取此工作树的运行项。检测到的运行项会先询问你。"),
   flatTool("chatTools.delegation", "Delegation", "任务委派", "Delegate a task to another supported agent.", "将任务委派给其他受支持的智能体。"),
+  flatTool("chatTools.autoWake", "Wake the main agent when a subtask has news", "子任务有结果时自动叫醒主 Agent", "The main agent is woken when a subtask finishes, needs a decision or goes quiet.", "子任务完成、需要决定或长时间没动静时，自动叫醒主 Agent。"),
   {
     id: "chatTools.generatedUi",
     en: "Generated UI",

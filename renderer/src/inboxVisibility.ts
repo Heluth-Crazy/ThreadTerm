@@ -12,6 +12,8 @@ export function inboxEventGroup(kind: string): string {
 
 export function inboxKindLabel(kind: string, zh: boolean): string {
   if (kind === "quiet") return zh ? "无活动" : "No activity";
+  // R6: the parent stopped being woken automatically; requests fall back to the user.
+  if (kind === "autowake_exhausted") return zh ? "不再自动叫醒" : "Auto-wake paused";
   const group = inboxEventGroup(kind);
   if (group === "approval") return zh ? "待确认" : "Approval";
   if (group === "waiting") return zh ? "待输入" : "Input";

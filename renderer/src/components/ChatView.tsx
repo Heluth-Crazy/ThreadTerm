@@ -39,6 +39,8 @@ import { liveSpeedGroupIndex, liveTurnSpeed, nextLiveTurnUsage, turnSpeedText, t
 import { BackgroundTasksStrip } from './BackgroundTasksStrip';
 import { backgroundHasOutput, revealBackgroundOutput } from '../backgroundTasks';
 import { ChatOverview } from './ChatOverview';
+import { ChatAutomaticRow } from './ChatAutomaticRow';
+import { automaticText } from '../automaticUpdate';
 import { overviewDocked } from '../chatOverview';
 import { ComposerOptions } from './ComposerOptions';
 import { ChatContextRing } from './ChatContextRing';
@@ -2001,6 +2003,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       }
       const usage = nested ? undefined : usageCards.get(item.id);
       if (usage) return <article className={`v3-chat-message assistant is-native is-${session.provider} is-usage`} key={item.id}><UsageCard model={usage} zh={zh} /></article>;
+      // R14: a delegate update is ThreadTerm talking to the parent agent, not the user's words.
+      const automatic = automaticText(item);
+      if (automatic) return <ChatAutomaticRow key={item.id} text={automatic} copy={copy} />;
       const live = itemShowsStreaming(item, presentation);
       const replyText = item.role === 'assistant' && !nested && replyEligible && item.parts.some(isReplyTextPart) ? replyActions.get(item.id) ?? '' : '';
       const showReplyActions = !!replyText;
@@ -2135,7 +2140,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     </CatalogPopover>}
     <SelectionBubble rootRef={logRef} visible={surface?.focused !== false && overlay !== 'full'} copy={copy} quoteEnabled={writable} askEnabled={!!onOpenSession} onQuote={text => insertChatText(session.id, quoteSelection(text))} onAsk={(text, current) => askSelectionChat(session, text, current, id => onOpenSession?.(id))} />
     <div className="chat-log-shell" ref={chatShellRef} onKeyDown={viewport.onKeyDown}>
-    <ChatOverview session={session} delegates={delegates} items={items} copy={copy} zh={zh} docked={overviewIsDocked} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} onOpenSession={onOpenSession} navigation={items.filter(item => item.role === 'user').length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} />
+    <ChatOverview session={session} delegates={delegates} items={items} copy={copy} zh={zh} docked={overviewIsDocked} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} onOpenSession={onOpenSession} navigation={items.filter(item => item.role === 'user' && !automaticText(item)).length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} />
     <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onFocusCapture={viewport.onFocus} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onTouchMoveCapture={viewport.onTouchMove} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
       // Links never navigate the app window (the desktop blocks that, so they used to do nothing).
       const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;

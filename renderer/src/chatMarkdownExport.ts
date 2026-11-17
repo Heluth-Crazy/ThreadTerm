@@ -1,4 +1,5 @@
 import type { ChatItem, UsageRecord } from '@threadterm/protocol';
+import { isAutomaticItem } from './automaticUpdate';
 import { hasRedactedBrowserResult } from './browserToolActivity';
 import { describeTool, toolEntriesForItems, toolSummary, toolSummaryText } from './toolActivity';
 import { formatChatDuration } from './chatPresentation';
@@ -59,6 +60,9 @@ export function chatMarkdownExport(items: readonly ChatItem[], meta: ChatExportM
     const key = item.turnId ?? `legacy:${fallbackTurn}`;
     if (turnKey !== key) { flush(); turnKey = key; }
     rows.push(item);
+    // R14: the export names ThreadTerm's automatic delegate update in one line; it never
+    // reads as something the user wrote.
+    if (item.role === 'user' && isAutomaticItem(item)) { parts.push(`> ${copy('Automatic update', '自动唤醒')}`, ''); continue; }
     const content: string[] = [];
     for (const part of item.parts) {
       if (hasRedactedBrowserResult(part)) continue;

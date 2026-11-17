@@ -15,6 +15,7 @@ import { ProviderReadinessAction } from "./ProviderReadinessAction";
 import "./workbench-page.css";
 
 type Defaults = { projectId?: string; path?: string; provider?: ProviderId; title?: string; draft?: string; mode?: "chat" | "terminal" };
+export type { Defaults as WorkbenchDefaults };
 type Props = { data: Snapshot; recentIds?: string[]; onProject: (id: string) => void; onSession: (id: string) => void; onCreate: (defaults?: Defaults) => void; onAddProject: () => void; onAll: () => void; onInbox: () => void; onOpenSettings?: () => void; onCreated?: (session: Session) => void };
 const stateClass = (session: Session) => session.readOnly ? "st-ended" : ({ starting: "st-running", running: "st-running", idle: "st-running", waiting: "st-needs", exited: "st-ended", interrupted: "st-stalled", error: "st-failed" }[session.status]);
 const statusLabel = (session: Session, zh: boolean) => session.readOnly ? (zh ? "只读" : "Read-only") : translate(zh ? "zh-CN" : "en", session.status);
@@ -70,7 +71,7 @@ export function WorkbenchPage({ data, recentIds = [], onSession, onCreate, onAdd
   </section>;
 }
 function Picker({ icon, value, onChange, label, options, disabled = false }: { icon: string; value: string; onChange: (value: string) => void; label: string; options: [string, string][]; disabled?: boolean }) { return <label className={`composer-chip${disabled ? " disabled" : ""}`}><Icon name={icon} /><Select className="composer-select" value={value} onChange={event => onChange(event.target.value)} disabled={disabled} aria-label={label}>{!value && <option value="">{label}</option>}{options.map(([id, text]) => <option key={id} value={id}>{text}</option>)}</Select></label>; }
-function AgentPicker({ value, onChange, agents, label, data, projectId, zh, onCreated, onOpenSettings }: { value?: ProviderId; onChange: (value: ProviderId) => void; agents: WorkbenchAgent[]; label: string; data: Snapshot; projectId?: string; zh: boolean; onCreated: (session: Session) => void; onOpenSettings?: () => void }) {
+export function AgentPicker({ value, onChange, agents, label, data, projectId, zh, onCreated, onOpenSettings }: { value?: ProviderId; onChange: (value: ProviderId) => void; agents: WorkbenchAgent[]; label: string; data: Snapshot; projectId?: string; zh: boolean; onCreated: (session: Session) => void; onOpenSettings?: () => void }) {
   const [open, setOpen] = useState(false);
   const selected = agents.find(agent => agent.id === value);
   const host = useRef<HTMLDivElement>(null);

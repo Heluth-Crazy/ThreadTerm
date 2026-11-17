@@ -1,0 +1,16 @@
+/* R14: an automatic delegate update in Chat reads as a system row, not a user bubble. */
+.chat-auto { margin: 14px 0 6px; }
+.chat-auto-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; text-align: left; }
+.chat-auto-row:hover { background: var(--fill-hover); }
+.chat-auto-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary) 45%, transparent); outline-offset: 1px; }
+.chat-auto-tag { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px 0 6px; border-radius: 10px; background: var(--accent); color: var(--accent-fg); font-size: 11.5px; font-weight: 600; flex: none; }
+.chat-auto-tag .ico { width: 12px; height: 12px; stroke-width: 2.1; }
+.chat-auto-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.chat-auto-more { flex: none; color: var(--faint); font-variant-numeric: tabular-nums; }
+.chat-auto-chev { width: 11px; height: 11px; flex: none; color: var(--faint); transition: transform .12s ease; }
+.chat-auto-row[aria-expanded="true"] .chat-auto-chev { transform: rotate(180deg); }
+.chat-auto-lines { display: grid; gap: 4px; margin: 2px 0 0; padding: 6px 10px 8px 30px; }
+.chat-auto-line { display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0; font-size: 12.5px; color: var(--text); }
+.chat-auto-line .agent-tile { flex: none; }
+.chat-auto-line > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .chat-auto-chev { transition: none; } }

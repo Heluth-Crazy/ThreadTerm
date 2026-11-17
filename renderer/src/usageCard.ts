@@ -1,5 +1,9 @@
 import type { ChatItem } from '@threadterm/protocol';
 
+/** Mirrors `automaticUpdate.isAutomaticItem`; this module is also imported directly by a Node test, so it stays
+ * dependency-free. R14: an automatic delegate update is not a `/usage` command the user typed. */
+const automaticItem = (item: ChatItem): boolean => item.role === 'user' && item.parts.some(part => (part as { automatic?: boolean }).automatic === true);
+
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {};
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
@@ -127,6 +131,7 @@ export function usageCardsForItems(provider: string, items: ChatItem[]): Map<str
   const commands = new Map<string, string>();
   let nearestCommand = '';
   for (const item of items) {
+    if (item.role === 'user' && automaticItem(item)) continue;
     if (item.role === 'user') {
       nearestCommand = item.parts.filter(part => part.type === 'text').map(part => part.text ?? '').join('').trim().split(/\s/)[0]?.toLowerCase() ?? '';
       if (item.turnId) commands.set(item.turnId, nearestCommand);
