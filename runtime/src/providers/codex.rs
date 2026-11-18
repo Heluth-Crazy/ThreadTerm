@@ -59,7 +59,7 @@ impl CodexAdapter {
         // Stdio is the native default, including releases predating --stdio.
         // One app-server per Chat, so `-c` overrides attach this session's
         // tool server without touching the user's config.toml.
-        let mut args = codex_tool_server_overrides(tools);
+        let mut args = codex_app_server_overrides(tools);
         #[cfg(not(test))]
         args.extend(codex_mcp_lazy_overrides_for_process());
         args.push("app-server".into());
@@ -381,6 +381,18 @@ fn codex_toml_value(value: &str) -> String {
     } else {
         format!("'{value}'")
     }
+}
+
+/// R7: the plan tool is off in the modes Chat runs Codex in, so every app-server ThreadTerm starts
+/// turns it on. An unknown key is ignored by the CLI, so this cannot break an older Codex.
+const CODEX_PLAN_OVERRIDES: [&str; 2] = ["-c", "tools.update_plan.enabled=true"];
+
+/// Every `-c` override of a Chat app-server: the native plan tool and the session's tool server.
+/// The tool-server list itself stays empty when there is no tool server (R7).
+fn codex_app_server_overrides(tools: Option<&ChatToolServer>) -> Vec<String> {
+    let mut overrides = CODEX_PLAN_OVERRIDES.map(str::to_owned).to_vec();
+    overrides.extend(codex_tool_server_overrides(tools));
+    overrides
 }
 
 /// `-c mcp_servers.<name>.*` overrides for a session's tool server.
@@ -8029,6 +8041,22 @@ process.on('exit', () => clearTimeout(timeout));
                 r#"mcp_servers.threadterm.env={THREADTERM_SESSION_ID='s-1',THREADTERM_V3_PIPE='\\.\pipe\threadterm-v3-x',ODD="it's"}"#,
             ]
         );
+    }
+
+    #[test]
+    fn codex_app_server_args_turn_the_native_plan_tool_on() {
+        // R7: the flag rides on every Chat app-server, with and without a tool server.
+        let plain = codex_app_server_overrides(None);
+        assert_eq!(plain, ["-c", "tools.update_plan.enabled=true"]);
+        assert!(codex_tool_server_overrides(None).is_empty(), "the tool-server list stays empty");
+        let tools = ChatToolServer {
+            name: "threadterm".into(), command: "mcp".into(), args: vec![],
+            env: vec![("THREADTERM_CHAT_TOKEN".into(), "opaque".into())],
+        };
+        let with_tools = codex_app_server_overrides(Some(&tools));
+        assert_eq!(&with_tools[..2], ["-c", "tools.update_plan.enabled=true"], "the plan flag comes first");
+        assert!(with_tools.contains(&"mcp_servers.threadterm.command='mcp'".to_owned()));
+        assert!(!with_tools.iter().any(|arg| arg == "app-server"), "process() adds the subcommand last");
     }
 
     #[test]

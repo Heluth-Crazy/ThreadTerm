@@ -1,6 +1,8 @@
-import type { ChatItem, ChatPlanEntry, Session } from '@threadterm/protocol';
+import type { ChatItem, ChatPlanEntry, GitCompareFile, ReviewCheckpoint, ReviewFile, Session } from '@threadterm/protocol';
 import { delegationQuiet, delegationQuietLabel, quietMinutesText } from './delegation';
 import { latestPlan, planProgress } from './chatPlan';
+import { reviewChangeTotals } from './agentChangeCounts';
+import { compareTotals } from './workbench/branchScope';
 
 export type Copy = (en: string, zh: string) => string;
 
@@ -158,6 +160,72 @@ export function overviewChangesLabel(count: number, copy: Copy): string {
 
 export function overviewHasSections(input: { delegates: readonly Session[]; plan?: unknown; changes?: number }): boolean {
   return input.delegates.length > 0 || Boolean(input.plan) || (input.changes ?? 0) > 0;
+}
+
+/** One 变更 row: the files it touched and the lines it added and removed. */
+export type OverviewChangeStat = { files: number; added: number; removed: number };
+
+/**
+ * The session row's checkpoint: R2 compares the **oldest** ready one with the current files.
+ * `review.list` is newest first, so the last ready entry is the session's first snapshot.
+ */
+export function overviewSessionCheckpoint(checkpoints: readonly ReviewCheckpoint[]): ReviewCheckpoint | undefined {
+  let oldest: ReviewCheckpoint | undefined;
+  for (const checkpoint of checkpoints) if (checkpoint.status === 'ready') oldest = checkpoint;
+  return oldest;
+}
+
+/** The session row's numbers: `review.changes` against the oldest checkpoint, binary files as files with 0 lines. */
+export function overviewReviewStat(files: readonly ReviewFile[]): OverviewChangeStat {
+  const { added, removed } = reviewChangeTotals(files);
+  return { files: files.length, added, removed };
+}
+
+/** The branch row's numbers: `git.compare.files`, the same sum the Source Control branch scope shows. */
+export function overviewCompareStat(files: readonly GitCompareFile[]): OverviewChangeStat {
+  const { additions, deletions } = compareTotals(files);
+  return { files: files.length, added: additions, removed: deletions };
+}
+
+/** The row's plain-text stat: `7 个文件 +205 −29` (U+2212, like the review panel). */
+export function overviewStatText(stat: OverviewChangeStat, copy: Copy): string {
+  return `${overviewChangesLabel(stat.files, copy)} +${stat.added} −${stat.removed}`;
+}
+
+export function overviewChangeKindLabel(kind: 'session' | 'branch', copy: Copy): string {
+  return kind === 'session' ? copy('This session', '本会话') : copy('Current branch', '当前分支');
+}
+
+/** `This session: 7 files, 205 added, 29 removed` / `本会话：7 个文件，新增 205 行，删除 29 行`. */
+export function overviewChangeRowLabel(kind: 'session' | 'branch', stat: OverviewChangeStat, copy: Copy): string {
+  const label = overviewChangeKindLabel(kind, copy);
+  return copy(
+    `${label}: ${stat.files} ${stat.files === 1 ? 'file' : 'files'}, ${stat.added} added, ${stat.removed} removed`,
+    `${label}：${stat.files} 个文件，新增 ${stat.added} 行，删除 ${stat.removed} 行`,
+  );
+}
+
+/** The head's branch name: the checked-out branch, or the short head when HEAD is detached. */
+export function overviewBranchName(branch: string | null | undefined, head: string | undefined): string | undefined {
+  if (branch) return branch;
+  const short = head?.slice(0, 7);
+  return short ? short : undefined;
+}
+
+/**
+ * The 变更 head: the branch name, titled `{branch} 对比 {base}`, with the uncommitted wording when the
+ * branch is the base itself (working on main), where the row holds only the uncommitted work.
+ */
+export function overviewBranchHead(input: { branch?: string; base?: string; committedOnly?: boolean }, copy: Copy):
+  { text: string; title: string } | undefined {
+  const { branch, base, committedOnly } = input;
+  if (!branch) return undefined;
+  const text = base && base === branch ? `${branch} · ${copy('uncommitted', '未提交')}` : branch;
+  if (!base) return { text, title: branch };
+  const title = committedOnly
+    ? copy(`${branch} compared with ${base}, committed only`, `${branch} 对比 ${base}，只算已提交`)
+    : copy(`${branch} compared with ${base}, uncommitted changes included`, `${branch} 对比 ${base}，含未提交的改动`);
+  return { text, title };
 }
 
 /** A single capped preference list, like the sidebar's expanded-delegate list. */

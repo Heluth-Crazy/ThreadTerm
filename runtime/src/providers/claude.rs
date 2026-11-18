@@ -155,11 +155,14 @@ impl ClaudeAdapter {
         ui: ClaudeUi,
     ) -> Result<(JsonLineProcess, WorkerLiveness), ProviderError> {
         let spec = self.worker_spec()?;
-        let worker_env: &[(&str, &str)] = if claude_worker_uses_electron_node() {
-            &[("ELECTRON_RUN_AS_NODE", "1")]
-        } else {
-            &[]
-        };
+        let mut env: Vec<(&str, &str)> = Vec::new();
+        if claude_worker_uses_electron_node() {
+            env.push(("ELECTRON_RUN_AS_NODE", "1"));
+        }
+        env.extend(claude_plan_tool_env(|key| {
+            std::env::var_os(key).is_some_and(|value| !value.is_empty())
+        }));
+        let worker_env: &[(&str, &str)] = &env;
         let events = self.events.clone();
         let owned_session = session_id.to_owned();
         let owned_token = worker_token.map(ToOwned::to_owned);
@@ -293,6 +296,21 @@ fn claude_fork_params(cwd: &str, native_id: &str, anchor: Option<&NativeForkAnch
 
 fn claude_worker_uses_electron_node() -> bool {
     std::env::var_os("THREADTERM_CLAUDE_ELECTRON_NODE").is_some_and(|value| value == "1")
+}
+
+/// R8: Claude Code only lists a todo tool when tasks are off, and only with
+/// `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` does it list `TodoWrite` (2.1.321). `TodoWrite` is
+/// what `claude_plan_part` turns into plan parts.
+const CLAUDE_PLAN_TOOL_ENV: [(&str, &str); 2] =
+    [("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1"), ("CLAUDE_CODE_ENABLE_TASKS", "0")];
+
+/// The two variables, each only when the runtime's own environment leaves it unset: a value the
+/// user set wins, and an empty value counts as unset.
+fn claude_plan_tool_env(set: impl Fn(&str) -> bool) -> Vec<(&'static str, &'static str)> {
+    CLAUDE_PLAN_TOOL_ENV
+        .into_iter()
+        .filter(|(key, _)| !set(key))
+        .collect()
 }
 
 impl ProviderAdapter for ClaudeAdapter {
@@ -3343,6 +3361,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_claude_worker_asks_the_cli_for_its_todo_plan_tool() {
+        // R8: both switches, in order, when the runtime's environment says nothing.
+        assert_eq!(
+            claude_plan_tool_env(|_| false),
+            [("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1"), ("CLAUDE_CODE_ENABLE_TASKS", "0")]
+        );
+        // A value the user set wins, in either direction and one at a time.
+        let only_tasks = claude_plan_tool_env(|key| key == "CLAUDE_CODE_ENABLE_TODO_TOOLS");
+        assert_eq!(only_tasks, [("CLAUDE_CODE_ENABLE_TASKS", "0")]);
+        let only_todo = claude_plan_tool_env(|key| key == "CLAUDE_CODE_ENABLE_TASKS");
+        assert_eq!(only_todo, [("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1")]);
+        assert!(claude_plan_tool_env(|_| true).is_empty());
     }
 
     #[test]

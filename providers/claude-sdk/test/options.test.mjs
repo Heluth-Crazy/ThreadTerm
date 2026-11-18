@@ -101,6 +101,13 @@ test('start publishes model, thinking and permission-mode options without a mode
   assert.ok(!sdk.state.calls.some(([name, detail]) => name === 'getContextUsage' && detail === 'summary'), 'getSettings answers when present');
 });
 
+test('the host leaves options.env unset so the CLI inherits the worker environment', async () => {
+  // R8: the two plan-tool variables ride on the worker environment, and SDK 0.3.266 passes
+  // process.env through only when options.env is absent, so the host must never set it.
+  const { sdk } = await started();
+  assert.equal('env' in sdk.state.options, false, 'options.env stays unset');
+});
+
 test('a saved permission mode is passed at query start and confirmed by the handshake', async () => {
   const { session, sdk } = await started({ permissionMode: 'dontAsk', init: { current_permission_mode: 'dontAsk' } });
   assert.equal(sdk.state.options.permissionMode, 'dontAsk');

@@ -1,12 +1,18 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ChatItem, ChatPlanEntry, NativeSubagentSummary, Session } from '@threadterm/protocol';
-import { operationId, request } from '../bridge';
+import { operationId, request, subscribeEvents } from '../bridge';
 import { attachedMessagesLabel, authorityLabel, delegationActive, delegationStateLabel } from '../delegation';
 import {
-  OVERVIEW_COLLAPSED_KEY, OVERVIEW_FINISHED_OPEN_KEY, overviewChangesFileCount, overviewChangesLabel,
+  OVERVIEW_COLLAPSED_KEY, OVERVIEW_FINISHED_OPEN_KEY, overviewBranchHead, overviewBranchName,
+  overviewChangeKindLabel, overviewChangeRowLabel, overviewChangesFileCount, overviewChangesLabel, overviewCompareStat,
   overviewDelegateGroups, overviewFinishedLabel, overviewHasSections, overviewPlan, overviewPlanText,
-  overviewStateText, readOverviewCollapsed, readOverviewFinishedOpen, toggleOverviewFinishedOpen, type Copy,
+  overviewReviewStat, overviewSessionCheckpoint, overviewStateText,
+  readOverviewCollapsed, readOverviewFinishedOpen, toggleOverviewFinishedOpen, type Copy, type OverviewChangeStat,
 } from '../chatOverview';
+import { branchScopeKey, readBranchScopePreference } from '../workbench/branchScope';
+import { createRefreshQueue } from '../workbench/refreshQueue';
+import { eventTouchesWorktree } from '../workbench/refreshTriggers';
+import { FILES_CHANGED_EVENT, scopeParams } from '../workbench/types';
 import { useNativeSubagents } from '../nativeSubagents';
 import { subagentTitle } from '../subagentActivity';
 import { planEntryLabel, planPriorityLabel } from '../chatPlan';
@@ -28,6 +34,119 @@ function persist(key: string, value: string): void {
 function openAgentChanges(): void {
   const key = globalThis.crypto?.randomUUID?.() ?? String(Date.now());
   window.dispatchEvent(new CustomEvent('threadterm:workbench', { detail: { view: 'changes', key } }));
+}
+
+/** R5: the workbench Source Control view in branch scope, switched by `SourceControlView` itself. */
+function openBranchScope(): void {
+  const key = globalThis.crypto?.randomUUID?.() ?? String(Date.now());
+  window.dispatchEvent(new CustomEvent('threadterm:workbench', { detail: { view: 'scm', key, scope: 'branch' } }));
+}
+
+type OverviewBranchRow = { stat: OverviewChangeStat; name?: string; base?: string; committedOnly: boolean };
+
+type OverviewChangeRows = {
+  /** The session these numbers belong to; another session's rows are never shown. */
+  sessionId: string;
+  loaded: boolean;
+  session?: OverviewChangeStat;
+  branch?: OverviewBranchRow;
+};
+
+/** R2: the oldest ready checkpoint against the current files; any failure hides the row silently. */
+async function loadSessionChangeStat(sessionId: string): Promise<OverviewChangeStat | undefined> {
+  try {
+    const state = await request('review.list', { sessionId });
+    const from = state.available ? overviewSessionCheckpoint(state.checkpoints) : undefined;
+    if (!from) return undefined;
+    return overviewReviewStat((await request('review.changes', { sessionId, from: from.id })).files);
+  } catch { return undefined; }
+}
+
+/** R2: `git.compare.files` with the base and scope Source Control remembers, so both read the same numbers. */
+async function loadBranchRow(scope: { projectId: string; worktreePath?: string }): Promise<OverviewBranchRow | undefined> {
+  const preference = readBranchScopePreference(branchScopeKey(scope)), params = scopeParams(scope);
+  const [status, compare] = await Promise.all([
+    request('git.status', params).catch(() => undefined),
+    request('git.compare.files', {
+      ...params,
+      ...(preference?.base ? { base: preference.base } : {}),
+      ...(preference?.committedOnly ? { committedOnly: true } : {}),
+    }).catch(() => undefined),
+  ]);
+  if (!compare) return undefined;
+  const name = overviewBranchName(status?.branch, compare.head);
+  return {
+    stat: overviewCompareStat(compare.files),
+    ...(name ? { name } : {}),
+    base: compare.base.ref,
+    committedOnly: Boolean(preference?.committedOnly),
+  };
+}
+
+/**
+ * R3: the card loads its two rows only while it is on screen, and refreshes from the same events as
+ * Agent Changes. The last numbers stay while a refresh runs, and an answer for a session the card no
+ * longer shows is dropped.
+ */
+function useOverviewChangeRows(session: Session, delegateIds: readonly string[], visible: boolean): OverviewChangeRows {
+  const [rows, setRows] = useState<OverviewChangeRows>(() => ({ sessionId: session.id, loaded: false }));
+  const generation = useRef(0);
+  const ids = useRef(delegateIds);
+  ids.current = delegateIds;
+  const { id: sessionId, projectId, worktreePath } = session;
+  const load = useCallback(async () => {
+    const ticket = ++generation.current;
+    const [sessionRow, branchRow] = await Promise.all([
+      loadSessionChangeStat(sessionId),
+      projectId ? loadBranchRow({ projectId, ...(worktreePath ? { worktreePath } : {}) }) : undefined,
+    ]);
+    if (ticket !== generation.current) return;
+    setRows({
+      sessionId, loaded: true,
+      ...(sessionRow ? { session: sessionRow } : {}),
+      ...(branchRow ? { branch: branchRow } : {}),
+    });
+  }, [sessionId, projectId, worktreePath]);
+  useEffect(() => {
+    // A stale answer for another session must not land on this card.
+    generation.current += 1;
+    setRows(current => current.sessionId === sessionId ? current : { sessionId, loaded: false });
+    if (!visible) return;
+    const queue = createRefreshQueue(load);
+    void queue.request();
+    const changed = () => { void queue.request(); };
+    const shown = () => { if (document.visibilityState === 'visible') changed(); };
+    addEventListener(FILES_CHANGED_EVENT, changed);
+    document.addEventListener('visibilitychange', shown);
+    const workspace = { projectId: projectId ?? '', ...(worktreePath ? { worktreePath } : {}) };
+    const unsubscribe = subscribeEvents(event => {
+      if (eventTouchesWorktree(event, workspace, new Set([sessionId, ...ids.current]))) changed();
+    });
+    return () => {
+      queue.stop();
+      removeEventListener(FILES_CHANGED_EVENT, changed);
+      document.removeEventListener('visibilitychange', shown);
+      unsubscribe();
+    };
+  }, [visible, load, sessionId, projectId, worktreePath]);
+  return rows;
+}
+
+/** R1: one 变更 row — icon, label, the diff stat and a chevron, 28 px like every other row. */
+function ChangeRow({ kind, stat, copy, onClick }: {
+  kind: 'session' | 'branch'; stat: OverviewChangeStat; copy: Copy; onClick: () => void;
+}) {
+  const label = overviewChangeRowLabel(kind, stat, copy);
+  return <button type="button" className={`chat-overview-change is-${kind}`} aria-label={label} title={label} onClick={onClick}>
+    <Icon name={kind === 'session' ? 'msg' : 'branch'} className="chat-overview-change-icon" />
+    <span className="chat-overview-change-label">{overviewChangeKindLabel(kind, copy)}</span>
+    <span className="chat-overview-stat">
+      <span className="chat-overview-stat-files">{overviewChangesLabel(stat.files, copy)}</span>
+      <span className={`chat-overview-stat-add${stat.added ? '' : ' is-zero'}`}>+{stat.added}</span>
+      <span className={`chat-overview-stat-del${stat.removed ? '' : ' is-zero'}`}>−{stat.removed}</span>
+    </span>
+    <Icon name="chevR" className="chat-overview-change-chevron" />
+  </button>;
 }
 
 function PlanMark({ status, live }: { status: ChatPlanEntry['status']; live: boolean }) {
@@ -62,20 +181,38 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   const nativeRunning = native.filter(agent => agent.status === 'running');
   const nativeFinished = native.filter(agent => agent.status !== 'running');
   const plan = useMemo(() => overviewPlan(items), [items]);
-  const changes = useMemo(() => overviewChangesFileCount(items), [items]);
+  const cheapChanges = useMemo(() => overviewChangesFileCount(items), [items]);
   const planActive = Boolean(plan?.turnId && liveTurnId && plan.turnId === liveTurnId);
-  const hasSections = native.length > 0 || overviewHasSections({ delegates, plan, changes });
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [finishedOpen, setFinishedOpen] = useState<string[]>(readFinishedOpen);
   const [open, setOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null);
+  // R3: the card asks for its numbers only while it is on screen (docked, or the open popover) and has
+  // a reason to exist. Without one — no delegates, subagents, plan or session changes — a Chat must not
+  // run `git.status` and `git.compare.files` on every file event just to keep an invisible card current.
+  const cardWanted = delegates.length > 0 || native.length > 0 || Boolean(plan) || (cheapChanges ?? 0) > 0;
+  const changeRows = useOverviewChangeRows(session, delegates.map(delegate => delegate.id), cardWanted && ((docked && !collapsed) || open));
+  const sessionChanges = changeRows.session && changeRows.session.files > 0 ? changeRows.session : undefined;
+  const branchChanges = changeRows.branch && changeRows.branch.stat.files > 0 ? changeRows.branch : undefined;
+  // R4: the cheap turn count stands in until the session row has loaded, then the loaded row decides.
+  const changesPresent = changeRows.sessionId === session.id && changeRows.loaded
+    ? Boolean(sessionChanges)
+    : (cheapChanges ?? 0) > 0;
+  const hasSections = native.length > 0 || overviewHasSections({ delegates, plan, changes: changesPresent ? 1 : 0 });
   const showDocked = docked && !collapsed && hasSections;
   const showButton = !showDocked && hasSections;
+  const branchHead = branchChanges
+    ? overviewBranchHead({ ...(changeRows.branch?.name ? { branch: changeRows.branch.name } : {}), ...(changeRows.branch?.base ? { base: changeRows.branch.base } : {}), committedOnly: Boolean(changeRows.branch?.committedOnly) }, copy)
+    : undefined;
   const activeCount = groups.active.length + nativeRunning.length;
+  // With the plan tools on and the change rows, a Chat without delegates gets the card too: name it
+  // for what it holds then, not for delegates it never had.
   const buttonLabel = activeCount
     ? copy(`${activeCount} running`, `${activeCount} 个进行中`)
-    : copy('Delegated agents', '委派的代理');
+    : delegates.length > 0 || native.length > 0
+      ? copy('Delegated agents', '委派的代理')
+      : copy('Overview', '概览');
   const accessibleLabel = `${buttonLabel}${groups.badge ? copy(`, ${groups.badge} need you`, `，${groups.badge} 个待处理`) : ''}`;
   const close = () => { setOpen(false); trigger.current?.focus({ preventScroll: true }); };
 
@@ -145,13 +282,14 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
         </div>}
       </>}
     </section>}
-    {changes !== undefined && <section className="chat-overview-section" aria-label={copy('Changes', '变更')}>
-      <button type="button" className="chat-overview-changes" onClick={() => { close(); openChanges(); }}>
-        <span className="chat-overview-changes-label">{copy('Changes', '变更')}</span>
-        <span className="chat-overview-changes-count">{overviewChangesLabel(changes, copy)}</span>
-        <Icon name="chevR" />
-      </button>
-    </section>}
+    {sessionChanges || branchChanges ? <section className="chat-overview-section" aria-label={copy('Changes', '变更')}>
+      <div className="chat-overview-section-head">
+        <span>{copy('Changes', '变更')}</span>
+        {branchHead && <span className="chat-overview-branch-name" title={branchHead.title}>{branchHead.text}</span>}
+      </div>
+      {sessionChanges && <ChangeRow kind="session" stat={sessionChanges} copy={copy} onClick={() => { close(); openChanges(); }} />}
+      {branchChanges && <ChangeRow kind="branch" stat={branchChanges.stat} copy={copy} onClick={() => { close(); openBranchScope(); }} />}
+    </section> : null}
     {plan && <section className="chat-overview-section" aria-label={copy('Plan', '计划')}>
       <div className="chat-overview-section-head"><span>{copy('Plan', '计划')}</span><span className="chat-overview-count">{plan.done}/{plan.total}</span></div>
       <button type="button" className="chat-overview-plan" aria-expanded={planOpen} aria-controls={planId} title={plan.entries.map(entry => planEntryLabel(entry, copy)).join('\n')} onClick={() => setPlanOpen(value => !value)}>

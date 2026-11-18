@@ -51,6 +51,8 @@ try {
     THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
     THREADTERM_V3_PIPE: `\\\\.\\pipe\\tt-chat-plan-${randomUUID()}`,
     THREADTERM_V3_RUNTIME: runtime,
+    // Without it the runtime resolves the user's real Codex install instead of the fake on PATH.
+    THREADTERM_QA_PROVIDER_BIN: bin,
     THREADTERM_QA_CODEX_PLAN_LOG: log,
     THREADTERM_QA_CODEX_PLAN_CWD: workspace,
   });

@@ -590,6 +590,8 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
   if(!visible||!status||git.loading||busy)return;
   consumedCommand.current=command.key;
   onCommandHandled?.(command.key);
+  // R5: the Chat overview's 当前分支 row opens this view in the Branch scope, even from Changes.
+  if(command.scopeMode==='branch'){ switchScope('branch'); return; }
   if(command.action==='commit')messageRef.current?.focus();
   else if(command.action==='switch-branch'){if(branchButton.current)openBranches(branchButton.current);}
   else if(command.action==='stash')setStashDialog(true);

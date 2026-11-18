@@ -19,7 +19,7 @@ import '../workbench/workbench.css';
 import './panel-headers.css';
 
 export type WorkbenchView = 'files'|'search'|'scm'|'run'|'changes'|'browser'|'details';
-export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeKey?:string; reveal?:FilesRevealRequest };
+export type WorkbenchCommand = { view:WorkbenchView|'toggle'; key:string; action?:GitWorkbenchAction; scopeMode?:'branch'; scopeKey?:string; reveal?:FilesRevealRequest };
 // Remember each view's width and the last view, but always start a workspace with the panel closed.
 type Stored = { view:WorkbenchView; widths:Record<WorkbenchView,number> };
 const STORAGE_KEY = 'threadterm.workbench.sidebar';
@@ -186,7 +186,7 @@ export function WorkbenchSideBar({scope, actions, filesActions, sessions, allSes
      {stored.view==='details'&&details}
      {visited.has('files') && <div className="wb-view" hidden={stored.view !== 'files'}>{alternateFiles?<AlternateFilesExplorer key={`${filesScope.projectId}\0${filesScope.worktreePath??filesScope.rootPath}`} sessions={sessions} active={open&&stored.view==='files'} scope={filesScope} actions={scopedFilesActions} zh={zh} activePath={undefined} focusKey={stored.view === 'files' ? focusKey : undefined} reveal={filesReveal} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/>:<ExplorerView scope={scope} actions={actions} git={git} zh={zh} activePath={activePath} focusKey={stored.view === 'files' ? focusKey : undefined} reveal={filesReveal} toolbarHost={stored.view === 'files' ? actionsHost : undefined}/>}</div>}
      {visited.has('search') && <div className="wb-view" hidden={stored.view !== 'search'}><SearchView scope={scope} actions={actions} zh={zh} focusKey={stored.view === 'search' ? focusKey : undefined}/></div>}
-     {visited.has('scm') && <div className="wb-view" hidden={stored.view !== 'scm'}><SourceControlView scope={scope} actions={actions} git={git} zh={zh} visible={open&&stored.view==='scm'} onReview={()=>select('changes', true)} command={open&&stored.view==='scm'&&command?.view==='scm'&&command.action&&command.key!==handledCommand?{view:'scm',key:command.key,action:command.action,scopeKey:command.scopeKey}:undefined} onCommandHandled={setHandledCommand} toolbarHost={stored.view === 'scm' ? actionsHost : undefined}/></div>}
+     {visited.has('scm') && <div className="wb-view" hidden={stored.view !== 'scm'}><SourceControlView scope={scope} actions={actions} git={git} zh={zh} visible={open&&stored.view==='scm'} onReview={()=>select('changes', true)} command={open&&stored.view==='scm'&&command?.view==='scm'&&(command.action||command.scopeMode)&&command.key!==handledCommand?{view:'scm',key:command.key,action:command.action,scopeMode:command.scopeMode,scopeKey:command.scopeKey}:undefined} onCommandHandled={setHandledCommand} toolbarHost={stored.view === 'scm' ? actionsHost : undefined}/></div>}
      {visited.has('run') && <div className="wb-view" hidden={stored.view !== 'run'}><RunViewPanel scope={scope} actions={actions} sessions={allSessions} zh={zh} visible={open&&stored.view==='run'} toolbarHost={stored.view === 'run' ? actionsHost??undefined : undefined}/></div>}
      {visited.has('changes') && <div className="wb-view" hidden={stored.view !== 'changes'}><AgentChangesView sessions={sessions} activeSessionId={activeSessionId} actions={actions} zh={zh} visible={stored.view === 'changes'} toolbarHost={stored.view === 'changes' ? actionsHost : undefined}/></div>}
     </div>

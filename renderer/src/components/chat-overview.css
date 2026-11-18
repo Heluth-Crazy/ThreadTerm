@@ -12,6 +12,10 @@
 .chat-overview-button-label { white-space:nowrap; }
 .chat-overview-badge { min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--st-needs, #e2b340); color:var(--bg); font-size:10px; font-weight:700; display:grid; place-items:center; }
 .chat-overview-popover { position:absolute; top:calc(100% + 6px); right:0; z-index:40; width:300px; max-height:min(56vh, 520px); overflow:auto; border-radius:14px; }
+/* The header button lives in the pane tab bar, which clips (`.workspace-tabbar.ws-strip`, workspace-parity.css)
+   so overflowing tabs stay hidden. Clipping on both axes cut the whole popover off below the bar; while it is
+   open the bar keeps clipping sideways only. The bar's z-index:1 keeps the popover above the transcript. */
+.workspace-tabbar.ws-strip:has(.chat-overview-popover) { overflow-x:clip; overflow-y:visible; }
 .chat-overview-dock { position:absolute; top:16px; right:18px; bottom:16px; z-index:5; width:280px; display:flex; align-items:flex-start; pointer-events:none; }
 .chat-overview-dock > * { pointer-events:auto; }
 .chat-overview-card { position:relative; width:280px; max-height:100%; overflow:auto; padding:6px 0; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow-soft, 0 12px 32px rgba(0, 0, 0, .35)); font-size:13px; }
@@ -55,11 +59,19 @@
 .chat-overview-fold-button { flex:1; min-width:0; height:28px; display:flex; align-items:center; gap:6px; padding:0; border:0; background:none; color:inherit; font:inherit; font-size:12px; text-align:left; cursor:pointer; }
 .chat-overview-fold-button .ico { flex:none; width:12px; height:12px; }
 .chat-overview-fold-failed { flex:none; color:var(--st-failed, #e5675f); font-size:12px; }
-.chat-overview-changes { display:flex; align-items:center; gap:8px; width:calc(100% + 16px); height:28px; margin:0 -8px; padding:0 8px; border:0; border-radius:7px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
-.chat-overview-changes:hover, .chat-overview-changes:focus-visible { background:var(--soft); }
-.chat-overview-changes-label { color:var(--muted); font-size:12px; }
-.chat-overview-changes-count { margin-left:auto; color:var(--muted); font-size:12px; }
-.chat-overview-changes .ico { flex:none; width:12px; height:12px; color:var(--faint); }
+/* R1: the 变更 head names the branch; the two rows carry the same diff stat as the review panel. */
+.chat-overview-branch-name { min-width:0; margin-left:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); font-family:var(--mono); font-size:11px; }
+.chat-overview-change { display:flex; align-items:center; gap:8px; width:calc(100% + 16px); height:28px; margin:0 -8px; padding:0 8px; border:0; border-radius:7px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.chat-overview-change:hover, .chat-overview-change:focus-visible { background:var(--soft); }
+.chat-overview-change .ico { flex:none; }
+.chat-overview-change-icon { width:14px; height:14px; color:var(--muted); }
+.chat-overview-change-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; }
+.chat-overview-stat { display:inline-flex; align-items:baseline; gap:5px; margin-left:auto; flex:none; font-size:12px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.chat-overview-stat-files { color:var(--muted); }
+.chat-overview-stat-add { color:var(--st-running-text); font-weight:600; }
+.chat-overview-stat-del { color:var(--st-failed-text); font-weight:600; }
+.chat-overview-stat .is-zero { color:var(--faint); font-weight:400; }
+.chat-overview-change-chevron { width:12px; height:12px; color:var(--faint); }
 .chat-overview-plan { display:flex; align-items:center; gap:8px; width:calc(100% + 16px); height:26px; margin:0 -8px; padding:0 8px; border:0; border-radius:7px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
 .chat-overview-plan:hover, .chat-overview-plan:focus-visible { background:var(--soft); }
 .chat-overview-plan-bar { flex:none; width:46px; height:4px; border-radius:999px; background:var(--border); overflow:hidden; }
