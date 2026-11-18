@@ -1672,8 +1672,15 @@ fn compare_untracked_files(root: &Path) -> Vec<Value> {
 
 /// Everything the current branch changes relative to its base, capped at `MAX_COMPARE_FILES`.
 fn compare_summary(root: &Path, requested: Option<&str>, committed_only: bool) -> Result<Value> {
-    let head = commit_oid(root, "HEAD").ok_or_else(|| anyhow!("compare_unborn"))?;
-    let current = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+    use crate::git_selected_commit::joined;
+    // Read-only Git processes that do not need each other's answer run side by side (perf 11-18); results are
+    // used in the original order.
+    let (head, current) = std::thread::scope(|scope| {
+        let current = scope.spawn(|| git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]));
+        (commit_oid(root, "HEAD"), joined(current))
+    });
+    let head = head.ok_or_else(|| anyhow!("compare_unborn"))?;
+    let current = current
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
@@ -1698,9 +1705,14 @@ fn compare_summary(root: &Path, requested: Option<&str>, committed_only: bool) -
     if committed_only {
         args.push(head.as_str());
     }
-    let output = run_git(root, &args, &[], None, LOCAL_TIMEOUT)?;
+    // The untracked listing does not depend on the diff: read it at the same time.
+    let (output, untracked) = std::thread::scope(|scope| {
+        let untracked = (!committed_only).then(|| scope.spawn(|| compare_untracked_files(root)));
+        (run_git(root, &args, &[], None, LOCAL_TIMEOUT), untracked.map(joined))
+    });
+    let output = output?;
     let mut files = parse_compare_files(&output);
-    if !committed_only {
+    if let Some(untracked) = untracked {
         // `git rm --cached` leaves the file on disk: it is already listed as a deletion, so the
         // untracked listing must not emit the same path a second time.
         let listed: std::collections::HashSet<String> = files
@@ -1708,7 +1720,7 @@ fn compare_summary(root: &Path, requested: Option<&str>, committed_only: bool) -
             .filter_map(|file| file["path"].as_str().map(str::to_owned))
             .collect();
         files.extend(
-            compare_untracked_files(root)
+            untracked
                 .into_iter()
                 .filter(|file| {
                     file["path"]

@@ -474,19 +474,24 @@ fn update(
     Ok(value)
 }
 fn git_catalog(root: &Path) -> Value {
-    let branch = git(root, &["branch", "--show-current"])
-        .ok()
-        .filter(|s| !s.is_empty());
-    let upstream = git(root, &["rev-parse", "--abbrev-ref", "@{upstream}"])
-        .ok()
-        .filter(|s| !s.is_empty());
-    let commit = git(root, &["log", "-1", "--format=%H%x1f%s%x1f%cI"])
+    // Four independent read-only Git processes: run side by side instead of one after another (perf 11-18).
+    let (branch, upstream, commit, available) = std::thread::scope(|scope| {
+        let branch = scope.spawn(|| git(root, &["branch", "--show-current"]));
+        let upstream = scope.spawn(|| git(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]));
+        let commit = scope.spawn(|| git(root, &["log", "-1", "--format=%H%x1f%s%x1f%cI"]));
+        let available = git(root, &["rev-parse", "--git-dir"]).is_ok();
+        use crate::git_selected_commit::joined;
+        (joined(branch), joined(upstream), joined(commit), available)
+    });
+    let branch = branch.ok().filter(|s| !s.is_empty());
+    let upstream = upstream.ok().filter(|s| !s.is_empty());
+    let commit = commit
         .ok()
         .and_then(|line| {
             let mut p = line.split('\u{1f}');
             Some(json!({"id":p.next()?,"subject":p.next()?,"committedAt":p.next()?}))
         });
-    let mut result = json!({"available":git(root, &["rev-parse", "--git-dir"]).is_ok()});
+    let mut result = json!({"available":available});
     if let Some(branch) = branch {
         result["branch"] = json!(branch);
     }

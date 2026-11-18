@@ -377,8 +377,15 @@ impl GitStatusReader {
     /// Cheap identity reread used to fence a multi-command status collection.
     /// Capability probing is intentionally excluded.
     pub(crate) fn identity(&self) -> Result<Value> {
-        let head = stable_head(&self.root, &self.executable)?;
-        let index = read_index(&self.root, &self.executable)?;
+        // Both are reads of the same moment; the index listing runs beside the head check. The head error still
+        // wins, as when they ran one after the other.
+        let (head, index) = std::thread::scope(|scope| {
+            let index = scope.spawn(|| read_index(&self.root, &self.executable));
+            let head = stable_head(&self.root, &self.executable);
+            (head, joined(index))
+        });
+        let head = head?;
+        let index = index?;
         Ok(json!({"head":head,"indexFingerprint":index.fingerprint}))
     }
 
@@ -499,36 +506,46 @@ fn stable_head(root: &Path, git: &GitExecutable) -> Result<Head> {
 }
 
 fn read_head(root: &Path, git: &GitExecutable) -> Result<Head> {
-    let symbolic = run_direct_git(
-        root,
-        &[
-            "symbolic-ref".into(),
-            "--quiet".into(),
-            "--no-recurse".into(),
-            "HEAD".into(),
-        ],
-        &[],
-        None,
-        LOCAL_TIMEOUT,
-        git,
-    )?;
-    if symbolic.status.success() {
-        let target = output_text(&symbolic.stdout)?;
-        let target = target.trim().to_owned();
-        validate_head_target(&target).map_err(|_| anyhow!("git_failed"))?;
-        let oid = run_direct_git(
+    // Both answers need `rev-parse HEAD^{commit}`, so it runs beside `symbolic-ref` instead of after it: two
+    // read-only Git processes at once instead of one after the other. The results are combined in the original
+    // order, so every outcome and error is the one the sequential reads gave.
+    let (symbolic, oid) = std::thread::scope(|scope| {
+        let oid = scope.spawn(|| {
+            run_direct_git(
+                root,
+                &[
+                    "rev-parse".into(),
+                    "--verify".into(),
+                    "--quiet".into(),
+                    "HEAD^{commit}".into(),
+                ],
+                &[],
+                None,
+                LOCAL_TIMEOUT,
+                git,
+            )
+        });
+        let symbolic = run_direct_git(
             root,
             &[
-                "rev-parse".into(),
-                "--verify".into(),
+                "symbolic-ref".into(),
                 "--quiet".into(),
-                "HEAD^{commit}".into(),
+                "--no-recurse".into(),
+                "HEAD".into(),
             ],
             &[],
             None,
             LOCAL_TIMEOUT,
             git,
-        )?;
+        );
+        (symbolic, joined(oid))
+    });
+    let symbolic = symbolic?;
+    if symbolic.status.success() {
+        let target = output_text(&symbolic.stdout)?;
+        let target = target.trim().to_owned();
+        validate_head_target(&target).map_err(|_| anyhow!("git_failed"))?;
+        let oid = oid?;
         if oid.status.success() {
             let oid = output_text(&oid.stdout)?.trim().to_owned();
             validate_oid(&oid).map_err(|_| anyhow!("git_failed"))?;
@@ -537,19 +554,7 @@ fn read_head(root: &Path, git: &GitExecutable) -> Result<Head> {
             Ok(Head::Unborn { target })
         }
     } else {
-        let oid = run_direct_git(
-            root,
-            &[
-                "rev-parse".into(),
-                "--verify".into(),
-                "--quiet".into(),
-                "HEAD^{commit}".into(),
-            ],
-            &[],
-            None,
-            LOCAL_TIMEOUT,
-            git,
-        )?;
+        let oid = oid?;
         if !oid.status.success() {
             return Err(anyhow!("git_unavailable"));
         }
@@ -557,6 +562,11 @@ fn read_head(root: &Path, git: &GitExecutable) -> Result<Head> {
         validate_oid(&oid).map_err(|_| anyhow!("git_failed"))?;
         Ok(Head::Detached { oid })
     }
+}
+
+/// The value of a scoped helper thread; a panic there is re-raised here, as if the work had run inline.
+pub(crate) fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 fn read_index(root: &Path, git: &GitExecutable) -> Result<IndexState> {

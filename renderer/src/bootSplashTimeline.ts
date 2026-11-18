@@ -7,8 +7,10 @@
    Timeline values are milliseconds at normal speed. */
 
 export const SPLASH_GATE = 2200;
-/** Playback rate of the remaining intro once the app is ready before the gate. */
-export const SPLASH_FAST_RATE = 1.6;
+/** Playback rate of the remaining intro once the app is ready before the gate. 8×: the app is usually ready about
+ * 0.8 s into the intro; at 1.6× the launch screen stayed some 2.4 s after it, and start-up long tasks (each frame
+ * advances the clock 100 ms at most) ate most of a 4× gain (perf 11-18). The finale and the fade are unchanged. */
+export const SPLASH_FAST_RATE = 8;
 const FAST_RAMP_MS = 220;
 /** Timeline ms from the gate (app ready) to the start of the exit fade. */
 export const SPLASH_FINALE = 420;

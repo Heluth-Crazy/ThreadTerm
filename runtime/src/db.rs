@@ -72,6 +72,39 @@ pub(crate) struct GitUndoEntry {
 #[path = "schema.rs"]
 pub(crate) mod schema;
 
+/// Free pages a database must hold, and the share of its pages they must be, before startup compacts it.
+const COMPACT_MIN_FREE_BYTES: i64 = 256 * 1024 * 1024;
+const COMPACT_MIN_FREE_SHARE: f64 = 0.5;
+
+/// Whether a file of `pages` pages of `page_size` bytes with `free` free pages is worth one startup VACUUM.
+fn worth_compacting(pages: i64, free: i64, page_size: i64) -> bool {
+    pages > 0 && free.saturating_mul(page_size) >= COMPACT_MIN_FREE_BYTES && free as f64 >= pages as f64 * COMPACT_MIN_FREE_SHARE
+}
+
+/// Startup only, before the runtime serves anything. Retention deletes old terminal output and events; SQLite
+/// reuses those pages but never gives them back, so the file only grows (an owner's database held 1.05 GB of free
+/// pages around 38 MB of data, 11-18). When most of the file is free space, one VACUUM rewrites the live data and
+/// returns the rest to the disk; it changes no row. It takes about a second per 40 MB of data and runs rarely.
+/// Any failure (busy, low disk) leaves the database as it was and the runtime starts as before.
+fn release_free_pages_if_bloated(connection: &Connection) {
+    let pragma = |name: &str| connection.query_row(&format!("PRAGMA {name}"), [], |row| row.get::<_, i64>(0));
+    let (Ok(pages), Ok(free), Ok(page_size)) = (pragma("page_count"), pragma("freelist_count"), pragma("page_size")) else {
+        return;
+    };
+    if !worth_compacting(pages, free, page_size) {
+        return;
+    }
+    let started = std::time::Instant::now();
+    match connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);") {
+        Ok(()) => eprintln!(
+            "Database compacted: {} MiB of free pages released in {} ms",
+            free.saturating_mul(page_size) / (1024 * 1024),
+            started.elapsed().as_millis()
+        ),
+        Err(error) => eprintln!("Database compaction skipped: {error}"),
+    }
+}
+
 impl Database {
     #[cfg(test)]
     pub(crate) fn set_synchronous_for_test(&self, mode: &str) -> Result<()> {
@@ -253,6 +286,7 @@ impl Database {
         crate::terminal_agents::initialize_connection(&connection)?;
         crate::usage_ledger::initialize_connection(&connection)?;
         schema::migrate_main(&mut connection, upgrade_backup)?;
+        release_free_pages_if_bloated(&connection);
         Ok(Self {
             connection: Mutex::new(connection),
             #[cfg(test)]
@@ -3344,6 +3378,45 @@ fn merge(base: &mut Value, patch: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_compacts_only_a_file_that_is_mostly_free_space() {
+        let page = 4096;
+        let mib = |n: i64| n * 1024 * 1024 / page;
+        // The owner's database on 11-18: 266 833 pages, 256 891 free.
+        assert!(worth_compacting(266_833, 256_891, page));
+        // Plenty of free pages, but most of the file is data: leave it.
+        assert!(!worth_compacting(mib(2048), mib(300), page));
+        // Mostly free, but small: not worth a rewrite.
+        assert!(!worth_compacting(mib(100), mib(90), page));
+        assert!(worth_compacting(mib(512), mib(256), page));
+        assert!(!worth_compacting(0, 0, page));
+    }
+
+    #[test]
+    fn compaction_keeps_every_row_and_shrinks_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compact.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE kept(id INTEGER PRIMARY KEY, data BLOB); CREATE TABLE churn(data BLOB);").unwrap();
+        connection.execute("INSERT INTO kept(data) VALUES (randomblob(1000))", []).unwrap();
+        for _ in 0..64 {
+            connection.execute("INSERT INTO churn(data) VALUES (randomblob(65536))", []).unwrap();
+        }
+        connection.execute_batch("DELETE FROM churn; PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        let before: Vec<u8> = connection.query_row("SELECT data FROM kept", [], |row| row.get(0)).unwrap();
+        let free: i64 = connection.query_row("PRAGMA freelist_count", [], |row| row.get(0)).unwrap();
+        assert!(free > 0);
+        // The real gate needs 256 MiB; run the same statement the startup path runs.
+        connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        let after: Vec<u8> = connection.query_row("SELECT data FROM kept", [], |row| row.get(0)).unwrap();
+        let free_after: i64 = connection.query_row("PRAGMA freelist_count", [], |row| row.get(0)).unwrap();
+        assert_eq!(before, after);
+        assert_eq!(free_after, 0);
+        assert!(std::fs::metadata(&path).unwrap().len() < 1024 * 1024);
+        // A small database is left alone by the startup gate.
+        release_free_pages_if_bloated(&connection);
+    }
 
     #[test]
     fn tree_delegation_projection_keeps_only_parent_and_state_for_full_and_targeted_updates() {
