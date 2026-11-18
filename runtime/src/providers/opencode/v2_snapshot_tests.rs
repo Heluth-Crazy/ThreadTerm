@@ -77,6 +77,23 @@ fn peer(
     Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     thread::JoinHandle<()>,
 ) {
+    peer_with_response(count, gate, fail_at, hold_at, |_, path, _| {
+        ("200 OK", response(path))
+    })
+}
+
+fn peer_with_response(
+    count: usize,
+    gate: Arc<Mutex<()>>,
+    fail_at: Option<usize>,
+    hold_at: Option<usize>,
+    respond: impl Fn(&str, &str, &str) -> (&'static str, String) + Send + 'static,
+) -> (
+    String,
+    mpsc::Receiver<Vec<String>>,
+    Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+    thread::JoinHandle<()>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -112,8 +129,15 @@ fn peer(
                     break;
                 }
                 request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|part| part == b"\r\n\r\n") {
-                    break;
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .map_or(0, |length| length.trim().parse::<usize>().unwrap());
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
                 }
             }
             assert!(
@@ -135,7 +159,8 @@ fn peer(
             let (status, body) = if fail_at == Some(index) {
                 ("500 Internal Server Error", "{}".to_owned())
             } else {
-                ("200 OK", response(&path))
+                let (_, body) = request.split_once("\r\n\r\n").unwrap();
+                respond(first, &path, body)
             };
             write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
@@ -277,4 +302,145 @@ fn completed_proven_child_snapshot_never_reopens_its_task_or_settles_root() {
         target.active.lock().unwrap().as_deref(),
         Some("root-operation")
     );
+}
+
+#[test]
+fn recorded_permission_rejection_cascades_preserve_unrelated_approvals() {
+    for (fixture, rejected_count) in [
+        ("opencode-v230-session-permissions.jsonl", 3),
+        ("opencode-v232-step-permissions.jsonl", 2),
+    ] {
+        let rows = crate::providers::conformance::fixture(fixture);
+        let captured = |case: &str| &rows.iter().find(|row| row["case"] == case).unwrap()["value"];
+        let (mut target, mut events) = target();
+        let asked = [
+            captured("asked_first"),
+            captured("asked_sibling"),
+            captured("asked_other"),
+        ];
+        let ids = asked.map(|event| text(&event["data"], "id").unwrap());
+        let same_step = asked[0]
+            .pointer("/data/source/messageID")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(asked[1]["data"]["source"]["messageID"], same_step);
+        assert_ne!(asked[2]["data"]["source"]["messageID"], same_step);
+        let native_id = text(&asked[0]["data"], "sessionID").unwrap().to_owned();
+        target.native_id = native_id.clone();
+
+        let snapshot_ids = |requests: &Value| {
+            requests
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|request| text(request, "id").unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let before = captured("pending_before");
+        let after = captured("pending_after");
+        let expected_ids = ids.map(str::to_owned);
+        assert_eq!(snapshot_ids(before).as_slice(), expected_ids.as_slice());
+        assert_eq!(
+            snapshot_ids(after).as_slice(),
+            &expected_ids[rejected_count..]
+        );
+
+        let root = format!("/api/session/{native_id}");
+        let reply_first = format!("POST {root}/permission/{}/reply HTTP/1.1", ids[0]);
+        let reply_other = format!("POST {root}/permission/{}/reply HTTP/1.1", ids[2]);
+        let survivor_count = ids.len() - rejected_count;
+        let expected_requests = 6 + 1 + survivor_count;
+        // A snapshot fetched before the receipts arrived can still list all three.
+        let pending_response = json!({ "data": before }).to_string();
+        let (base, paths, _, peer) = peer_with_response(
+            expected_requests,
+            Arc::clone(&target.event_gate),
+            None,
+            None,
+            move |first, path, body| {
+                if first == reply_first {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(body).unwrap(),
+                        json!({"decision":"reject"})
+                    );
+                    return ("204 No Content", String::new());
+                }
+                if survivor_count == 1 && first == reply_other {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(body).unwrap(),
+                        json!({"decision":"once"})
+                    );
+                    return ("204 No Content", String::new());
+                }
+                let data = match path.strip_prefix(&root) {
+                    Some("") => {
+                        json!({"data":{"id":native_id,"location":{"directory":"C:/isolated"},"time":{"created":0,"updated":1}}})
+                    }
+                    Some("/message?limit=128&order=desc") => json!({"data":[],"cursor":{}}),
+                    Some("/permission") => return ("200 OK", pending_response.clone()),
+                    Some("/inbox" | "/form") => json!({"data":[]}),
+                    _ if path == "/api/session/active" => json!({"data":{}}),
+                    _ => panic!("unexpected OpenCode request {first}"),
+                };
+                ("200 OK", data.to_string())
+            },
+        );
+        target.base_url = base;
+
+        for event in asked {
+            process_event(&target, event.clone(), false);
+        }
+        let mut take_approvals = |kind| {
+            std::iter::from_fn(|| events.try_recv().ok())
+                .filter(|event| event.kind == kind)
+                .collect::<Vec<_>>()
+        };
+        let raised = take_approvals("chat.approval");
+        assert_eq!(raised.len(), ids.len());
+        for (event, id) in raised.iter().zip(ids) {
+            assert_eq!(event.data["approvalId"], id);
+        }
+
+        approve(&target, NATIVE_BUSY_TURN, ids[0], "deny").unwrap();
+        for case in ["rejected_first", "rejected_sibling", "rejected_other"]
+            .into_iter()
+            .take(rejected_count)
+        {
+            let event = captured(case);
+            process_event(&target, event.clone(), false);
+            process_event(&target, event.clone(), false);
+        }
+        let settled = take_approvals("chat.approval.resolved");
+        assert_eq!(settled.len(), rejected_count);
+        for (event, id) in settled.iter().zip(ids) {
+            assert_eq!(event.data["approvalId"], id);
+            assert_eq!(event.data["status"], "resolved");
+        }
+
+        recover(&target).unwrap();
+        let recovered = take_approvals("chat.approval");
+        assert_eq!(recovered.len(), survivor_count);
+        for (event, id) in recovered.iter().zip(&ids[rejected_count..]) {
+            assert_eq!(event.data["approvalId"], *id);
+        }
+        for id in &ids[..rejected_count] {
+            assert_eq!(
+                approve(&target, NATIVE_BUSY_TURN, id, "allow")
+                    .unwrap_err()
+                    .code,
+                "approval_not_pending"
+            );
+        }
+
+        if survivor_count == 1 {
+            approve(&target, NATIVE_BUSY_TURN, ids[2], "allow").unwrap();
+            let settled = take_approvals("chat.approval.resolved");
+            assert_eq!(settled.len(), 1);
+            assert_eq!(settled[0].data["approvalId"], ids[2]);
+            assert_eq!(settled[0].data["outcome"], "once");
+        }
+        peer.join().unwrap();
+        assert_eq!(paths.recv().unwrap().len(), expected_requests);
+        assert!(target.v2.lock().unwrap().interactions.is_empty());
+    }
 }
