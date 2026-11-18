@@ -153,15 +153,16 @@ try {
   const saved = await page.evaluate(() => localStorage.getItem('threadterm.v3.boot-appearance'));
   const remembered = JSON.parse(saved);
   assert.deepEqual({ theme: remembered.theme, locale: remembered.locale }, { theme: 'dark', locale: 'zh-CN' });
-  // Since AB2 every theme is a palette: the launch screen also remembers the resolved one (default dark = ThreadTerm Dark).
-  assert.deepEqual(remembered.tokens, { background: '#262624', surface: '#2c2c2a', text: '#ecebe5', muted: '#a8a59c', border: '#3b3a37' });
+  // Since AB2 every theme is a palette: the launch screen also remembers the resolved one. Since mac-style S1 the
+  // default dark is the neutral mac palette (themePresets.ts), no longer the warm ThreadTerm Dark.
+  assert.deepEqual(remembered.tokens, { background: '#1e1e1e', surface: '#1e1e1e', text: '#ececec', muted: '#98989d', border: 'rgba(255,255,255,.085)' });
   check(`the app saves the appearance for the next launch: ${saved}`);
   await page.reload({ waitUntil: 'commit' });
   await recordTimeline();
   const first = await page.evaluate(() => { const splash = document.getElementById('boot-splash'); return splash && { theme: splash.dataset.theme, lang: splash.lang, bg: getComputedStyle(splash).backgroundColor }; });
   assert.ok(first, 'the launch screen is up after a relaunch');
   assert.equal(first.theme, 'dark'); assert.equal(first.lang, 'zh-CN');
-  assert.equal(first.bg, 'rgb(38, 38, 36)', 'dark launch screen uses the app dark canvas');
+  assert.equal(first.bg, 'rgb(30, 30, 30)', 'dark launch screen uses the app dark canvas (mac-style neutral dark #1e1e1e)');
   await at(450); await shot('06-float-warm-dark-zh.png');
   await at(1150); await shot('07-converge-warm-dark-zh.png');
   const warmLog = await waitForTimelineEnd('warm');
