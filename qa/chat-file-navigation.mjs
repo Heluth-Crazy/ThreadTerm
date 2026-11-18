@@ -46,7 +46,7 @@ window.qaCalls=[];window.qaSaved=initial;window.qaEvents=0;window.qaPwned=0;wind
 for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])addEventListener(type,event=>{const target=event.target instanceof Element?event.target.closest('button[data-file-reference]'):null;if(!target)return;if(type==='pointerdown')pointerTarget=target;window.qaPointerEvents.push({type,text:target.textContent,reference:target.getAttribute('data-file-reference'),sameNode:target===pointerTarget});},true);
 window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{backend:'conpty',buildNumber:22631},openExternal:async()=>{},subscribeOutput:async()=>()=>{},onEvent:listener=>{window.qaEvents++;listeners.add(listener);return()=>listeners.delete(listener);},
  request:async(method,params)=>{window.qaCalls.push({method,params});
-  if(method==='chat.snapshot')return{revision:1,items:[{id:'answer',role:'assistant',createdAt:'now',parts:[{type:'text',text:answerText},toolPart]}]};
+  if(method==='chat.snapshot')return{revision:1,items:[{id:'answer',role:'assistant',createdAt:'now',parts:[toolPart,{type:'text',text:answerText}]}]};
   if(method==='chat.draft.read')return{text:'draft stays',revision:0};
   if(method==='chat.options')return chatOptions;
   if(method==='chat.connection'||method==='chat.connect')return{sessionId:params.sessionId,runtimeEpoch:'qa',connectionGeneration:1,revision:1,phase:'ready',optionsLoadState:'ready'};
@@ -71,7 +71,7 @@ window.threadterm={onPageContextMenu:()=>()=>{},platform:'win32',windowsPty:{bac
   if(method==='preview.attach')return{attachmentId:'qa-preview-attachment',associations:[]};
   throw Error('Unexpected QA request '+method);
  }};
-window.qaEmitUpdated=()=>listeners.forEach(listener=>listener({event:'chat.item',seq:2,epoch:'qa',data:{sessionId:session.id,item:{id:'answer',role:'assistant',createdAt:'now',parts:[{type:'text',text:answerText+'\\n\\n[updated](updated.md)'},toolPart]}}}));
+window.qaEmitUpdated=()=>listeners.forEach(listener=>listener({event:'chat.item',seq:2,epoch:'qa',data:{sessionId:session.id,item:{id:'answer',role:'assistant',createdAt:'now',parts:[toolPart,{type:'text',text:answerText+'\\n\\n[updated](updated.md)'}]}}}));
 const other={...session,id:session.id+'-other',title:'Other '+provider};
 const data={projects:[{id:'project',name:'Fixture',path:'D:/fixture'}],sessions:[session,other],settings:{terminalCompatibility:{}},providers:[{id:provider}],workspaces:[{id:'workspace',projectId:'project',worktreePath:'D:/fixture',layout:initial,revision:0}]};
 function Fixture(){const [id,setId]=useState(session.id),[epoch,setEpoch]=useState(0);window.qaNavigate=id=>{setId(id);setEpoch(value=>value+1);};return <I18nProvider locale="en"><SessionWorkspace session={data.sessions.find(item=>item.id===id)} data={data} theme="light" initialLayout={initial} navigationKey={epoch} onActiveSession={setId} onBack={()=>{}} onSelect={window.qaNavigate} onProject={()=>{}} onChanged={()=>{}} onBackgroundPresented={()=>{}}/></I18nProvider>;}

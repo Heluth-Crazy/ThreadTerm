@@ -5,8 +5,9 @@ import { createRequire } from 'node:module';
 Object.assign(globalThis, { require: createRequire(import.meta.url) });
 const { renderToStaticMarkup } = await import('react-dom/server');
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
-import { ToolActivity } from './ToolActivity';
+import { ActivityFold, ToolActivity } from './ToolActivity';
 import { toolEntriesForItems, type ToolThought } from '../toolActivity';
+import { turnSegments } from '../turnSegments';
 
 const zh = (_en: string, chinese: string) => chinese;
 const command = (id: string, status: string, data: Record<string, unknown>): ChatPart =>
@@ -20,19 +21,18 @@ const text = (html: string, className: string) => [...html.matchAll(new RegExp(`
 const failed = command('node', 'failed', { command: 'node scripts/report.mjs', exitCode: 1, aggregatedOutput: "SyntaxError\nprocess.stdout.write(JSON.stringify(state) + '\\n')" });
 const building = command('build', 'inProgress', { command: 'npm run build' });
 
-test('a running command shows two lines at most and never another command\'s output', () => {
+test('a running command is the whole headline: no output preview line and no separate failures line', () => {
   const html = render({ entries: entries(failed, building) });
   assert.match(html, /正在执行命令: npm run build/);
-  assert.doesNotMatch(html, /chat-tool-output-preview/, 'no "Latest output" borrowed from the failed command');
-  assert.doesNotMatch(html, /chat-tool-failures/, 'failures wait until nothing is running');
-  const withOutput = render({ entries: entries(failed, command('build', 'inProgress', { command: 'npm run build', aggregatedOutput: 'vite v6 building for production...' })) });
-  assert.deepEqual(text(withOutput, 'chat-tool-output-preview'), ['最新输出vite v6 building for production...']);
-  assert.doesNotMatch(withOutput, /chat-tool-failures/);
+  assert.doesNotMatch(html, /chat-tool-output-preview/, 'the latest-output line is gone (11-18 chat-activity-fold)');
+  assert.doesNotMatch(html, /chat-tool-failures/, 'failures are a count in the header, not a second line');
+  assert.equal((html.match(/class="chat-tool-failed-count"/g) ?? []).length, 0, 'a running call owns the headline, so no failure badge beside it');
 });
 
-test('a finished drawer shows its failures once and no output preview', () => {
+test('a finished drawer says once how many calls failed, in the header', () => {
   const html = render({ entries: entries(failed, command('build', 'completed', { command: 'npm run build', exitCode: 0, aggregatedOutput: 'built' })), active: false });
-  assert.equal((html.match(/chat-tool-failures/g) ?? []).length, 1);
+  const labels = [...html.matchAll(/class="chat-tool-failed-count"[^>]*>([^<]*)</g)].map(match => match[1]);
+  assert.deepEqual(labels, ['1 项失败']);
   assert.doesNotMatch(html, /chat-tool-output-preview/);
 });
 
@@ -53,4 +53,64 @@ test('streaming thinking after the last tool makes the drawer headline say so; t
   assert.doesNotMatch(html, /thought-body/, 'a collapsed drawer does not mount thinking bodies');
   assert.doesNotMatch(render({ entries: tools, thoughts: thoughts('completed'), renderThought }), /思考中…/);
   assert.doesNotMatch(render({ entries: tools, thoughts: thoughts('streaming'), renderThought, active: false }), /思考中…/, 'only a live turn is thinking');
+});
+
+// ── One fold per output segment (11-18 chat-activity-fold) ──
+const foldSteps = (parts: ChatPart[]) => {
+  const blocks = turnSegments([{ id: 'item', role: 'assistant', turnId: 'turn', createdAt: 'now', parts }]);
+  return blocks.flatMap(block => block.kind === 'fold' ? block.steps : []);
+};
+const renderFold = (props: Partial<Parameters<typeof ActivityFold>[0]>) =>
+  renderToStaticMarkup(createElement(ActivityFold, { steps: [], live: false, provider: 'codex', copy: zh, ...props }));
+
+test('a collapsed live fold spins, names the running step, counts the work and shows the newest note', () => {
+  const steps = foldSteps([
+    { type: 'thinking', text: 'Look at auth', status: 'complete' },
+    { type: 'text', text: 'I will read the file.\nSecond line.', status: 'complete', phase: 'commentary' },
+    command('read', 'completed', { command: 'ls' }),
+    command('build', 'inProgress', { command: 'npm run build' }),
+  ]);
+  const html = renderFold({ steps, live: true });
+  assert.match(html, /chat-tool-spinner/);
+  assert.match(html, /正在执行命令: npm run build/);
+  assert.match(html, /运行 2 条命令/);
+  assert.match(html, /chat-fold-note/);
+  // The note keeps the whole commentary in the DOM; the CSS ellipsis makes it one visual line.
+  assert.match(html, /<span class="chat-fold-note">I will read the file\.[\s\S]*Second line\.<\/span>/);
+  assert.match(html, /data-tool-id="read"/, 'tool shells stay in the DOM while the fold is closed (navigation)');
+  assert.doesNotMatch(html, /tool-card-body/, 'collapsed folds mount no card bodies');
+  assert.equal((html.match(/chat-fold-note/g) ?? []).length, 1, 'at most one note line');
+});
+
+test('a settled fold says it is done with the counts and no duration', () => {
+  const steps = foldSteps([command('read', 'completed', { command: 'ls' }), command('bad', 'failed', { command: 'false', exitCode: 1, aggregatedOutput: 'nope' })]);
+  const html = renderFold({ steps });
+  assert.doesNotMatch(html, /chat-tool-spinner/);
+  assert.match(html, /已完成/);
+  assert.match(html, /项失败/);
+  assert.doesNotMatch(html, /chat-fold-note/, 'the note line belongs to the live header only');
+  assert.doesNotMatch(html, /秒|用时|\bs\b/, 'the duration lives only in TurnFooter');
+});
+
+test('a thinking-only fold reads 思考过程 when settled and the turn outcome otherwise', () => {
+  const steps = foldSteps([{ type: 'thinking', text: 'Only a thought', status: 'streaming' }]);
+  assert.match(renderFold({ steps, live: true }), /思考中…/);
+  assert.match(renderFold({ steps: foldSteps([{ type: 'thinking', text: 'Only a thought', status: 'complete' }]) }), /思考过程/);
+  assert.match(renderFold({ steps, outcome: 'failed' }), /失败/);
+  assert.match(renderFold({ steps, outcome: 'interrupted' }), /已中断/);
+});
+
+test('an expanded fold is one dense row per step, in order, with each item addressable', () => {
+  const steps = foldSteps([
+    { type: 'thinking', text: 'First thought', status: 'complete' },
+    command('cmd-1', 'completed', { command: 'npm test' }),
+    { type: 'text', text: 'A note in the middle', status: 'complete', phase: 'commentary' },
+    { type: 'approval', approvalId: 'appr', status: 'resolved', data: { approvalId: 'appr', requestType: 'commandExecution', details: { command: 'cargo test --lib auth' }, choices: [] } },
+  ]);
+  const details = renderFold({ steps }).replace('<details class="chat-tool-activity chat-fold is-settled"', '<details class="chat-tool-activity chat-fold is-settled" open=""');
+  const rows = [...details.matchAll(/<(?:div|details) class="chat-fold-step ([^"]*)"/g)].map(match => match[1]!.trim());
+  assert.deepEqual(rows, ['is-thinking', 'is-note', 'is-approval is-resolved']);
+  assert.match(details, /data-chat-item="item"/, 'steps keep their item address while folded');
+  assert.match(details, /已作出决定/, 'a resolved approval is one row');
+  assert.match(details, /cargo test --lib auth/);
 });

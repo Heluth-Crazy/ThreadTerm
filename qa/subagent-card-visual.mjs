@@ -25,6 +25,9 @@ let intervalStarts = 0, intervalStops = 0;
 window.setInterval = (...args) => { intervalStarts++; return nativeSetInterval(...args); };
 window.clearInterval = id => { intervalStops++; return nativeClearInterval(id); };
 const text = value => ({type:'text',text:value});
+// 11-18 chat-activity-fold: an unphased Codex text is commentary unless it is the turn's last text item, so the
+// long scroll fixture marks its paragraphs as answers to keep them visible outside the work fold.
+const answer = value => ({type:'text',text:value,phase:'final_answer'});
 const tool = (id,status='completed') => ({type:'tool',toolId:id,toolName:'commandExecution',status,data:{command:'npm run '+id,aggregatedOutput:'finished '+id}});
 const subagent = (key, info) => ({type:'subagent',data:{key,provider:'codex',agentType:'general-purpose',description:'Inspect the renderer implementation and report the layout findings.',prompt:'Inspect renderer components, run focused checks, and explain any layout risks.',status:'running',transcript:'live',startedAt:'2026-10-07T12:00:00.000Z',toolCount:2,rev:1,...info}});
 const assistant = (id,turnId,parts,extra={}) => ({id,role:'assistant',turnId,createdAt:'2026-10-07T12:00:00.000Z',parts,...extra});
@@ -45,7 +48,7 @@ const cards = {
   narrow: [user('u10','live','Check the long description.'), assistant('narrow','live',[subagent('narrow',{description:long,lastActivity:long,summary:long})])],
   'background-live': [user('u11','background','Check the background task.'), assistant('background-intro','background',[text('Background intro: I started a helper to inspect the folder.')]), assistant('background-card','background',[subagent('background',{description:'Count the files in the requested folder.',lastActivity:'Listing the requested folder.'})]), assistant('background-conclusion','background',[text('Background conclusion: I will incorporate the helper result when it arrives.')])],
   'background-completed': [user('u12','background','Check the completed background task.'), assistant('background-intro','background',[text('Background intro: I started a helper to inspect the folder.')]), assistant('background-card','background',[subagent('background',{status:'completed',description:'Count the files in the requested folder.',summary:'The requested folder contains three files.'})]), assistant('background-conclusion','background',[text('Background conclusion: the helper found three files.')],{elapsedMs:19000})],
-  resize: [user('u13','resize','Keep the final response visible after the pane is narrowed.'), ...Array.from({length:14}, (_, index) => assistant('resize-'+index,'resize',[text('Resize message '+(index+1)+': '+resizeParagraph)])), assistant('resize-last','resize',[text('Resize final message: this must remain visible after a following resize.')])],
+  resize: [user('u13','resize','Keep the final response visible after the pane is narrowed.'), ...Array.from({length:14}, (_, index) => assistant('resize-'+index,'resize',[answer('Resize message '+(index+1)+': '+resizeParagraph)])), assistant('resize-last','resize',[answer('Resize final message: this must remain visible after a following resize.')])],
 };
 const transcripts = {
   expanded: {items:[assistant('sub-text','sub',[text('The transcript keeps ordinary subagent messages readable.')]),assistant('sub-retry','sub',[{type:'thinking',text:'Reconnecting... 2/5'}]),assistant('sub-tool','sub',[tool('subagent-command')]),assistant('sub-nested','sub',[{type:'subagent',data:{key:'nested-child',provider:'codex',name:'Nested helper',status:'completed',transcript:'none',summary:'Nested work stays a plain transcript line.'}}])],rev:2,truncated:false,source:'live'},
@@ -129,16 +132,16 @@ try {
   const completed = page.locator('.chat-subagent-card');
   assert.match(await completed.textContent() ?? '', /The renderer already uses/i, 'completed card previews its summary');
   assert.equal(await completed.locator('.chat-subagent-description').textContent(), 'count_files', 'Codex path fallback uses its last segment');
-  assert.equal(await completed.evaluate(node => Boolean(node.closest('.codex-work'))), false, 'completed card is outside the elapsed work fold');
+  assert.equal(await completed.evaluate(node => Boolean(node.closest('details.chat-fold'))), false, 'completed card is outside the work fold');
   assert.equal(await page.locator('.chat-tool-activity').count(), 1, 'parent tool drawer remains before completed cards');
-  const work = page.locator('.codex-work');
-  assert.equal(await work.count(), 1, 'completed Codex-style turn retains its elapsed fold');
-  assert.equal(await work.evaluate(node => node.open), false, 'elapsed fold starts closed');
+  const work = page.locator('details.chat-fold');
+  assert.equal(await work.count(), 1, 'completed Codex-style turn keeps one work fold');
+  assert.equal(await work.evaluate(node => node.open), false, 'the work fold starts closed');
   assert.ok((await page.evaluate(() => window.qaTimerCounts())).stops >= 1, 'leaving the running card clears its elapsed-time interval');
   assert.equal(await completed.evaluate(node => node.previousElementSibling?.classList.contains('chat-tool-activity-card')), true, 'completed card follows the parent tool drawer');
   await shot('03-completed-summary-light.png');
   await work.locator('> summary').click();
-  assert.equal(await completed.evaluate(node => Boolean(node.closest('.codex-work'))), false, 'opening elapsed fold never captures the card');
+  assert.equal(await completed.evaluate(node => Boolean(node.closest('details.chat-fold'))), false, 'opening the work fold never captures the card');
   await shot('10-completed-turn-outside-fold-light.png');
 
   for (const scenario of ['background-live', 'background-completed']) {

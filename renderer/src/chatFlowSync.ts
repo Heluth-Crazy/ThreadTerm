@@ -150,14 +150,13 @@ export function useChatFlowSync(sessionId: string, logRef: RefObject<HTMLDivElem
       reveal: target => {
         const log = logRef.current, content = contentRef.current;
         if (!shown(log) || !content) return false;
-        // A settled turn renders one item twice: an activity copy (thinking, inside the "Activity" disclosure) and a
-        // response copy (reply text, tools drawer). Prefer the response copy, rendered first; open disclosures last.
+        // Every item renders once now: the fold holds the process steps, the answer sits outside it. A step
+        // inside a closed fold is in the DOM but not laid out, so prefer a rendered copy and fall back to the
+        // first one; the disclosures are opened below either way.
         const find = (attribute: string, id: string | undefined) => {
           if (id === undefined) return null;
           const matches = [...content.querySelectorAll<HTMLElement>(`[${attribute}="${CSS.escape(id)}"]`)];
-          const activity = (element: HTMLElement) => Boolean(element.closest('details.codex-work'));
-          return matches.find(element => rendered(element) && !activity(element)) ?? matches.find(element => !activity(element))
-            ?? matches.find(rendered) ?? matches[0] ?? null;
+          return matches.find(rendered) ?? matches[0] ?? null;
         };
         const element = find('data-tool-id', target.toolId) ?? find('data-chat-item', target.itemId) ?? find('data-chat-turn', target.turnItemId);
         if (!element) return false;

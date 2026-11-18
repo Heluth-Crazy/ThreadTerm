@@ -95,8 +95,10 @@ const report = { passed: false, scratch, checks: [], snapshots: [], errors: [] }
 async function selectProvider(provider) {
   await page.evaluate(value => window.qaRender(value), provider);
   await page.waitForFunction(value => document.querySelector('.chat-view')?.getAttribute('data-provider') === value, provider);
-  await page.locator('.chat-tool-activity').waitFor({ state: 'attached' });
+  await page.locator('.chat-tool-activity').first().waitFor({ state: 'attached' });
 }
+// 11-18 chat-activity-fold: a turn renders one fold per output segment; the tools live in one of them.
+const toolFold = () => page.locator('.chat-tool-activity').filter({ has: page.locator('.chat-tool-entry') });
 async function openCompleteTurnIfNeeded() {
   const work = page.locator('.codex-work');
   if (await work.count() && !await work.evaluate(node => node.open)) await work.locator('summary').click();
@@ -111,33 +113,36 @@ try {
   for (const provider of ['codex', 'claude', 'kimi', 'gemini', 'grok', 'opencode', 'plugin-unknown']) {
     await selectProvider(provider);
     await openCompleteTurnIfNeeded();
-    const drawer = page.locator('.chat-tool-activity');
-    assert.equal(await drawer.count(), 1, `${provider}: one activity drawer for the normal turn`);
+    const drawer = toolFold();
+    assert.equal(await drawer.count(), 1, `${provider}: one fold holds the turn's tool calls`);
     assert.equal(await page.locator('.codex-command-group').count(), 0, `${provider}: legacy Codex command group is absent`);
     assert.equal(await drawer.locator('.codex-tool-disclosure').count(), 0, `${provider}: no nested per-tool drawers`);
     assert.equal(await drawer.locator('.chat-tool-entry').count(), 9, `${provider}: ordinary calls retain chronological entries`);
     assert.deepEqual(await drawer.locator('.chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tool-id'))), ['command-codex','browser-mcp','command-claude','browser-acp','file-read','search','delegate','failed-command','cancelled-browser'], `${provider}: entries retain call order rather than category sort`);
+    assert.equal(await drawer.locator('.chat-fold-step.is-note').count(), 2, `${provider}: the two interim texts are notes inside the same fold`);
     const summary = drawer.locator('> summary');
-    assert.match(await summary.locator('.chat-tool-current-action').textContent() ?? '', /Explored 1 file.*Searched 1.*Ran 3 commands.*Used 4 tools/, `${provider}: idle summary describes the turn's tool work`);
+    assert.match(await summary.locator('.chat-tool-current-action').textContent() ?? '', /^Done$/, `${provider}: a settled fold says Done`);
+    assert.match(await summary.locator('.chat-fold-counts').textContent() ?? '', /Explored 1 file.*Searched 1.*Ran 3 commands.*Used 4 tools/, `${provider}: the settled fold counts the turn's tool work`);
     assert.equal(await summary.locator('.chat-tool-active-count').count(), 0, `${provider}: completed turn never claims an active tool`);
     assert.equal(await drawer.evaluate(node => Boolean(node.closest('.codex-work'))), false, `${provider}: completed tool activity stays outside elapsed commentary fold`);
-    assert.equal(await summary.locator('.chat-tool-failures').count(), 1, `${provider}: failures have one visible summary line`);
-    assert.equal(await page.locator('.chat-part.approval').count(), 2, `${provider}: approval and question remain independent`);
-    const question = page.locator('.chat-question-wrapper');
+    assert.equal(await summary.locator('.chat-tool-failed-count').count(), 1, `${provider}: failures are one count in the fold header`);
+    assert.equal(await page.locator('.chat-part.approval').count(), 1, `${provider}: the pending approval stays a card outside the folds`);
+    const answeredFold = page.locator('.chat-tool-activity-card').filter({ has: page.locator('.chat-fold-step.is-approval') });
+    assert.equal(await answeredFold.count(), 1, `${provider}: the answered question is a step of a fold`);
     const final = page.getByText('The inspection is complete.', { exact: true });
-    assert.equal(await question.isVisible(), true, `${provider}: completed question stays outside the activity fold`);
-    assert.ok((await question.boundingBox()).y < (await final.boundingBox()).y, `${provider}: mixed-row question renders before final answer text`);
+    assert.ok((await answeredFold.boundingBox()).y < (await final.boundingBox()).y, `${provider}: a question recorded after the answer is seated before the final answer text`);
     assert.ok(await page.getByText('A visible provider error remains outside tool activity.').count(), `${provider}: errors remain independent`);
   }
-  report.checks.push('all providers use one generic normal-turn drawer with ordered entries, independent approval/error/failure rows, and no legacy nested drawers');
-  report.checks.push('completed mixed-row answered questions render before final answer for all seven provider descriptors');
+  report.checks.push('all providers keep one fold with the ordered tool entries and interim notes, a Done header with counts and the failure count, a pending approval card and the error outside it');
+  report.checks.push('completed mixed-row answered questions are seated in a fold before the final answer for all seven provider descriptors');
 
   // Use a non-Codex live provider here so the generic drawer assertions are
   // independent of Codex's deliberately paced transcript stream queue.
   await selectProvider('claude');
-  const drawers = page.locator('.chat-tool-activity');
-  assert.equal(await drawers.count(), 1, 'the completed turn starts with one tool drawer');
+  const drawers = toolFold();
+  assert.equal(await drawers.count(), 1, 'the completed turn has one fold with tool calls');
   const drawer = drawers.first();
+  const foldsBeforeLive = await page.locator('.chat-tool-activity').count();
   const summary = drawer.locator('> summary');
   assert.equal(await drawer.evaluate(node => node.open), false, 'drawer starts collapsed');
   await summary.focus();
@@ -149,7 +154,7 @@ try {
   assert.equal(await drawer.evaluate(node => node.open), true, 'manual expansion opens the drawer');
   await page.evaluate(() => window.qaUpdate({id:'live-user',role:'user',turnId:'turn-live',createdAt:'later',parts:[{type:'text',text:'Run two commands and open a page.'}]}));
   await page.evaluate(() => window.qaUpdate({id:'live-command',role:'assistant',turnId:'turn-live',createdAt:'later',parts:[{type:'tool',toolId:'live-command',toolName:'commandExecution',status:'running',data:{command:'npm run lint'}},{type:'tool',toolId:'live-browser',toolName:'mcp__playwright__browser_navigate',status:'running',data:{server:'playwright',tool:'browser_navigate',arguments:{url:'https://example.test/live/page'}}}]}));
-  await page.waitForFunction(() => document.querySelectorAll('.chat-tool-activity').length === 2);
+  await page.waitForFunction(count => document.querySelectorAll('.chat-tool-activity').length === count + 1, foldsBeforeLive);
   const live = page.locator('.chat-tool-activity').last();
   assert.equal(await live.isVisible(), true, 'live-turn drawer is outside the completed activity fold');
   assert.match(await live.locator('.chat-tool-current-action').textContent() ?? '', /Browsing: Open page · example\.test\/live\/page/i, 'latest browser descriptor appears in the outer summary');

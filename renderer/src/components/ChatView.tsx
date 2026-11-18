@@ -1,4 +1,4 @@
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatProviderNotice } from './ChatProviderNotice';
@@ -22,11 +22,12 @@ import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
 import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
-import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
+import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
 import { groupCodexTranscript, isGuardianReview, type CodexTurn } from "../codexTranscript";
-import { completedTurnPresentation, groupToolActivity, shouldShowWorkingIndicator, toolEntriesForItems, type ToolActivityEntry, type ToolThought } from "../toolActivity";
+import { shouldShowWorkingIndicator } from "../toolActivity";
+import { lastFoldIndex, turnSegments } from '../turnSegments';
 import { ChatWorkingIndicator } from './ChatWorkingIndicator';
-import { ToolActivity } from './ToolActivity';
+import { ActivityFold } from './ToolActivity';
 import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
@@ -121,39 +122,6 @@ function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; str
       <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />
     </details>
   );
-}
-
-type ThinkingEntry = { itemId: string; part: ChatPart };
-type ThinkingGroups = ReadonlyMap<ChatPart, ThinkingEntry[] | null>;
-
-function groupCompletedThinking(items: readonly ChatItem[]): ThinkingGroups {
-  const groups = new Map<ChatPart, ThinkingEntry[] | null>();
-  let run: ThinkingEntry[] = [];
-  function finish() {
-    if (run.length > 1) {
-      groups.set(run[0]!.part, run);
-      for (const entry of run.slice(1)) groups.set(entry.part, null);
-    }
-    run = [];
-  }
-  // Read original parts, before the settled projection moves tools and replies
-  // out of the activity disclosure.
-  for (const item of items) {
-    if (!item.turnId || item.role !== 'assistant') {
-      finish();
-      continue;
-    }
-    for (const part of item.parts) {
-      if (part.type === 'thinking' && part.text &&
-          (part.status === 'complete' || part.status === 'completed' || part.status === undefined)) {
-        run.push({ itemId: item.id, part });
-      } else if (part.type === 'tool' || shouldRenderPart(part)) {
-        finish();
-      }
-    }
-  }
-  finish();
-  return groups;
 }
 
 const codexMarkdownCache = new Map<string, string>();
@@ -475,18 +443,6 @@ function hasVisibleAssistantResponse(items: ChatItem[], turnId: string): boolean
   return items.some(item => item.role === "assistant" && item.turnId === turnId && item.parts.some(shouldRenderPart));
 }
 
-
-/**
- * Folded completed-turn growth. The disclosure header always renders; the body
- * mounts on expand so a long session keeps no hidden activity cards in the DOM.
- */
-function FoldedActivity({ summary, children }: { summary: ReactNode; children: () => ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return <details className="codex-work" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary><span className="codex-work-label">{summary}</span></summary>
-    {open && <div className="codex-work-body">{children()}</div>}
-  </details>;
-}
 
 function isTerminalChatStatus(status: Session["status"]): boolean {
   return status === "idle" || status === "error" || status === "exited" || status === "interrupted";
@@ -1961,6 +1917,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     }
   }
   const usageCards = useMemo(() => usageCardsForItems(session.provider, items), [session.provider, items]);
+  // A usage card owns its whole item, so the segment pass must not split it part by part.
+  const usageCardIds = useMemo(() => new Set(usageCards.keys()), [usageCards]);
   const replyActions = useMemo(() => replyActionMarkdown(items, session.status), [items, session.status]);
   function copyCodeBlock(event: ReactMouseEvent<HTMLElement>) {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button[data-copy-code]') : null;
@@ -1976,13 +1934,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       window.setTimeout(() => { button.textContent = zhRef.current ? '复制' : 'Copy'; delete button.dataset.copying; }, 1500);
     }).catch(() => undefined);
   }
-  function renderItem(item: ChatItem, nested = false, replyEligible = true, thinkingGroups?: ThinkingGroups) {
+  function renderItem(item: ChatItem, nested = false, replyEligible = true) {
       if (!item.parts.length) return null;
       if (!nested && item.parts.some(isSubagentPart)) {
         const lastReplyIndex = item.parts.reduce((last, part, index) => isReplyTextPart(part) ? index : last, -1);
         return <Fragment key={item.id}>
         {item.parts.map((part, index) => {
-          if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] }, false, index === lastReplyIndex, thinkingGroups)}</Fragment>;
+          if (!isSubagentPart(part)) return <Fragment key={`part-${index}`}>{renderItem({ ...item, parts: [part] }, false, index === lastReplyIndex)}</Fragment>;
           const info = subagentInfo(part);
           return info ? <SubagentCard
             key={`${session.id}:${info.key}`}
@@ -2010,7 +1968,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       const replyText = item.role === 'assistant' && !nested && replyEligible && item.parts.some(isReplyTextPart) ? replyActions.get(item.id) ?? '' : '';
       const showReplyActions = !!replyText;
       const parts = item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage)) || (Array.isArray(asRecord(part.data).imageRefs) && (asRecord(part.data).imageRefs as unknown[]).some(isChatImageRef)));
-      if (parts.length && parts.every(part => thinkingGroups?.get(part) === null)) return null;
       return <article data-chat-item={item.id} className={`v3-chat-message ${item.role} is-native is-${session.provider}${showReplyActions ? ' has-reply-actions' : ''}`} key={item.id} onClick={copyCodeBlock}>
       {parts.map((part, index) => {
         if (isSubagentPart(part)) {
@@ -2018,14 +1975,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           return <p className="chat-subagent-nested" key={`subagent-${index}`}>{info ? subagentTitle(info, copy) : copy('Subagent', '子代理')}</p>;
         }
         if (part.type === "thinking") {
-          const run = thinkingGroups?.get(part);
-          if (run === null) return null;
-          if (run) return <details className="v3-thinking v3-thinking-group" key={`thinking-${index}`}>
-            <summary>{copy(`Thought process (${run.length})`, `思考过程（${run.length}）`)}</summary>
-            {run.map((entry, entryIndex) => <div data-chat-item={entryIndex > 0 && run[entryIndex - 1]?.itemId !== entry.itemId ? entry.itemId : undefined} key={entryIndex}>
-              <ThinkingPart part={entry.part} streaming={false} copy={copy} openFile={openFile} />
-            </div>)}
-          </details>;
           return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
         }
         if (part.type === 'status' && providerRetryPresentation(part.data)) return <ProviderRetryStatus key={`retry-${index}`} data={part.data} copy={copy} />;
@@ -2068,48 +2017,62 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {showReplyActions && <MessageActions markdown={replyText} copy={copy}>{isCompletedForkReply(item, items, presentation) && <ChatForkButton itemId={item.id} disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>}</MessageActions>}
     </article>;
   }
+  /** A commentary step in an expanded fold reads like the reply it interrupted: full text, Markdown, file links. */
+  function renderFoldNote(part: ChatPart) {
+    const body = partBody(part);
+    return body ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} zh={zh} onInsert={writable ? text => insertChatText(session.id, text) : undefined} /> : null;
+  }
   function renderTurn(group: CodexTurn, groupIndex: number) {
     // Display activity follows runtime liveness even in a read-only observer;
     // it is independent of whether this window owns the control lease.
     const displayTurn = liveTurn;
-    const thinkingGroups = groupCompletedThinking(group.items);
     const active = group.items.some(item => item.turnId && item.turnId === displayTurn);
     const awaitingApproval = active && session.status === 'waiting' && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
     const awaitingQuestion = awaitingApproval && group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending' && asRecord(part.data).interaction === 'question'));
-    const drawer = (entries: ToolActivityEntry[], id = `${group.id}-tools`, running = active, thoughts?: ToolThought[]) => <ToolActivity key={id} entries={entries} thoughts={thoughts} renderThought={thoughts?.length ? thought => renderItem(thought, true, true, thinkingGroups) : undefined} onInspect={viewport.pauseForNavigation} active={running} awaitingApproval={running && awaitingApproval} awaitingQuestion={running && awaitingQuestion} provider={session.provider} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} sessionCwd={session.worktreePath} />;
-    if (!group.settled) {
-      // Keep earlier activity in place and preserve the first drawer's turn key.
-      const entries = groupToolActivity(group.response, true);
-      const lastDrawerIndex = entries.findLastIndex(entry => entry.type === 'tools');
-      let drawerIndex = 0;
-      const visible = entries.map((entry, index) => entry.type === 'tools'
-        ? drawer(entry.tools, drawerIndex++ ? `${group.id}-tools-${drawerIndex}` : `${group.id}-tools`, active && index === lastDrawerIndex, entry.thoughts)
-        : <Fragment key={entry.item.parts.some(isSubagentPart) ? `${entry.item.id}-subagent` : entry.id}>{renderItem(entry.item, false, true, thinkingGroups)}</Fragment>);
+    const pendingInteraction = group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
+    // One segmentation for live and settled turns: only a fold's header changes when the turn ends,
+    // so the output never reflows underneath the reader (11-18 chat-activity-fold).
+    const blocks = turnSegments(group.items, { collapseCommentary: session.provider === 'codex', wholeItems: usageCardIds, settled: group.settled });
+    const newestFold = lastFoldIndex(blocks);
+    const live = !group.settled;
+    const outcome = turnOutcome(group.turnStatus, group.items);
+    const visible = blocks.map((block, index) => block.kind === 'item'
+      ? <Fragment key={block.id}>{renderItem(block.item, false, true)}</Fragment>
+      : <ActivityFold
+        key={block.id}
+        steps={block.steps}
+        live={live && active && index === newestFold}
+        outcome={index === newestFold ? outcome : undefined}
+        awaitingApproval={active && index === newestFold && awaitingApproval}
+        awaitingQuestion={active && index === newestFold && awaitingQuestion}
+        provider={session.provider}
+        copy={copy}
+        openFile={openFile}
+        onInspect={viewport.pauseForNavigation}
+        openDiff={openDiff}
+        canOpenDiff={canOpenDiff}
+        sessionCwd={session.worktreePath}
+        renderNote={renderFoldNote}
+      />);
+    if (live) {
       if (group.turnStatus && !group.items.some(item => item.parts.some(shouldRenderPart))) {
         visible.push(<p className="chat-duration" key={`${group.id}-status`}>{group.turnStatus === 'inProgress'
           ? copy('Saved turn: in progress', '保存的回合：进行中') : copy('Saved turn: status unknown', '保存的回合：状态未知')}</p>);
       }
       if (liveSpeed && groupIndex === speedGroupIndex) visible.push(<p className="chat-turn-speed-live" key={`${group.id}-turn-speed`} data-testid="turn-speed-live" data-estimated={String(liveSpeed.estimated)} data-tokens-per-second={String(liveSpeed.tokensPerSecond)} title={turnSpeedTooltip(liveSpeed, zh)}>{turnSpeedText(liveSpeed)}</p>);
-      const pendingInteraction = group.items.some(item => item.parts.some(part => part.type === 'approval' && part.status === 'pending'));
-      if (shouldShowWorkingIndicator(active && groupIndex === workingGroupIndex, entries, pendingInteraction, Boolean(firstResponseWait))) {
+      const lastBlock = blocks.at(-1);
+      const foldTail = Boolean(lastBlock && lastBlock.kind === 'fold' && active && blocks.length - 1 === newestFold);
+      if (shouldShowWorkingIndicator(active && groupIndex === workingGroupIndex, foldTail, pendingInteraction, Boolean(firstResponseWait))) {
         const startedAt = items.find(item => item.turnId === liveTurn && item.role === 'user')?.createdAt;
         visible.push(<ChatWorkingIndicator key={`${group.id}-working`} startedAt={startedAt} zh={zh} />);
       }
       return visible;
     }
-    const tools = toolEntriesForItems(group.items);
-    const { activity, subagents, response } = completedTurnPresentation(group.activity, group.response);
-    const outcome = group.turnStatus === 'failed' ? copy('Turn failed', '回合失败') : group.turnStatus === 'interrupted' ? copy('Turn interrupted', '回合已中断') : undefined;
-    const summary = group.elapsedMs == null ? (activity.length ? copy('Activity','过程') : outcome ?? copy('Completed','已完成')) : formatChatDuration(group.elapsedMs, zh);
+    // The fold header carries the outcome; the plain line is only for a turn with no output segment.
+    const outcomeLabel = outcome ? (outcome === 'failed' ? copy('Turn failed', '回合失败') : copy('Turn interrupted', '回合已中断')) : undefined;
     return [
-      outcome && turnOutcome(group.turnStatus, group.items)
-        ? <p className="chat-duration" key={`${group.id}-status`}>{outcome}</p> : null,
-      !group.response.some(item => usageCards.has(item.id)) && (activity.length ? <FoldedActivity key={`${group.id}-work`} summary={<>{summary}<Icon name="chevR" /></>}>
-        {() => activity.map(item => renderItem(item, false, true, thinkingGroups))}
-      </FoldedActivity> : null),
-      tools.length ? drawer(tools) : null,
-      ...subagents.map(item => <Fragment key={`${item.id}-subagent`}>{renderItem(item)}</Fragment>),
-      ...response.map(item => <Fragment key={item.parts.some(isSubagentPart) ? `${item.id}-subagent` : `${item.id}-response`}>{renderItem(item)}</Fragment>),
+      outcomeLabel && newestFold < 0 ? <p className="chat-duration" key={`${group.id}-status`}>{outcomeLabel}</p> : null,
+      ...visible,
       group.items.some(item => item.role !== 'user' && item.role !== 'system') && <TurnFooter key={`${group.id}-footer`} items={group.items} elapsedMs={group.elapsedMs} session={session} zh={zh} copy={copy} cache={turnChangesCache} openFile={openFile} />,
     ];
   }

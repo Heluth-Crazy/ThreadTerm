@@ -36,7 +36,8 @@ export function hiddenQuestionTool(part: ChatPart): boolean {
     || string(xaiTool.kind) === 'ask_user';
 }
 
-const hiddenTool = (part: ChatPart): boolean => hiddenSubagentTool(part) || hiddenQuestionTool(part);
+/** A tool call with no row of its own: a sub-agent snapshot, or the native transport of a question card. */
+export const hiddenTool = (part: ChatPart): boolean => hiddenSubagentTool(part) || hiddenQuestionTool(part);
 
 export function toolActivityWaitingLabel(awaitingQuestion: boolean, awaitingApproval: boolean, copy: Copy): string | undefined {
   if (awaitingQuestion) return copy('Waiting for your answer', '等待你的回答');
@@ -44,7 +45,7 @@ export function toolActivityWaitingLabel(awaitingQuestion: boolean, awaitingAppr
   return undefined;
 }
 
-function toolEntry(item: ChatItem, part: ChatPart, index: number): ToolActivityEntry {
+export function toolEntry(item: ChatItem, part: ChatPart, index: number): ToolActivityEntry {
   return { id: `${item.id}:${part.toolId ? `tool:${part.toolId}` : `part:${index}`}`, itemId: item.id, part };
 }
 
@@ -180,10 +181,13 @@ export function drawerIsThinking(tools: readonly ToolActivityEntry[], thoughts: 
     && thought.item.parts.some(part => part.type === 'thinking' && part.status === 'streaming'));
 }
 
-export function shouldShowWorkingIndicator(active: boolean, entries: readonly ToolPresentation[], pendingInteraction: boolean, firstResponseWait: boolean): boolean {
+/**
+ * The dot indicator fills the tail of an active turn that has no output segment of its own. A live
+ * fold already spins and names the current step, so it never gets a second indicator.
+ */
+export function shouldShowWorkingIndicator(active: boolean, liveFoldTail: boolean, pendingInteraction: boolean, firstResponseWait: boolean): boolean {
   if (!active || pendingInteraction || firstResponseWait) return false;
-  const last = entries.at(-1);
-  return last?.type !== 'tools' || (activeToolEntries(last.tools, true).length === 0 && !drawerIsThinking(last.tools, last.thoughts));
+  return !liveFoldTail;
 }
 
 function inputs(data: Record<string, unknown>): Record<string, unknown>[] {

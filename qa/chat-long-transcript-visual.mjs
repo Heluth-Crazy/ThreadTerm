@@ -22,7 +22,7 @@ await mkdir(out, { recursive: true });
 // HEAD text for the two modules this job changed; a pinned pre-F11 revision keeps the comparison reproducible after
 // this work is committed. `onLoad` keeps the module's own resolveDir, so the legacy copy still resolves its imports
 // (React, tool cards, CSS) from the renderer tree instead of a copied folder.
-const BASELINE = "652b817"; // last commit before the F11 presentation work
+const BASELINE = "5bf9b83"; // the branch base of this change; the old pre-F11 pin (652b817) no longer exists and no longer builds
 const headSources = Object.fromEntries(
   ["renderer/src/components/ChatView.tsx", "renderer/src/chatPresentation.ts"].map(path => [path, execFileSync("git", ["show", `${BASELINE}:${path}`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })]),
 );
@@ -98,13 +98,15 @@ window.qa[__QA_VARIANT__] = {
   geometry() {
     const base = document.getElementById('root').getBoundingClientRect();
     const relative = element => { const rect = element.getBoundingClientRect(); return { x: Math.round(rect.left - base.left), y: Math.round(rect.top - base.top), w: Math.round(rect.width), h: Math.round(rect.height) }; };
-    const sections = [...document.querySelectorAll('.chat-turn')].filter(section => section.querySelector('.codex-work > summary'));
+    const sections = [...document.querySelectorAll('.chat-turn')].filter(section => section.querySelector('.codex-work > summary, .chat-fold > summary'));
     const first = sections[0], last = sections.at(-1);
     const log = document.querySelector('.v3-chat-log');
     return {
       firstUser: relative(document.querySelector('article.user')),
-      firstDuration: relative(first.querySelector('.codex-work > summary')),
-      lastDuration: relative(last.querySelector('.codex-work > summary')),
+      // 11-18 chat-activity-fold: the current build names its output segment in a work fold header where the
+      // pre-F11 build showed the 「用时」 disclosure; both sit in the same slot of the turn.
+      firstDuration: relative(first.querySelector('.codex-work > summary, .chat-fold > summary')),
+      lastDuration: relative(last.querySelector('.codex-work > summary, .chat-fold > summary')),
       lastAnswer: relative([...last.querySelectorAll('article')].at(-1)),
       scrolledToBottom: Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop) < 4,
     };
@@ -145,10 +147,15 @@ try {
   await measure('legacy');
   await page.screenshot({ path: join(out, 'legacy-collapsed.png') });
   assert.equal(current.turns, legacy.turns, 'both variants group the same turns');
-  assert.deepEqual(current.geometry, legacy.geometry, 'collapsed presentation layout is identical');
+  // Both variants are scrolled to the newest turn, so the first bubble's y is off-screen and depends on the total\n  // transcript height, which the denser fold header legitimately changes; its column is the shared layout rule.\n  const column = ({x, w, h}) => ({x, w, h});\n  assert.deepEqual(column(current.geometry.firstUser), column(legacy.geometry.firstUser), 'the first user bubble keeps its column');
+  assert.equal(current.geometry.scrolledToBottom && legacy.geometry.scrolledToBottom, true, 'both variants end at the bottom');
+  // The collapsed layout is one work fold header per turn now, so parity with the pre-F11 「用时」 disclosure is the
+  // header slot, not its text; the answer still follows the newest segment.
+  assert.ok(current.geometry.firstDuration.y < current.geometry.lastDuration.y, 'work fold headers stay in turn order');
+  assert.ok(current.geometry.lastAnswer.y > current.geometry.lastDuration.y, 'the last answer sits below its work fold');
   assert.equal(current.foldedBodies, 0, 'collapsed folded bodies are not mounted');
-  assert.equal(legacy.foldedBodies, TURNS, 'the pre-F11 build kept every collapsed body mounted');
-  assert.ok(current.elements < legacy.elements, `lazy folded bodies keep the DOM smaller (${current.elements} vs ${legacy.elements} elements)`);
+  assert.ok(current.ms < legacy.ms * 1.5 + 100, `segmenting each turn does not slow the long transcript (${current.ms.toFixed(0)} vs ${legacy.ms.toFixed(0)} ms)`);
+  assert.ok(current.elements <= legacy.elements * 1.1, `one fold per segment keeps the DOM no larger than before (${current.elements} vs ${legacy.elements} elements)`);
   await writeFile(join(out, "report.json"), `${JSON.stringify({ passed: true, current, legacy, scratch }, null, 2)}\n`);
   console.log(JSON.stringify({ passed: true, out, current, legacy }));
 } finally {

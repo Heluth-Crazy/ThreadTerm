@@ -49,15 +49,16 @@ try {
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.locator('.codex-work > summary').waitFor();
+  await page.locator('.chat-fold > summary').waitFor();
   const bubble = page.locator('.is-codex.user');
   // One line of text plus the bubble's own padding and borders, read from the theme rather than fixed numbers (the Mac
   // chat bubble is 13.5 px type at 1.6 with 8 px padding).
   const geometry = await bubble.evaluate(el => { const box = getComputedStyle(el), line = getComputedStyle(el.querySelector('.v3-message-text') ?? el); return { height: el.getBoundingClientRect().height, text: el.innerText, oneLine: parseFloat(line.lineHeight) + parseFloat(box.paddingTop) + parseFloat(box.paddingBottom) + parseFloat(box.borderTopWidth) + parseFloat(box.borderBottomWidth) }; });
   assert.equal(geometry.text, 'Test message');
   assert.ok(Math.abs(geometry.height - geometry.oneLine) <= 0.5, `one line plus the bubble's padding (${geometry.oneLine}px), got ${geometry.height}px; no phantom Markdown newline`);
-  assert.equal(await page.locator('.codex-work').getAttribute('open'), null);
-  assert.equal(await page.locator('.codex-work-body').isVisible(), false);
+  // 11-18 chat-activity-fold: the settled turn has one work fold instead of the 用时 disclosure.
+  assert.equal(await page.locator('.chat-fold').getAttribute('open'), null);
+  assert.equal(await page.locator('.chat-fold .chat-tool-entries').isVisible(), false);
   assert.equal(await page.locator('.codex-turn > .assistant').filter({hasText:'The test message completed successfully.'}).locator('.v3-message-text').first().innerText(), 'The test message completed successfully.');
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
@@ -68,19 +69,21 @@ try {
       assert.match(await review.innerText(), /Codex 自动审查[\s\S]*已拒绝[\s\S]*echo hello[\s\S]*风险等级[\s\S]*高[\s\S]*Outside requested scope/);
       assert.equal(await review.getByRole('button').count(), 0);
       await page.screenshot({path:join(out,`${theme}-${width}-collapsed.png`)});
-      await page.locator('.codex-work > summary').focus();
+      await page.locator('.chat-fold > summary').focus();
       await page.keyboard.press('Enter');
       // The folded body mounts on expand; wait for it instead of sampling visibility.
-      await page.locator('.codex-work-body').waitFor({state:'visible'});
-      // A one-tool group names the tool itself (10-20-delegation-tool-ux), not "Tool activity · Last: …".
-      assert.match(await page.locator('.chat-tool-current-action').textContent() ?? '', /^(?:Command|命令) · Get-Content AGENTS\.md$/);
+      await page.locator('.chat-fold .chat-tool-entries').waitFor({state:'visible'});
+      // 11-18 chat-activity-fold: the settled header says the segment is done and counts it; the tool row inside
+      // the expanded fold still names the command itself (10-20-delegation-tool-ux).
+      assert.match(await page.locator('.chat-fold .chat-tool-current-action').textContent() ?? '', /已完成|Done/);
+      assert.match(await page.locator('.chat-fold .chat-tool-entry').first().innerText(), /Get-Content AGENTS\.md/);
       await page.screenshot({path:join(out,`${theme}-${width}-expanded.png`)});
       await page.keyboard.press('Space');
-      await page.locator('.codex-work-body').waitFor({state:'detached'});
+      await page.locator('.chat-fold .chat-tool-entries').waitFor({state:'hidden'});
       assert.equal(await page.evaluate(() => document.querySelector('.v3-chat-log').scrollWidth <= document.querySelector('.v3-chat-log').clientWidth), true);
     }
   }
-  await page.locator('.codex-work > summary').click();
+  await page.locator('.chat-fold > summary').click();
   const drawer = page.locator('.chat-tool-activity').first();
   if (!(await drawer.evaluate(element => element.open))) await drawer.locator('> summary').click();
   // B2/B3 replaced the generic entry with typed cards; the expanded card body
@@ -90,7 +93,7 @@ try {
   await page.evaluate(() => window.qaUpdate({id:'u2',role:'user',turnId:'t2',createdAt:'now',parts:[{type:'text',text:'First line\nSecond line'}]}));
   await page.locator('.is-codex.user').nth(1).waitFor();
   assert.equal(await page.locator('.is-codex.user').nth(1).innerText(), 'First line\nSecond line');
-  assert.equal(await page.locator('.codex-work-body').isVisible(), true);
+  assert.equal(await page.locator('.chat-tool-entries').first().isVisible(), true);
   const liveTool = {id:'live-tool',role:'assistant',turnId:'t2',createdAt:'now',parts:[{type:'tool',toolName:'commandExecution',toolId:'live',status:'running',text:'Live output'}]};
   await page.evaluate(item => window.qaUpdate(item), liveTool);
   const liveDetails = page.locator('.chat-tool-activity').last();

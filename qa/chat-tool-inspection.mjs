@@ -30,11 +30,12 @@ import {I18nProvider} from '${join(root, 'renderer/src/i18n.tsx').replaceAll('\\
 import {SessionSurfaceContext} from '${join(root, 'renderer/src/components/SessionSurfaceContext.tsx').replaceAll('\\','/')}';
 import '${join(root, 'renderer/src/styles.css').replaceAll('\\','/')}';
 const t=text=>({type:'text',text});
+const answer=text=>({type:'text',text,phase:'final_answer'});
 const tool=(id,name,status,data,text)=>({type:'tool',toolId:id,toolName:name,status,data,text});
 const row=(id,parts,extra={})=>({id,role:'assistant',turnId:'turn-inspect',createdAt:id,parts,...extra});
 const providerNames=['pi','codex','claude','kimi','gemini','grok','opencode','plugin-unknown'];
 const common=(provider)=>{
- const body=[]; for(let i=0;i<24;i++) body.push(row('context-'+i,[t('Transcript context '+i+' — scrolling establishes a real inspectable viewport.') ]));
+ const body=[]; for(let i=0;i<60;i++) body.push(row('context-'+i,[answer('Transcript context '+i+' — scrolling establishes a real inspectable viewport.') ]));
  body.push({id:'user',role:'user',turnId:'turn-inspect',createdAt:'user',parts:[t('Inspect all provider tools without losing my reading position.')]});
  body.push(row('pi-command',[tool('pi-command','bash','completed',{type:'tool_execution_update',toolCallId:'pi-command',toolName:'bash',args:{command:'git status --short'},partialResult:{content:[{type:'text',text:' M renderer/src/components/ChatView.tsx\n M renderer/src/components/ToolActivity.tsx'}]},result:{content:[{type:'text',text:' M renderer/src/components/ChatView.tsx\n M renderer/src/components/ToolActivity.tsx'}]}},'git status')]));
  body.push(row('codex-command',[tool('codex-command','commandExecution','completed',{command:'npm run typecheck',aggregatedOutput:'Typecheck completed successfully\\nextra output that must remain inspectable'},'typecheck')]));
@@ -79,7 +80,9 @@ function env() {
 }
 async function shot(name) { const path = join(out, name); await page.screenshot({ path, animations: 'disabled' }); report.screenshots.push(name); }
 async function setSize(width) { await page.setViewportSize({ width, height:width===390?844:900 }); await page.waitForFunction(value => innerWidth === value, width); }
-async function drawer() { const value = page.locator('.chat-tool-activity').first(); await value.waitFor(); return value; }
+// 11-18 chat-activity-fold: a turn can own more than one fold (a commentary-only segment, then the tools).
+// The drawer under test is the one that holds tool entries.
+async function drawer() { const value = page.locator('.chat-tool-activity').filter({has:page.locator('.chat-tool-entry')}).first(); await value.waitFor(); return value; }
 async function logState() { return page.locator('.v3-chat-log').evaluate(node => ({ top:node.scrollTop,height:node.scrollHeight,client:node.clientHeight })); }
 async function hydrated(id, entries=8) {
   await page.waitForFunction(([value,count])=>window.__toolInspection.lastHydrated===value && document.querySelectorAll('.chat-tool-entry').length===count,[id,entries]);
@@ -158,7 +161,7 @@ try {
   await inspectionLog.evaluate(node=>{node.scrollTop=node.scrollHeight;node.dispatchEvent(new Event('scroll'));});
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   assert.equal(await inspectionLog.evaluate(node=>node.style.overflowAnchor),'none','the scroll handler confirms follow before opening');
-  const inspectionDrawer=await drawer(); const inspectionBefore=await logState(); await inspectionDrawer.locator('> summary').click(); await page.waitForFunction(()=>document.querySelector('.chat-tool-activity')?.open); await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))); const inspectionAfter=await logState(); assert.ok(inspectionAfter.height-inspectionBefore.height>1000,`opening the long drawer adds meaningful body height (${inspectionAfter.height-inspectionBefore.height})`); report.baseline.trueFollowLastDrawerDelta=inspectionAfter.top-inspectionBefore.top;
+  const inspectionDrawer=await drawer(); const inspectionBefore=await logState(); await inspectionDrawer.locator('> summary').click(); await page.waitForFunction(()=>[...document.querySelectorAll('.chat-tool-activity')].some(node=>node.open)); await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))); const inspectionAfter=await logState(); assert.ok(inspectionAfter.height-inspectionBefore.height>1000,`opening the long drawer adds meaningful body height (${inspectionAfter.height-inspectionBefore.height})`); report.baseline.trueFollowLastDrawerDelta=inspectionAfter.top-inspectionBefore.top;
   if (baselineOnly) throw new Error(`Expected frozen last-drawer deficiencies: trueFollowDelta=${report.baseline.trueFollowLastDrawerDelta}, previewMissing=${await inspectionDrawer.locator('.chat-tool-output-preview').count()===0}`);
   assert.ok(Math.abs(inspectionAfter.top-inspectionBefore.top)<8,'true-follow live last drawer preserves scrollTop when disclosure expands');
   await inspectionLog.evaluate(node=>{node.scrollTop+=900;});
@@ -167,7 +170,7 @@ try {
   assert.ok(sticky.y>=viewport.y-2 && sticky.y<viewport.y+80,'expanded long drawer keeps its collapse header in the reading viewport');
   await shot('tool-inspection-live-expanded-en-light.png');
   await inspectionDrawer.locator('.chat-tool-collapse-label').click();
-  await page.waitForFunction(()=>!document.querySelector('.chat-tool-activity')?.open);
+  await page.waitForFunction(()=>[...document.querySelectorAll('.chat-tool-activity')].every(node=>!node.open));
   check('following long disclosure preserves position and offers a reachable sticky collapse header');
   await page.evaluate(()=>window.__toolInspection.render()); await hydrated('inspect-codex');
   const initial = await logState(); report.baseline.initialFollow = initial; assert.ok(initial.height > initial.client + 200, `fixture produces a scrollable production log (${initial.height} > ${initial.client})`); assert.ok(initial.top >= Math.max(0, initial.height-initial.client-4), 'initial ChatView follows the latest transcript content');
@@ -175,7 +178,11 @@ try {
   check('baseline records the pre-repair one-line preview and sticky-collapse selector state without treating missing controls as a pass');
   for (const provider of providers) { await page.evaluate(value=>window.__toolInspection.render(value),provider); await hydrated('inspect-'+provider); const activity=await drawer(); assert.equal(await activity.locator('.chat-tool-entry').count(),8,`${provider} retains all mixed provider tool records`); assert.equal(await page.locator('.chat-part.approval').count(),2,`${provider} retains question and approval outside drawer`); assert.ok(await page.getByText('A provider error remains visible outside the tool drawer.').count(),`${provider} retains error visibility`); }
   check('Pi actual arguments/result.content plus Codex, Claude, Kimi, Gemini, Grok, OpenCode, and plugin tool shapes preserve independent question, approval, and error rows');
-  const activity=await drawer(); const log=page.locator('.v3-chat-log'); await log.evaluate(node=>node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight-360)); const beforeOpen=await logState(); await page.evaluate(()=>document.querySelector('.chat-tool-activity > summary')?.click()); await page.waitForFunction(()=>document.querySelector('.chat-tool-activity')?.open); const afterOpen=await logState();
+  const activity=await drawer(); const log=page.locator('.v3-chat-log');
+  // Put the fold header in view first, so Playwright's own scroll-into-view is not counted as the jump.
+  await activity.locator('> summary').scrollIntoViewIfNeeded();
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const beforeOpen=await logState(); await activity.locator('> summary').click(); await page.waitForFunction(()=>[...document.querySelectorAll('.chat-tool-activity')].some(node=>node.open)); const afterOpen=await logState();
   report.baseline.openingScrollDelta = afterOpen.top-beforeOpen.top;
   report.baseline.missingPreview = await activity.locator('.chat-tool-output-preview').count() === 0;
   report.baseline.missingStickyCollapse = await activity.locator(':scope > summary .chat-tool-collapse-label').count() === 0;
@@ -183,10 +190,11 @@ try {
   if (baselineOnly) throw new Error(`Expected pre-repair deficiencies: preview=${report.baseline.missingPreview}, sticky=${report.baseline.missingStickyCollapse}, footer=${report.baseline.missingFooterCollapse}, openingScrollDelta=${report.baseline.openingScrollDelta}`);
   assert.ok(Math.abs(afterOpen.top-beforeOpen.top)<8,'opening the drawer preserves pre-click reading position');
   assert.equal(await activity.locator('.chat-tool-output-preview').count(),0,'a finished group shows no output preview; the one-line live preview is only for a running turn (10-20-delegation-tool-ux)');
+  await activity.locator(':scope > summary .chat-tool-collapse-label').waitFor();
   assert.equal(await activity.locator(':scope > summary .chat-tool-collapse-label').count(),1,'expanded sticky summary exposes Collapse tools label'); assert.equal(await activity.locator('.chat-tool-collapse[data-chat-collapse]').count(),1,'expanded mid-body footer exposes Collapse tools control');
-  await activity.locator('.chat-tool-collapse').click(); await page.waitForFunction(()=>!document.querySelector('.chat-tool-activity')?.open); check('activating disclosure pauses follow before resize, preserves scroll, and exposes both collapse controls when expanded');
+  await activity.locator('.chat-tool-collapse').click(); await page.waitForFunction(()=>[...document.querySelectorAll('.chat-tool-activity')].every(node=>!node.open)); check('activating disclosure pauses follow before resize, preserves scroll, and exposes both collapse controls when expanded');
   assert.equal(await page.locator('.chat-back-to-bottom').count(),1,'paused follow reveals back-to-bottom overlay'); await page.locator('.chat-back-to-bottom').click(); await page.waitForFunction(()=>{const node=document.querySelector('.v3-chat-log');return !!node&&node.scrollTop>=node.scrollHeight-node.clientHeight-4}); const resumed=await logState(); assert.ok(resumed.top >= resumed.height-resumed.client-4,'back-to-bottom resumes follow at the end');
-  await activity.locator('> summary').click(); const stayed=await logState(); await page.evaluate(()=>window.__toolInspection.appendOutput()); await page.waitForFunction(()=>document.querySelector('.chat-tool-activity .chat-tool-entries')?.textContent?.includes('output update')); const updated=await logState(); assert.ok(Math.abs(updated.top-stayed.top)<8,'live output update while inspecting preserves viewport'); assert.equal(await activity.evaluate(node=>node.open),true,'output update retains open state');
+  await activity.locator('> summary').click(); const stayed=await logState(); await page.evaluate(()=>window.__toolInspection.appendOutput()); await page.waitForFunction(()=>[...document.querySelectorAll('.chat-tool-activity .chat-tool-entries')].some(node=>node.textContent?.includes('output update'))); const updated=await logState(); assert.ok(Math.abs(updated.top-stayed.top)<8,'live output update while inspecting preserves viewport'); assert.equal(await activity.evaluate(node=>node.open),true,'output update retains open state');
   await log.focus(); await page.keyboard.press('Escape'); assert.equal(await activity.evaluate(node=>node.open),true,'Escape from the focused log resumes follow without collapsing the inspected drawer'); const escaped=await logState(); assert.ok(escaped.top>=escaped.height-escaped.client-4,'Escape from the focused log returns to the bottom');
   await activity.locator('> summary').focus(); await page.keyboard.press('Space'); assert.equal(await activity.evaluate(node=>node.open),false,'Space closes the native summary disclosure'); await page.keyboard.press('Enter'); assert.equal(await activity.evaluate(node=>node.open),true,'Enter opens the native summary disclosure from follow');
   await page.evaluate(()=>window.__toolInspection.session('kimi')); await hydrated('inspect-kimi'); const restored=await logState(); assert.ok(restored.top >= restored.height-restored.client-4,'switching session restores its own followed viewport'); check('back-to-bottom, live updates, keyboard disclosure, completion/inactive state and session restore preserve inspection state');

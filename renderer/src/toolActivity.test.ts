@@ -65,13 +65,12 @@ test('live replies still split drawers (#8) and thinking before a reply stays wi
   assert.deepEqual(shape(groupToolActivity(nextTurn, true)), ['item[thinking]', 'item[text]'], 'waiting thinking is released before a user message');
 });
 
-test('a drawer whose newest activity is streaming thinking is its own working indicator', () => {
+test('a drawer whose newest activity is streaming thinking names it in its own header', () => {
   const thinking = groupToolActivity([row('c1', [tool('c1', 'Read')]), row('r1', [thought('more', 'streaming')])], true);
   const done = groupToolActivity([row('c1', [tool('c1', 'Read')]), row('r1', [thought('more')])], true);
   const last = thinking.at(-1)!;
   assert.equal(last.type === 'tools' && drawerIsThinking(last.tools, last.thoughts), true);
-  assert.equal(shouldShowWorkingIndicator(true, thinking, false, false), false);
-  assert.equal(shouldShowWorkingIndicator(true, done, false, false), true);
+  assert.equal(done.at(-1)!.type === 'tools' && drawerIsThinking((done.at(-1) as Extract<typeof done[number], { type: 'tools' }>).tools, (done.at(-1) as Extract<typeof done[number], { type: 'tools' }>).thoughts), false);
 });
 
 test('live subagent parts form chronology boundaries within the same item', () => {
@@ -84,20 +83,14 @@ test('hidden streaming metadata does not split live tools or replace their activ
     row('metadata', [{ type: 'usage' }, { type: 'text', text: '' }]), row('two', [tool('next', 'Read', 'running')])];
   const live = groupToolActivity(items, true);
   assert.deepEqual(live.map(entry => entry.type), ['tools']);
-  assert.equal(shouldShowWorkingIndicator(true, groupToolActivity(items.slice(0, 3), true), false, false), false);
 });
 
-test('working indicator only fills an active turn tail without another visible indicator', () => {
-  const text = groupToolActivity([row('text', [{ type: 'text', text: 'Still checking.' }])], true);
-  const running = groupToolActivity([row('tool', [tool('tool', 'Read', 'running')])], true);
-  const completed = groupToolActivity([row('tool', [tool('tool', 'Read')])], true);
-  assert.equal(shouldShowWorkingIndicator(true, text, false, false), true);
-  assert.equal(shouldShowWorkingIndicator(true, completed, false, false), true);
-  assert.equal(shouldShowWorkingIndicator(true, running, false, false), false);
-  assert.equal(shouldShowWorkingIndicator(true, [...running, ...text], false, false), true);
-  assert.equal(shouldShowWorkingIndicator(true, text, true, false), false);
-  assert.equal(shouldShowWorkingIndicator(true, text, false, true), false);
-  for (const entries of [text, running, completed, []]) assert.equal(shouldShowWorkingIndicator(false, entries, false, false), false);
+test('working indicator only fills an active turn tail that is not a live output fold', () => {
+  assert.equal(shouldShowWorkingIndicator(true, false, false, false), true, 'a running turn with no live fold still shows the dots');
+  assert.equal(shouldShowWorkingIndicator(true, true, false, false), false, 'a live fold has its own spinner and headline');
+  assert.equal(shouldShowWorkingIndicator(true, false, true, false), false, 'a pending interaction owns the turn');
+  assert.equal(shouldShowWorkingIndicator(true, false, false, true), false, 'the first-response wait has its own indicator');
+  for (const foldTail of [true, false]) assert.equal(shouldShowWorkingIndicator(false, foldTail, false, false), false, 'an inactive turn never shows it');
 });
 
 test('completed turns retain approval, intervening text, and final answer order', () => {

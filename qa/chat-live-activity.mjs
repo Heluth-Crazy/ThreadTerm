@@ -58,46 +58,49 @@ try {
   const scope = page.locator(`[data-testid="session-chat-${chat.id}"]`), composer = scope.locator('.chat-compose-shell textarea');
   await until(() => composer.isEnabled(), 'composer');
   await sendChatPrompt({ composer, sendButton: scope.locator('.chat-compose-send[type=submit]'), text: 'Show live activity.', readSnapshot: () => request('chat.snapshot', { sessionId: chat.id }), readConnection: () => request('chat.connection', { sessionId: chat.id }) });
-  const drawers = scope.locator('.chat-tool-activity');
+  const drawers = scope.locator('details.chat-fold');
   await until(async () => await drawers.count() === 1 && await scope.getByText('First live update.', { exact: true }).count(), 'first text after first tool');
   assert.equal(await scope.locator('.chat-first-response-wait').count(), 0, 'interim text clears the first-response placeholder');
   assert.equal(await scope.locator('.chat-live-activity').count(), 1, 'interim text leaves one compact working status');
   assert.equal(await scope.locator('.chat-live-elapsed').count(), 1, 'working status includes elapsed time when the turn start is known');
   const firstDrawer = drawers.first();
   if (!await firstDrawer.evaluate(node => node.open)) await firstDrawer.locator('> summary').click();
-  assert.equal(await firstDrawer.evaluate(node => node.open), true, 'the first drawer can be expanded before later live activity');
+  assert.equal(await firstDrawer.evaluate(node => node.open), true, 'the work fold can be expanded before later live activity');
   await page.screenshot({ path: join(out, 'live-text-wait-light.png'), animations: 'disabled' }); report.screenshots.push('live-text-wait-light.png');
-  await until(async () => await drawers.count() === 2 && await drawers.nth(1).locator('.is-running').count() > 0, 'trailing running tool');
+  // While a new unphased text is the newest part it is the answer, shown outside the fold.
   const firstText = scope.getByText('First live update.', { exact: true });
-  const [firstBox, textBox, secondBox] = await Promise.all([firstDrawer.boundingBox(), firstText.boundingBox(), drawers.nth(1).boundingBox()]);
-  assert.ok(firstBox && textBox && secondBox && firstBox.y < textBox.y && textBox.y < secondBox.y, 'first drawer, interim text, and trailing drawer stay in transcript order');
-  assert.equal(await firstDrawer.evaluate(node => node.open), true, 'the original drawer keeps its expansion state after the split');
-  assert.equal(await drawers.nth(0).locator('.is-running').count(), 0, 'earlier drawer is no longer running');
-  assert.equal(await scope.locator('.chat-live-activity').count(), 0, 'running trailing drawer replaces the working status');
+  const foldBox = await firstDrawer.boundingBox(), textBox = await firstText.boundingBox();
+  assert.ok(foldBox && textBox && foldBox.y < textBox.y, 'the work fold sits above the interim text');
+  await until(async () => await drawers.first().locator('.chat-tool-entry[data-tool-status="running"]').count() > 0, 'trailing running tool');
+  assert.equal(await drawers.count(), 1, 'the following call joins the same fold instead of opening another');
+  assert.equal(await firstDrawer.evaluate(node => node.open), true, 'the fold keeps its expansion state across the update');
+  assert.equal(await firstDrawer.locator('.chat-fold-step.is-note').filter({ hasText: 'First live update.' }).count(), 1, 'the absorbed text becomes a step of that fold (R1 one accepted jump)');
+  assert.equal(await scope.getByText('First live update.', { exact: true }).count(), 1, 'the text is not duplicated outside');
+  assert.equal(await scope.locator('.chat-live-activity').count(), 0, 'the live fold replaces the working status');
   await page.screenshot({ path: join(out, 'live-running-tool-light.png'), animations: 'disabled' }); report.screenshots.push('live-running-tool-light.png');
-  // Thinking between calls stays inside the trailing drawer: no third drawer, no loose "Thought process" rows.
-  const looseThinking = () => scope.locator('.v3-thinking').evaluateAll(nodes => nodes.filter(node => !node.closest('.chat-tool-activity')).length);
+  // Thinking between calls is a row inside the same fold: no second fold, no loose "Thought process" rows.
+  const looseThinking = () => scope.locator('.v3-thinking').count();
   let mostDrawers = 0;
   try {
     await until(async () => { mostDrawers = Math.max(mostDrawers, await drawers.count()); return await scope.getByText('Second live update.', { exact: true }).count() > 0; }, 'second reply after thinking and two calls');
   } finally {
-    report.liveStructure = await scope.locator('.v3-chat-log').evaluate(log => [...log.querySelectorAll('.chat-tool-activity, .v3-thinking, .v3-message-text')]
-      .map(node => node.classList.contains('chat-tool-activity') ? `drawer:${node.querySelector('.chat-tool-current-action')?.textContent}` : node.classList.contains('v3-thinking') ? `thinking${node.closest('.chat-tool-activity') ? '(in drawer)' : ''}` : `text:${node.textContent?.slice(0, 40)}`));
+    report.liveStructure = await scope.locator('.v3-chat-log').evaluate(log => [...log.querySelectorAll('details.chat-fold, .v3-thinking, .v3-message-text')]
+      .map(node => node.nodeName === 'DETAILS' ? `fold:${node.querySelector('.chat-tool-current-action')?.textContent}` : node.classList.contains('v3-thinking') ? 'thinking' : `text:${node.textContent?.slice(0, 40)}`));
   }
-  assert.equal(mostDrawers, 2, 'thinking between calls never splits the live drawer');
-  assert.equal(await looseThinking(), 0, 'thinking before and between calls is not a separate transcript row');
-  await drawers.nth(1).locator('> summary').click();
-  await until(async () => await drawers.nth(1).locator('.chat-tool-thought').count() === 2, 'thoughts listed in the open drawer');
-  assert.deepEqual(await drawers.nth(1).locator('.chat-tool-entries > [role="listitem"]').evaluateAll(nodes => nodes.map(node => node.classList.contains('chat-tool-thought') ? 'thought' : 'tool')), ['thought', 'tool', 'thought', 'tool'], 'thoughts and calls keep their order inside the drawer');
+  assert.equal(mostDrawers, 1, 'the whole working segment stays one fold');
+  assert.equal(await looseThinking(), 0, 'thinking is never a separate transcript row');
+  await drawers.first().locator('> summary').click();
+  await until(async () => await drawers.first().locator('.chat-fold-step.is-thinking').count() >= 2, 'thoughts listed in the open fold');
+  assert.deepEqual(await drawers.first().locator('.chat-tool-entries > *').evaluateAll(nodes => nodes.map(node => node.classList.contains('chat-tool-entry') ? 'tool' : node.classList.contains('is-thinking') ? 'thought' : 'note')), ['tool', 'note', 'thought', 'tool', 'thought', 'tool'], 'steps keep their order inside the fold');
   await page.screenshot({ path: join(out, 'live-thinking-in-drawer-light.png'), animations: 'disabled' }); report.screenshots.push('live-thinking-in-drawer-light.png');
-  await drawers.nth(1).locator('> summary').click();
-  report.checks.push('thinking between live calls stays in one drawer and is listed in order when the drawer is open');
+  await drawers.first().locator('> summary').click();
+  report.checks.push('thinking between live calls stays in one fold and is listed in order when the fold is open');
   await until(async () => await scope.getByText('Second live update.', { exact: true }).count() && await scope.locator('.chat-live-activity').count() === 1, 'second text working status');
-  assert.equal(await drawers.nth(1).locator('.is-running').count(), 0, 'second drawer stops claiming to run after its text');
-  report.checks.push('live activity splits around interim assistant text and only the trailing drawer presents running work');
+  assert.equal(await drawers.first().locator('.chat-tool-entry[data-tool-status="running"]').count(), 0, 'the fold stops claiming to run after its text');
+  report.checks.push('live activity keeps one fold per working segment and only its newest step presents running work');
   await until(async () => (await request('runtime.snapshot')).sessions.find(row => row.id === chat.id)?.status === 'idle', 'turn settlement');
   assert.equal(await scope.locator('.chat-live-activity').count(), 0, 'working status leaves when the turn settles');
-  assert.equal(await drawers.count(), 1, 'settled turn keeps its folded single-drawer presentation');
+  assert.equal(await drawers.count(), 1, 'settled turn keeps its single work fold');
   const darkSnapshot = await request('runtime.snapshot');
   await request('settings.update', { patch: { language: 'zh-CN', theme: 'dark' }, expectedRevision: darkSnapshot.settings.revision, operationId: randomUUID() });
   const darkChat = await request('session.create', { projectId: project.id, cwd: work, title: 'Live activity dark QA', provider: 'chat-live-activity', mode: 'chat', operationId: randomUUID() });

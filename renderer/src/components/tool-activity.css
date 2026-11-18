@@ -40,6 +40,45 @@
 .chat-tool-failures { display:flex; gap:0; min-width:0; margin-top:2px; color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .chat-tool-failure-reason { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 
+/* One fold per output segment (turnSegments). Dense rows, tokens only, light and dark. */
+.chat-fold > summary { padding:4px 8px; margin-left:-8px; border-radius:8px; }
+.chat-fold > summary:hover { background:var(--fill-hover); }
+.chat-fold.is-settled > summary { color:var(--muted); }
+.chat-fold .chat-fold-icon { width:13px; height:13px; color:var(--faint); flex:none; }
+.chat-fold .chat-fold-icon.is-outcome { color:var(--st-failed-text); }
+/* The prototype's header: the current step, then its counts, then the chevron on the right. */
+.chat-fold .chat-tool-current-action { flex:0 1 auto; }
+.chat-fold .chat-tool-chevron { margin-left:auto; }
+.chat-fold .chat-fold-counts { flex:0 0 auto; color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60%; }
+.chat-fold .chat-fold-failed { flex:none; color:var(--st-failed-text); font-size:11px; white-space:nowrap; }
+.chat-fold-note { display:block; min-width:0; margin:-2px 0 0 21px; color:var(--faint); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chat-fold .chat-tool-entries { margin:4px 0 0 5px; padding:2px 0 2px 14px; border-left:2px solid var(--border); }
+.chat-fold .chat-tool-entry { padding:4px 0; border-left:0; }
+.chat-fold .chat-tool-entry + .chat-tool-entry, .chat-fold .chat-tool-entry + .chat-fold-step, .chat-fold .chat-fold-step + .chat-tool-entry, .chat-fold .chat-fold-step + .chat-fold-step { border-top:0; }
+.chat-fold .chat-tool-entry-label { min-height:22px; gap:8px; font-size:12px; }
+.chat-fold .chat-tool-step { width:16px; min-width:16px; color:var(--faint); font-variant-numeric:tabular-nums; }
+.chat-fold-step { display:flex; align-items:baseline; gap:8px; min-height:22px; padding:1px 0; font-size:12px; color:var(--muted); }
+.chat-fold-step-key { flex:none; color:var(--faint); }
+.chat-fold-step-value { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+.chat-fold-step-value.is-dim { color:var(--muted); }
+.chat-fold-step.is-note .chat-fold-step-value { color:var(--muted); }
+/* An open fold shows the whole commentary, wrapped, in the muted note colour. */
+.chat-fold-step.is-note.is-full { display:block; padding:3px 0; }
+.chat-fold-note-body { min-width:0; color:var(--muted); font-size:12.5px; line-height:1.55; overflow-wrap:anywhere; }
+.chat-fold-note-body p { margin:0 0 4px; }
+.chat-fold-note-body > :last-child, .chat-fold-note-body > * > :last-child { margin-bottom:0; }
+.chat-fold-note-body :is(ul, ol) { margin:0 0 4px; padding-left:18px; }
+.chat-fold-step.is-approval .chat-fold-step-value code { font:11.5px/1.5 var(--mono); }
+.chat-fold-step > summary { display:inline-flex; align-items:baseline; gap:8px; max-width:100%; min-width:0; padding:0; cursor:pointer; list-style:none; }
+.chat-fold-step > summary::-webkit-details-marker { display:none; }
+.chat-fold-step > summary:focus-visible { outline:2px solid var(--primary); outline-offset:2px; border-radius:4px; }
+.chat-fold-step-chevron { flex:none; width:11px; height:11px; color:var(--faint); }
+.chat-fold-step[open] .chat-fold-step-chevron { transform:rotate(90deg); }
+.chat-fold-step-body { margin:4px 0 4px 0; padding-left:10px; border-left:1px solid var(--border); color:var(--muted); font-size:12px; line-height:1.55; max-height:220px; overflow:auto; }
+.chat-fold .chat-tool-collapse { margin:6px 0 0 0; }
+.chat-fold.is-settled .chat-tool-chevron { color:var(--faint); }
+@media (prefers-reduced-motion:reduce) { .chat-fold .chat-tool-chevron, .chat-fold-step-chevron { transition:none; } }
+
 /* Typed tool cards (B2) */
 .tool-card { display:block; }
 .tool-card-head { gap:8px; }

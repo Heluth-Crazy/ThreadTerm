@@ -87,15 +87,19 @@ try {
   const page = await app.firstWindow();
   page.setDefaultTimeout(10_000);
   const panel = provider => page.locator(`[data-panel="${provider}"]`);
-  await panel('kimi').locator('.codex-work > summary').waitFor();
-  await panel('codex').locator('.codex-work > summary').waitFor();
+  await panel('kimi').locator('.chat-fold > summary').first().waitFor();
+  await panel('codex').locator('.chat-fold > summary').first().waitFor();
 
+  // 11-18 chat-activity-fold: a settled turn is one work fold (process parts), the answer and any pending
+  // interaction outside it, then the footer. `.codex-work` (the 「用时」 disclosure) is gone.
   for (const provider of ['kimi','codex']) {
     const root = panel(provider);
-    assert.equal(await root.locator('.codex-work').evaluate(el => el.open), false, `${provider} completed turn starts collapsed`);
-    assert.equal(await root.locator('.codex-work-body').isVisible(), false, `${provider} hidden process starts collapsed`);
+    assert.equal(await root.locator('.chat-fold').first().evaluate(el => el.open), false, `${provider} completed turn starts collapsed`);
+    assert.equal(await root.locator('.chat-fold .chat-tool-entries').first().isVisible(), false, `${provider} hidden process starts collapsed`);
     assert.equal(await root.locator('.chat-approval-card').count(), 1, `${provider} approval stays outside the collapsed process`);
-    assert.equal(await root.locator('.v3-thinking').filter({hasText:'Live thinking remains visible'}).isVisible(), true, `${provider} streaming content remains visible`);
+    const thought = root.locator('.chat-fold-step.is-thinking').filter({hasText:'Live thinking remains visible'});
+    assert.equal(await thought.count(), 1, `${provider} streaming thinking is a row of its own segment`);
+    assert.equal(await thought.isVisible(), false, `${provider} a closed fold keeps it hidden until the reader opens it`);
   }
   assert.equal(await panel('kimi').locator('[data-testid="plan-usage-card"]').count(), 1, 'Kimi quota remains outside the collapsed process');
 
@@ -104,11 +108,11 @@ try {
     const relative = element => { const r=element.getBoundingClientRect(), base=root.getBoundingClientRect(); return {x:Math.round(r.left-base.left),y:Math.round(r.top-base.top),w:Math.round(r.width),h:Math.round(r.height)}; };
     const articles=[...root.querySelectorAll('article')];
     const final=articles.find(article => article.textContent.includes('Final answer'));
-    return [provider,{user:relative(root.querySelector('article.user')),duration:relative(root.querySelector('.codex-work > summary')),final:relative(final)}];
+    return [provider,{user:relative(root.querySelector('article.user')),fold:relative(root.querySelector('.chat-fold > summary')),final:relative(final)}];
   })));
   const position = ({x,y}) => ({x,y});
   assert.deepEqual(position(geometry.kimi.user), position(geometry.codex.user), 'user bubbles share turn coordinates');
-  assert.deepEqual(position(geometry.kimi.duration), position(geometry.codex.duration), 'duration headers share turn coordinates');
+  assert.deepEqual(position(geometry.kimi.fold), position(geometry.codex.fold), 'work fold headers share turn coordinates');
   assert.deepEqual(position(geometry.kimi.final), position(geometry.codex.final), 'final replies share turn coordinates');
 
   for (const theme of ['light','dark']) {
@@ -116,17 +120,16 @@ try {
     for (const width of [1280,1440,1920]) {
       await app.evaluate(({BrowserWindow}, nextWidth) => BrowserWindow.getAllWindows()[0].setContentSize(nextWidth,900), width);
       await page.screenshot({path:join(out,`${theme}-${width}-collapsed.png`)});
-      for (const provider of ['kimi','codex']) await panel(provider).locator('.codex-work > summary').click();
+      for (const provider of ['kimi','codex']) await panel(provider).locator('.chat-fold > summary').first().click();
       for (const provider of ['kimi','codex']) {
         const root=panel(provider);
-        // The folded process body mounts on expand, so wait for the mount instead of sampling visibility.
-        await root.locator('.codex-work-body').waitFor({state:'visible'});
-        assert.equal(await root.locator('.codex-work-body').isVisible(), true, `${provider} process expands`);
-        assert.equal(await root.locator('article').filter({hasText:provider === 'kimi' ? 'Kimi private thought' : 'Codex private thought'}).isVisible(), true, `${provider} expanded process is visible`);
+        await root.locator('.chat-fold .chat-tool-entries').first().waitFor({state:'visible'});
+        assert.equal(await root.locator('.chat-fold .chat-tool-entries').first().isVisible(), true, `${provider} process expands`);
+        assert.equal(await root.locator('.chat-fold-step.is-thinking').filter({hasText:provider === 'kimi' ? 'Kimi private thought' : 'Codex private thought'}).isVisible(), true, `${provider} expanded process is visible`);
         assert.equal(await root.locator('article').filter({hasText:'Final answer'}).isVisible(), true, `${provider} final reply remains visible while expanded`);
       }
       await page.screenshot({path:join(out,`${theme}-${width}-expanded.png`)});
-      for (const provider of ['kimi','codex']) await panel(provider).locator('.codex-work > summary').click();
+      for (const provider of ['kimi','codex']) await panel(provider).locator('.chat-fold > summary').first().click();
     }
   }
   for (const provider of ['codex','claude','kimi','gemini','opencode','grok']) {
@@ -141,11 +144,11 @@ try {
   await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setContentSize(1280,900));
   await page.evaluate(() => window.qaRenderProvider('grok'));
   const grok=page.locator('[data-testid="session-chat-single-grok"]');
-  await grok.locator('.codex-work > summary').waitFor();
-  assert.equal(await grok.locator('.codex-work').evaluate(el => el.open), false, 'grok completed turn starts collapsed');
+  await grok.locator('.chat-fold > summary').first().waitFor();
+  assert.equal(await grok.locator('.chat-fold').first().evaluate(el => el.open), false, 'grok completed turn starts collapsed');
   assert.equal(await grok.locator('.chat-approval-card').count(), 1, 'grok approval stays outside the collapsed process');
   assert.equal(await grok.locator('[data-testid="plan-usage-card"]').count(), 1, 'grok quota remains outside the collapsed process');
-  assert.equal(await grok.locator('.v3-thinking').filter({hasText:'Live thinking remains visible'}).isVisible(), true, 'grok streaming content remains visible');
+  assert.equal(await grok.locator('.chat-fold-step.is-thinking').filter({hasText:'Live thinking remains visible'}).count(), 1, 'grok streaming thinking is its own fold row');
   const grokGeometry = await grok.evaluate(root => {
     const relative = element => { const r=element.getBoundingClientRect(), base=root.getBoundingClientRect(); return {x:Math.round(r.left-base.left),y:Math.round(r.top-base.top),w:Math.round(r.width),h:Math.round(r.height)}; };
     const articles=[...root.querySelectorAll('article')];
@@ -154,7 +157,7 @@ try {
     const style=approval ? getComputedStyle(approval) : undefined;
     return {
       user:relative(root.querySelector('article.user')),
-      duration:relative(root.querySelector('.codex-work > summary')),
+      fold:relative(root.querySelector('.chat-fold > summary')),
       final:relative(final),
       approvalPaddingTop:style?.paddingTop,
       approvalPaddingLeft:style?.paddingLeft,
@@ -165,49 +168,52 @@ try {
   assert.equal(grokGeometry.approvalPaddingTop, '10px', 'grok approval uses the shared ACP card padding');
   assert.equal(grokGeometry.approvalPaddingLeft, '12px', 'grok approval uses the shared ACP card padding');
   await page.screenshot({path:join(out,'grok-full-collapsed.png')});
-  await grok.locator('.codex-work > summary').click();
-  await grok.locator('.codex-work-body').waitFor({state:'visible'});
-  assert.equal(await grok.locator('article').filter({hasText:'Grok private thought'}).isVisible(), true, 'grok expanded process is visible');
+  await grok.locator('.chat-fold > summary').first().click();
+  await grok.locator('.chat-fold .chat-tool-entries').first().waitFor({state:'visible'});
+  assert.equal(await grok.locator('.chat-fold-step.is-thinking').filter({hasText:'Grok private thought'}).isVisible(), true, 'grok expanded process is visible');
   await page.screenshot({path:join(out,'grok-full-expanded.png')});
   await page.evaluate(() => window.qaRenderThinking('thinking-groups'));
   const thinking = page.getByTestId('session-chat-thinking-groups');
   const active = thinking.locator('[data-chat-turn="active-0"]');
-  const groups = active.locator('.v3-thinking-group');
-  await active.getByText('Message between runs', {exact:true}).waitFor();
-  assert.equal(await groups.count(), 2, 'completed runs each use one row, split at the intervening message');
-  assert.deepEqual(await groups.locator(':scope > summary').allTextContents(), ['Thought process (14)', 'Thought process (2)']);
-  assert.equal(await active.getByText('Current thinking text', {exact:true}).isVisible(), true);
-  assert.equal(await active.locator('.chat-live-activity').isVisible(), true);
-  assert.equal(await groups.first().evaluate(el => el.open), false);
-  assert.equal(await active.getByText('Thought entry 14', {exact:true}).isVisible(), false);
+  const activeFold = active.locator('details.chat-fold');
+  await activeFold.locator('.chat-fold-step').first().waitFor({state:'attached'});
+  assert.equal(await active.locator('details.chat-fold').count(), 1, 'one fold for the whole working segment');
+  const rowLabels = nodes => nodes.map(node => node.classList.contains('is-note')
+    ? `note:${node.querySelector('.chat-fold-step-value')?.textContent}`
+    : `think:${node.querySelector('.chat-fold-step-value')?.textContent}`);
+  const activeRows = await activeFold.locator('.chat-fold-step').evaluateAll(rowLabels);
+  assert.deepEqual(activeRows.slice(0, 14), Array.from({length:14}, (_, i) => `think:Thought entry ${i+1}`), 'the first run keeps its order');
+  assert.equal(activeRows[14], 'note:Message between runs', 'the intervening message is one row of the same fold');
+  assert.deepEqual(activeRows.slice(15), ['think:First after message','think:Second after message','think:Current thinking text'], 'the second run follows it in the same fold');
+  assert.equal(await active.locator('.chat-fold.is-live').count(), 1, 'the newest segment is the live fold');
+  assert.match(await active.locator('.chat-fold > summary').innerText(), /思考中|Thinking/, 'the live header says it is thinking');
+  assert.equal(await active.locator('.chat-fold > summary .chat-tool-spinner').count(), 1, 'one spinner, in the fold header');
+  assert.equal(await active.locator('details[open]').count(), 0, 'no disclosure opened itself');
   await page.screenshot({path:join(out,'thinking-groups-collapsed.png')});
-  await groups.first().locator(':scope > summary').press('Enter');
-  const cards = groups.first().locator('details.v3-thinking');
-  assert.deepEqual(await cards.locator('.v3-message-text').allTextContents(), Array.from({length:14}, (_, i) => 'Thought entry '+(i+1)));
-  assert.equal(await cards.nth(13).evaluate(el => el.open), false);
-  await cards.nth(13).locator('summary').press('Space');
-  assert.equal(await active.getByText('Thought entry 14', {exact:true}).isVisible(), true);
-  assert.equal(await active.getByText('Thought entry 13', {exact:true}).isVisible(), false);
+  await active.locator('.chat-fold > summary').press('Enter');
+  assert.equal(await activeFold.evaluate(el => el.open), true, 'keyboard opens the fold');
+  const thoughtRows = active.locator('.chat-fold-step.is-thinking');
+  assert.equal(await thoughtRows.nth(13).locator('.chat-fold-step-body').count(), 0, 'a thought row mounts no body until asked');
+  // The sticky fold header can overlap the row a synthetic scroll puts under the pointer, so click the row itself.
+  await thoughtRows.nth(13).locator('summary').evaluate(el => el.click());
+  await thoughtRows.nth(13).locator('.chat-fold-step-body').waitFor({state:'visible'});
+  assert.equal(await thoughtRows.nth(12).locator('.chat-fold-step-body').count(), 0, 'and only that one');
   const settled = thinking.locator('[data-chat-turn="settled-first"]');
-  await settled.locator('.codex-work > summary').click();
-  assert.equal(await settled.locator('.v3-thinking-group > summary').innerText(), 'Thought process (2)', 'a tool breaks a run even in the settled activity projection');
-  assert.equal(await settled.locator('details.v3-thinking:not(.v3-thinking-group) > summary').filter({visible:true}).count(), 1);
+  await settled.locator('.chat-fold > summary').click();
+  assert.deepEqual(await settled.locator('.chat-fold-step, .chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.classList.contains('chat-tool-entry') ? 'tool' : node.classList.contains('is-thinking') ? 'think' : 'note')), ['think','think','tool','think'], 'a tool breaks the run, not the fold');
   assert.equal(await settled.getByText('Settled final answer', {exact:true}).isVisible(), true);
   await page.screenshot({path:join(out,'thinking-groups-expanded.png')});
   await page.evaluate(() => {
     document.documentElement.dataset.theme = 'dark';
     window.qaRenderThinking('thinking-drawer', 'zh-CN');
   });
-  const drawer = page.getByTestId('session-chat-thinking-drawer').locator('.chat-tool-activity');
+  const drawerTurn = page.getByTestId('session-chat-thinking-drawer').locator('[data-chat-turn="drawer-first"]');
+  const drawer = drawerTurn.locator('.chat-tool-activity');
   await drawer.locator('.chat-tool-current-action').getByText('思考中…', {exact:true}).waitFor();
   await drawer.locator(':scope > summary').click();
-  await drawer.getByText('Now thinking', {exact:true}).waitFor();
-  const drawerEntries = drawer.locator('.chat-tool-entries > [role="listitem"]');
-  assert.deepEqual(await drawerEntries.evaluateAll(nodes => nodes.map(node =>
-    node.classList.contains('chat-tool-thought') ? [...node.querySelectorAll('article > details > summary')].map(summary => summary.textContent) : 'tool'
-  )), [['思考过程（2）'], 'tool', ['思考过程（2）','思考中…']], 'group summaries and the live thought keep their original positions around the tool');
+  assert.deepEqual(await drawer.locator('.chat-fold-step, .chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.classList.contains('chat-tool-entry') ? 'tool' : node.classList.contains('is-thinking') ? 'think' : 'note')), ['think','think','tool','think','think','think'], 'thoughts keep their positions around the tool');
   await page.screenshot({path:join(out,'thinking-groups-tool-drawer-dark-zh.png')});
-  await writeFile(join(out,'report.json'),JSON.stringify({passed:true,geometry,checks:['Kimi/Codex collapsed parity','approval and Kimi quota visible','streaming visible','expand preserves final','light/dark 1280/1440/1920','thinking runs keep order and live indicators','keyboard opens each disclosure independently'],scratch},null,2));
+  await writeFile(join(out,'report.json'),JSON.stringify({passed:true,geometry,checks:['Kimi/Codex collapsed parity','approval and Kimi quota visible','work fold replaces the duration disclosure','expand preserves final','light/dark 1280/1440/1920','one fold per output segment keeps every step in order','live header owns the spinner','keyboard opens each disclosure independently'],scratch},null,2));
   console.log(JSON.stringify({passed:true,out,geometry}));
 } finally {
   await app?.close();

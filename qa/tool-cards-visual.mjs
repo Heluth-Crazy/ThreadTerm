@@ -115,7 +115,8 @@ try {
   assert.equal(await page.locator('.chat-tool-entry').count(), corpus.length, 'every corpus part renders one entry shell');
   assert.equal(await page.locator('.tool-card-body').count(), 0, 'a collapsed drawer renders no card bodies');
   assert.deepEqual(await page.locator('.chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tool-kind'))), ['edit', 'command', 'command', 'read', 'search', 'web', 'todo', 'skill', 'mcp', 'image', 'compaction', 'generic']);
-  assert.match(await page.locator('.chat-tool-current-action').textContent(), /Explored .* · Ran .* · Edited .* · .*/, 'the idle summary describes the turn');
+  // 11-18 chat-activity-fold: a settled fold's header says Done; the turn's counts follow it.
+  assert.match(await page.locator('.chat-fold-counts').first().textContent(), /Explored .* · Ran .* · Edited .* · .*/, 'the idle summary describes the turn');
   report.checks.push('collapsed drawer keeps every entry shell, no card bodies, kind order and the idle summary');
 
   // Expanded: typed bodies render, never as nested drawers.
@@ -172,7 +173,8 @@ try {
   // Running command: live preview outside, Running chip and streaming output inside.
   await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'running' });
   await drawerOpen(false);
-  assert.match(await page.locator('.chat-tool-output-preview').textContent(), /waiting for the next output line/, 'the live output preview shows outside the drawer');
+  // 11-18 chat-activity-fold: the fold no longer pops a latest-output line; the output stays in the card.
+  assert.equal(await page.locator('.chat-tool-output-preview').count(), 0, 'the collapsed fold shows no latest-output line');
   await shot('running-light-en-1280-collapsed.png');
   await drawerOpen(true);
   assert.match(await page.locator('.tool-card-status').first().textContent(), /Running/, 'a live command card reports Running');
@@ -182,7 +184,7 @@ try {
   await drawerOpen(true);
   assert.equal(await page.locator('.v3-chat-log').evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, 'running command at 420 px has no horizontal clipping');
   await shot('running-dark-zh-420-expanded.png');
-  report.checks.push('running command shows the live preview, Running chip and streamed output, and fits at 420 px');
+  report.checks.push('running command keeps its output in the card (no latest-output line), Running chip and streamed output, and fits at 420 px');
 
   // Expanding a 300-entry turn must stay inside the 100 ms frame budget.
   await page.evaluate(() => { window.__corpus = Array.from({ length: 300 }, (_, index) => ({ type: 'tool', toolId: `perf-${index}`, toolName: 'commandExecution', status: 'completed', data: { type: 'commandExecution', command: `run task ${index}`, aggregatedOutput: `output ${index}` } })); });
