@@ -94,7 +94,7 @@ test("a fast load speeds the rest of the intro up instead of making the user wai
   const atNormalSpeed = SPLASH_GATE + SPLASH_FINALE + SPLASH_EXIT;
   const instant = run(settleClock(startClock(), "ready"), clock => clock.exit >= 1).elapsed;
   assert.ok(instant < atNormalSpeed - 600, `instant load took ${instant} ms`);
-  assert.ok(instant <= 2200, `instant load took ${instant} ms`);
+  assert.ok(instant <= 1200, `instant load took ${instant} ms`);
   const partway = run(startClock(), clock => clock.t >= 1200).clock;
   const later = run(settleClock(partway, "ready"), clock => clock.exit >= 1).elapsed;
   assert.ok(later < SPLASH_GATE - 1200 + SPLASH_FINALE + SPLASH_EXIT, `ready at 1.2 s took ${later} ms more`);

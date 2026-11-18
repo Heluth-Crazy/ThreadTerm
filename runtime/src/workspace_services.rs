@@ -2274,30 +2274,49 @@ pub fn git(root: &Path, arguments: &[&str]) -> Result<String> {
 /// remain unavailable rather than impersonating a clean branch with zero counts.
 pub fn git_status(root: &Path) -> Result<Value> {
     let reader = crate::git_selected_commit::GitStatusReader::new(root)?;
-    let inside = reader
-        .read(&["rev-parse", "--is-inside-work-tree"])
-        .map_err(|_| anyhow!("git_unavailable"))?;
+    use crate::git_selected_commit::joined;
+    // Every Git call here is a read, and each one is a separate process (40–80 ms on Windows). Calls that do not
+    // need each other's answer run side by side; their results are then checked in the original order, so the
+    // returned status and every error are the ones the sequential reads gave (perf 11-18: 0.77 s → see progress).
+    let (inside, operation) = std::thread::scope(|scope| {
+        let operation = scope.spawn(|| git_operation(&reader, root));
+        let inside = reader.read(&["rev-parse", "--is-inside-work-tree"]);
+        (inside, joined(operation))
+    });
+    let inside = inside.map_err(|_| anyhow!("git_unavailable"))?;
     if inside.trim() != "true" {
         return Err(anyhow!("git_unavailable"));
     }
-    let operation = git_operation(&reader, root)?;
+    let operation = operation?;
     for _ in 0..3 {
+        // The fence: a snapshot before the reads, the identity after them.
         let selected_snapshot = reader.snapshot()?;
-        // symbolic-ref works for an unborn branch; detached HEAD has no branch name.
-        let branch = reader
-            .read(&["symbolic-ref", "--quiet", "--short", "HEAD"])
-            .ok();
-        let upstream = reader
-            .read(&[
-                "rev-parse",
-                "--abbrev-ref",
-                "--symbolic-full-name",
-                "@{upstream}",
-            ])
-            .ok();
-        let (ahead, behind) = if upstream.is_some() {
-            let counts =
-                reader.read(&["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
+        let (branch, upstream, prefix, porcelain) = std::thread::scope(|scope| {
+            // symbolic-ref works for an unborn branch; detached HEAD has no branch name.
+            let branch = scope.spawn(|| reader.read(&["symbolic-ref", "--quiet", "--short", "HEAD"]).ok());
+            let upstream = scope.spawn(|| {
+                let upstream = reader
+                    .read(&[
+                        "rev-parse",
+                        "--abbrev-ref",
+                        "--symbolic-full-name",
+                        "@{upstream}",
+                    ])
+                    .ok();
+                let counts = upstream
+                    .is_some()
+                    .then(|| reader.read(&["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]));
+                (upstream, counts)
+            });
+            // Porcelain paths are repository-relative; the registered root may be a
+            // subdirectory, so keep only entries below it and make them root-relative.
+            let prefix = scope.spawn(|| reader.read(&["rev-parse", "--show-prefix"]));
+            let porcelain = reader.read(&["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+            (joined(branch), joined(upstream), joined(prefix), porcelain)
+        });
+        let (upstream, counts) = upstream;
+        let (ahead, behind) = if let Some(counts) = counts {
+            let counts = counts?;
             let values = counts
                 .split_whitespace()
                 .map(str::parse::<i64>)
@@ -2310,12 +2329,9 @@ pub fn git_status(root: &Path) -> Result<Value> {
         } else {
             (0, 0)
         };
-        // Porcelain paths are repository-relative; the registered root may be a
-        // subdirectory, so keep only entries below it and make them root-relative.
-        let prefix = reader.read(&["rev-parse", "--show-prefix"])?;
+        let prefix = prefix?;
         let prefix = prefix.trim_end_matches(['\r', '\n']);
-        let porcelain =
-            reader.read(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+        let porcelain = porcelain?;
         let mut fields = porcelain.split('\0');
         let mut changes = Vec::new();
         while let Some(record) = fields.next() {
