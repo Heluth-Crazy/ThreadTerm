@@ -211,6 +211,8 @@ impl Database {
                 connection.execute(&format!("ALTER TABLE delegations ADD COLUMN {column} TEXT"), [])?;
             }
         }
+        // Push wake must not report what a parent already knew before it existed (once per database).
+        crate::delegation_wake::backfill_reported_once(&connection)?;
         // F07: a delegation start that needs the user's explicit widening.
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS delegation_authority_requests (id TEXT PRIMARY KEY, parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, authority TEXT NOT NULL, parent_authority TEXT NOT NULL, approval_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL, request TEXT NOT NULL, created_at TEXT NOT NULL);

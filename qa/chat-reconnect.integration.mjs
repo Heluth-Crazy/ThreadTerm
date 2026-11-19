@@ -15,6 +15,8 @@ const pipe = `\\\\.\\pipe\\threadterm-reconnect-pipe-${randomUUID()}`;
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['path', 'codex_home', 'openai_api_key', 'threadterm_v3_data', 'threadterm_v3_pipe'].includes(key.toLowerCase())));
 Object.assign(env, {
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';'),
+  // Debug-runtime hook: resolve the fake Codex from `bin`, never an installed CLI (see qa-fake-provider-isolation).
+  THREADTERM_QA_PROVIDER_BIN: bin,
   THREADTERM_V3_DATA: data, THREADTERM_V3_PIPE: pipe, CODEX_HOME: join(scratch, 'provider-home'),
   TT_QA_NODE: process.execPath, TT_QA_SCRIPT: resolve('qa/fixtures/fake-codex-reconnect.cjs'),
   THREADTERM_QA_CODEX_RECONNECT_LOG: log, THREADTERM_QA_CODEX_RECONNECT_CWD: cwd, THREADTERM_QA_CODEX_RECONNECT_CONTROL: control,

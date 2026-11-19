@@ -255,6 +255,11 @@ enum Lane {
     /// Terminal control (input, resize and the lease guarding them): arrival order, independent
     /// of slow mutations, so a 120 s `git push` never freezes typing or lets the lease lapse.
     Terminal,
+    /// Quick writes of ThreadTerm's own UI state (the tab layout, composer and editor drafts): arrival
+    /// order among themselves, independent of provider starts, sends and Git. Each is one
+    /// revision-checked transaction; queued behind a slow `chat.connect` they timed out and the
+    /// later, still-applied write left the view's next revision stale (11-18).
+    State,
     /// Everything else: one at a time in arrival order, as before.
     Ordered,
 }
@@ -283,6 +288,18 @@ fn request_lane(method: &str) -> Lane {
     match method {
         "chat.tool.ask" | "chat.tool.sessionInfo" | "chat.tool.feedback" | "chat.feedback.read"
         | "chat.image.read" => Lane::Concurrent,
+        // What a view needs to render: pure reads that must never wait behind a provider start
+        // or send. One `chat.connect` holds the ordered lane for the whole provider start (a Codex
+        // app-server took 0.8–12 s on the owner's PC, longer elsewhere), and every other Chat's
+        // history and draft queued behind it until they timed out after 30 s (11-18). Out of order is
+        // safe: Chat merges a snapshot with live items by outbox seq, draft saves carry their
+        // revision, and the sidebar applies only its newest refresh.
+        "chat.snapshot" | "chat.draft.read" | "chat.read" | "chat.queue.read" | "chat.connection"
+        | "chat.context.read" | "runtime.snapshot" | "catalog.visibility.list" => Lane::Concurrent,
+        // The cached option state; the provider's catalogue refresh it starts never blocks the reply,
+        // and the view drops a reply that a newer `chat.ui` event already replaced.
+        "chat.options" => Lane::Concurrent,
+        "workspace.save" | "workspace.delete" | "draft.put" | "draft.delete" | "chat.draft.save" => Lane::State,
         // The run reads never wait for the user; `run.start`/`run.restart` do, and stay
         // ordered so one approval cannot reorder a stop behind a start.
         "chat.tool.run.list" | "chat.tool.run.status" | "chat.tool.run.logs" => Lane::Concurrent,
@@ -627,6 +644,7 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
     let ordered = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), true);
     let terminal = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false);
+    let state = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false);
     let reads = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS));
     // Sequenced requests without a reply yet. Events wait for them, as in the old one-at-a-time
     // loop, so a mutation's reply is still written before the events it caused.
@@ -656,6 +674,10 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                     Lane::Terminal => {
                         sequenced_in_flight += 1;
                         terminal.send(request).await.context("terminal lane stopped")?;
+                    }
+                    Lane::State => {
+                        sequenced_in_flight += 1;
+                        state.send(request).await.context("state lane stopped")?;
                     }
                     Lane::Concurrent => {
                         let permit = Arc::clone(&reads).acquire_owned().await.context("read pool closed")?;
@@ -1305,6 +1327,16 @@ mod decoder_tests {
             "filesystem.external.image",
             "filesystem.external.list",
             "usage.query",
+            // A view's own reads: they never queue behind a provider start (11-18).
+            "chat.snapshot",
+            "chat.draft.read",
+            "chat.read",
+            "chat.queue.read",
+            "chat.connection",
+            "chat.context.read",
+            "runtime.snapshot",
+            "catalog.visibility.list",
+            "chat.options",
         ] {
             assert_eq!(request_lane(read), Lane::Concurrent, "{read}");
         }
@@ -1316,6 +1348,10 @@ mod decoder_tests {
             "session.release",
         ] {
             assert_eq!(request_lane(control), Lane::Terminal, "{control}");
+        }
+        // Quick writes of the UI's own state keep their order without waiting behind a provider (11-18).
+        for write in ["workspace.save", "workspace.delete", "draft.put", "draft.delete", "chat.draft.save"] {
+            assert_eq!(request_lane(write), Lane::State, "{write}");
         }
         // Mutations and anything unlisted stay one at a time in arrival order.
         for method in [
@@ -1346,12 +1382,17 @@ mod decoder_tests {
             "quickLaunch.restart",
             "quickLaunch.sequence.cancel",
             "worktree.list",
-            "workspace.save",
             "filesystem.write",
             "review.checkpoint",
             "review.revert",
             "runtime.shutdown",
             "provider.refresh",
+            // The Chat requests that drive the provider or write stay in arrival order.
+            "chat.connect",
+            "chat.send",
+            "chat.queue.add",
+            "chat.repair",
+            "inbox.read",
             "not.a.method",
         ] {
             assert_eq!(request_lane(method), Lane::Ordered, "{method}");

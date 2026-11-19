@@ -42,3 +42,33 @@ test('backup requests outlive the ordinary request timeout while unrelated reque
     context.mock.timers.reset();
   }
 });
+
+test('a Chat connect may take as long as the runtime allows an agent start, but not forever', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new RuntimeClient({ autoLaunch: false });
+  const internal = client as unknown as Internals;
+  const requests: Array<{ id: string; method: string }> = [];
+  internal.ensureConnected = async () => undefined;
+  internal.control = {
+    write(payload) { requests.push(JSON.parse(payload.toString('utf8')) as { id: string; method: string }); },
+    close() {},
+  };
+  try {
+    const connect = client.request('chat.connect', { sessionId: 'chat-1', leaseEpoch: 1, operationId: 'connect-operation' });
+    const ordinary = client.request('runtime.health', {});
+    await Promise.resolve();
+    assert.deepEqual(requests.map(request => request.method), ['chat.connect', 'runtime.health']);
+    let connectSettled = false;
+    void connect.then(() => { connectSettled = true; }, () => { connectSettled = true; });
+    // A Codex start whose initialize and thread resume each took 25 s (11-18) is still connecting.
+    context.mock.timers.tick(60_000);
+    await Promise.resolve();
+    assert.equal(connectSettled, false, 'a one-minute agent start is not reported as failed');
+    await assert.rejects(ordinary, /Runtime request runtime\.health timed out/);
+    context.mock.timers.tick(91_000);
+    await assert.rejects(connect, /Runtime request chat\.connect timed out/);
+  } finally {
+    client.dispose();
+    context.mock.timers.reset();
+  }
+});

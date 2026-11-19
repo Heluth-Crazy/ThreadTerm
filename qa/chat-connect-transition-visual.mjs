@@ -35,6 +35,8 @@ Object.assign(env, {
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';'),
   THREADTERM_V3_DATA: join(scratch, 'data'), THREADTERM_V3_USER_DATA: join(scratch, 'profile'),
   THREADTERM_V3_PIPE: `\\\\.\\pipe\\threadterm-connect-transition-${randomUUID()}`,
+  // Debug-runtime hook: resolve the fake Codex from `bin`, never an installed CLI (see qa-fake-provider-isolation).
+  THREADTERM_QA_PROVIDER_BIN: bin,
   THREADTERM_V3_RUNTIME: runtime, THREADTERM_V3_RELOCATION_QA: '1', CODEX_HOME: join(scratch, 'codex-home'),
   TT_QA_NODE: process.execPath, TT_QA_SCRIPT: fixture,
   THREADTERM_QA_TRANSITION_CONTROL: control, THREADTERM_QA_TRANSITION_LOG: log, THREADTERM_QA_TRANSITION_CWD: workspace,

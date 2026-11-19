@@ -297,6 +297,45 @@ pub(crate) fn collect_updates(db: &Database, parent_id: &str) -> Result<Vec<Upda
     Ok(updates)
 }
 
+// ---- upgrade: what the parent already knew before push wake -----------------
+
+/// Metadata key of [`backfill_reported_once`].
+const REPORTED_BACKFILL_KEY: &str = "delegation.wake.reportedBackfill";
+
+/// R2 on upgrade (11-18): the reported columns arrived empty, so every delegation that had ended
+/// before push wake existed counted as news, and a parent's first turn end after the upgrade woke
+/// it with all of those old outcomes. The parent had already seen them the old way (it asked
+/// `delegation status`, and a quiet episode already gave the user its Inbox notice). Once per
+/// database, every ended delegation and every open quiet episode is marked as reported. A delegate
+/// that is still running is left alone: its outcome is news and wakes the parent as designed.
+pub(crate) fn backfill_reported_once(connection: &rusqlite::Connection) -> Result<()> {
+    let done: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM metadata WHERE key=?)",
+        [REPORTED_BACKFILL_KEY],
+        |row| row.get(0),
+    )?;
+    if done {
+        return Ok(());
+    }
+    let states = crate::delegation::REPORTABLE_STATES
+        .iter()
+        .map(|state| format!("'{state}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let tx = connection.unchecked_transaction()?;
+    tx.execute(
+        &format!("UPDATE delegations SET reported_state=state WHERE reported_state IS NULL AND state IN ({states})"),
+        [],
+    )?;
+    tx.execute(
+        "UPDATE delegations SET reported_quiet=quiet_since WHERE reported_quiet IS NULL AND quiet_since IS NOT NULL",
+        [],
+    )?;
+    tx.execute("INSERT INTO metadata(key,value) VALUES (?,'1')", [REPORTED_BACKFILL_KEY])?;
+    tx.commit()?;
+    Ok(())
+}
+
 // ---- R4: can this parent be woken right now? --------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1038,6 +1077,64 @@ mod tests {
         let collected = updates(&fixture);
         assert_eq!(write_wake(&fixture.db, &fixture.queues, "p", &collected).unwrap(), Wake::Paused);
         assert!(fixture.queue().is_empty());
+    }
+
+    #[test]
+    fn an_upgrade_reports_nothing_that_ended_before_push_wake_and_backfills_once() {
+        // A database the previous build already opened: the reported columns exist, are empty, and
+        // no backfill ran. One delegation completed, one failed, one is still running with an open
+        // quiet episode, one was cancelled.
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("upgrade.sqlite");
+        {
+            let db = Database::open(&path).unwrap();
+            db.transaction(|tx| {
+                for (id, status) in [("p", "idle"), ("c1", "idle"), ("c2", "idle"), ("c3", "running"), ("c4", "idle")] {
+                    tx.execute(
+                        "INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES (?,?,'fake','chat',?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                        params![id, id, status],
+                    )?;
+                }
+                for (id, child, state) in [("d1", "c1", "completed"), ("d2", "c2", "failed"), ("d3", "c3", "running"), ("d4", "c4", "cancelled")] {
+                    tx.execute(
+                        "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,created_at,updated_at) VALUES (?,'p',?,'fake','shared','C:/fixture',NULL,'work',0,?,'turn',?,'2026-01-01T00:00:02Z','2026-01-01T00:00:02Z')",
+                        params![id, child, format!("op-{id}"), state],
+                    )?;
+                }
+                tx.execute("UPDATE delegations SET quiet_since='2026-01-01T00:00:05Z' WHERE id='d3'", [])?;
+                tx.execute("DELETE FROM metadata WHERE key=?", [REPORTED_BACKFILL_KEY])?;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(collect_updates(&db, "p").unwrap().len(), 3, "the old outcomes and the old episode read as news");
+        }
+        let marks = |db: &Database| -> Vec<(String, Option<String>, Option<String>)> {
+            db.transaction(|tx| {
+                let mut statement = tx.prepare("SELECT id,reported_state,reported_quiet FROM delegations ORDER BY id")?;
+                let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+            })
+            .unwrap()
+        };
+        let db = Database::open(&path).unwrap();
+        let some = |value: &str| Some(value.to_owned());
+        assert_eq!(
+            marks(&db),
+            vec![
+                ("d1".to_owned(), some("completed"), None),
+                ("d2".to_owned(), some("failed"), None),
+                ("d3".to_owned(), None, some("2026-01-01T00:00:05Z")),
+                ("d4".to_owned(), None, None),
+            ]
+        );
+        assert!(collect_updates(&db, "p").unwrap().is_empty(), "nothing that ended before the upgrade wakes the parent");
+        // Once only: an outcome after the upgrade is news, and a restart does not mark it.
+        db.transaction(|tx| crate::delegation::set_state(tx, "d3", "completed", Some("done"), None)).unwrap();
+        drop(db);
+        let db = Database::open(&path).unwrap();
+        let fresh = collect_updates(&db, "p").unwrap();
+        assert_eq!(fresh.len(), 1, "{fresh:?}");
+        assert!(matches!(&fresh[0], Update::Terminal { delegation_id, state, .. } if delegation_id == "d3" && state == "completed"));
     }
 
     #[test]

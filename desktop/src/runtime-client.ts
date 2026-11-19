@@ -300,9 +300,15 @@ export async function waitForPendingRuntimeStartup(timeoutMs = 30_000): Promise<
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const BACKUP_REQUEST_TIMEOUT_MS = 30 * 60_000;
+/** `chat.connect` starts the agent: the runtime allows each of its provider requests 30 s (initialize,
+ * account, thread resume, …), so a start that succeeds after 50 s must not be reported as failed here
+ * while the runtime is still connecting it (11-18). */
+const CHAT_CONNECT_TIMEOUT_MS = 150_000;
 
-function requestTimeoutMs(method: Method): number {
-  return method === 'data.backup' || method === 'data.backup.verify' ? BACKUP_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
+export function requestTimeoutMs(method: Method): number {
+  if (method === 'data.backup' || method === 'data.backup.verify') return BACKUP_REQUEST_TIMEOUT_MS;
+  if (method === 'chat.connect') return CHAT_CONNECT_TIMEOUT_MS;
+  return DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
 export class RuntimeClient {
