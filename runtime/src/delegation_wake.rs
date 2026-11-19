@@ -336,6 +336,32 @@ pub(crate) fn backfill_reported_once(connection: &rusqlite::Connection) -> Resul
     Ok(())
 }
 
+/// Metadata key of [`backfill_acceptance_once`].
+const ACCEPTANCE_BACKFILL_KEY: &str = "delegation.acceptance.backfill";
+
+/// R13 on upgrade (owner decision 11-19): the acceptance columns arrived empty, so every delegate
+/// that had finished before acceptance existed waited in 待处理 as 待验收. Once per database, every
+/// completed delegation without a decision is marked accepted, as of its last update; one that
+/// finishes after the upgrade waits for the user's decision as designed.
+pub(crate) fn backfill_acceptance_once(connection: &rusqlite::Connection) -> Result<()> {
+    let done: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM metadata WHERE key=?)",
+        [ACCEPTANCE_BACKFILL_KEY],
+        |row| row.get(0),
+    )?;
+    if done {
+        return Ok(());
+    }
+    let tx = connection.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE delegations SET acceptance='accepted',acceptance_at=updated_at WHERE state='completed' AND acceptance IS NULL",
+        [],
+    )?;
+    tx.execute("INSERT INTO metadata(key,value) VALUES (?,'1')", [ACCEPTANCE_BACKFILL_KEY])?;
+    tx.commit()?;
+    Ok(())
+}
+
 // ---- R4: can this parent be woken right now? --------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1135,6 +1161,60 @@ mod tests {
         let fresh = collect_updates(&db, "p").unwrap();
         assert_eq!(fresh.len(), 1, "{fresh:?}");
         assert!(matches!(&fresh[0], Update::Terminal { delegation_id, state, .. } if delegation_id == "d3" && state == "completed"));
+    }
+
+    #[test]
+    fn an_upgrade_accepts_what_finished_before_acceptance_existed_once() {
+        // A database the previous build already opened: the acceptance columns exist and are empty
+        // except for one decision the user made on that build.
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("acceptance.sqlite");
+        {
+            let db = Database::open(&path).unwrap();
+            db.transaction(|tx| {
+                for (id, status) in [("p", "idle"), ("c1", "idle"), ("c2", "idle"), ("c3", "running"), ("c4", "idle")] {
+                    tx.execute(
+                        "INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES (?,?,'fake','chat',?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                        params![id, id, status],
+                    )?;
+                }
+                for (id, child, state) in [("d1", "c1", "completed"), ("d2", "c2", "failed"), ("d3", "c3", "running"), ("d4", "c4", "completed")] {
+                    tx.execute(
+                        "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,turn_id,state,created_at,updated_at) VALUES (?,'p',?,'fake','shared','C:/fixture',NULL,'work',0,?,'turn',?,'2026-01-01T00:00:02Z','2026-01-01T00:00:09Z')",
+                        params![id, child, format!("op-{id}"), state],
+                    )?;
+                }
+                tx.execute("UPDATE delegations SET acceptance='sent_back',acceptance_at='2026-01-01T00:00:10Z' WHERE id='d4'", [])?;
+                tx.execute("DELETE FROM metadata WHERE key=?", [ACCEPTANCE_BACKFILL_KEY])?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        let decisions = |db: &Database| -> Vec<(String, Option<String>, Option<String>)> {
+            db.transaction(|tx| {
+                let mut statement = tx.prepare("SELECT id,acceptance,acceptance_at FROM delegations ORDER BY id")?;
+                let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+            })
+            .unwrap()
+        };
+        let some = |value: &str| Some(value.to_owned());
+        let db = Database::open(&path).unwrap();
+        assert_eq!(
+            decisions(&db),
+            vec![
+                ("d1".to_owned(), some("accepted"), some("2026-01-01T00:00:09Z")),
+                ("d2".to_owned(), None, None),
+                ("d3".to_owned(), None, None),
+                ("d4".to_owned(), some("sent_back"), some("2026-01-01T00:00:10Z")),
+            ],
+            "only a completed delegate without a decision is accepted, as of when it finished"
+        );
+        // Once only: a delegate that finishes after the upgrade waits for the user, across restarts.
+        db.transaction(|tx| crate::delegation::set_state(tx, "d3", "completed", Some("done"), None)).unwrap();
+        drop(db);
+        let db = Database::open(&path).unwrap();
+        assert_eq!(decisions(&db)[2], ("d3".to_owned(), None, None));
     }
 
     #[test]
