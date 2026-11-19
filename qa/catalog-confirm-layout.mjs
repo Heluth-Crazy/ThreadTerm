@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from '@playwright/test';
 import { startReadonlyReferenceServer } from './parity/reference-server.mjs';
 import { installVisualFixture } from './parity/fixture.mjs';
+import { productionRenderer, visualSeed } from './parity/catalog-fixture.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -23,7 +24,7 @@ function interceptArchive() {
 }
 
 await mkdir(out, { recursive: true });
-const seed = JSON.parse(await readFile(join(here, 'results/parity/2026-09-10T14-50-58-408Z/visual-fixture.json'), 'utf8'));
+const seed = await visualSeed(electron), renderer = await productionRenderer();
 seed.sessions.find(session => session.id === 'pulse-shell').name = longName;
 let app, server, page;
 try {
@@ -33,7 +34,7 @@ try {
   page.setDefaultTimeout(5000);
   await page.addInitScript(installVisualFixture, { seed, theme: 'light' });
   await page.addInitScript(interceptArchive);
-  server = await startReadonlyReferenceServer(join(root, 'desktop-dist/renderer'));
+  server = await startReadonlyReferenceServer(renderer.dir);
   const cases = [
     { theme: 'light', width: 1280, height: 900, scale: 1 },
     { theme: 'dark', width: 1280, height: 900, scale: 1 },
@@ -113,6 +114,7 @@ try {
 finally {
   await app?.close().catch(() => {});
   await server?.close();
+  await renderer.cleanup();
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ out, passed: report.checks.filter(check => check.passed).length, failed: report.checks.filter(check => !check.passed), errors: report.errors }, null, 2));
   if (report.errors.length) process.exitCode = 1;

@@ -1,25 +1,27 @@
 import assert from 'node:assert/strict';
-import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
+import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {_electron as electron} from '@playwright/test';
 import {installVisualFixture} from './parity/fixture.mjs';
 import {startReadonlyReferenceServer} from './parity/reference-server.mjs';
+import {productionRenderer,visualSeed} from './parity/catalog-fixture.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const out=join(here,'results/catalog-header-menu',new Date().toISOString().replace(/[:.]/g,'-'));
 const report={startedAt:new Date().toISOString(),checks:[],errors:[]};
 await mkdir(out,{recursive:true});
 let app,page,server;
+// The seed and the renderer come first: a fresh renderer build would run into the hard deadline below.
+const seed=await visualSeed(electron),renderer=await productionRenderer();
 const deadline=setTimeout(()=>{report.errors.push('60s hard deadline');void app?.close().catch(()=>{});},60000);
 try{
-  const seed=JSON.parse(await readFile(join(here,'results/parity/2026-09-10T14-50-58-408Z/visual-fixture.json'),'utf8'));
   const profile=await mkdtemp(join(tmpdir(),'threadterm-catalog-header-'));
   app=await electron.launch({args:[join(here,'parity/electron-static.cjs')],env:{...process.env,TT_PARITY_PROFILE:profile},timeout:15000});
   page=await app.firstWindow();page.setDefaultTimeout(8000);
   await page.addInitScript(installVisualFixture,{seed,theme:'light'});
-  server=await startReadonlyReferenceServer(join(here,'../desktop-dist/renderer'));
+  server=await startReadonlyReferenceServer(renderer.dir);
   await page.goto(server.origin+'/?theme=light');
   await page.locator('.side-scope').waitFor();
   const head=page.locator('.catalog-head');
@@ -50,7 +52,7 @@ try{
   await page?.screenshot({path:join(out,'failure.png')}).catch(()=>{});
 }finally{
   clearTimeout(deadline);
-  await app?.close().catch(()=>{});await server?.close();
+  await app?.close().catch(()=>{});await server?.close();await renderer.cleanup();
   report.completedAt=new Date().toISOString();
   await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({out,report},null,2));

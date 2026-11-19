@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { openCatalogPage } from './catalog-page.mjs';
-import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
+import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {_electron as electron} from '@playwright/test';
 import {startReadonlyReferenceServer} from './parity/reference-server.mjs';
 import {installVisualFixture} from './parity/fixture.mjs';
+import {productionRenderer,visualSeed} from './parity/catalog-fixture.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url)),root=resolve(here,'..');
 const out=join(here,'results/parity-catalog-actions',new Date().toISOString().replace(/[:.]/g,'-'));
@@ -48,15 +49,16 @@ function extendCatalog(){
 }
 
 await mkdir(out,{recursive:true});let app,server,page;
+// The seed and the renderer come first: a fresh renderer build would run into the hard deadline below.
+const seed=await visualSeed(electron),renderer=await productionRenderer();
 const deadline=setTimeout(()=>{report.errors.push('240s hard deadline');void app?.close().catch(()=>{});},240000);
 async function caseOf(name,action){const only=process.argv.find(arg=>arg.startsWith('--case='))?.slice(7);if(only&&name!==only)return;console.log(name+': starting');try{await action();report.checks.push({name,passed:true});console.log(name+': passed');}catch(error){report.checks.push({name,passed:false,error:String(error)});report.errors.push(name);await page.screenshot({path:join(out,name+'-failure.png')}).catch(()=>{});await page.keyboard.press('Escape').catch(()=>{});}}
 try{
-  const seed=JSON.parse(await readFile(join(here,'results/parity/2026-09-10T14-50-58-408Z/visual-fixture.json'),'utf8'));
   const profile=await mkdtemp(join(tmpdir(),'threadterm-catalog-static-'));
   app=await electron.launch({args:[join(here,'parity/electron-static.cjs')],env:{...process.env,TT_PARITY_PROFILE:profile},timeout:15000});
   page=await app.firstWindow();page.setDefaultTimeout(6000);
   await page.addInitScript(installVisualFixture,{seed,theme:'light'});await page.addInitScript(extendCatalog);
-  server=await startReadonlyReferenceServer(join(root,'desktop-dist/renderer'));await page.goto(server.origin+'/?theme=light');
+  server=await startReadonlyReferenceServer(renderer.dir);await page.goto(server.origin+'/?theme=light');
   const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
   await page.evaluate(([revision, id]) => window.threadterm.request('settings.update', { patch: { language: 'zh-CN' }, expectedRevision: revision, operationId: id }), [settings.revision, crypto.randomUUID()]);
   await page.waitForFunction(() => document.body.innerText.includes('所有终端'));await page.locator('.proj-row').first().waitFor();
@@ -104,4 +106,4 @@ try{
   });
   await page.screenshot({path:join(out,'complete.png'),animations:'disabled'});
 }catch(error){report.errors.push(error.stack??String(error));}
-finally{clearTimeout(deadline);await app?.close().catch(()=>{});await server?.close();report.completedAt=new Date().toISOString();await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({out,report},null,2));if(report.errors.length)process.exitCode=1;}
+finally{clearTimeout(deadline);await app?.close().catch(()=>{});await server?.close();await renderer.cleanup();report.completedAt=new Date().toISOString();await writeFile(join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({out,report},null,2));if(report.errors.length)process.exitCode=1;}
