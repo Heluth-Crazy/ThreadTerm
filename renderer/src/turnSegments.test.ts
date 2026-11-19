@@ -202,3 +202,37 @@ test('a settled turn seats a resolved interaction recorded after the answer befo
   const plain = [item('a1', [approval('q-4', 'answered')]), item('a2', [text('Answer.')])];
   assert.deepEqual(turnSegments(plain, { settled: true }), turnSegments(plain));
 });
+
+test('tool rows (Codex, ACP, Grok record each call as role "tool") fold with the assistant rows around them', () => {
+  const row = (id: string, parts: ChatPart[]) => item(id, parts, { role: 'tool' });
+  const user: ChatItem = { id: 'u1', role: 'user', turnId: 'turn', createdAt: 'now', parts: [text('Fix it')] };
+  // Codex: thinking and commentary on assistant rows, every command or edit on its own tool row.
+  const codex = [
+    user,
+    item('a1', [think('Where is it')]),
+    row('cmd-1', [tool('cmd-1', 'failed')]),
+    item('a2', [text('Retrying with the right path.', 'commentary')]),
+    row('cmd-2', [tool('cmd-2')]),
+    row('cmd-3', [tool('cmd-3')]),
+    row('cmd-4', [tool('cmd-4')]),
+    item('a3', [text('Done.', 'final_answer')]),
+  ];
+  assert.deepEqual(shape(turnSegments(codex, { collapseCommentary: true, settled: true })), [
+    { item: 'u1', parts: ['Fix it'] },
+    { fold: 'fold:a1:0', steps: ['thinking:Where is it', 'tool:cmd-1', 'commentary:Retrying with the right path.', 'tool:cmd-2', 'tool:cmd-3', 'tool:cmd-4'] },
+    { item: 'a3', parts: ['Done.'] },
+  ]);
+  // A turn that opens with a tool row starts its fold there; text after a tool row is not the answer yet.
+  const acp = [row('acp-tool-1', [tool('t1')]), item('a1', [text('Reading more.')]), row('acp-tool-2', [tool('t2')]), item('a2', [text('All set.')])];
+  assert.deepEqual(shape(turnSegments(acp)), [
+    { fold: 'fold:acp-tool-1:0', steps: ['tool:t1', 'commentary:Reading more.', 'tool:t2'] },
+    { item: 'a2', parts: ['All set.'] },
+  ]);
+  // System rows still split segments and render whole.
+  const system: ChatItem = { id: 's1', role: 'system', turnId: 'turn', createdAt: 'now', parts: [text('Context compacted')] };
+  assert.deepEqual(shape(turnSegments([row('r1', [tool('t1')]), system, row('r2', [tool('t2')])])), [
+    { fold: 'fold:r1:0', steps: ['tool:t1'] },
+    { item: 's1', parts: ['Context compacted'] },
+    { fold: 'fold:r2:0', steps: ['tool:t2'] },
+  ]);
+});

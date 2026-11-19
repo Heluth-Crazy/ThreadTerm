@@ -104,7 +104,10 @@ window.qaSetTheme = theme => { document.documentElement.dataset.theme = theme; }
 window.qaStage = index => {
   const stage = stages[index];
   if (!stage) throw new Error('no stage ' + index);
-  const item = {turnId:'turn-1', role:'assistant', createdAt:'now', ...stage.item};
+  // Codex records every command, edit and search as its own role:'tool' row (as do ACP agents and Grok);
+  // Claude keeps tool_use inside the assistant row. The probe plays both shapes.
+  const role = provider === 'codex' && stage.item.parts.some(part => part.type === 'tool') ? 'tool' : 'assistant';
+  const item = {turnId:'turn-1', role, createdAt:'now', ...stage.item};
   if (stage.status) status = stage.status;
   items = stage.replace ? items.map(row => row.id === item.id ? item : row) : [...items, item];
   render();
@@ -132,6 +135,8 @@ window.qaState = () => {
     foldCount: folds.length,
     openDetails: [...log.querySelectorAll('details[open]')].map(node => node.className),
     liveSpinners: log.querySelectorAll('.chat-fold.is-live .chat-tool-spinner').length,
+    // A tool call rendered as its own card outside a fold (the 11-18 role:'tool' regression).
+    looseTools: [...log.querySelectorAll('.chat-part.tool, .codex-tool-disclosure')].filter(node => !node.closest('details.chat-fold')).length,
     approvalCards: [...log.querySelectorAll('.chat-part.approval')].map(node => node.closest('details.chat-fold') ? 'folded' : 'outside'),
     steps,
     outsideText: [...log.querySelectorAll('.v3-chat-log article.assistant .chat-part.text')].filter(node => !node.closest('details.chat-fold')).map(node => node.textContent?.trim()),
@@ -183,6 +188,7 @@ try {
     const label = `stage ${index}`;
     check(`${label}: one fold for the working segment`, now.foldCount === 1, now.foldCount);
     check(`${label}: nothing opens by itself`, now.openDetails.length === 0, now.openDetails);
+    check(`${label}: no tool call renders outside the fold`, now.looseTools === 0, now.looseTools);
     if (mark === undefined) mark = fold(now).mark;
     check(`${label}: the fold is the same element`, fold(now).mark === mark, [mark, fold(now).mark]);
     if (index === 2 || index === 9 || index === 13) await shot(`light-mid-${index}`);
@@ -245,6 +251,7 @@ try {
     const label = `claude stage ${index}`;
     check(`${label}: one fold`, now.foldCount === 1, now.foldCount);
     check(`${label}: nothing opens by itself`, now.openDetails.length === 0, now.openDetails);
+    check(`${label}: no tool call renders outside the fold`, now.looseTools === 0, now.looseTools);
     if (claudeMark === undefined) claudeMark = fold(now).mark;
     check(`${label}: the fold keeps its element`, fold(now).mark === claudeMark, [claudeMark, fold(now).mark]);
     if (index === 2) {

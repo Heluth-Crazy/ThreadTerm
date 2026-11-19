@@ -4,7 +4,8 @@ import { hiddenTool, toolEntry, type ToolActivityEntry } from './toolActivity';
 
 /**
  * One turn's blocks: a work fold per maximal run of process parts, and the content
- * parts (answer, pending interaction, error, status, cards) between them.
+ * parts (answer, pending interaction, error, status, cards) between them. Process parts
+ * come from assistant rows and from the separate tool rows most adapters record.
  *
  * Live and settled turns run the same pass, so a fold never moves or remounts when the
  * turn ends: only its header changes (see ToolActivity). The one exception is an adapter
@@ -80,6 +81,12 @@ function visiblePart(part: ChatPart): boolean {
 
 const PENDING_APPROVAL = 'pending';
 
+/**
+ * Rows the agent produced. Codex, ACP agents and Grok record each tool call as its own `role: 'tool'` row, so
+ * those fold with the assistant's rows; only the user's message and system rows stay whole, as before the fold.
+ */
+const agentRow = (item: ChatItem): boolean => item.role !== 'user' && item.role !== 'system';
+
 function isProcessPart(part: ChatPart): boolean {
   return part.type === 'thinking' || part.type === 'tool';
 }
@@ -92,7 +99,7 @@ function isProcessPart(part: ChatPart): boolean {
 function answerIds(items: readonly ChatItem[], collapseCommentary: boolean): Set<string> {
   const refs: PartRef[] = [];
   for (const item of items) {
-    if (item.role !== 'assistant') continue;
+    if (!agentRow(item)) continue;
     item.parts.forEach((part, index) => { if (visiblePart(part) || isCardText(part)) refs.push({ item, part, index }); });
   }
   const hasPhase = refs.some(ref => isText(ref.part) && !!ref.part.phase);
@@ -164,7 +171,7 @@ export function turnSegments(items: readonly ChatItem[], options: TurnSegmentsOp
   const whole = options.wholeItems ?? new Set<string>();
   let entries: Entry[] = [];
   for (const item of items) {
-    if (item.role !== 'assistant' || whole.has(item.id)) {
+    if (!agentRow(item) || whole.has(item.id)) {
       entries.push({ kind: 'whole', item });
       continue;
     }
