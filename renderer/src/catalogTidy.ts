@@ -136,6 +136,15 @@ export function orderBranchSessions<T extends TidySession>(
   });
 }
 
+/**
+ * The order `orderBranchSessions` shows, as a frozen order: an open ⋯ menu keeps exactly the rows it was opened on.
+ * It must be the same comparator: freezing with another one (the activity order) moved a running chat above a newer
+ * idle one the moment a menu opened (11-19).
+ */
+export function branchOrder<T extends TidySession>(sessions: readonly T[]): Map<string, number> {
+  return new Map(orderBranchSessions(sessions).map((session, index) => [session.id, index]));
+}
+
 /** Parents whose delegate or native subagent is still active. */
 export function activeDelegateParents(
   sessions: readonly TidySession[],

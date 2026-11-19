@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from 'react';
-import { machineBridge, useMachines, useMachineTree } from '../machines';
+import { machineBridge, useMachineExpand, useMachines, useMachineTree } from '../machines';
 import { machineTreeKey, type MachineSnapshot, type MachineTreeFeed, type MachineTreeSession, type MachineTree } from '../machineTypes';
 import { Icon, SessionIcon } from './PrototypeIcon';
 import { CatalogPopover } from './CatalogActions';
@@ -34,10 +34,11 @@ export function MachineRowsView({ zh, snapshot, feed = { machines: [], expanded:
   const [menu, setMenu] = useState<{ key: string; anchor: HTMLElement }>();
   const [expandedDelegates, setExpandedDelegates] = useState<string[]>([]);
   const folds = useCatalogFolds(), setFolds = updateCatalogFolds;
+  const expandMachine = useMachineExpand();
   if (!snapshot.enabled || snapshot.machines.length < 2) return <>{children}</>;
   const fail = (error: unknown) => setIssue(error instanceof Error ? error.message : String(error));
   const expanded = (key: string) => feed.expanded[key] !== false;
-  const toggle = (key: string) => { void machineBridge()?.machineExpand(key, !expanded(key)).catch(fail); };
+  const toggle = (key: string) => { void expandMachine(key, !expanded(key)).catch(fail); };
   const open = (id: string, sessionId?: string) => { setIssue(undefined); void machineBridge()?.machineShow(id, sessionId).catch(fail); };
   const closeMenu = () => setMenu(undefined);
   const start = (machineId: string, projectId?: string, path?: string) => { closeMenu(); setIssue(undefined); void machineBridge()?.machineShow(machineId, undefined, { action: 'new-session', projectId, path }).catch(fail); };

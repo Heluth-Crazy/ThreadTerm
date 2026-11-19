@@ -1,7 +1,11 @@
 /** Public machine metadata only. Credentials stay in Electron main. */
 export type MachineState = 'local' | 'connecting' | 'connected' | 'disconnected' | 'incompatible' | 'pin-mismatch';
 export interface MachineInfo { id: string; name: string; color: string; state: MachineState; message?: string }
-export interface MachineSnapshot { enabled: boolean; currentId: string; machines: MachineInfo[] }
+export interface MachineSnapshot {
+  enabled: boolean; currentId: string; machines: MachineInfo[];
+  /** Renderer only: false until the main process has answered (set by MachineProvider). */
+  loaded?: boolean;
+}
 export type MachineNavigation = { action: 'new-session'; projectId?: string; path?: string } | { action: 'add-project' };
 export interface MachineBridge {
   readonly machineId: string;
@@ -25,6 +29,10 @@ export type MachineTreeSessionMetadata = Pick<import('@threadterm/protocol').Ses
 };
 export interface MachineTreeSession { session: MachineTreeSessionMetadata; needsYou: number }
 export interface MachineTree { machine: MachineInfo; projects: import('@threadterm/protocol').Project[]; worktrees: import('@threadterm/protocol').Worktree[]; sessions: MachineTreeSession[]; needsYou: number }
-export interface MachineTreeFeed { machines: MachineTree[]; expanded: Record<string, boolean> }
+export interface MachineTreeFeed {
+  machines: MachineTree[]; expanded: Record<string, boolean>;
+  /** Renderer only: false until the main process has answered (set by MachineProvider). */
+  loaded?: boolean;
+}
 /** JSON tuple encoding also avoids collisions when ids/paths contain separators. */
 export const machineTreeKey = (machineId: string, kind: string, id: string) => JSON.stringify([machineId, kind, id]);

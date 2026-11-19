@@ -184,6 +184,14 @@ try {
     await page.waitForFunction(value => document.documentElement.lang === value, language);
     const zh = language === 'zh-CN', label = `${language}-${theme}`;
     await openSettings(zh);
+    // 11-19: the search pill owns the focus ring; the bare input inside draws none (it drew one larger than the pill).
+    const search = page.locator('label.mac-settings-search');
+    await search.locator('input').focus();
+    const ring = await search.evaluate(pill => { const field = getComputedStyle(pill), input = getComputedStyle(pill.querySelector('input')); return { pill: `${field.outlineStyle} ${field.outlineWidth}`, input: `${input.outlineStyle} ${input.outlineWidth}` }; });
+    if (ring.pill !== 'solid 3px' || !ring.input.startsWith('none ')) report.issues.push({ variant: label, tab: 'search', kind: 'search-focus-ring', at: JSON.stringify(ring) });
+    const pillBox = await search.boundingBox();
+    if (pillBox) { const file = `${label}-search-focus.png`; await page.screenshot({ path: join(out, file), clip: { x: Math.max(0, pillBox.x - 10), y: Math.max(0, pillBox.y - 10), width: pillBox.width + 20, height: pillBox.height + 20 }, animations: 'disabled' }); report.screenshots.push(file); }
+    await search.locator('input').evaluate(input => input.blur());
     const tabs = await page.locator('[data-settings-tab]').evaluateAll(nodes => nodes.map(node => node.dataset.settingsTab));
     for (const tab of tabs) {
       if (only && tab !== only) continue;

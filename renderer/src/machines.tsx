@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { MachineBridge, MachineSnapshot, MachineTreeFeed } from './machineTypes';
 import type { PairedDevice } from '@threadterm/protocol';
 
@@ -8,30 +8,41 @@ export function machineBridge(): MachineBridge | undefined {
 }
 const MachineTreeContext = createContext<MachineTreeFeed>({ machines: [], expanded: {} });
 export const useMachineTree = () => useContext(MachineTreeContext);
+/** Folds a shared tree row: shown at once, then saved by the main process, which echoes the same state back. */
+const MachineExpandContext = createContext<(key: string, open: boolean) => Promise<void>>(async (key, open) => { await machineBridge()?.machineExpand(key, open); });
+export const useMachineExpand = () => useContext(MachineExpandContext);
 const MachineContext = createContext<MachineSnapshot>({ enabled: false, currentId: 'local', machines: [] });
 export function MachineProvider({ children }: { children: ReactNode }) {
   const bridge = machineBridge();
-  const [tree, setTree] = useState<MachineTreeFeed>({ machines: [], expanded: {} });
+  // `loaded` lets the sidebar wait for the folds it will show instead of drawing defaults first (11-19: rows opened,
+  // closed and opened again while the machine list and then the tree arrived).
+  const [tree, setTree] = useState<MachineTreeFeed>(() => ({ machines: [], expanded: {}, loaded: !bridge?.machineTree || !bridge.onMachineTree }));
   useEffect(() => {
     if (!bridge?.machineTree || !bridge.onMachineTree) return;
     let alive = true, revision = 0;
-    const unsubscribe = bridge.onMachineTree(value => { revision++; if (alive) setTree(value); });
+    const unsubscribe = bridge.onMachineTree(value => { revision++; if (alive) setTree({ ...value, loaded: true }); });
     const initialRevision = revision;
-    void bridge.machineTree().then(value => { if (alive && revision === initialRevision) setTree(value); }).catch(() => {});
+    void bridge.machineTree().then(value => { if (alive && revision === initialRevision) setTree({ ...value, loaded: true }); })
+      .catch(() => { if (alive) setTree(current => current.loaded ? current : { ...current, loaded: true }); });
     return () => { alive = false; unsubscribe(); };
   }, [bridge]);
-  const [snapshot, setSnapshot] = useState<MachineSnapshot>({ enabled: false, currentId: bridge?.machineId ?? 'local', machines: [] });
+  const expand = useCallback(async (key: string, open: boolean) => {
+    setTree(current => current.expanded[key] === open ? current : { ...current, expanded: { ...current.expanded, [key]: open } });
+    await bridge?.machineExpand(key, open);
+  }, [bridge]);
+  const [snapshot, setSnapshot] = useState<MachineSnapshot>(() => ({ enabled: false, currentId: bridge?.machineId ?? 'local', machines: [], loaded: !bridge }));
   useEffect(() => {
     if (!bridge) return;
     let alive = true, generation = 0;
     const refresh = () => {
       const current = ++generation;
-      void bridge.machineList().then(value => { if (alive && current === generation) setSnapshot(value); }).catch(() => {});
+      void bridge.machineList().then(value => { if (alive && current === generation) setSnapshot({ ...value, loaded: true }); })
+        .catch(() => { if (alive && current === generation) setSnapshot(previous => previous.loaded ? previous : { ...previous, loaded: true }); });
     };
     refresh(); const unsubscribe = bridge.onMachinesChanged(refresh);
     return () => { alive = false; unsubscribe(); };
   }, [bridge]);
-  return <MachineContext.Provider value={snapshot}><MachineTreeContext.Provider value={tree}>{children}</MachineTreeContext.Provider></MachineContext.Provider>;
+  return <MachineContext.Provider value={snapshot}><MachineTreeContext.Provider value={tree}><MachineExpandContext.Provider value={expand}>{children}</MachineExpandContext.Provider></MachineTreeContext.Provider></MachineContext.Provider>;
 }
 /** Sidebar and current-machine failure alerts must observe the same watcher state. */
 export function machineSnapshotWithTree(snapshot: MachineSnapshot, tree: MachineTreeFeed): MachineSnapshot {

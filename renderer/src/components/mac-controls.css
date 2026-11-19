@@ -22,7 +22,10 @@ body .wb-review-diff > .file-bar .icon-btn.icon-btn-sm { height:22px; min-height
 body :has(> .btn.btn-sm) > .icon-btn.icon-btn-sm { height:22px; min-height:22px; }
 body .tt-select-chevron { width:11px; height:11px; color:var(--muted); }
 body :is(button,input,textarea,select,[role="button"]):focus-visible { outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent); outline-offset:0; }
-body .input-wrap:has(input:focus-visible), body .setting-switch input:focus-visible + span { outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent); outline-offset:0; }
+/* A field drawn as a pill around a bare input owns the focus ring, which follows the pill; the input inside draws
+   none (11-19: Settings' search ring sat on the inner input, larger than the pill, and .input-wrap showed two). */
+body :is(.input-wrap,.mac-settings-search) input:focus-visible { outline:none; }
+body :is(.input-wrap,.mac-settings-search):has(input:focus-visible), body .setting-switch input:focus-visible + span { outline:3px solid color-mix(in srgb,var(--primary) 45%,transparent); outline-offset:0; }
 body .setting-switch > span { width:32px; height:19px; border-radius:999px; background:color-mix(in srgb,var(--text) 14%,transparent); transition:background .18s; }
 body .setting-switch > span::after { width:15px; height:15px; top:2px; left:2px; background:var(--switch-thumb); box-shadow:var(--switch-shadow); transition:transform .18s; }
 body .setting-switch input:checked + span { background:var(--primary); }

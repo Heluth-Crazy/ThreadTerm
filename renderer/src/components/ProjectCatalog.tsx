@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, useContext } from "react";
 import type { NativeSubagentSummary, CatalogVisibility, ProjectCatalogItem, ProviderCapability, Session, Worktree } from "@threadterm/protocol";
-import { machineBridge, useMachines, useMachineTree } from '../machines';
+import { useMachineExpand, useMachines, useMachineTree } from '../machines';
 import { machineTreeKey } from '../machineTypes';
 import { request, subscribeEvents } from "../bridge";
 import { projectCatalogStore } from '../projectCatalogStore';
@@ -13,7 +13,7 @@ import { CatalogActions, CatalogPopover, restoreCatalogTarget, type CatalogTarge
 import "./project-catalog.css";
 import "./mac-sidebar.css";
 import { sessionState, sessionStateLabel } from "../sessionState";
-import { activityOrder, isTerminalAttentionSession, sessionActivity, sessionActivityLabel } from "../sessionActivity";
+import { isTerminalAttentionSession, sessionActivity, sessionActivityLabel } from "../sessionActivity";
 import { isCodeReviewSession } from "../codeReview";
 import { delegationQuiet, delegationQuietLabel, delegationStateLabel, nestedDelegateIds } from "../delegation";
 import { QuietMinutes } from "./QuietMinutes";
@@ -24,6 +24,7 @@ import { openGroup } from "../groupNavigation";
 import { WbIcon } from "../workbench/icons";
 import {
   activeDelegateParents,
+  branchOrder,
   CATALOG_VIEW_KEY,
   foldExpanded,
   foldedSummaryLabel,
@@ -119,15 +120,25 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
   const machine=useMachines(),machineTree=useMachineTree(),sharedTree=machine.enabled&&machine.machines.length>1;
   const folds=useCatalogFolds(),setFolds=updateCatalogFolds;
   const [view,setView]=useState<CatalogView>(()=>{try{return readCatalogView(localStorage.getItem(CATALOG_VIEW_KEY));}catch{return 'tree';}});
-  const expanded=(kind:CatalogFoldKind,id:string)=>foldExpanded(folds,kind,id);
+  const expandMachine=useMachineExpand();
+  // The tree is drawn once its folds are known: the machine list decides whether this window shares one tree with
+  // other computers, whose folds then come from the main process. Drawing defaults first made rows open, close and
+  // open again on startup (11-19).
+  const foldsKnown=machine.loaded!==false&&(!sharedTree||machineTree.loaded!==false);
+  // R9: the selected chat's project, branch and parents read as open while its reveal is not saved yet (see the
+  // effect below), so the first frame already shows it unfolded.
+  const revealing=(kind:CatalogFoldKind,id:string)=>Boolean(pendingReveal&&(kind==='project'?pendingReveal.projectId===id:kind==='branch'?pendingReveal.branch===id:kind==='parent'&&pendingReveal.parents.includes(id)));
+  const expanded=(kind:CatalogFoldKind,id:string)=>revealing(kind,id)||foldExpanded(folds,kind,id);
   const setFold=(kind:CatalogFoldKind,id:string,open:boolean)=>setFolds(current=>setCatalogFold(current,kind,id,open));
   const setManyFolds=(kind:CatalogFoldKind,ids:readonly string[],open:boolean)=>setFolds(current=>ids.reduce((next,id)=>setCatalogFold(next,kind,id,open),current));
-  const projectOpen=(id:string)=>sharedTree?machineTree.expanded[machineTreeKey(machine.currentId,'project',id)]!==false:expanded('project',id);
-  const branchOpen=(path:string)=>sharedTree?machineTree.expanded[machineTreeKey(machine.currentId,'branch',path)]!==false:expanded('branch',path);
+  // With several computers the main process keeps this tree's folds in memory only: a fold it has not seen this run
+  // falls back to the one saved here, so a restart does not open everything first.
+  const projectOpen=(id:string)=>revealing('project',id)||(sharedTree?machineTree.expanded[machineTreeKey(machine.currentId,'project',id)]??foldExpanded(folds,'project',id):foldExpanded(folds,'project',id));
+  const branchOpen=(path:string)=>revealing('branch',path)||(sharedTree?machineTree.expanded[machineTreeKey(machine.currentId,'branch',path)]??foldExpanded(folds,'branch',path):foldExpanded(folds,'branch',path));
   const machineExpandMany=(projectIds:readonly string[],paths:readonly string[],open:boolean)=>{
-    const bridge=machineBridge();if(!bridge)return;
-    for(const id of projectIds)void bridge.machineExpand(machineTreeKey(machine.currentId,'project',id),open);
-    for(const path of paths)void bridge.machineExpand(machineTreeKey(machine.currentId,'branch',path),open);
+    for(const id of projectIds)void expandMachine(machineTreeKey(machine.currentId,'project',id),open);
+    for(const path of paths)void expandMachine(machineTreeKey(machine.currentId,'branch',path),open);
+    setFolds(current=>[...projectIds.map(id=>['project',id] as const),...paths.map(path=>['branch',path] as const)].reduce((next,[kind,id])=>setCatalogFold(next,kind,id,open),current));
   };
   const sessions=sessionSnapshot??[];
   const {locale}=useTranslation(),zh=locale==="zh-CN",label=(en:string,cn:string)=>zh?cn:en;
@@ -135,9 +146,23 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
   const {items,trees,groups,loaded,loading,issue:loadIssue}=useSyncExternalStore(store.subscribe,store.getSnapshot,store.getSnapshot);
   const [actionIssue,setIssue]=useState<string>(),issue=actionIssue??loadIssue;
   const [scopeProjectId,setScopeProjectId]=useState<string>(),[menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[activities,setActivities]=useState<Record<string,NonNullable<Session['activity']>>>({}),[frozenOrder,setFrozenOrder]=useState<ReadonlyMap<string,number>>(),activityEpoch=useRef<string|undefined>(undefined);
-  const rootRef=useRef<HTMLElement>(null),revealed=useRef<string|undefined>(undefined);
+  const rootRef=useRef<HTMLElement>(null);
   const catalogSessions=useMemo(()=>sessions.filter(session=>!isCodeReviewSession(session)).map(session=>{const snapshotActivity=session.activity,override=activities[session.id];return !override||snapshotActivity&&snapshotActivity.revision>=override.revision?session:{...session,activity:override};}),[sessions,activities]);
   const [expandedDelegates,setExpandedDelegates]=useState<string[]>(()=>{try{return readExpandedParents(localStorage.getItem(EXPANDED_DELEGATES_KEY));}catch{return [];}});
+  const [revealedId,setRevealedId]=useState<string>();
+  /** R9: what has to be open to show the selected chat; undefined until its project's branch list is known. */
+  const revealTarget=useMemo(()=>{
+    if(!selectedSessionId)return undefined;
+    const session=catalogSessions.find(row=>row.id===selectedSessionId);
+    if(!session)return undefined;
+    const parents=[...selectedAncestors(catalogSessions,session.id)];
+    if(!session.projectId)return {id:session.id,projectId:undefined,branch:undefined,parents};
+    const project=items.find(item=>item.id===session.projectId),projectTrees=trees[session.projectId];
+    if(!project||!projectTrees)return undefined;
+    const tree=projectTrees.find(row=>sameCanonicalScope(row.path,session.worktreePath??project.path));
+    return {id:session.id,projectId:session.projectId,branch:tree?.path,parents};
+  },[selectedSessionId,catalogSessions,items,trees]);
+  const pendingReveal=foldsKnown&&revealTarget&&revealedId!==revealTarget.id?revealTarget:undefined;
   useEffect(()=>{try{localStorage.setItem(CATALOG_VIEW_KEY,writeCatalogView(view));}catch{/* The choice still holds for this window. */}},[view]);
   useEffect(()=>{
     if(!sessionSnapshot)return;
@@ -183,7 +208,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     if(target.kind==="project"&&selectedProjectId===target.id||target.kind==="worktree"&&selectedProjectId===target.projectId&&sameCanonicalScope(target.path,selectedWorktreePath)||target.kind==="session"&&selectedSessionId===target.id)onAll();
     if(target.kind==="project"&&scopeProjectId===target.id){setScopeProjectId(undefined);onScopeChange?.();}
   };
-  const onCatalogMenuOpenChange=useCallback((open:boolean)=>setFrozenOrder(current=>open?current??activityOrder(catalogSessions):undefined),[catalogSessions]);
+  const onCatalogMenuOpenChange=useCallback((open:boolean)=>setFrozenOrder(current=>open?current??branchOrder(catalogSessions):undefined),[catalogSessions]);
   // Project and branch rows fold on click; ＋ beside ⋯ starts a session there in one click.
   const newIn=(projectId:string,path:string|undefined,name:string)=>onNewSession&&<button type="button" className="icon-btn tree-new" aria-label={label(`New terminal in ${name}`,`在 ${name} 中新建终端`)} title={label("New terminal","新建终端")} onClick={()=>onNewSession(projectId,path)}><Icon name="plus"/></button>;
   const actions=(target:CatalogTarget)=><CatalogActions target={target} projects={items} trees={trees[target.projectId]??[]} sessions={catalogSessions} providers={providers} visibility={visibility} onChanged={changed} onHidden={()=>hide(target)} onWorktree={(id,path)=>path===undefined?onProject(id):onWorktree?.(id,path)} onNewSession={onNewSession} onMenuOpenChange={onCatalogMenuOpenChange}/>;
@@ -197,24 +222,22 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     return <div className="group-catalog-group" key={group.id}><button type="button" className="sess-row group-row" data-group-id={group.id} title={`${group.title} · ${stateLabel}`} onClick={()=>openGroup(group)}><span className="bico"><WbIcon name="users"/></span><span className="grow">{group.title}</span><span className={`group-state ${groupCatalogStatusClass(state)}`}>{stateLabel}</span></button><div className="group-members">{members.map(session=>{const activity=sessionActivity(session),activityLabel=sessionActivityLabel(activity,zh),member=group.members.find(value=>value.sessionId===session.id),memberLabel=member?groupMemberLabel(member.handle):session.title;return <div className="sess-row-wrap group-member" data-session-id={session.id} data-activity={activity}><button type="button" className={`sess-row${session.id===selectedSessionId?" active":""}`} data-session-id={session.id} data-activity={activity} title={session.title+" · "+activityLabel} onClick={()=>onSession?.(session.id)}><span className={`bico session-activity-${activity}`} aria-label={activityLabel} title={activityLabel}><span className="session-agent-icon"><SessionIcon session={session}/>{activity==="running"&&<i className="session-attention-ring"/>}</span><i className={`bico-dot st-${attentionStateClass(session)}`}/></span><span className="grow">{memberLabel}</span></button></div>;})}</div></div>;
   });
 
-  /* R9: when the selected session changes, unfold its project, branch and parents, then scroll to it. */
+  /* R9: when the selected session changes, unfold its project, branch and parents, then scroll to it. The rows read
+     as open from the first frame (`revealing`); this effect then saves the folds once. The branch list loads after
+     the first render, so the reveal waits for it: marking it done before left the branch folded for good. */
   useEffect(()=>{
-    if(!selectedSessionId||revealed.current===selectedSessionId)return;
-    const session=catalogSessions.find(row=>row.id===selectedSessionId);
-    if(!session)return;
-    revealed.current=selectedSessionId;
-    const project=session.projectId?items.find(item=>item.id===session.projectId):undefined;
-    const tree=session.projectId?(trees[session.projectId]??[]).find(row=>sameCanonicalScope(row.path,session.worktreePath??project?.path)):undefined;
-    const parents=selectedAncestors(catalogSessions,session.id);
+    if(!pendingReveal)return;
+    const {id,projectId,branch,parents}=pendingReveal;
+    setRevealedId(id);
     setFolds(current=>{
       let next=current;
-      if(session.projectId)next=setCatalogFold(next,'project',session.projectId,true);
-      if(tree)next=setCatalogFold(next,'branch',tree.path,true);
+      if(projectId)next=setCatalogFold(next,'project',projectId,true);
+      if(branch)next=setCatalogFold(next,'branch',branch,true);
       for(const parent of parents)next=setCatalogFold(next,'parent',parent,true);
       return next;
     });
-    if(sharedTree&&session.projectId){const bridge=machineBridge();if(bridge){void bridge.machineExpand(machineTreeKey(machine.currentId,'project',session.projectId),true);if(tree)void bridge.machineExpand(machineTreeKey(machine.currentId,'branch',tree.path),true);}}
-  },[selectedSessionId,catalogSessions,items,trees,sharedTree,machine.currentId]);
+    if(sharedTree&&projectId){void expandMachine(machineTreeKey(machine.currentId,'project',projectId),true);if(branch)void expandMachine(machineTreeKey(machine.currentId,'branch',branch),true);}
+  },[pendingReveal,sharedTree,machine.currentId,expandMachine]);
   useEffect(()=>{
     if(!selectedSessionId)return;
     let frame=0,tries=0;
@@ -292,7 +315,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
         if(sharedTree)machineExpandMany([],paths,next);else setManyFolds('branch',paths,next);
         return;
       }
-      if(sharedTree)void machineBridge()?.machineExpand(machineTreeKey(machine.currentId,'branch',tree.path),next);else setFold('branch',tree.path,next);
+      if(sharedTree)void expandMachine(machineTreeKey(machine.currentId,'branch',tree.path),next);setFold('branch',tree.path,next);
     };
     const toggleParent=(session:Session,event:React.MouseEvent)=>{
       const next=!expanded('parent',session.id);
@@ -337,8 +360,8 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     const parents=selectedAncestors(catalogSessions,selectedSessionId);
     if(sharedTree){
       machineExpandMany(allProjectIds,allTreePaths,false);
-      if(projectId)void machineBridge()?.machineExpand(machineTreeKey(machine.currentId,'project',projectId),true);
-      if(branchPath)void machineBridge()?.machineExpand(machineTreeKey(machine.currentId,'branch',branchPath),true);
+      if(projectId)void expandMachine(machineTreeKey(machine.currentId,'project',projectId),true);
+      if(branchPath)void expandMachine(machineTreeKey(machine.currentId,'branch',branchPath),true);
     }
     setFolds(current=>[
       ...allProjectIds.map(id=>['project',id] as const),...allTreePaths.map(path=>['branch',path] as const),...allParentIds.map(id=>['parent',id] as const),
@@ -369,7 +392,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
         if(sharedTree)machineExpandMany(allProjectIds,[],next);else setManyFolds('project',allProjectIds,next);
         return;
       }
-      if(sharedTree)void machineBridge()?.machineExpand(machineTreeKey(machine.currentId,'project',item.id),next);else setFold('project',item.id,next);
+      if(sharedTree)void expandMachine(machineTreeKey(machine.currentId,'project',item.id),next);setFold('project',item.id,next);
     };
     const plainTarget:CatalogTarget={kind:"worktree",id:`plain:${item.id}`,name:item.name,path:item.path,projectId:item.id};
     const plainNested=nestedDelegateIds(plainDirectorySessions);
@@ -437,7 +460,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
       </div>
       <button type="button" className="side-label side-scope" aria-haspopup="menu" aria-expanded={Boolean(menuAnchor)} aria-label={label("Project scope","项目范围")} title={scopeName} onClick={event=>setMenuAnchor(menuAnchor?undefined:event.currentTarget)}><Icon name="more"/></button>
     </div>
-    {view==="recent"?renderRecent():<div className="side-tree">{scoped.map(renderProject)}</div>}
+    {view==="recent"?renderRecent():<div className="side-tree">{foldsKnown&&scoped.map(renderProject)}</div>}
     {loading&&!items.length&&!issue&&<p className="side-empty" role="status">{label("Loading projects…","正在加载项目…")}</p>}
     {loaded&&!loading&&!items.length&&!issue&&<p className="side-empty">{label("No projects yet. Add a directory to get started.","还没有项目，请先添加目录。")}</p>}{issue&&<p className="side-empty" role="alert" title={issue}>{actionIssue??(items.length?label("Some project details did not load. Retrying…","部分项目信息没有加载出来，正在重试…"):label("Projects did not load yet. Retrying…","项目列表还没有加载出来，正在重试…"))} <button type="button" className="btn btn-sm" onClick={()=>{setIssue(undefined);void reload();}}>{label("Try again","重试")}</button></p>}
     {menuAnchor&&<CatalogPopover anchor={menuAnchor} onClose={closeMenu} label={label("Project scope","项目范围")}>

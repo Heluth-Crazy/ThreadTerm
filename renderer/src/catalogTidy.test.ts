@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { Session, Worktree } from '@threadterm/protocol';
 import {
   activeDelegateParents,
+  branchOrder,
   foldSummary,
   foldedSummaryLabel,
   foldExpanded,
@@ -99,6 +100,19 @@ test('R5/R6: needs-you first, then creation order; running/idle activity never m
   assert.deepEqual(ids(orderBranchSessions(changed)), before);
   const frozen = new Map([['old', 0], ['new', 1], ['run', 2], ['wait', 3]]);
   assert.deepEqual(ids(orderBranchSessions(rows, frozen)), ['old', 'new', 'run', 'wait']);
+});
+
+test('an open menu freezes exactly the shown order (11-19: a running older chat jumped above a newer idle one)', () => {
+  // Newer idle above older running: the order the tree shows.
+  const rows = [running('driving', 9), session('readonly', 1), session('golden', 5)];
+  const shown = ids(orderBranchSessions(rows));
+  assert.deepEqual(shown, ['readonly', 'golden', 'driving']);
+  // Frozen from every chat of the catalog, it keeps each branch's own order, even while activity changes.
+  const frozen = branchOrder([...rows, waiting('elsewhere', 2)]);
+  assert.deepEqual(ids(orderBranchSessions(rows, frozen)), shown);
+  const changed = rows.map(row => row.id === 'readonly' ? { ...row, status: 'waiting' as const, activity: { state: 'awaiting_approval' as const, revision: 2 } } : row);
+  assert.deepEqual(ids(orderBranchSessions(changed, frozen)), shown, 'a chat that needs you while the menu is open does not move');
+  assert.deepEqual(ids(orderBranchSessions(changed))[0], 'readonly', 'after the menu closes it moves up as usual');
 });
 
 test('R5: waiting, running, selected, followed and active parents pin; 3 newest others show; the rest fold', () => {
