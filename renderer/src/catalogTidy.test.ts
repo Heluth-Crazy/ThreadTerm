@@ -26,6 +26,7 @@ import {
   CATALOG_VIEW_KEY,
   selectedAncestors,
   uniqueWorktrees,
+  projectShapeKnown,
 } from './catalogTidy';
 
 const now = Date.parse('2026-11-16T20:30:00Z');
@@ -224,4 +225,15 @@ test('fold keys and the remembered Projects/Recent choice', () => {
   assert.equal(readCatalogView(null), 'tree');
   assert.equal(writeCatalogView('recent'), 'recent');
   assert.equal(CATALOG_VIEW_KEY, 'threadterm.catalogView');
+});
+
+test('a project is drawn once Git is read and its groups and branch list have answered (11-19 cold start)', () => {
+  const repo = { id: 'repo', git: { available: true } }, plain = { id: 'plain', git: { available: false } };
+  const answered = (...keys: string[]) => (kind: 'trees' | 'groups', id: string) => keys.includes(`${kind}:${id}`);
+  assert.equal(projectShapeKnown({ id: 'repo', git: { available: false, pending: true } }, answered('trees:repo', 'groups:repo')), false, 'not read yet is not a plain directory');
+  assert.equal(projectShapeKnown(repo, answered('groups:repo')), false, 'a repository waits for its branch list');
+  assert.equal(projectShapeKnown(repo, answered('trees:repo')), false, 'and for its groups');
+  assert.equal(projectShapeKnown(repo, answered('trees:repo', 'groups:repo')), true, 'loaded or failed alike');
+  assert.equal(projectShapeKnown({ id: 'repo', git: { available: true, pending: true } }, answered('trees:repo', 'groups:repo')), true, 'last known facts while Git is read again');
+  assert.equal(projectShapeKnown(plain, answered('groups:plain')), true, 'a plain directory has no branch list to wait for');
 });

@@ -1,7 +1,10 @@
-// Isolated Electron probe for the sidebar's stability (owner report 11-19): opening a row's ⋯ menu must not reorder
+// Isolated Electron probe for the sidebar's stability (owner reports 11-19): opening a row's ⋯ menu must not reorder
 // the rows, and on startup no project or branch row may open, close and open again. It renders the production
-// ProjectCatalog with a synthetic bridge whose machine list and machine tree answer after IPC-like delays, and samples
-// every frame from the first render. Never starts the runtime or an agent.
+// ProjectCatalog with a synthetic bridge whose machine list, machine tree, Git facts and branch lists answer after
+// IPC-like delays, and samples every frame from the first render. Never starts the runtime or an agent.
+// E/F replay a cold start on a computer where Git is slow: the first project list has the repository's Git still
+// being read (`{available:false,pending:true}`) and the branch list comes late. 87fe8661 drew its chats flat, then
+// nothing, then as the branch tree.
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -45,6 +48,9 @@ const selected = scenario.get('selected') ?? undefined;
 const collapsed = scenario.get('collapsed');
 try { localStorage.setItem(CATALOG_FOLD_KEY, writeCatalogFolds(collapsed ? {[foldKey('branch', collapsed)]: false} : {})); } catch {}
 const listDelay = Number(scenario.get('listDelay') ?? 30), treeDelay = Number(scenario.get('treeDelay') ?? 90), expandDelay = Number(scenario.get('expandDelay') ?? 40);
+const gitPending = scenario.get('gitPending') === '1', worktreeDelay = Number(scenario.get('worktreeDelay') ?? 0);
+let catalogLists = 0;
+const later = (value, ms) => ms > 0 ? new Promise(done => setTimeout(() => done(value), ms)) : value;
 let expanded = collapsed ? {[machineTreeKey('local', 'branch', collapsed)]: false} : {};
 const treeListeners = new Set(), machineListeners = new Set(), listeners = new Set();
 const machines = [{id:'local', name:'This PC', kind:'local'}, {id:'remote', name:'公司电脑', kind:'remote'}];
@@ -55,8 +61,8 @@ window.threadterm = {
   onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   async request(method, params) {
     calls.push(method);
-    if (method === 'project.catalog.list') return [project];
-    if (method === 'worktree.list') return [workbench, jiaxiao, quiet];
+    if (method === 'project.catalog.list') return [gitPending && catalogLists++ === 0 ? {...project, git: {available: false, pending: true}} : project];
+    if (method === 'worktree.list') return later([workbench, jiaxiao, quiet], worktreeDelay);
     if (method === 'group.list') return [];
     if (method === 'session.processes') return {sessions: []};
     if (method === 'catalog.visibility.list') return [];
@@ -79,8 +85,12 @@ const started = performance.now();
 const sample = () => {
   const rows = [...document.querySelectorAll('.proj-row, .tree-row')].map(node => (node.classList.contains('proj-row') ? 'project ' : 'branch ') + (node.getAttribute('title')?.split('\\n')[0] ?? '') + '=' + node.getAttribute('aria-expanded'));
   const order = [...document.querySelectorAll('.sess-row[data-session-id]')].map(node => node.dataset.sessionId);
+  // What each project shows under its row: branch rows, chats and fold rows in order.
+  const bodies = Object.fromEntries([...document.querySelectorAll('.proj-group')].map(group => [group.querySelector('.proj-row')?.getAttribute('title') ?? '',
+    [...group.querySelectorAll('.tree-list .tree-row, .tree-list .sess-row[data-session-id], .tree-list .catalog-fold-row')].map(node => node.classList.contains('tree-row') ? 'branch:' + (node.querySelector('.branch')?.textContent ?? '') : node.dataset.sessionId ?? 'fold').join(' ')]));
+  const loading = Boolean(document.querySelector('.project-catalog .side-empty[role="status"]'));
   const last = frames.at(-1);
-  if (!last || JSON.stringify(last.rows) !== JSON.stringify(rows) || JSON.stringify(last.order) !== JSON.stringify(order)) frames.push({at: Math.round(performance.now() - started), rows, order});
+  if (!last || JSON.stringify(last.rows) !== JSON.stringify(rows) || JSON.stringify(last.order) !== JSON.stringify(order) || JSON.stringify(last.bodies) !== JSON.stringify(bodies) || last.loading !== loading) frames.push({at: Math.round(performance.now() - started), rows, order, bodies, loading});
 };
 // Every DOM change is a candidate frame: a hidden test window runs no animation frames, but mutations still fire.
 new MutationObserver(sample).observe(document.getElementById('root'), {subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded']});
@@ -118,6 +128,16 @@ const rowStates = frames => {
   return Object.fromEntries(states);
 };
 const orders = frames => frames.map(frame => frame.order.join(',')).filter((order, index, all) => order && order !== all[index - 1]);
+/** Each project's body in frame order (consecutive repeats dropped); a stable body is empty until it appears final. */
+const bodyStates = frames => {
+  const states = {};
+  for (const frame of frames) for (const [name, body] of Object.entries(frame.bodies ?? {})) {
+    const seen = states[name] ??= [];
+    if (seen.at(-1) !== body) seen.push(body);
+  }
+  return states;
+};
+const appearsOnce = seen => seen.filter(body => body !== '').length === 1 && seen.at(-1) !== '';
 
 let app, page, releaseLock;
 try {
@@ -125,10 +145,10 @@ try {
   app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
   await app.evaluate(async () => { while (!globalThis.qaWindow) await new Promise(done => setTimeout(done, 10)); });
   page = await app.firstWindow();
-  const open = async search => {
+  const open = async (search, settle = 1700) => {
     await app.evaluate(({}, url) => globalThis.qaWindow.loadURL(url), `file:///${join(scratch, 'index.html').replace(/\\/g, '/')}?${search}`);
     await page.waitForFunction(() => typeof window.qaFrames === 'function');
-    await page.waitForTimeout(1700);
+    await page.waitForTimeout(settle);
     return page.evaluate(() => window.qaFrames());
   };
 
@@ -170,6 +190,27 @@ try {
   report.scenarios.plain = { rows: rowStates(plain) };
   for (const [row, states] of Object.entries(report.scenarios.plain.rows)) check(`shared startup without a selection: ${row} appears once`, states.length === 1, states);
   check('shared startup without a selection: the folded branch stays folded', report.scenarios.plain.rows['branch feature-jiaxiaomode-w']?.at(-1) === 'false', report.scenarios.plain.rows);
+
+  // ── E: cold start where Git is slow: Git facts pending in the first list, the branch list after 1.2 s ──
+  for (const [mode, label] of [['local', 'slow Git'], ['shared', 'slow Git, two machines']]) {
+    const slow = await open(`mode=${mode}&gitPending=1&worktreeDelay=1200`, 3200);
+    const bodies = bodyStates(slow), rows = rowStates(slow);
+    report.scenarios[`slowGit-${mode}`] = { rows, bodies, loading: slow.filter(frame => frame.loading).map(frame => frame.at) };
+    if (process.env.QA_SIDEBAR_FRAMES) for (const frame of slow) console.log('FRAME', frame.at, frame.loading ? 'loading' : '', JSON.stringify(frame.rows), JSON.stringify(frame.bodies));
+    for (const [row, states] of Object.entries(rows)) check(`${label}: ${row} appears once in its final state`, states.length === 1, states);
+    for (const [name, seen] of Object.entries(bodies)) check(`${label}: ${name} shows its chats once, already as the branch tree`, appearsOnce(seen) && seen.at(-1).startsWith('branch:'), seen);
+    check(`${label}: the project list reads as loading until the tree is drawn`, slow.some(frame => frame.loading) && !slow.at(-1).loading, report.scenarios[`slowGit-${mode}`].loading);
+    await page.screenshot({ path: join(out, `slow-git-${mode}.png`) });
+  }
+
+  // ── F: Git slower than the wait: the rows are drawn after it, each body only once its shape is known ──
+  const slower = await open('mode=local&gitPending=1&worktreeDelay=4000', 5200);
+  const slowerBodies = bodyStates(slower), slowerRows = rowStates(slower);
+  report.scenarios.slowerGit = { rows: slowerRows, bodies: slowerBodies, firstRows: slower.find(frame => frame.rows.length)?.at };
+  for (const [row, states] of Object.entries(slowerRows)) check(`Git slower than the wait: ${row} appears once in its final state`, states.length === 1, states);
+  for (const [name, seen] of Object.entries(slowerBodies)) check(`Git slower than the wait: ${name} stays empty until its branch tree`, appearsOnce(seen) && seen.at(-1).startsWith('branch:'), seen);
+  check('Git slower than the wait: the project rows are drawn after the wait, before the branch list', report.scenarios.slowerGit.firstRows >= 2400 && report.scenarios.slowerGit.firstRows < 3900, report.scenarios.slowerGit.firstRows);
+
   report.failures = failures;
   assert.deepEqual(failures, [], `${failures.length} sidebar stability checks failed`);
   report.passed = true;

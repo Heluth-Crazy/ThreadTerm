@@ -1,4 +1,4 @@
-import type { NativeSubagentSummaries, Session, SessionDelegation } from '@threadterm/protocol';
+import type { NativeSubagentSummaries, ProjectCatalogItem, Session, SessionDelegation } from '@threadterm/protocol';
 import type { Worktree } from '@threadterm/protocol';
 import { delegationActive } from './delegation';
 import { canonicalScopePath } from './projectScope';
@@ -143,6 +143,18 @@ export function orderBranchSessions<T extends TidySession>(
  */
 export function branchOrder<T extends TidySession>(sessions: readonly T[]): Map<string, number> {
   return new Map(orderBranchSessions(sessions).map((session, index) => [session.id, index]));
+}
+
+/**
+ * Whether a project's rows can be drawn in their final shape: Git has been read (a repository the runtime has not read
+ * yet is listed as `{available:false,pending:true}`, which reads as a plain directory with every chat flat), its
+ * groups have answered, and a repository's branch list has answered. Drawing before that showed a project's chats
+ * flat, then nothing, then as its branch tree on a cold start where Git was slow (11-19). A read that failed counts as
+ * answered: it is retried in the background and must not hide the rows it never hid before.
+ */
+export function projectShapeKnown(item: Pick<ProjectCatalogItem, 'id' | 'git'>, answered: (kind: 'trees' | 'groups', projectId: string) => boolean): boolean {
+  if (item.git.pending && !item.git.available) return false;
+  return answered('groups', item.id) && (!item.git.available || answered('trees', item.id));
 }
 
 /** Parents whose delegate or native subagent is still active. */

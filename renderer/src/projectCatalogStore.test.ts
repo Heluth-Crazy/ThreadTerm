@@ -115,6 +115,82 @@ test('retries back off to ten seconds and do not multiply for the same failed lo
   stop(); assert.equal(pending.size, 0);
 });
 
+// 11-19: on a cold start where Git is slow the list is asked for again while branch lists are still being read.
+test('a branch list in flight when the list reloads is kept, and read once more after it answers', async () => {
+  const first = deferred<Worktree[]>(); let reads = 0;
+  const tree = (branch: string) => ({ id: branch, projectId: 'repo', path: `C:/repo-${branch}`, branch } as Worktree);
+  const { store } = setup(async method => {
+    if (method === 'project.catalog.list') return [project('repo')];
+    if (method === 'group.list') return [];
+    return ++reads === 1 ? first.promise : [tree('second')];
+  });
+  const shown: string[] = [];
+  store.subscribe(() => { const rows = store.getSnapshot().trees.repo?.map(row => row.branch).join(); if (rows && shown.at(-1) !== rows) shown.push(rows); });
+  const stop = store.activate(); await flush();
+  void store.reload(); await flush(); void store.reload(); await flush();
+  assert.equal(reads, 1, 'one read in flight at a time');
+  first.resolve([tree('first')]); await flush();
+  assert.equal(reads, 2, 'one more read for both reloads');
+  assert.deepEqual(shown, ['first', 'second'], 'the answer in flight is shown, then the newer one');
+  stop();
+});
+
+test('listing again while Git is being read asks only for details not read yet', async () => {
+  let lists = 0; const calls: string[] = [];
+  const { store, pending, tick } = setup(async (method, params) => {
+    calls.push(`${method}:${params.projectId ?? ''}`);
+    if (method === 'project.catalog.list') return [{ ...project('repo'), git: ++lists === 1 ? { available: false, pending: true } : { available: true, branch: 'main' } } as ProjectCatalogItem];
+    return [];
+  });
+  const stop = store.activate(); await flush();
+  assert.deepEqual([...calls].sort(), ['group.list:repo', 'project.catalog.list:', 'worktree.list:repo']);
+  calls.length = 0; tick(); await flush();
+  assert.deepEqual(calls, ['project.catalog.list:'], 'the branch list and groups are not read again');
+  assert.equal(store.getSnapshot().items[0].git.branch, 'main'); assert.equal(pending.size, 0);
+  stop();
+});
+
+test('a project that leaves the list takes its failing read with it: no issue, no retry', async () => {
+  const read = deferred<Worktree[]>(); let lists = 0;
+  const { store, pending } = setup(async method => {
+    if (method === 'project.catalog.list') return ++lists === 1 ? [project('gone')] : [];
+    if (method === 'group.list') return [];
+    return read.promise;
+  });
+  const stop = store.activate(); await flush();
+  await store.reload(); read.reject(new Error('project not found')); await flush();
+  assert.equal(store.getSnapshot().issue, undefined); assert.equal(pending.size, 0);
+  assert.deepEqual(store.getSnapshot().trees, {}); assert.deepEqual(store.getSnapshot().answered, {});
+  stop();
+});
+
+test('a branch list or groups read counts as answered when it loads and when it fails', async () => {
+  const { store } = setup(async method => {
+    if (method === 'project.catalog.list') return [project('repo')];
+    if (method === 'group.list') throw new Error('groups unavailable');
+    return [];
+  });
+  const stop = store.activate(); await flush();
+  assert.deepEqual(store.getSnapshot().answered, { 'trees:repo': true, 'groups:repo': true });
+  assert.deepEqual(store.getSnapshot().trees.repo, []); assert.equal(store.getSnapshot().groups.repo, undefined);
+  stop();
+});
+
+test('a bridge that throws instead of rejecting answers the read and keeps the next one possible', async () => {
+  let reads = 0;
+  const { store, pending, tick } = setup((method => {
+    if (method === 'project.catalog.list') return Promise.resolve([project('repo')]);
+    if (method === 'group.list') return Promise.resolve([]);
+    if (++reads === 1) throw new Error('bridge gone');
+    return Promise.resolve([]);
+  }) as Parameters<typeof setup>[0]);
+  const stop = store.activate(); await flush();
+  assert.equal(store.getSnapshot().answered['trees:repo'], true); assert.match(store.getSnapshot().issue!, /bridge gone/);
+  assert.equal(pending.size, 1, 'retried like a rejection'); tick(); await flush();
+  assert.deepEqual(store.getSnapshot().trees.repo, []); assert.equal(store.getSnapshot().issue, undefined);
+  stop();
+});
+
 test('cache identity is stable within a machine and isolated between machines', () => {
   const request = (async () => []) as Request;
   assert.equal(projectCatalogStore('a', request), projectCatalogStore('a', request));

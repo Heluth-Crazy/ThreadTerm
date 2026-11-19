@@ -26,6 +26,7 @@ import {
   activeDelegateParents,
   branchOrder,
   CATALOG_VIEW_KEY,
+  projectShapeKnown,
   foldExpanded,
   foldedSummaryLabel,
   foldSummary,
@@ -62,6 +63,10 @@ const treeState=(tree:Worktree,sessions:Session[])=>{
   return sessions.map(attentionStateClass).reduce((best,state)=>rank[state]>rank[best]?state:best,"ended");
 };
 const activityStates=new Set(['running','awaiting_approval','awaiting_parent','awaiting_input','idle','unknown']);
+/** How long the tree waits for every open project's shape before it draws what it has (see `layoutKnown`). */
+const CATALOG_LAYOUT_WAIT_MS=2500;
+/** Catalog stores whose tree this window has drawn: a remount draws at once and never waits again. */
+const drawnCatalogs=new WeakSet<object>();
 /**
  * Marks a session another agent started through ThreadTerm delegation with what its row does not
  * already show: a branch icon for a worktree delegate (branch in the tooltip), and the word
@@ -143,7 +148,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
   const sessions=sessionSnapshot??[];
   const {locale}=useTranslation(),zh=locale==="zh-CN",label=(en:string,cn:string)=>zh?cn:en;
   const store=useMemo(()=>projectCatalogStore(machine.currentId,request),[machine.currentId]);
-  const {items,trees,groups,loaded,loading,issue:loadIssue}=useSyncExternalStore(store.subscribe,store.getSnapshot,store.getSnapshot);
+  const {items,trees,groups,answered,loaded,loading,issue:loadIssue}=useSyncExternalStore(store.subscribe,store.getSnapshot,store.getSnapshot);
   const [actionIssue,setIssue]=useState<string>(),issue=actionIssue??loadIssue;
   const [scopeProjectId,setScopeProjectId]=useState<string>(),[menuAnchor,setMenuAnchor]=useState<HTMLElement>(),[activities,setActivities]=useState<Record<string,NonNullable<Session['activity']>>>({}),[frozenOrder,setFrozenOrder]=useState<ReadonlyMap<string,number>>(),activityEpoch=useRef<string|undefined>(undefined);
   const rootRef=useRef<HTMLElement>(null);
@@ -217,6 +222,22 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
   const selectScope=(id?:string)=>{setScopeProjectId(id);closeMenu();onScopeChange?.(id);};
   const scopeName=items.find(item=>item.id===scopeProjectId)?.name??label("all projects","全部项目");
   const scoped=items.filter(item=>visibilityOf("project",item.id)==="active"&&(!scopeProjectId||scopeProjectId===item.id));
+  // 11-19 (second report): on a cold start the runtime lists the projects before Git has read them (a repository not
+  // read yet comes as "not a repository") and before their branch lists and groups. Drawing every partial answer
+  // listed a project's chats flat, then nothing, then as its branch tree: open, closed, open again. A project's rows
+  // are drawn once their shape is known, and the tree waits for every open project, at most CATALOG_LAYOUT_WAIT_MS
+  // after the list; once drawn it is never hidden again.
+  const shapeKnown=(item:ProjectCatalogItem)=>projectShapeKnown(item,(kind,id)=>answered[`${kind}:${id}`]===true);
+  const layoutKnown=foldsKnown&&loaded&&scoped.every(item=>!projectOpen(item.id)||shapeKnown(item));
+  const [layoutDrawn,setLayoutDrawn]=useState(()=>drawnCatalogs.has(store));
+  const layoutWaiting=foldsKnown&&loaded&&!layoutDrawn&&!layoutKnown;
+  useEffect(()=>{if(layoutKnown&&!layoutDrawn){drawnCatalogs.add(store);setLayoutDrawn(true);}},[layoutKnown,layoutDrawn,store]);
+  useEffect(()=>{
+    if(!layoutWaiting)return;
+    const timer=setTimeout(()=>{drawnCatalogs.add(store);setLayoutDrawn(true);},CATALOG_LAYOUT_WAIT_MS);
+    return()=>clearTimeout(timer);
+  },[layoutWaiting,store]);
+  const showTree=foldsKnown&&(layoutDrawn||layoutKnown);
   const renderGroups=(groupsToRender:ReturnType<typeof catalogGroups>)=>groupsToRender.map(({group,members})=>{
     const state=groupCatalogState(group.members,catalogSessions),stateLabel=groupCatalogLabel(group.members,zh,catalogSessions);
     return <div className="group-catalog-group" key={group.id}><button type="button" className="sess-row group-row" data-group-id={group.id} title={`${group.title} · ${stateLabel}`} onClick={()=>openGroup(group)}><span className="bico"><WbIcon name="users"/></span><span className="grow">{group.title}</span><span className={`group-state ${groupCatalogStatusClass(state)}`}>{stateLabel}</span></button><div className="group-members">{members.map(session=>{const activity=sessionActivity(session),activityLabel=sessionActivityLabel(activity,zh),member=group.members.find(value=>value.sessionId===session.id),memberLabel=member?groupMemberLabel(member.handle):session.title;return <div className="sess-row-wrap group-member" data-session-id={session.id} data-activity={activity}><button type="button" className={`sess-row${session.id===selectedSessionId?" active":""}`} data-session-id={session.id} data-activity={activity} title={session.title+" · "+activityLabel} onClick={()=>onSession?.(session.id)}><span className={`bico session-activity-${activity}`} aria-label={activityLabel} title={activityLabel}><span className="session-agent-icon"><SessionIcon session={session}/>{activity==="running"&&<i className="session-attention-ring"/>}</span><i className={`bico-dot st-${attentionStateClass(session)}`}/></span><span className="grow">{memberLabel}</span></button></div>;})}</div></div>;
@@ -410,7 +431,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     // is in the row's ⋯ menu, and ＋ starts a session here.
     return <div className="proj-group" key={item.id}><div className={"proj-row-wrap"+(selectedProjectId===item.id&&!selectedWorktreePath?" active":"")}>
       <button type="button" className="proj-row" aria-expanded={open} title={displayPath(item.path)} onClick={toggleProject}><Icon name={open?"folderOpen":"folder"}/><span className="grow">{item.name}</span>{item.pinned&&<span className="follow-star">★</span>}{!open&&<FoldMark summary={summaryOf(projectSessions)} zh={zh}/>}</button>{newIn(item.id,undefined,item.name)}{actions(projectTarget(item))}
-    </div>{open&&<div className="tree-list">
+    </div>{open&&shapeKnown(item)&&<div className="tree-list">
       {listed.map(tree=>renderBranch(item,tree,{projectSessions,allSessions:visibleProjectSessions,projectGroups,memberIds,siblings}))}
       {other.length>0&&<>
         <button type="button" className="catalog-fold-row other-fold-row" aria-expanded={otherOpen} onClick={()=>setFold('other',item.id,!otherOpen)}><span className="grow">{otherOpen?label("Hide other branches","收起其他分支"):label(`${other.length} other branches`,`其他 ${other.length} 个分支`)}</span></button>
@@ -460,8 +481,8 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
       </div>
       <button type="button" className="side-label side-scope" aria-haspopup="menu" aria-expanded={Boolean(menuAnchor)} aria-label={label("Project scope","项目范围")} title={scopeName} onClick={event=>setMenuAnchor(menuAnchor?undefined:event.currentTarget)}><Icon name="more"/></button>
     </div>
-    {view==="recent"?renderRecent():<div className="side-tree">{foldsKnown&&scoped.map(renderProject)}</div>}
-    {loading&&!items.length&&!issue&&<p className="side-empty" role="status">{label("Loading projects…","正在加载项目…")}</p>}
+    {view==="recent"?renderRecent():<div className="side-tree">{showTree&&scoped.map(renderProject)}</div>}
+    {(loading&&!items.length||view==="tree"&&!showTree&&items.length>0)&&!issue&&<p className="side-empty" role="status">{label("Loading projects…","正在加载项目…")}</p>}
     {loaded&&!loading&&!items.length&&!issue&&<p className="side-empty">{label("No projects yet. Add a directory to get started.","还没有项目，请先添加目录。")}</p>}{issue&&<p className="side-empty" role="alert" title={issue}>{actionIssue??(items.length?label("Some project details did not load. Retrying…","部分项目信息没有加载出来，正在重试…"):label("Projects did not load yet. Retrying…","项目列表还没有加载出来，正在重试…"))} <button type="button" className="btn btn-sm" onClick={()=>{setIssue(undefined);void reload();}}>{label("Try again","重试")}</button></p>}
     {menuAnchor&&<CatalogPopover anchor={menuAnchor} onClose={closeMenu} label={label("Project scope","项目范围")}>
       {onAddProject&&<button type="button" role="menuitem" className="menu-item" onClick={()=>{closeMenu();onAddProject();}}><Icon name="plus"/>{label("Add project","添加项目")}</button>}
