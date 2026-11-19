@@ -74,7 +74,11 @@ try {
   await until(async () => await drawers.first().locator('.chat-tool-entry[data-tool-status="running"]').count() > 0, 'trailing running tool');
   assert.equal(await drawers.count(), 1, 'the following call joins the same fold instead of opening another');
   assert.equal(await firstDrawer.evaluate(node => node.open), true, 'the fold keeps its expansion state across the update');
-  assert.equal(await firstDrawer.locator('.chat-fold-step.is-note').filter({ hasText: 'First live update.' }).count(), 1, 'the absorbed text becomes a step of that fold (R1 one accepted jump)');
+  // 11-19: with no text after the newest call yet, the interim text is still the answer and stays visible after
+  // the fold (adapters that keep a turn's prose in one growing item need this); the next text takes it into the fold.
+  assert.equal(await firstDrawer.locator('.chat-fold-step.is-note').filter({ hasText: 'First live update.' }).count(), 0, 'the interim text stays the visible answer while the next call runs');
+  const textAfter = await scope.getByText('First live update.', { exact: true }).boundingBox(), foldAfter = await firstDrawer.boundingBox();
+  assert.ok(textAfter && foldAfter && foldAfter.y < textAfter.y, 'the interim text sits after the fold');
   assert.equal(await scope.getByText('First live update.', { exact: true }).count(), 1, 'the text is not duplicated outside');
   assert.equal(await scope.locator('.chat-live-activity').count(), 0, 'the live fold replaces the working status');
   await page.screenshot({ path: join(out, 'live-running-tool-light.png'), animations: 'disabled' }); report.screenshots.push('live-running-tool-light.png');

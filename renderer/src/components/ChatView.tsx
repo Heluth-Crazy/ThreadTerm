@@ -2060,8 +2060,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           ? copy('Saved turn: in progress', '保存的回合：进行中') : copy('Saved turn: status unknown', '保存的回合：状态未知')}</p>);
       }
       if (liveSpeed && groupIndex === speedGroupIndex) visible.push(<p className="chat-turn-speed-live" key={`${group.id}-turn-speed`} data-testid="turn-speed-live" data-estimated={String(liveSpeed.estimated)} data-tokens-per-second={String(liveSpeed.tokensPerSecond)} title={turnSpeedTooltip(liveSpeed, zh)}>{turnSpeedText(liveSpeed)}</p>);
-      const lastBlock = blocks.at(-1);
-      const foldTail = Boolean(lastBlock && lastBlock.kind === 'fold' && active && blocks.length - 1 === newestFold);
+      // The newest fold is the live tail; prose seated after it (see turnSegments) still reads as part of it.
+      const foldTail = Boolean(active && newestFold >= 0 && blocks.slice(newestFold + 1).every(block => block.kind === 'item' && block.seated));
       if (shouldShowWorkingIndicator(active && groupIndex === workingGroupIndex, foldTail, pendingInteraction, Boolean(firstResponseWait))) {
         const startedAt = items.find(item => item.turnId === liveTurn && item.role === 'user')?.createdAt;
         visible.push(<ChatWorkingIndicator key={`${group.id}-working`} startedAt={startedAt} zh={zh} />);

@@ -86,15 +86,26 @@ const CLAUDE = [
   {item:{id:'c-done', parts:[], elapsedMs:61000, turnStatus:'completed'}, status:'idle'},
 ];
 
+// The real Claude adapter (11-19 live turn): the turn's prose is ONE item, created first and still growing
+// after the tools; each tool call is its own item recorded after it. The answer must stay outside the fold.
+const CLAUDE_REAL = [
+  {item:{id:'ct', parts:[think('先确认仓库状态。')]}},
+  {item:{id:'ct', parts:[think('先确认仓库状态。', false), {type:'text', text:"I'll run both read-only commands together.", status:'streaming'}]}, replace:true},
+  {item:{id:'ct-bash-1', parts:[file('bash-1', 'Bash', undefined, 'completed', input({command:'git status'}))]}},
+  {item:{id:'ct-bash-2', parts:[file('bash-2', 'Bash', undefined, 'completed', input({command:'dir'}))]}},
+  {item:{id:'ct', parts:[think('先确认仓库状态。', false), {type:'text', text:"I'll run both read-only commands together.\\n\\n当前目录有 README.md 和 notes.txt，notes.txt 被修改了。", status:'complete'}]}, replace:true},
+  {item:{id:'ct-done', parts:[], elapsedMs:48000, turnStatus:'completed'}, status:'idle'},
+];
+
 const root = createRoot(document.getElementById('root'));
 const session = () => ({id:sessionId, provider, mode:'chat', status, title:'QA fold', createdAt:'now', updatedAt:'now'});
 const render = () => root.render(React.createElement(I18nProvider, {locale, key:sessionId}, React.createElement(ChatView, {session:session()})));
 window.qaReset = (kind = 'codex', nextLocale = 'zh-CN') => {
-  provider = kind === 'claude' ? 'claude' : 'codex';
+  provider = kind === 'claude' || kind === 'claude-real' ? 'claude' : 'codex';
   // A fresh session id makes ChatView remount, so the probe always starts from an empty transcript.
   sessionId = 'qa-fold-' + kind + '-' + (++sessionSeq);
   locale = nextLocale;
-  stages = kind === 'claude' ? CLAUDE : CODEX;
+  stages = kind === 'claude' ? CLAUDE : kind === 'claude-real' ? CLAUDE_REAL : CODEX;
   items = []; status = 'running'; sequence = 0; listeners.clear(); window.qaReady = false;
   document.documentElement.dataset.theme = 'light';
   render();
@@ -141,6 +152,7 @@ window.qaState = () => {
     steps,
     outsideText: [...log.querySelectorAll('.v3-chat-log article.assistant .chat-part.text')].filter(node => !node.closest('details.chat-fold')).map(node => node.textContent?.trim()),
     workingIndicators: log.querySelectorAll('.chat-live-activity, [data-testid="turn-speed-live"]').length,
+    answerAfterFold: (() => { const fold = log.querySelector('details.chat-fold'); const texts = [...log.querySelectorAll('article.assistant .chat-part.text')].filter(node => !node.closest('details.chat-fold')); return fold && texts.length ? Boolean(fold.compareDocumentPosition(texts.at(-1)) & Node.DOCUMENT_POSITION_FOLLOWING) : null; })(),
     footer: footer ? footer.textContent?.replace(/\\s+/g, ' ') ?? '' : undefined,
     // Everything that is not inside the fold: the answer, pending cards, status lines.
     outsideFolds: [...log.querySelectorAll('article, footer')].filter(node => !node.closest('details.chat-fold') && !node.querySelector('details.chat-fold')).length,
@@ -258,14 +270,39 @@ try {
       check('a streaming unphased text is the answer outside the fold', now.steps.length === 1 && now.outsideText.includes('让我先看看重试的实现。'), [now.steps, now.outsideText]);
     }
     if (index === 3) {
-      check('the tool absorbs that text into the same fold', now.steps.includes('note:让我先看看重试的实现。') && now.steps.includes('tool:c-read'), now.steps);
-      check('the absorbed text leaves the outside empty', !now.outsideText.includes('让我先看看重试的实现。'), now.outsideText);
+      check('a tool after the text keeps that text the visible answer, below the fold', now.steps.includes('tool:c-read') && !now.steps.includes('note:让我先看看重试的实现。') && now.outsideText.includes('让我先看看重试的实现。') && now.answerAfterFold === true, [now.steps, now.outsideText, now.answerAfterFold]);
+    }
+    if (index === 4) {
+      check('the next text takes the answer over and the earlier text joins the same fold', now.steps.includes('note:让我先看看重试的实现。') && !now.outsideText.includes('让我先看看重试的实现。') && now.outsideText.includes('问题出在固定的重试次数上。'), [now.steps, now.outsideText]);
     }
   }
   const claudeEnd = await state();
   check('the Claude answer stays outside the fold', claudeEnd.outsideText.includes('已改成按总时长限制，并补了一条测试。'), claudeEnd.outsideText);
   check('the Claude fold is settled and counted', /已完成/.test(fold(claudeEnd).head), fold(claudeEnd).head);
   check('the Claude turn keeps one fold', claudeEnd.foldCount === 1, claudeEnd.foldCount);
+
+  // ── The real Claude shape: one growing prose item before its tool items ──
+  const realTotal = await reset('claude-real');
+  let realMark;
+  for (let index = 0; index < realTotal; index += 1) {
+    const now = await stage(index);
+    const label = `claude-real stage ${index}`;
+    check(`${label}: at most one fold`, now.foldCount <= 1, now.foldCount);
+    check(`${label}: nothing opens by itself`, now.openDetails.length === 0, now.openDetails);
+    check(`${label}: no tool call renders outside the fold`, now.looseTools === 0, now.looseTools);
+    if (now.foldCount === 1) {
+      if (realMark === undefined) realMark = fold(now).mark;
+      check(`${label}: the fold keeps its element`, fold(now).mark === realMark, [realMark, fold(now).mark]);
+    }
+    if (index >= 2 && index < realTotal - 1) {
+      check(`${label}: the prose stays visible after the fold while tools run`, now.outsideText.some(text => text.startsWith("I'll run both read-only commands together.")) && now.answerAfterFold === true, [now.outsideText, now.answerAfterFold]);
+    }
+  }
+  const realEnd = await state();
+  check('the real Claude answer is outside the fold, after it', realEnd.outsideText.some(text => text.includes('当前目录有 README.md 和 notes.txt')) && realEnd.answerAfterFold === true, [realEnd.outsideText, realEnd.answerAfterFold]);
+  check('the real Claude fold holds the thinking and both tool calls', realEnd.steps.filter(step => step.startsWith('tool:')).length === 2 && realEnd.steps.some(step => step.startsWith('think:')), realEnd.steps);
+  check('the real Claude fold is settled', /已完成/.test(fold(realEnd).head), fold(realEnd).head);
+  await shot('light-claude-real-end');
 
   // ── Screenshots in dark, replayed to the states that matter ──
   await reset('codex');

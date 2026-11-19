@@ -32,17 +32,55 @@ test('a phased Codex turn keeps one fold for the whole working segment, then the
   assert.deepEqual(settled, live);
 });
 
-test('a Claude turn keeps a streaming text outside until a tool arrives, then absorbs it without remounting the fold', () => {
+test('unphased text stays the visible answer until text follows its tools, and the fold keeps its id', () => {
   const before = [item('a1', [think('Look first')]), item('a2', [text('Let me read the file.')])];
   const blocks = turnSegments(before);
   assert.deepEqual(shape(blocks), [
     { fold: 'fold:a1:0', steps: ['thinking:Look first'] },
     { item: 'a2', parts: ['Let me read the file.'] },
   ]);
-  const after = [...before.slice(0, 1), item('a2', [text('Let me read the file.'), tool('read-1')])];
-  const grown = turnSegments(after);
-  assert.deepEqual(shape(grown), [{ fold: 'fold:a1:0', steps: ['thinking:Look first', 'commentary:Let me read the file.', 'tool:read-1'] }]);
-  assert.equal(grown[0]!.kind === 'fold' && grown[0]!.id, blocks[0]!.kind === 'fold' && blocks[0]!.id, 'the fold keeps its id across the jump');
+  // A tool follows: no text after it yet, so the text is still the answer, shown after the work.
+  const working = [...before.slice(0, 1), item('a2', [text('Let me read the file.'), tool('read-1')])];
+  const grown = turnSegments(working);
+  assert.deepEqual(shape(grown), [
+    { fold: 'fold:a1:0', steps: ['thinking:Look first', 'tool:read-1'] },
+    { item: 'a2', parts: ['Let me read the file.'] },
+  ]);
+  // A later text record is the answer: the earlier text becomes a note of the same fold.
+  const answered = turnSegments([...working, item('a3', [text('Done.')])]);
+  assert.deepEqual(shape(answered), [
+    { fold: 'fold:a1:0', steps: ['thinking:Look first', 'commentary:Let me read the file.', 'tool:read-1'] },
+    { item: 'a3', parts: ['Done.'] },
+  ]);
+  assert.equal(new Set([blocks[0]!.id, grown[0]!.id, answered[0]!.id]).size, 1, 'the fold keeps its id throughout');
+});
+
+test('a turn whose prose is one growing item (Claude, pi, Grok) shows that prose after its tools, never folded', () => {
+  // Real adapter shape (11-19 live Claude turn): the turn's text item is created first and holds the
+  // preamble and the answer; each tool call is its own item recorded after it.
+  const prose = item('turn', [text("I'll run both commands. The repo has README.md and notes.txt; notes.txt changed.")]);
+  const tools = [item('toolu-1', [tool('bash-1')]), item('toolu-2', [tool('bash-2')])];
+  const expected = [
+    { fold: 'fold:toolu-1:0', steps: ['tool:bash-1', 'tool:bash-2'] },
+    { item: 'turn', parts: ["I'll run both commands. The repo has README.md and notes.txt; notes.txt changed."] },
+  ];
+  assert.deepEqual(shape(turnSegments([prose, ...tools])), expected, 'live');
+  assert.deepEqual(shape(turnSegments([prose, ...tools], { settled: true })), expected, 'settled: nothing moves when the turn ends');
+  // With thinking first in the same item, the thinking and the tools share one fold.
+  const thinking = item('turn', [think('Plan the checks'), text('Both commands ran. notes.txt changed.')]);
+  assert.deepEqual(shape(turnSegments([thinking, ...tools], { settled: true })), [
+    { fold: 'fold:turn:0', steps: ['thinking:Plan the checks', 'tool:bash-1', 'tool:bash-2'] },
+    { item: 'turn', parts: ['Both commands ran. notes.txt changed.'] },
+  ]);
+  // Delegation shape: tools before the first text, the prose, then more tools; the prose is the answer.
+  const delegation = [item('toolu-a', [tool('start')]), item('turn', [text('Delegated; the result: README.md is open.')]), item('toolu-b', [tool('wait')]), item('toolu-c', [tool('result')])];
+  assert.deepEqual(shape(turnSegments(delegation, { settled: true })), [
+    { fold: 'fold:toolu-a:0', steps: ['tool:start', 'tool:wait', 'tool:result'] },
+    { item: 'turn', parts: ['Delegated; the result: README.md is open.'] },
+  ]);
+  // Codex is unchanged: its commentary is marked, so a phased note before the last tool stays folded.
+  const codex = turnSegments([item('a1', [text('Checking.', 'commentary')]), item('a2', [tool('cmd-1')])], { collapseCommentary: true });
+  assert.deepEqual(shape(codex), [{ fold: 'fold:a1:0', steps: ['commentary:Checking.', 'tool:cmd-1'] }]);
 });
 
 test('an answer between two working segments starts a second fold', () => {

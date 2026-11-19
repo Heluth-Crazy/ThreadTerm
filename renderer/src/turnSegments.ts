@@ -10,6 +10,8 @@ import { hiddenTool, toolEntry, type ToolActivityEntry } from './toolActivity';
  * Live and settled turns run the same pass, so a fold never moves or remounts when the
  * turn ends: only its header changes (see ToolActivity). The one exception is an adapter
  * that records a resolved interaction after the answer (see `seatLateInteractions`).
+ * A turn whose prose is one growing item that precedes its tools (Claude, pi, Grok) shows
+ * that prose after the fold, live and settled alike (see `answerIds`, `seatAfterProcess`).
  */
 
 export interface FoldThinkingStep {
@@ -46,7 +48,8 @@ export type FoldStep = FoldPartStep | FoldToolStep;
 
 export type TurnBlock =
   | { kind: 'fold'; id: string; steps: FoldStep[] }
-  | { kind: 'item'; id: string; item: ChatItem };
+  /** `seated`: prose shown after the fold it precedes in the record (see `answerIds`). */
+  | { kind: 'item'; id: string; item: ChatItem; seated?: true };
 
 export interface TurnSegmentsOptions {
   /**
@@ -81,6 +84,8 @@ function visiblePart(part: ChatPart): boolean {
 
 const PENDING_APPROVAL = 'pending';
 
+const refKey = (ref: PartRef): string => `${ref.item.id}:${ref.index}`;
+
 /**
  * Rows the agent produced. Codex, ACP agents and Grok record each tool call as its own `role: 'tool'` row, so
  * those fold with the assistant's rows; only the user's message and system rows stay whole, as before the fold.
@@ -95,8 +100,11 @@ function isProcessPart(part: ChatPart): boolean {
  * The answer: `final_answer`, or text with no thinking/tool call after it in the turn.
  * A resolved approval and a commentary text do not end that look-ahead; any content
  * part (answer text, pending interaction, error, status, card) does.
+ *
+ * `seated` holds the answers that come before the turn's last process part and are shown after it
+ * instead (see the fallback at the end).
  */
-function answerIds(items: readonly ChatItem[], collapseCommentary: boolean): Set<string> {
+function answerIds(items: readonly ChatItem[], collapseCommentary: boolean): { answers: Set<string>; seated: Set<string> } {
   const refs: PartRef[] = [];
   for (const item of items) {
     if (!agentRow(item)) continue;
@@ -137,12 +145,29 @@ function answerIds(items: readonly ChatItem[], collapseCommentary: boolean): Set
     }
     if (!processAhead) { answers.add(`${item.id}:${refs[index]!.index}`); processAhead = false; }
   }
-  return answers;
+  const seated = new Set<string>();
+  if (!collapseCommentary) {
+    // Claude, pi, Grok and imported ACP turns keep the turn's prose in ONE item that is created before the
+    // tool calls and keeps growing, so the answer written after the tools sits in front of them. With no
+    // text after the turn's last process part, its last run of text is the answer: shown after the work it
+    // reports instead of folded away (11-19: the fold hid Claude's whole answer). The same rule holds while
+    // the turn is live, so nothing moves when it ends; a later text record takes the answer over as usual.
+    const isProse = (ref: PartRef | undefined): boolean => !!ref && isText(ref.part) && !isCardText(ref.part) && ref.part.phase !== 'commentary';
+    const lastProcess = refs.findLastIndex(ref => isProcessPart(ref.part));
+    const lastProse = refs.findLastIndex(isProse);
+    // Only prose the look-ahead would fold: text a content part already set apart stays an answer in place.
+    if (lastProse >= 0 && lastProse < lastProcess && !answers.has(refKey(refs[lastProse]!))) {
+      for (let index = lastProse; index >= 0 && isProse(refs[index]) && !answers.has(refKey(refs[index]!)); index -= 1) {
+        answers.add(refKey(refs[index]!));
+        seated.add(refKey(refs[index]!));
+      }
+    }
+  }
+  return { answers, seated };
 }
 
 type Entry = { kind: 'whole'; item: ChatItem } | ({ kind: 'part' } & PartRef);
 
-const refKey = (ref: PartRef): string => `${ref.item.id}:${ref.index}`;
 
 /**
  * Adapters may record a resolved question or approval after the final answer: a late update of an older
@@ -162,12 +187,24 @@ function seatLateInteractions(entries: Entry[], answers: ReadonlySet<string>): E
   return [...entries.slice(0, start), ...late.filter(resolved), ...entries.slice(start, final + 1), ...late.filter(entry => !resolved(entry))];
 }
 
+/** Moves the seated answers (see `answerIds`) after the turn's last folded part, keeping their order. */
+function seatAfterProcess(entries: Entry[], seated: ReadonlySet<string>): Entry[] {
+  const folded = (entry: Entry): boolean => entry.kind === 'part'
+    && (isProcessPart(entry.part) || (entry.part.type === 'approval' && entry.part.status !== PENDING_APPROVAL));
+  const last = entries.findLastIndex(folded);
+  const moving = entries.filter((entry, index) => index < last && entry.kind === 'part' && seated.has(refKey(entry)));
+  if (!moving.length) return entries;
+  const rest = entries.filter(entry => !moving.includes(entry));
+  const at = rest.findLastIndex(folded) + 1;
+  return [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+}
+
 /**
  * Segment one turn. Content parts of the same item merge into one block, so a card and
  * the text around it keep rendering as the item they came from.
  */
 export function turnSegments(items: readonly ChatItem[], options: TurnSegmentsOptions = {}): TurnBlock[] {
-  const answers = answerIds(items, options.collapseCommentary === true);
+  const { answers, seated } = answerIds(items, options.collapseCommentary === true);
   const whole = options.wholeItems ?? new Set<string>();
   let entries: Entry[] = [];
   for (const item of items) {
@@ -179,6 +216,7 @@ export function turnSegments(items: readonly ChatItem[], options: TurnSegmentsOp
       if (visiblePart(part) || isCardText(part)) entries.push({ kind: 'part', item, part, index });
     });
   }
+  if (seated.size) entries = seatAfterProcess(entries, seated);
   if (options.settled) entries = seatLateInteractions(entries, answers);
   const blocks: TurnBlock[] = [];
   const toolIds = new Set<string>();
@@ -195,7 +233,7 @@ export function turnSegments(items: readonly ChatItem[], options: TurnSegmentsOp
       || (isText(part) && !isCardText(part) && !answers.has(stepId));
     if (!process) {
       if (parent?.kind === 'item' && parent.item.id === item.id) parent.item = { ...parent.item, parts: [...parent.item.parts, part] };
-      else blocks.push({ kind: 'item', id: `item:${stepId}`, item: { ...item, parts: [part] } });
+      else blocks.push({ kind: 'item', id: `item:${stepId}`, item: { ...item, parts: [part] }, ...(seated.has(stepId) ? { seated: true as const } : {}) });
       continue;
     }
     let step: FoldStep;

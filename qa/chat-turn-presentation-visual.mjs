@@ -183,8 +183,12 @@ try {
     : `think:${node.querySelector('.chat-fold-step-value')?.textContent}`);
   const activeRows = await activeFold.locator('.chat-fold-step').evaluateAll(rowLabels);
   assert.deepEqual(activeRows.slice(0, 14), Array.from({length:14}, (_, i) => `think:Thought entry ${i+1}`), 'the first run keeps its order');
-  assert.equal(activeRows[14], 'note:Message between runs', 'the intervening message is one row of the same fold');
-  assert.deepEqual(activeRows.slice(15), ['think:First after message','think:Second after message','think:Current thinking text'], 'the second run follows it in the same fold');
+  // 11-19: with no text after the newest thought yet, the message is still the answer: it stays visible after the
+  // fold (adapters that keep a turn's prose in one growing item need this) and folds in when a newer text arrives.
+  assert.deepEqual(activeRows.slice(14), ['think:First after message','think:Second after message','think:Current thinking text'], 'the second run follows in the same fold');
+  const between = active.getByText('Message between runs', {exact:true});
+  assert.equal(await between.count(), 1, 'the message is shown once');
+  assert.equal(await between.evaluate(node => Boolean(node.closest('details.chat-fold'))), false, 'the newest message stays outside the fold while thinking continues');
   assert.equal(await active.locator('.chat-fold.is-live').count(), 1, 'the newest segment is the live fold');
   assert.match(await active.locator('.chat-fold > summary').innerText(), /思考中|Thinking/, 'the live header says it is thinking');
   assert.equal(await active.locator('.chat-fold > summary .chat-tool-spinner').count(), 1, 'one spinner, in the fold header');
