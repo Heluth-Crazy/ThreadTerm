@@ -3429,6 +3429,56 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
 
     #[test]
+    fn aborted_tool_batch_settles_every_call_and_keeps_the_successor_clean() {
+        let frames = super::super::conformance::fixture("pi-aborted-tool-batch.jsonl");
+        for case in ["sequential", "parallel"] {
+            let (events, mut receiver) = scoped();
+            let shared = PiShared::default();
+            *shared.active_turn.lock().unwrap() = Some("aborted-turn".into());
+            shared.tool_calls.lock().unwrap().owner = Some("aborted-turn".into());
+            for frame in frames.iter().filter(|frame| frame["case"] == case).cloned() {
+                pi_event(&events, "pi", "session", &shared, frame);
+            }
+            let emitted: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+            let tool_items: Vec<_> = emitted.iter().filter(|event| event.kind == "chat.item").collect();
+            assert_eq!(tool_items.len(), 6, "{case}: every aborted call has a start and end item");
+            let tool_ids = tool_items.iter().map(|event| event.data["item"]["id"].as_str().unwrap()).collect::<Vec<_>>();
+            let statuses = tool_items.iter().map(|event| event.data["part"]["status"].as_str().unwrap()).collect::<Vec<_>>();
+            if case == "sequential" {
+                assert_eq!(tool_ids, ["tool-1", "tool-1", "tool-2", "tool-2", "tool-3", "tool-3"], "{case}");
+                assert_eq!(statuses, ["running", "failed", "running", "failed", "running", "failed"], "{case}");
+            } else {
+                let running_ids = tool_items.iter()
+                    .filter(|event| event.data["part"]["status"].as_str() == Some("running"))
+                    .map(|event| event.data["item"]["id"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(running_ids, ["tool-1", "tool-2", "tool-3"], "{case}: starts stay ordered");
+                let mut terminal_ids = tool_items.iter()
+                    .filter(|event| event.data["part"]["status"].as_str() == Some("failed"))
+                    .map(|event| event.data["item"]["id"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                terminal_ids.sort_unstable();
+                assert_eq!(terminal_ids, ["tool-1", "tool-2", "tool-3"], "{case}: ends may arrive in any order");
+                assert_eq!(running_ids.len() + terminal_ids.len(), tool_items.len(), "{case}: every item is a start or failed end");
+            }
+            assert!(tool_items.iter().all(|event| event.turn_id.as_deref() == Some("aborted-turn")), "{case}");
+            let completed: Vec<_> = emitted.iter().filter(|event| event.kind == "chat.turn.completed").collect();
+            assert_eq!(completed.len(), 1, "{case}: the aborted batch settles its turn once");
+            assert_eq!(completed[0].data["result"]["stopReason"], "cancelled");
+            assert!(shared.active_turn.lock().unwrap().is_none());
+            assert!(shared.tool_calls.lock().unwrap().calls.is_empty());
+
+            *shared.active_turn.lock().unwrap() = Some("successor-turn".into());
+            shared.tool_calls.lock().unwrap().owner = Some("successor-turn".into());
+            pi_event(&events, "pi", "session", &shared, json!({"type":"tool_execution_start","toolCallId":"successor-tool","toolName":"bash","args":{"command":"echo successor"}}));
+            let successor = receiver.try_recv().unwrap();
+            assert_eq!(successor.turn_id.as_deref(), Some("successor-turn"));
+            assert_eq!(successor.data["item"]["id"], "successor-tool");
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
     fn pi_tool_cache_is_bounded_per_active_turn() {
         let (sender, mut receiver) = tap_channel(PI_TOOL_CALL_LIMIT + 1);
         let events = ScopedProviderEvents::new(sender, "worker");

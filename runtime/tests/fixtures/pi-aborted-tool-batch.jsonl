@@ -1,0 +1,15 @@
+{"type":"fixture_metadata","source":"sanitized reconstruction of Pi upstream commit 4438c58ba2208a8a5d0d27f0ca0b8139748f8ff3 (#9986), not a live capture","version":"1.6.0","note":"upstream asserts sequential start/end order; parallel starts are ordered and parallel ends are intentionally unordered"}
+{"case":"sequential","type":"tool_execution_start","toolCallId":"tool-1","toolName":"slow","args":{"value":"first"}}
+{"case":"sequential","type":"tool_execution_end","toolCallId":"tool-1","toolName":"slow","args":{"value":"first"},"result":{"content":[{"type":"text","text":"interrupted"}]},"isError":true}
+{"case":"sequential","type":"tool_execution_start","toolCallId":"tool-2","toolName":"slow","args":{"value":"second"}}
+{"case":"sequential","type":"tool_execution_end","toolCallId":"tool-2","toolName":"slow","args":{"value":"second"},"result":{"content":[{"type":"text","text":"Operation aborted"}]},"isError":true}
+{"case":"sequential","type":"tool_execution_start","toolCallId":"tool-3","toolName":"slow","args":{"value":"third"}}
+{"case":"sequential","type":"tool_execution_end","toolCallId":"tool-3","toolName":"slow","args":{"value":"third"},"result":{"content":[{"type":"text","text":"Operation aborted"}]},"isError":true}
+{"case":"sequential","type":"agent_settled","aborted":true}
+{"case":"parallel","type":"tool_execution_start","toolCallId":"tool-1","toolName":"slow","args":{"value":"first"}}
+{"case":"parallel","type":"tool_execution_start","toolCallId":"tool-2","toolName":"slow","args":{"value":"second"}}
+{"case":"parallel","type":"tool_execution_end","toolCallId":"tool-2","toolName":"slow","args":{"value":"second"},"result":{"content":[{"type":"text","text":"Operation aborted"}]},"isError":true}
+{"case":"parallel","type":"tool_execution_start","toolCallId":"tool-3","toolName":"slow","args":{"value":"third"}}
+{"case":"parallel","type":"tool_execution_end","toolCallId":"tool-3","toolName":"slow","args":{"value":"third"},"result":{"content":[{"type":"text","text":"Operation aborted"}]},"isError":true}
+{"case":"parallel","type":"tool_execution_end","toolCallId":"tool-1","toolName":"slow","args":{"value":"first"},"result":{"content":[{"type":"text","text":"Operation aborted"}]},"isError":true}
+{"case":"parallel","type":"agent_settled","aborted":true}
