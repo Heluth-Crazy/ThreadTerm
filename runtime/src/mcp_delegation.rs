@@ -31,7 +31,6 @@ const MAX_LINE: usize = 1024 * 1024;
 const MAX_WAIT_SECONDS: u64 = 45;
 const DEFAULT_WAIT_SECONDS: u64 = 30;
 const POLL_INTERVAL: Duration = Duration::from_millis(1000);
-const AGENTS: [&str; 6] = ["claude", "codex", "kimi", "grok", "gemini", "opencode"];
 const TERMINAL_STATES: [&str; 4] = ["completed", "failed", "cancelled", "interrupted"];
 const MAX_INFLIGHT_CALLS: usize = 64;
 const BROWSER_RPC_TIMEOUT: Duration = Duration::from_secs(12);
@@ -1190,6 +1189,19 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
     json!({"name": name, "description": description, "inputSchema": schema})
 }
 
+/// `agent` is a free string: the runtime decides availability (installed,
+/// Chat-capable built-ins and plugin agents) and answers `unknown_agent` or
+/// `agent_unavailable`. A fixed enum here once left out Pi while
+/// `delegate_status` listed it, so clients forced the call to another agent.
+fn agent_description() -> String {
+    let builtins: Vec<&str> = crate::providers::BUILTIN_AGENTS.iter().map(|agent| agent.id).collect();
+    format!(
+        "Agent id to delegate to, exactly as listed in delegate_status availableAgents (built-ins: {}; installed \
+plugin agents too).",
+        builtins.join(", ")
+    )
+}
+
 fn tools(auto_wake: bool) -> Vec<Value> {
     // R10: with automatic wake the parent may end its turn after a start, so
     // both tool descriptions say so instead of asking for a stay-in-turn poll.
@@ -1214,7 +1226,7 @@ fn tools(auto_wake: bool) -> Vec<Value> {
 another delegation plugin, MCP server or agent CLI run from a shell, unless the user names that tool) whenever the \
 user asks for another agent. The delegate does not see your conversation, so make the prompt self-contained (its description gives the recommended brief). {start_tail} workspace `shared` (default) works in your folder; `worktree` gives the delegate its own git branch and folder created from your current commit (your uncommitted changes are not included) — use it when several delegates edit files in parallel. At most 4 active delegates; delegates cannot delegate. A delegate never gets broader permission than this chat: ThreadTerm starts it in the strongest of its own modes that fits under yours, and when none fits it asks the user to allow the wider access instead of starting (you then get `delegation_authority_exceeded`, or `awaiting_user` on a retry with the same operationId)."),
             json!({"type":"object","additionalProperties":false,"required":["agent","prompt"],"properties":{
-                "agent":{"type":"string","enum":AGENTS,"description":"Agent to delegate to; delegate_status lists the available ones."},
+                "agent":{"type":"string","minLength":1,"description":agent_description()},
                 "prompt":{"type":"string","minLength":1,"description":concat!("Self-contained task for the delegate. ", handoff_guide!())},
                 "title":{"type":"string","maxLength":120,"description":"Short session title shown in ThreadTerm."},
                 "userMessages":{"type":"integer","minimum":0,"maximum":crate::delegation::MAX_USER_MESSAGES,"description":"How many of the user's latest messages in this chat ThreadTerm attaches word for word above your prompt (default 1: the message that started your turn; 0: none)."},
@@ -2744,6 +2756,23 @@ mod tests {
             .contains("After starting delegates you can end your turn"));
         std::env::remove_var("THREADTERM_AUTO_WAKE");
         assert!(!auto_wake_from_env());
+    }
+
+    #[test]
+    fn agent_is_not_limited_to_a_fixed_list() {
+        // Availability is the runtime's call (`delegation::validate_start`); an enum here once
+        // left out Pi while delegate_status listed it, and clients rewrote `pi` to another agent.
+        for auto_wake in [false, true] {
+            let start = &tools(auto_wake)[0];
+            let agent = &start["inputSchema"]["properties"]["agent"];
+            assert_eq!(agent["type"], "string");
+            assert!(agent.get("enum").is_none(), "{agent}");
+            let description = agent["description"].as_str().unwrap();
+            assert!(description.contains("availableAgents"), "{description}");
+            for builtin in crate::providers::BUILTIN_AGENTS {
+                assert!(description.contains(builtin.id), "{} missing: {description}", builtin.id);
+            }
+        }
     }
 
     #[test]
