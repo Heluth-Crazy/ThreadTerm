@@ -1,0 +1,6 @@
+{"method":"turn/started","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turn":{"id":"native-a","status":"inProgress"}}}
+{"method":"item/completed","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turnId":"native-a","item":{"id":"floor-command","type":"commandExecution","command":"echo floor","status":"completed","aggregatedOutput":"floor","exitCode":0}}}
+{"method":"turn/completed","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turn":{"id":"native-a","status":"interrupted"}}}
+{"method":"turn/started","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turn":{"id":"native-b","status":"inProgress"}}}
+{"id":41,"method":"item/commandExecution/requestApproval","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turnId":"native-a","itemId":"late-command","command":"echo late","cwd":"C:/fixture","reason":"fixture late approval"}}
+{"method":"item/completed","params":{"threadId":"01a10cc5-adcf-7532-8366-f82284f88ff9","turnId":"native-a","item":{"id":"late-command","type":"commandExecution","command":"echo late","status":"declined","aggregatedOutput":"","exitCode":null}}}

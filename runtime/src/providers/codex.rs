@@ -2137,6 +2137,8 @@ struct CodexUiState {
     background_candidates: HashMap<String, CodexBackgroundCandidate>,
     background_revision: u64,
     background_terminal_items: VecDeque<(String, String)>,
+    // Late native items retain their public turn after a successor starts.
+    recent_turn_ids: VecDeque<(String, String)>,
     /// One non-blocking notice about this CLI's limits (older app-server).
     notice: Option<Value>,
 }
@@ -4437,28 +4439,52 @@ fn emit_codex_message(
         .get("item")
         .and_then(|item| item.get("type"))
         .and_then(Value::as_str);
-    let turn_id = {
+    let remembered_turn_id = if child.is_none() {
+        provider_turn_id.and_then(|native| ui.lock().ok().and_then(|state| {
+            state.recent_turn_ids.iter().rev()
+                .find(|(id, _)| id == native).map(|(_, public)| public.clone())
+        }))
+    } else { None };
+    let (turn_id, owns_active_turn) = {
         let (active, changed) = &**active_turn;
-        active.lock().ok().and_then(|mut active| {
-            if method == "turn/started" {
-                if let (Some(turn), Some(provider_turn_id)) = (active.as_mut(), provider_turn_id) {
-                    turn.native_id = Some(provider_turn_id.to_owned());
-                    changed.notify_all();
+        active.lock().ok().map(|mut active| {
+            if let Some(turn) = active.as_mut() {
+                let known_other = remembered_turn_id.as_deref()
+                    .is_some_and(|public| public != turn.public_id);
+                if method == "turn/started" && child.is_none() && !known_other {
+                    if let Some(native) = provider_turn_id {
+                        if turn.native_id.as_deref().is_none_or(|id| id == native) {
+                            turn.native_id = Some(native.to_owned());
+                            changed.notify_all();
+                        }
+                    }
+                }
+                // Preserve the pre-start/floor fallback, but consult known old
+                // turns first so A cannot claim B's provisional active slot.
+                let owns = !known_other && (child.is_some() || provider_turn_id.is_none()
+                    || turn.native_id.is_none() || turn.native_id.as_deref() == provider_turn_id);
+                if owns {
+                    if (method == "item/started" && provider_item_type == Some("agentMessage"))
+                        || method == "item/agentMessage/delta"
+                    {
+                        if let Some(item) = provider_item_id {
+                            turn.assistant_item_id = Some(item.to_owned());
+                        }
+                    }
+                    return (Some(turn.public_id.clone()), true);
                 }
             }
-            if (method == "item/started" && provider_item_type == Some("agentMessage"))
-                || method == "item/agentMessage/delta"
-            {
-                if let (Some(turn), Some(provider_item_id)) = (active.as_mut(), provider_item_id) {
-                    turn.assistant_item_id = Some(provider_item_id.to_owned());
-                }
-            }
-            active
-                .as_ref()
-                .map(|turn| turn.public_id.clone())
-                .or_else(|| provider_turn_id.map(ToOwned::to_owned))
-        })
+            (remembered_turn_id.clone().or_else(|| provider_turn_id.map(ToOwned::to_owned)), false)
+        }).unwrap_or_else(|| (provider_turn_id.map(ToOwned::to_owned), false))
     };
+    // Never nest the active/UI locks: approval and plan paths use both states.
+    if method == "turn/started" && owns_active_turn && child.is_none() {
+        if let (Some(native), Some(public), Ok(mut state)) = (provider_turn_id, turn_id.as_deref(), ui.lock()) {
+            state.recent_turn_ids.retain(|(id, _)| id != native);
+            state.recent_turn_ids.push_back((native.to_owned(), public.to_owned()));
+            if state.recent_turn_ids.len() > 128 { state.recent_turn_ids.pop_front(); }
+        }
+    }
     let elapsed_ms = if method == "turn/completed" {
         turn_id
             .as_deref()
@@ -4466,7 +4492,7 @@ fn emit_codex_message(
     } else {
         None
     };
-    if method == "turn/started" {
+    if method == "turn/started" && owns_active_turn {
         if let Ok(mut state) = subagents.lock() {
             state.parent_turn_id = turn_id.clone();
         }
@@ -4482,8 +4508,8 @@ fn emit_codex_message(
         .and_then(|public_id| codex_turn_native_id(active_turn, public_id))
         .or_else(|| provider_turn_id.map(ToOwned::to_owned));
     let background_changed = ui.lock().ok().is_some_and(|mut state| match method {
-        "turn/started" => state.begin_turn(),
-        "turn/completed" => state.promote_background_candidates(),
+        "turn/started" if owns_active_turn => state.begin_turn(),
+        "turn/completed" if owns_active_turn => state.promote_background_candidates(),
         "item/started" => params
             .get("item")
             .is_some_and(|item| state.observe_command_item(item, false)),
@@ -4553,13 +4579,7 @@ fn emit_codex_message(
                 approval_id.clone(),
                 PendingCodexApproval {
                     method: method.to_owned(),
-                    turn_id: {
-                        let (active, _) = &**active_turn;
-                        active
-                            .lock()
-                            .ok()
-                            .and_then(|turn| turn.as_ref().map(|turn| turn.public_id.clone()))
-                    },
+                    turn_id: turn_id.clone(),
                     params: params.clone(),
                     choices: choices.clone(),
                     submittable,
@@ -4833,7 +4853,7 @@ fn emit_codex_message(
     // visible. The queue schedules from `chat.turn.completed`; publishing the
     // pending card first keeps queued prompts pending for review instead of
     // letting one race into native send (or fail against validate_send).
-    if matches!(method, "turn/completed" | "thread/compacted" | "error") {
+    if owns_active_turn && matches!(method, "turn/completed" | "thread/compacted" | "error") {
         if let Some(public_turn_id) = turn_id.as_deref() {
             let (plan, orphan) = match ui.lock() {
                 Ok(mut state) => {
@@ -4928,7 +4948,7 @@ fn emit_codex_message(
     if background_changed {
         emit_chat_ui(events, session_id, native_id.as_deref(), ui, worker_token);
     }
-    if matches!(method, "turn/completed" | "thread/compacted" | "error") {
+    if owns_active_turn && matches!(method, "turn/completed" | "thread/compacted" | "error") {
         if let Some(turn_id) = turn_id {
             clear_codex_turn(active_turn, &turn_id);
             if let Ok(mut pending) = approvals.lock() {
@@ -5691,6 +5711,56 @@ mod tests {
         fn drain(&mut self) -> Vec<super::super::ProviderEvent> {
             std::iter::from_fn(|| self.received.try_recv().ok()).collect()
         }
+    }
+
+    #[test]
+    fn late_command_completion_retains_its_original_turn() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.drain();
+        replay.active.0.lock().unwrap().as_mut().unwrap().native_id = None;
+        let frames = super::super::conformance::fixture("codex-late-command-completion.jsonl");
+        for (index, frame) in frames.into_iter().enumerate() {
+            if index == 3 {
+                replay.active.0.lock().unwrap().replace(ActiveCodexTurn {
+                    public_id: "public-b".into(), native_id: None,
+                    assistant_item_id: None, started_at: Instant::now(),
+                });
+            }
+            replay.raw(frame);
+        }
+        let observed = replay.drain();
+        let floor = observed.iter().find(|event| event.data.pointer("/raw/params/item/id").and_then(Value::as_str) == Some("floor-command")).unwrap();
+        assert_eq!(floor.turn_id.as_deref(), Some("public-turn"));
+        let late = observed.iter().find(|event| event.data.pointer("/raw/params/item/id").and_then(Value::as_str) == Some("late-command")).unwrap();
+        assert_eq!(late.kind, "chat.item");
+        assert_eq!(late.turn_id.as_deref(), Some("public-turn"));
+        assert_eq!(late.data["raw"]["params"]["item"]["status"], "declined");
+        assert_eq!(replay.approvals.lock().unwrap().values().next().unwrap().turn_id.as_deref(), Some("public-turn"));
+        assert_eq!(wait_for_codex_native_turn(&replay.active, "public-b").unwrap().as_deref(), Some("native-b"));
+        replay.emit("turn/completed", json!({"threadId":SUBAGENT_PARENT,"turn":{"id":"native-b","status":"interrupted"}}));
+        replay.drain();
+        replay.raw(super::super::conformance::fixture("codex-late-command-completion.jsonl").pop().unwrap());
+        assert_eq!(replay.drain().iter().find(|event| event.kind == "chat.item").unwrap().turn_id.as_deref(), Some("public-turn"));
+    }
+
+    #[test]
+    fn remembered_late_items_do_not_claim_a_provisional_successor() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.active.0.lock().unwrap().as_mut().unwrap().native_id = None;
+        let frames = super::super::conformance::fixture("codex-late-command-completion.jsonl");
+        for frame in &frames[..3] { replay.raw(frame.clone()); }
+        replay.active.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: "public-b".into(), native_id: None,
+            assistant_item_id: None, started_at: Instant::now(),
+        });
+        replay.drain();
+        replay.raw(frames.last().unwrap().clone());
+        assert_eq!(replay.drain().iter().find(|event| event.kind == "chat.item").unwrap().turn_id.as_deref(), Some("public-turn"));
+        assert!(replay.active.0.lock().unwrap().as_ref().unwrap().native_id.is_none());
+        replay.emit("item/agentMessage/delta", json!({"threadId":SUBAGENT_PARENT,"turnId":"native-b","itemId":"b-reply","delta":"B"}));
+        assert_eq!(replay.drain().iter().find(|event| event.kind == "chat.delta").unwrap().turn_id.as_deref(), Some("public-b"));
+        replay.raw(frames[3].clone());
+        assert_eq!(wait_for_codex_native_turn(&replay.active, "public-b").unwrap().as_deref(), Some("native-b"));
     }
 
     #[test]
