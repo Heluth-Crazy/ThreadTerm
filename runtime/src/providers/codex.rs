@@ -8410,6 +8410,113 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         *active.0.lock().unwrap() = None;
         crate::providers::conformance::assert_stop_of_finished_turn_succeeds(chat.cancel("turn-b"));
     }
+
+    #[test]
+    fn interrupt_acknowledgements_stay_scoped_to_the_requested_turn_and_surface_shutdown() {
+        let frames = super::super::conformance::fixture("codex-interrupt-acknowledgement.jsonl");
+        assert!(frames[0]["provenance"].as_str().is_some_and(|value| value.contains("58627e6feac9")));
+        let cases = &frames[1..];
+        let dir = tempfile::tempdir().unwrap();
+        let Some(node) = crate::providers::common::find_executable("node") else {
+            eprintln!("node is unavailable; skipping the interrupt fixture test");
+            return;
+        };
+        let script = dir.path().join("interrupt-fixture.cjs");
+        let log = dir.path().join("interrupt-frames.jsonl");
+        let acknowledged = serde_json::to_string(&cases[1]).unwrap();
+        let shutdown = serde_json::to_string(&cases[2]).unwrap();
+        std::fs::write(&script, format!(r#"
+const fs = require('node:fs'); const log = process.argv[2];
+const acknowledged = {acknowledged}; const shutdown = {shutdown}; let pending; let interrupts = 0;
+const out = value => process.stdout.write(JSON.stringify(value) + '\n');
+require('node:readline').createInterface({{input:process.stdin}}).on('line', line => {{
+  const frame = JSON.parse(line); fs.appendFileSync(log, JSON.stringify(frame) + '\n');
+  if (frame.method === 'turn/interrupt' && ++interrupts === 1) {{
+    pending = frame; out({{method:acknowledged.notification.method,params:acknowledged.notification.params}}); return;
+  }}
+  if (frame.method === 'test/release') {{
+    out({{id:pending.id,...acknowledged.response}});
+    out({{method:acknowledged.completion.method,params:acknowledged.completion.params}}); pending = null; return;
+  }}
+  if (frame.method === 'turn/interrupt') {{
+    out({{method:shutdown.notification.method,params:shutdown.notification.params}});
+    out({{id:frame.id,...shutdown.response}});
+  }}
+}});
+"#,)).unwrap();
+        let spec = CommandSpec::from_path(node, vec![script.to_string_lossy().into_owned(), log.to_string_lossy().into_owned()]).unwrap();
+        let (notifications, received_notifications) = std::sync::mpsc::channel();
+        let process = JsonLineProcess::spawn("interrupt-codex", &spec, None, &[], EnvelopeStyle::Codex, Arc::new(move |frame| {
+            // Windows libtest bootstrap also reports non-protocol stdout diagnostics.
+            if frame.get("method").is_some() { let _ = notifications.send(frame); }
+        })).unwrap();
+        let release = process.responder();
+        let (sender, mut received) = crate::provider_events::tap_channel(16);
+        let active = new_codex_turn_state();
+        active.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: cases[0]["active"]["publicId"].as_str().unwrap().into(),
+            native_id: Some(cases[0]["active"]["nativeId"].as_str().unwrap().into()),
+            assistant_item_id: None,
+            started_at: Instant::now(),
+        });
+        let approvals = Arc::new(Mutex::new(HashMap::new()));
+        let native = Mutex::new(Some("thread".to_owned()));
+        let ui = Arc::new(Mutex::new(CodexUiState::default()));
+        let responder = Mutex::new(None);
+        let subagents = Mutex::new(CodexSubagents::default());
+        let mut chat = CodexChat {
+            process, native_id: "thread".into(), approvals: Arc::clone(&approvals),
+            active_turn: Arc::clone(&active), session_id: "codex-chat".into(), cwd: String::new(),
+            events: sender.clone(), ui: Arc::clone(&ui), worker_token: "interrupt-worker".into(),
+        };
+        crate::providers::conformance::assert_stop_refuses_a_turn_that_is_not_live(chat.cancel(cases[0]["request"]["publicId"].as_str().unwrap()));
+        let before = crate::providers::conformance::recorded_frames(&log, &[]);
+        assert_eq!(before.len(), cases[0]["expectedRequests"].as_array().unwrap().len(), "a stale public Stop writes no native request: {before:?}");
+        let (done, received_done) = std::sync::mpsc::sync_channel(1);
+        let acknowledged_public_id = cases[1]["request"]["publicId"].as_str().unwrap().to_owned();
+        std::thread::spawn(move || { let result = chat.cancel(&acknowledged_public_id); done.send((chat, result)).unwrap(); });
+        let old_terminal = received_notifications.recv_timeout(Duration::from_secs(5)).expect("A terminal notification while B is pending");
+        assert_eq!(old_terminal["method"], cases[1]["notification"]["method"], "first callback: {old_terminal:?}");
+        assert_eq!(old_terminal["params"], cases[1]["notification"]["params"]);
+        assert!(received_done.try_recv().is_err(), "A notification cannot acknowledge B's pending Stop");
+        release.notification("test/release", json!({})).unwrap();
+        let (mut chat, acknowledged) = received_done.recv_timeout(Duration::from_secs(5)).expect("B interrupt acknowledgement");
+        acknowledged.unwrap();
+        let target_terminal = received_notifications.recv_timeout(Duration::from_secs(5)).expect("B terminal notification after B acknowledgement");
+        assert_eq!(target_terminal["method"], cases[1]["completion"]["method"]);
+        assert_eq!(target_terminal["params"], cases[1]["completion"]["params"]);
+        assert_eq!(active.0.lock().unwrap().as_ref().map(|turn| turn.public_id.as_str()), Some(cases[1]["expectedPublicId"].as_str().unwrap()), "the interrupt response itself does not settle B");
+        emit_codex_message(&sender, "codex-chat", &native, &approvals, &active, &ui, &responder,
+            "interrupt-worker", &subagents, cases[1]["completion"].clone());
+        let settled = received.try_recv().expect("B terminal completion is projected");
+        assert_eq!(settled.kind, "chat.turn.completed");
+        assert_eq!(settled.turn_id.as_deref(), Some(cases[1]["expectedPublicId"].as_str().unwrap()));
+        assert!(active.0.lock().unwrap().is_none(), "only B's terminal completion clears B's active slot");
+        let requests: Vec<_> = crate::providers::conformance::recorded_frames(&log, &["turn/interrupt"])
+            .into_iter().filter(|frame| frame["method"] == "turn/interrupt").collect();
+        assert_eq!(requests[0]["method"], cases[1]["expected"]["method"]);
+        assert_eq!(requests[0]["params"], cases[1]["expected"]["params"]);
+        active.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: cases[2]["active"]["publicId"].as_str().unwrap().into(),
+            native_id: Some(cases[2]["active"]["nativeId"].as_str().unwrap().into()),
+            assistant_item_id: None,
+            started_at: Instant::now(),
+        });
+        let shutdown = chat.cancel(cases[2]["request"]["publicId"].as_str().unwrap()).unwrap_err();
+        assert_eq!(shutdown.code, "provider_error");
+        assert_eq!(
+            shutdown.message,
+            cases[2]["response"]["error"]["message"].as_str().unwrap()
+        );
+        let target_terminal = received_notifications.recv_timeout(Duration::from_secs(5)).expect("B terminal notification");
+        assert_eq!(target_terminal["method"], cases[2]["notification"]["method"]);
+        assert_eq!(target_terminal["params"], cases[2]["notification"]["params"]);
+        let requests: Vec<_> = crate::providers::conformance::recorded_frames(&log, &["turn/interrupt"])
+            .into_iter().filter(|frame| frame["method"] == "turn/interrupt").collect();
+        assert_eq!(requests.len(), 2, "shutdown error must not retry the interrupt: {requests:?}");
+        assert_eq!(requests[1]["method"], cases[2]["expected"]["method"]);
+        assert_eq!(requests[1]["params"], cases[2]["expected"]["params"]);
+    }
     #[test]
     fn codex_startup_permissions_accept_only_known_choices() {
         let permissions = codex_startup_permissions(&json!([
