@@ -377,19 +377,6 @@ struct Reply {
 }
 
 #[cfg(windows)]
-struct NavigationControlPresence {
-    navigation: Arc<crate::editor_navigation::EditorNavigation>,
-    principal: String,
-}
-
-#[cfg(windows)]
-impl Drop for NavigationControlPresence {
-    fn drop(&mut self) {
-        self.navigation.disconnect(&self.principal);
-    }
-}
-
-#[cfg(windows)]
 struct QueuedRequest {
     request: RpcRequest,
     queued: Option<SendTraceTimer>,
@@ -599,8 +586,17 @@ fn lane_worker(
     LaneSender { sender, active, traced }
 }
 
-fn parse_event_filter(params: &Value) -> std::result::Result<(), crate::domain::RpcError> {
-    if params.as_object().is_some_and(|p| p.len() == 1 && p.get("preset") == Some(&json!("tree"))) { return Ok(()); }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventFilter { All, Tree, None }
+
+fn parse_event_filter(params: &Value) -> std::result::Result<EventFilter, crate::domain::RpcError> {
+    if params.as_object().is_some_and(|p| p.len() == 1) {
+        return match params.get("preset").and_then(Value::as_str) {
+            Some("tree") => Ok(EventFilter::Tree),
+            Some("none") => Ok(EventFilter::None),
+            _ => Err(crate::domain::RpcError { code:"invalid_request".into(), message:"Unknown event filter preset".into(), details:None }),
+        };
+    }
     Err(crate::domain::RpcError { code:"invalid_request".into(), message:"Unknown event filter preset".into(), details:None })
 }
 
@@ -631,14 +627,11 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     let _browser_presence = service.browser_tools.connect_control(&principal)?;
     // A dropped control connection revokes all contexts owned by that principal,
     // including a concurrent startup or lookup that ignored client cancellation.
-    let _navigation_presence = NavigationControlPresence {
-        navigation: Arc::clone(&service.editor_navigation),
-        principal: principal.clone(),
-    };
+    let _navigation_presence = service.editor_navigation.connect(&principal);
     let mut turn_speeds = service.subscribe_turn_speed();
     let mut turn_speeds_open = true;
-    let mut sent_seq = service.db.snapshot()?.revision;
-    let mut tree_filter = false;
+    let mut sent_seq: i64 = service.db.transaction(|tx| Ok(tx.query_row("SELECT COALESCE(MAX(seq),0) FROM outbox", [], |row| row.get(0))?))?;
+    let mut event_filter = EventFilter::All;
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
     let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
@@ -657,9 +650,14 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                     let result = crate::peer::guard(&service, &principal, &request.method)
                         .and_then(|()| parse_event_filter(&request.params));
                     let response = match result {
-                        Ok(()) => {
-                            tree_filter = true;
-                            json!({"v":PROTOCOL_VERSION,"id":request.id,"result":{"preset":"tree","tree":service.db.tree_projection("state.changed", &json!({}))?}})
+                        Ok(filter) => {
+                            event_filter = filter;
+                            let result = match filter {
+                                EventFilter::Tree => json!({"preset":"tree","tree":service.db.tree_projection("state.changed", &json!({}))?}),
+                                EventFilter::None => json!({"preset":"none"}),
+                                EventFilter::All => unreachable!(),
+                            };
+                            json!({"v":PROTOCOL_VERSION,"id":request.id,"result":result})
                         }
                         Err(error) => json!({"v":PROTOCOL_VERSION,"id":request.id,"error":error}),
                     };
@@ -709,20 +707,20 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                 delivery?;
                 if reply.served_snapshot { service.db.start_retention(); }
             }
-            received = turn_speeds.recv(), if !tree_filter && turn_speeds_open && sequenced_in_flight == 0 => {
+            received = turn_speeds.recv(), if event_filter == EventFilter::All && turn_speeds_open && sequenced_in_flight == 0 => {
                 let epoch = service.db.epoch()?;
                 if received.is_ok() { guard_stream(&service, &principal, "runtime.event")?; }
                 turn_speeds_open = forward_turn_speed(&mut writer, &epoch, received).await?;
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
-        if sequenced_in_flight == 0 {
+        if sequenced_in_flight == 0 && event_filter != EventFilter::None {
             let epoch = service.db.epoch()?;
             let previous_seq = sent_seq;
             for (seq, event, mut data) in service.db.events_after(sent_seq)? {
                 sent_seq = seq;
-                if tree_filter && !tree_event(&event, &data) { continue; }
-                if tree_filter && event != "runtime.degraded" {
+                if event_filter == EventFilter::Tree && !tree_event(&event, &data) { continue; }
+                if event_filter == EventFilter::Tree && event != "runtime.degraded" {
                     data["tree"] = service.db.tree_projection(&event, &data)?;
                 }
                 let frame = json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data});
@@ -741,7 +739,7 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                     write_binary(&mut writer, &bytes).await?;
                 }
             }
-            if tree_filter && sent_seq != previous_seq {
+            if event_filter == EventFilter::Tree && sent_seq != previous_seq {
                 write_json(&mut writer, &json!({"v":PROTOCOL_VERSION,"event":"runtime.cursor","epoch":epoch,"seq":sent_seq,"data":{}})).await?;
             }
         }
@@ -1129,8 +1127,9 @@ mod decoder_tests {
     }
 
     #[test]
-    fn tree_filter_accepts_only_the_named_preset() {
-        assert!(parse_event_filter(&json!({"preset":"tree"})).is_ok());
+    fn event_filter_accepts_only_the_named_presets() {
+        assert!(matches!(parse_event_filter(&json!({"preset":"tree"})), Ok(EventFilter::Tree)));
+        assert!(matches!(parse_event_filter(&json!({"preset":"none"})), Ok(EventFilter::None)));
         for params in [json!({"preset":"other"}), json!({"preset":"tree","events":["chat.item"]}), json!({"events":[]})] {
             assert!(parse_event_filter(&params).is_err());
         }
@@ -1161,6 +1160,10 @@ mod decoder_tests {
         assert_eq!(read_json(&mut filtered).await.unwrap()["error"]["code"], "invalid_request");
         write_json(&mut filtered, &json!({"v":1,"id":"filter","method":"runtime.events.filter","params":{"preset":"tree"}})).await.unwrap();
         assert_eq!(read_json(&mut filtered).await.unwrap()["result"]["preset"], "tree");
+        let (server, mut request_only) = tokio::io::duplex(1024 * 1024);
+        let c = tokio::spawn(serve_control(server, Arc::clone(&service), "request-only".into()));
+        write_json(&mut request_only, &json!({"v":1,"id":"filter","method":"runtime.events.filter","params":{"preset":"none"}})).await.unwrap();
+        assert_eq!(read_json(&mut request_only).await.unwrap()["result"], json!({"preset":"none"}));
         let (server, mut local) = tokio::io::duplex(1024 * 1024);
         let b = tokio::spawn(serve_control(server, Arc::clone(&service), "local".into()));
         write_json(&mut local, &json!({"v":1,"id":"health","method":"runtime.health","params":{}})).await.unwrap();
@@ -1186,6 +1189,9 @@ mod decoder_tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop { if read_json(&mut local).await.unwrap()["event"] == "chat.item" { break; } }
         }).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(250), read_json(&mut request_only)).await.is_err(), "request-only controls do not poll or serialize the outbox");
+        write_json(&mut request_only, &json!({"v":1,"id":"request-only-health","method":"runtime.health","params":{}})).await.unwrap();
+        assert_eq!(read_json(&mut request_only).await.unwrap()["id"], "request-only-health", "request-only controls still serve RPC replies");
         db.record_provider_event(&session.id, Some("turn"), "chat.approval.resolved", &json!({"approvalId":"approval","status":"resolved","preserveSessionState":true})).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -1197,7 +1203,7 @@ mod decoder_tests {
                 }
             }
         }).await.unwrap();
-        a.abort(); b.abort(); service.shutdown();
+        a.abort(); b.abort(); c.abort(); service.shutdown();
     }
 
     #[tokio::test]

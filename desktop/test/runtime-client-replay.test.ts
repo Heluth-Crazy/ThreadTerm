@@ -6,12 +6,14 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { PROTOCOL_CONTRACT, PROTOCOL_VERSION } from '@threadterm/protocol';
+import { PROTOCOL_CONTRACT, PROTOCOL_VERSION, type Method } from '@threadterm/protocol';
 import {
   parseAuthChallenge,
   ProtocolIncompatibleError,
   RuntimeClient,
+  RuntimeRequestError,
   RuntimeUnavailableError,
+  isolatedSessionMutationId,
   waitForPendingRuntimeStartup,
 } from '../src/runtime-client.js';
 
@@ -20,8 +22,12 @@ type ClientInternals = {
   output?: { write(payload: Buffer): void; close(): void };
   outputGroups: Map<string, { cursor: number; fanout: { size: number; pendingBytes: number } }>;
   request: RuntimeClient['request'];
+  createSessionRequestClient(onDisconnect?: (error: Error) => void): RuntimeClient;
+  sessionRequestShards: Map<string, { client: RuntimeClient; active: number }>;
   handleControlFrame(frame: Buffer): void;
   handleOutputFrame(frame: Buffer, origin?: { write(payload: Buffer): void; close(): void }): Promise<void>;
+  handleDisconnect(error: Error): void;
+  qaReconnectPaused: boolean;
 };
 
 type StartupInternals = {
@@ -658,6 +664,299 @@ function gapFrame(sessionId: string, cursor: number): Buffer {
   header.copy(frame, 5);
   return frame;
 }
+
+const classifySessionMutation = isolatedSessionMutationId as (method: Method, params: Record<string, unknown>) => string | undefined;
+
+test('only provider-driving mutations are isolated by session identity', () => {
+  for (const method of [
+    'chat.answer', 'chat.approve', 'chat.backgroundTask.stop', 'chat.cancel', 'chat.connect',
+    'chat.feedback.add', 'chat.feedback.dismiss', 'chat.option.set', 'chat.projectTrust.set',
+    'chat.queue.add', 'chat.queue.move', 'chat.queue.pause', 'chat.queue.remove', 'chat.queue.resume',
+    'chat.queue.send', 'chat.queue.update', 'chat.refreshHistory', 'chat.repair', 'chat.send',
+    'chat.steer', 'session.releaseResources', 'session.resume', 'session.stop',
+  ] satisfies Method[]) assert.equal(classifySessionMutation(method, { sessionId: 'session-a' }), 'session-a', method);
+
+  for (const method of [
+    'runtime.shutdown', 'settings.update', 'project.update', 'git.push', 'chat.fork', 'session.rerun',
+    'session.claim', 'session.renew', 'session.release', 'chat.tool.run.start',
+  ] satisfies Method[]) assert.equal(classifySessionMutation(method, { sessionId: 'session-a' }), undefined, method);
+  assert.equal(classifySessionMutation('chat.send', { sessionId: '' }), undefined);
+});
+
+test('session mutations negotiate request-only events, retain same-session FIFO and leave global mutations on primary', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  const primaryMethods: string[] = [];
+  internal.control = {
+    write(payload) {
+      const request = JSON.parse(payload.toString('utf8')) as { id?: string; method?: string };
+      if (!request.method || !request.id) return;
+      primaryMethods.push(request.method);
+      internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, id: request.id, result: null })));
+    },
+    close() {},
+  };
+  const children: Array<{ calls: string[]; disposed: boolean }> = [];
+  internal.createSessionRequestClient = () => {
+    const state = { calls: [] as string[], disposed: false };
+    children.push(state);
+    return {
+      async request(method: string) {
+        state.calls.push(method);
+        if (method === 'runtime.events.filter') return { preset: 'none' };
+        if (method === 'chat.send') return { turnId: 'turn' };
+        return null;
+      },
+      dispose() { state.disposed = true; },
+    } as unknown as RuntimeClient;
+  };
+  try {
+    await client.request('chat.send', { sessionId: 'session-a', text: 'one', operationId: 'send-a', leaseEpoch: 1 });
+    await client.request('chat.cancel', { sessionId: 'session-a', turnId: 'turn', leaseEpoch: 1 });
+    await client.request('chat.connect', { sessionId: 'session-b', leaseEpoch: 1, operationId: 'connect-b' });
+    await client.request('project.remove', { id: 'project', operationId: 'remove-project' });
+    assert.deepEqual(children.map(child => child.calls), [
+      ['runtime.events.filter', 'chat.send', 'chat.cancel'],
+      ['runtime.events.filter', 'chat.connect'],
+    ]);
+    assert.deepEqual(primaryMethods, ['project.remove']);
+  } finally { client.dispose(); }
+  assert.ok(children.every(child => child.disposed));
+});
+
+test('an older runtime rejecting request-only mode falls back before the mutation is handed off', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  const childMethods: string[] = [];
+  const primaryMethods: string[] = [];
+  internal.createSessionRequestClient = () => ({
+    async request(method: string) {
+      childMethods.push(method);
+      throw new RuntimeRequestError({ code: 'invalid_request', message: 'Unknown event filter preset' });
+    },
+    dispose() {},
+  }) as unknown as RuntimeClient;
+  internal.control = {
+    write(payload) {
+      const request = JSON.parse(payload.toString('utf8')) as { id: string; method: string };
+      primaryMethods.push(request.method);
+      internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, id: request.id, result: { turnId: 'fallback-turn' } })));
+    },
+    close() {},
+  };
+  try {
+    const [first, second] = await Promise.all([
+      client.request('chat.send', { sessionId: 'old-runtime', text: 'hello', operationId: 'fallback-1', leaseEpoch: 1 }),
+      client.request('chat.send', { sessionId: 'old-runtime', text: 'again', operationId: 'fallback-2', leaseEpoch: 1 }),
+    ]);
+    assert.deepEqual(first, { turnId: 'fallback-turn' });
+    assert.deepEqual(second, { turnId: 'fallback-turn' });
+    assert.deepEqual(childMethods, ['runtime.events.filter'], 'the mutation is never sent on an unfiltered child');
+    assert.deepEqual(primaryMethods, ['chat.send', 'chat.send'], 'the rejection is remembered for this primary connection');
+  } finally { client.dispose(); }
+});
+
+test('a transient negotiation failure keeps concurrent and re-entrant requests in one FIFO fallback group', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  const children: string[][] = [];
+  const primaryOperations: string[] = [];
+  let reentrant: Promise<{ turnId: string }> | undefined;
+  internal.createSessionRequestClient = () => {
+    const calls: string[] = [];
+    const index = children.push(calls) - 1;
+    return {
+      async request(method: string) {
+        calls.push(method);
+        if (method === 'runtime.events.filter') {
+          if (index === 0) throw new RuntimeUnavailableError('request-only filter timed out');
+          return { preset: 'none' };
+        }
+        return { turnId: 'child-turn' };
+      },
+      dispose() {},
+    } as unknown as RuntimeClient;
+  };
+  internal.control = {
+    write(payload) {
+      const request = JSON.parse(payload.toString('utf8')) as { id: string; method: string; params: { operationId?: string } };
+      primaryOperations.push(String(request.params.operationId));
+      if (!reentrant) {
+        reentrant = client.request('chat.send', {
+          sessionId: 'transient-group', text: 'three', operationId: 'transient-3', leaseEpoch: 1,
+        });
+      }
+      internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, id: request.id, result: { turnId: 'fallback-turn' } })));
+    },
+    close() {},
+  };
+  try {
+    const first = client.request('chat.send', { sessionId: 'transient-group', text: 'one', operationId: 'transient-1', leaseEpoch: 1 });
+    const second = client.request('chat.send', { sessionId: 'transient-group', text: 'two', operationId: 'transient-2', leaseEpoch: 1 });
+    assert.deepEqual(await Promise.all([first, second]), [{ turnId: 'fallback-turn' }, { turnId: 'fallback-turn' }]);
+    assert.deepEqual(await reentrant, { turnId: 'fallback-turn' });
+    assert.deepEqual(primaryOperations, ['transient-1', 'transient-2', 'transient-3']);
+    assert.deepEqual(children, [['runtime.events.filter']], 'no replacement child can overtake the active fallback group');
+    assert.deepEqual(await client.request('chat.send', {
+      sessionId: 'transient-group', text: 'four', operationId: 'transient-4', leaseEpoch: 1,
+    }), { turnId: 'child-turn' });
+    assert.deepEqual(children, [
+      ['runtime.events.filter'],
+      ['runtime.events.filter', 'chat.send'],
+    ], 'a later explicit request may negotiate again after the failed group drains');
+  } finally { client.dispose(); }
+});
+
+test('a request-only child is terminal after disconnect and cannot reconnect with the default event stream', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  let retired = 0;
+  const child = internal.createSessionRequestClient(() => { retired++; });
+  const childInternal = child as unknown as ClientInternals;
+  childInternal.control = { write() {}, close() {} };
+  childInternal.handleDisconnect(new RuntimeUnavailableError('request-only pipe dropped'));
+  assert.equal(retired, 1);
+  await assert.rejects(child.request('runtime.health', {}), /Desktop is closing/);
+  client.dispose();
+});
+
+test('a parent lifecycle change while event suppression is pending never falls through to a new primary epoch', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  let rejectFilter!: (error: Error) => void;
+  const primaryMethods: string[] = [];
+  internal.createSessionRequestClient = () => ({
+    request() { return new Promise((_resolve, reject) => { rejectFilter = reject; }); },
+    dispose() { rejectFilter(new RuntimeUnavailableError('request-only child closed')); },
+  }) as unknown as RuntimeClient;
+  internal.control = {
+    write(payload) { primaryMethods.push((JSON.parse(payload.toString('utf8')) as { method: string }).method); },
+    close() {},
+  };
+  try {
+    const pending = client.request('chat.send', { sessionId: 'pending-filter', text: 'hello', operationId: 'pending-filter', leaseEpoch: 1 });
+    await settle();
+    client.setSuspended(true);
+    await assert.rejects(pending, /connection changed/);
+    assert.deepEqual(primaryMethods, [], 'the pending mutation is not replayed on the primary connection');
+  } finally { client.dispose(); }
+});
+
+test('a disconnected child is retired and the next explicit request negotiates a fresh connection', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  const childCalls: string[][] = [];
+  let disconnectFirst!: (error: Error) => void;
+  let rejectFirst!: (error: Error) => void;
+  internal.createSessionRequestClient = (onDisconnect = () => {}) => {
+    const calls: string[] = [];
+    const index = childCalls.push(calls) - 1;
+    if (index === 0) disconnectFirst = onDisconnect;
+    return {
+      async request(method: string) {
+        calls.push(method);
+        if (method === 'runtime.events.filter') return { preset: 'none' };
+        if (index === 0) return await new Promise((_resolve, reject) => { rejectFirst = reject; });
+        return { turnId: 'replacement-turn' };
+      },
+      dispose() {},
+    } as unknown as RuntimeClient;
+  };
+  try {
+    const first = client.request('chat.send', { sessionId: 'replace-child', text: 'one', operationId: 'replace-1', leaseEpoch: 1 });
+    await settle();
+    disconnectFirst(new RuntimeUnavailableError('request-only pipe dropped'));
+    rejectFirst(new RuntimeUnavailableError('request-only pipe dropped'));
+    await assert.rejects(first, /request-only pipe dropped/);
+    assert.deepEqual(await client.request('chat.send', { sessionId: 'replace-child', text: 'two', operationId: 'replace-2', leaseEpoch: 1 }), { turnId: 'replacement-turn' });
+    assert.deepEqual(childCalls, [
+      ['runtime.events.filter', 'chat.send'],
+      ['runtime.events.filter', 'chat.send'],
+    ]);
+  } finally { client.dispose(); }
+});
+
+test('eight active sessions get distinct bounded clients and overload stays on the primary ordered lane', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  const releases: Array<() => void> = [];
+  const children: string[][] = [];
+  const primaryMethods: string[] = [];
+  internal.createSessionRequestClient = () => {
+    const calls: string[] = [];
+    children.push(calls);
+    return {
+      async request(method: string) {
+        calls.push(method);
+        if (method === 'runtime.events.filter') return { preset: 'none' };
+        await new Promise<void>(resolve => releases.push(resolve));
+        return { turnId: 'child-turn' };
+      },
+      dispose() {},
+    } as unknown as RuntimeClient;
+  };
+  internal.control = {
+    write(payload) {
+      const request = JSON.parse(payload.toString('utf8')) as { id: string; method: string };
+      primaryMethods.push(request.method);
+      internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, id: request.id, result: { turnId: 'overflow-turn' } })));
+    },
+    close() {},
+  };
+  try {
+    const active = Array.from({ length: 8 }, (_, index) => client.request('chat.send', {
+      sessionId: `active-${index}`, text: 'hold', operationId: `hold-${index}`, leaseEpoch: 1,
+    }));
+    await settle();
+    const overflow = client.request('chat.send', { sessionId: 'active-8', text: 'overflow', operationId: 'overflow', leaseEpoch: 1 });
+    assert.deepEqual(await overflow, { turnId: 'overflow-turn' });
+    assert.equal(children.length, 8);
+    assert.equal(internal.sessionRequestShards.size, 8);
+    assert.deepEqual(primaryMethods, ['chat.send']);
+    for (const release of releases) release();
+    await Promise.all(active);
+  } finally { client.dispose(); }
+});
+
+test('the primary event stream stays globally ordered while a session request is slow and a disconnect retires its child', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  let rejectSlow!: (error: Error) => void;
+  let disposed = false;
+  const primaryMethods: string[] = [];
+  internal.control = {
+    write(payload) { primaryMethods.push((JSON.parse(payload.toString('utf8')) as { method: string }).method); },
+    close() {},
+  };
+  internal.createSessionRequestClient = () => ({
+    async request(method: string) {
+      if (method === 'runtime.events.filter') return { preset: 'none' };
+      return await new Promise((_resolve, reject) => { rejectSlow = reject; });
+    },
+    dispose() {
+      disposed = true;
+      rejectSlow(new RuntimeUnavailableError('request-only child closed'));
+    },
+  }) as unknown as RuntimeClient;
+  const sequences: number[] = [];
+  const unsubscribe = client.onEvent(event => { if (event.seq) sequences.push(event.seq); });
+  try {
+    const slow = client.request('chat.connect', { sessionId: 'session-a', leaseEpoch: 1, operationId: 'slow-connect' });
+    await settle();
+    internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, event: 'chat.item', epoch: 'epoch', seq: 40, data: { sessionId: 'session-a' } })));
+    internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, event: 'state.changed', epoch: 'epoch', seq: 41, data: { kind: 'settings' } })));
+    assert.deepEqual(sequences, [40, 41], 'the authoritative stream never skips or inverts a blocked session event');
+    internal.qaReconnectPaused = true;
+    internal.handleDisconnect(new RuntimeUnavailableError('primary pipe dropped'));
+    await assert.rejects(slow, /request-only child closed/);
+    assert.equal(disposed, true);
+    assert.deepEqual(primaryMethods, [], 'a mutation handed to a child is never retried on the primary connection');
+    assert.deepEqual(sequences, [40, 41], 'events delivered before the gap remain visible for snapshot fencing');
+  } finally {
+    unsubscribe();
+    client.dispose();
+  }
+});
 
 test('disposed clients reject new work instead of reopening runtime pipes', async () => {
   const { client } = clientWithPipes();

@@ -8,6 +8,7 @@ import type { BrowserBounds, BrowserCommand, BrowserEvent, BrowserPreferences, B
 import { browserDevtoolsShortcut } from '../../../renderer/src/browserDevtools.js';
 import { allowedTopLevelUrl, defaultBrowserPreferences, expiredHidden, lruVictims, normalizeBrowserUrl } from './policy.js';
 import { captureNativePageShot, deletePageShots, nativePageClosed, nativePageRegistered } from '../pageComments.js';
+import type { PagePick } from '@threadterm/protocol';
 import { MAX_PAGE_SHOT_BYTES, pageImageSize, pageShotPath, validPageShotId } from '../pageCommentsCore.js';
 import { appendConsoleEntry, consoleCounts, createConsoleRing, formatConsolePageData } from './consoleHandoff.js';
 import type { BrowserConsoleEntry, BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult } from './handoffTypes.js';
@@ -16,7 +17,7 @@ import { faviconRequestCurrent, fetchFavicon, settleFavicon } from './favicon.js
 
 type DevtoolsPanel = 'console'|'network'|'elements';
 type Devtools = { view:WebContentsView; bounds?:BrowserBounds; ready:boolean; panel?:DevtoolsPanel; inspectMode:boolean };
-type Tab = { preparing?:Promise<void>; partition:string; id:string; owner:WebContents; window:BrowserWindow; url:string; title:string; frameName:string; view?:WebContentsView; bounds?:BrowserBounds; radius:number; devtools?:Devtools; devtoolsWanted:boolean; devtoolsStopped?:number; devtoolsBounds?:BrowserBounds; devtoolsSnapshot?:string; contextPoint?:{x:number;y:number}; visible:boolean; shownAt:number; hiddenAt?:number; loading:boolean; documentGeneration:number; navigationEpoch:number; viewGeneration:number; navigation:BrowserState['navigation']; issue?:string; snapshot?:string; zoom:number; find?:BrowserState['find']; findRequestId?:number; origin?:string; favicon?:string; faviconRequest?:number; faviconAbort?:AbortController; downloads:Map<string,string>; leases:number; download?:{id:string;name:string}; notice?:string; gestureUntil:number; occlusionGeneration:number; contextSequence:number; console:ReturnType<typeof createConsoleRing>; consoleCounts:{errors:number;warnings:number}; consoleUrl?:string; consoleStatus:'pending'|'committed'|'failed'; handoffs:Map<string,{path:string;epoch:number;generation:number;viewGeneration:number;origin?:string;url:string;currentUrl:string}> };
+type Tab = { preparing?:Promise<void>; partition:string; id:string; owner:WebContents; window:BrowserWindow; url:string; title:string; frameName:string; view?:WebContentsView; bounds?:BrowserBounds; radius:number; devtools?:Devtools; devtoolsWanted:boolean; devtoolsStopped?:number; devtoolsBounds?:BrowserBounds; devtoolsSnapshot?:string; contextPoint?:{x:number;y:number}; contextPick?:{sequence:number;generation:number;url:string;view:WebContentsView;point:{x:number;y:number};pick:PagePick}; visible:boolean; shownAt:number; hiddenAt?:number; loading:boolean; documentGeneration:number; navigationEpoch:number; viewGeneration:number; navigation:BrowserState['navigation']; issue?:string; snapshot?:string; zoom:number; find?:BrowserState['find']; findRequestId?:number; origin?:string; favicon?:string; faviconRequest?:number; faviconAbort?:AbortController; downloads:Map<string,string>; leases:number; download?:{id:string;name:string}; notice?:string; gestureUntil:number; occlusionGeneration:number; contextSequence:number; console:ReturnType<typeof createConsoleRing>; consoleCounts:{errors:number;warnings:number}; consoleUrl?:string; consoleStatus:'pending'|'committed'|'failed'; handoffs:Map<string,{path:string;epoch:number;generation:number;viewGeneration:number;origin?:string;url:string;currentUrl:string}> };
 const tabs = new Map<string, Tab>();
 const faviconCache = new Map<string,string>();
 const FAVICON_CACHE_LIMIT=256;
@@ -85,7 +86,7 @@ function makeView(tab: Tab): WebContentsView {
   const clearHistoryUpdate=()=>{const pending=historyUpdate;historyUpdate=undefined;if(pending?.timer)clearTimeout(pending.timer);return pending;};
   const beginNavigation=(address:string,crossDocument:boolean)=>{
     const previousEpoch=tab.navigationEpoch;
-    agentControllers.get(tab.owner)?.navigationStarted(tab.id,address);tab.navigationEpoch++;if(!crossDocument)advanceSameDocumentHandoffs(tab,address,previousEpoch);tab.contextPoint=undefined;if(crossDocument){tab.faviconAbort?.abort();tab.faviconAbort=undefined;tab.consoleStatus='pending';tab.favicon=undefined;tab.faviconRequest=(tab.faviconRequest??0)+1;} tab.findRequestId=undefined; tab.find=undefined; tab.issue=tab.devtoolsStopped!==undefined?devtoolsStoppedIssue:undefined;tab.loading=true;tab.navigation='pending';tab.url=address;tab.origin=pageOrigin(address);emit(tab);
+    agentControllers.get(tab.owner)?.navigationStarted(tab.id,address);tab.navigationEpoch++;if(!crossDocument)advanceSameDocumentHandoffs(tab,address,previousEpoch);tab.contextPoint=undefined;tab.contextPick=undefined;if(crossDocument){tab.faviconAbort?.abort();tab.faviconAbort=undefined;tab.consoleStatus='pending';tab.favicon=undefined;tab.faviconRequest=(tab.faviconRequest??0)+1;} tab.findRequestId=undefined; tab.find=undefined; tab.issue=tab.devtoolsStopped!==undefined?devtoolsStoppedIssue:undefined;tab.loading=true;tab.navigation='pending';tab.url=address;tab.origin=pageOrigin(address);emit(tab);
   };
   // Supplemental native Electron event, intentionally outside its public typings.
   // Absence on a future version falls back to navigation; it never grants access.
@@ -193,7 +194,25 @@ async function nativeContext(tab:Tab,x:number,y:number):Promise<void> {
   const { pagePickerSource } = await import('../pagePickerScript.js');
   const { sanitizePagePick } = await import('../pageCommentsCore.js');
   const pick=sanitizePagePick(await wc.executeJavaScriptInIsolatedWorld(999, [{code:pagePickerSource('at',undefined,undefined,{x:x/zoom,y:y/zoom})}], false));
-  if(pick&&current()&&!tab.owner.isDestroyed()){const shot=await captureNativePageShot(wc,pick);if(!current()){if(shot)await deletePageShots([shot.id]);return;}tab.owner.send('threadterm:page-context-menu',{frameName:tab.frameName,x:tab.bounds.x+x/appZoom,y:tab.bounds.y+y/appZoom,pick:{...pick,...(shot?{shot}:{})},selectionText:''});}
+  if(pick&&current()&&!tab.owner.isDestroyed()){tab.contextPick={sequence,generation,url,view:tab.view!,point:{x:x/zoom,y:y/zoom},pick};tab.owner.send('threadterm:page-context-menu',{frameName:tab.frameName,x:tab.bounds.x+x/appZoom,y:tab.bounds.y+y/appZoom,pick,contextSequence:sequence,selectionText:''});}
+}
+function sameContextTarget(previous:PagePick,next:PagePick):boolean { if(previous.url!==next.url||previous.target.type!==next.target.type)return false;if(previous.target.type==='element'&&next.target.type==='element')return previous.target.selector===next.target.selector&&previous.target.tag===next.target.tag;const a=previous.target.rect,b=next.target.rect;return a.x===b.x&&a.y===b.y&&a.width===b.width&&a.height===b.height; }
+async function captureContextPick(tab:Tab,generation:unknown,sequence:unknown):Promise<import('./handoffTypes.js').BrowserContextCaptureResult> {
+  validGeneration(tab,generation);
+  if(typeof sequence!=='number'||!Number.isSafeInteger(sequence)||sequence<1)throw new Error('Invalid page context.');
+  const contextSequence=sequence;
+  const pending=tab.contextPick,wc=tab.view?.webContents;
+  if(!pending||!wc)throw new Error('Page changed; open the menu again.');
+  const current=()=>tabs.get(tab.id)===tab&&tab.contextPick===pending&&tab.contextSequence===contextSequence&&tab.documentGeneration===generation&&tab.view===pending.view&&wc===pending.view.webContents&&!wc.isDestroyed()&&wc.getURL()===pending.url&&tab.url===pending.url&&tab.visible;
+  if(!current())throw new Error('Page changed; open the menu again.');
+  const { pagePickerSource } = await import('../pagePickerScript.js');
+  const { sanitizePagePick } = await import('../pageCommentsCore.js');
+  const pick=sanitizePagePick(await wc.executeJavaScriptInIsolatedWorld(999, [{code:pagePickerSource('at',undefined,undefined,pending.point)}], false));
+  if(!pick||!sameContextTarget(pending.pick,pick)||!current())throw new Error('Page changed; open the menu again.');
+  const shot=await captureNativePageShot(wc,pick);
+  if(!current()){if(shot)await deletePageShots([shot.id]);throw new Error('Page changed; open the menu again.');}
+  if(!shot)throw new Error('Could not capture the selected page area.');
+  return {shot,pick,documentGeneration:tab.documentGeneration,contextSequence};
 }
 function applyViewRadius(tab:Tab):void { const radius=Math.round(tab.radius*tab.owner.getZoomFactor());for(const view of [tab.view,tab.devtools?.view])if(view&&!view.webContents.isDestroyed())view.setBorderRadius(radius); }
 function detachDevtools(tab:Tab):void { const view=tab.devtools?.view;if(view&&!tab.window.isDestroyed()&&appView(tab).children.includes(view))appView(tab).removeChildView(view); }
@@ -344,6 +363,7 @@ export function registerBrowser(assertTrustedRenderer:(event:IpcMainInvokeEvent)
     if(command.type==='preferences'){if(command.patch!==undefined&&(!command.patch||typeof command.patch!=='object'||typeof command.patch.devServerOffers!=='boolean'))throw new Error('Invalid browser handoff preferences');if(command.patch){devServerOffers=command.patch.devServerOffers!;savePreferences();for(const owner of trustedOwners)if(!owner.isDestroyed())owner.send('threadterm:browser-handoff-event',{type:'preferences',devServerOffers} satisfies BrowserHandoffEvent);}return {devServerOffers};}
     const tab=tabFor(event,command.tabId);
     if(command.type==='capture')return captureHandoff(tab,command.documentGeneration);
+    if(command.type==='contextCapture')return captureContextPick(tab,command.documentGeneration,command.contextSequence);
     if(command.type==='saveMarkup')return saveMarkup(tab,command);
     if(command.type==='console'){validGeneration(tab,command.documentGeneration);const wc=tab.view?.webContents;if(!wc||wc.isDestroyed()||tab.consoleStatus!=='committed'||!tab.consoleUrl||wc.getURL()!==tab.consoleUrl)throw new Error('Page changed; wait for navigation to settle before sending console errors.');const counts=consoleCounts(tab.console.entries);return {url:tab.consoleUrl,documentGeneration:tab.documentGeneration,entries:[...tab.console.entries],...counts,truncated:tab.console.truncated,text:formatConsolePageData(tab.consoleUrl,tab.console.entries,tab.console.truncated)};}
     throw new Error('Unsupported browser handoff command');

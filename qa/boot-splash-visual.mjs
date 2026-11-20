@@ -1,6 +1,6 @@
 // Real-app check of the launch screen (prototypes/app-loading → renderer/index.html + src/bootSplash.ts): it is in
 // the window's first paint, holds while the runtime is still starting, never disappears before the app has loaded,
-// hands over as soon as its finale ends, remembers theme + language for the next launch, honours reduced motion,
+// hands over when the workspace renders, remembers theme + language for the next launch, honours reduced motion,
 // and clears promptly when the runtime cannot start.
 // Isolated Electron (own data, user data, pipe and app bundle in disposable scratch;
 // desktop-dist and renderer/dist untouched) on the target-qa runtime. No providers are
@@ -80,7 +80,8 @@ async function recordTimeline() {
       const splash = document.getElementById('boot-splash');
       const loading = !!document.querySelector('.content.main > .state > .spinner');
       const appReady = !!document.querySelector('.app-shell .content.main') && !loading;
-      const entry = { present: !!splash, phase: splash?.dataset.phase ?? null, status: splash?.querySelector('.bs-status-text')?.textContent ?? null, appReady, opacity: splash ? Number(getComputedStyle(splash).opacity) : 0 };
+      const hit = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+      const entry = { blocked: !!splash && splash.contains(hit), present: !!splash, phase: splash?.dataset.phase ?? null, status: splash?.querySelector('.bs-status-text')?.textContent ?? null, appReady, opacity: splash ? Number(getComputedStyle(splash).opacity) : 0 };
       const key = JSON.stringify({ ...entry, opacity: entry.opacity === 1 ? 1 : entry.opacity === 0 ? 0 : 'fading' });
       if (key !== last) { last = key; log.entries.push({ at: Math.round(performance.now()), ...entry }); }
       if (splash || !appReady) requestAnimationFrame(sample);
@@ -110,9 +111,13 @@ function assertHandOver(log, label, maxLatency) {
   assert.ok(ready && ready.at <= gone.at, `${label}: the app rendered before the launch screen left`);
   const fadingWhileLoading = log.entries.find(entry => entry.present && entry.opacity < 1 && !entry.appReady);
   assert.equal(fadingWhileLoading, undefined, `${label}: no exit fade before the app had rendered`);
+  const interactive = log.entries.find(entry => entry.appReady && !entry.blocked);
+  assert.ok(interactive, label + ': the workspace accepts pointer input');
+  const inputDelay = interactive.at - ready.at;
+  assert.ok(inputDelay <= 100, label + ': the splash intercepted input for ' + inputDelay + ' ms after readiness');
   const latency = gone.at - ready.at;
   assert.ok(latency <= maxLatency, `${label}: handed over ${latency} ms after the app rendered (max ${maxLatency})`);
-  return { latency, total: gone.at, ready: ready.at, sampledFrom: Math.round(log.started) };
+  return { latency, inputDelay, total: gone.at, ready: ready.at, sampledFrom: Math.round(log.started) };
 }
 
 async function teardown() {
@@ -125,6 +130,19 @@ try {
   await mkdir(out, { recursive: true });
   releaseLock = await acquireElectronQaLock();
   await prepare();
+
+  // Fresh app process, profile and runtime, without a simulated backend delay.
+  const launchStarted = Date.now();
+  await launch('cold', runtime);
+  const coldLog = await waitForTimelineEnd('cold');
+  const interactive = coldLog.entries.find(entry => entry.appReady && !entry.blocked);
+  assert.ok(interactive, 'the fresh workspace accepts pointer input');
+  const origin = await page.evaluate(() => performance.timeOrigin);
+  await page.evaluate(() => window.threadterm.request('runtime.health', {}));
+  report.cold = { launchToInteractiveMs: Math.round(origin + interactive.at - launchStarted),
+    navigationToInteractiveMs: interactive.at, firstSampleMs: Math.round(coldLog.started) };
+  check(`fresh profile and runtime: workspace accepts input ${report.cold.launchToInteractiveMs} ms after launching Electron (${interactive.at} ms after navigation)`);
+  await teardown();
 
   // 1. Cold start with a slow runtime: no saved appearance yet (system theme, English default).
   console.log(`slow runtime (${SLOW_MS} ms) …`);
@@ -139,11 +157,11 @@ try {
   assert.equal(holding.status, 'Connecting to the local runtime', 'the status names the step that is actually pending');
   check(`holds while the runtime starts (3.6 s: phase hold, status "${holding.status}", bar ${holding.fill})`);
   await shot('03-hold-slow.png');
-  await page.waitForFunction(() => document.getElementById('boot-splash')?.dataset.phase === 'finale', null, { timeout: 20000 });
-  await shot('04-finale-slow.png');
+  await page.waitForFunction(() => document.getElementById('boot-splash')?.inert || !document.getElementById('boot-splash'), null, { timeout: 20000 });
+  await shot('04-handover-slow.png');
   const slow = assertHandOver(await waitForTimelineEnd('slow'), 'slow runtime', 1100);
   assert.ok(slow.ready > SLOW_MS, `the app only rendered after the delayed runtime (${slow.ready} ms)`);
-  check(`slow start: app rendered at ${slow.ready} ms, launch screen handed over ${slow.latency} ms later (finale + fade), never before`);
+  check(`slow start: app rendered at ${slow.ready} ms, workspace accepts input ${slow.inputDelay} ms later, fade completed in ${slow.latency} ms, never before`);
   await delay(300); await shot('05-app-after-slow.png');
 
   // 2. Saved appearance: dark + English, then a relaunch of the window against the now-warm runtime.
@@ -170,7 +188,7 @@ try {
   const statuses = [...new Set(warmLog.entries.map(entry => entry.status).filter(Boolean))];
   assert.ok(!statuses.includes('正在连接本地运行时'), 'no runtime-wait message when nothing waited');
   assert.ok(warm.total <= 2900, `a warm start is not dragged out (${warm.total} ms from navigation)`);
-  check(`warm relaunch (dark, Chinese from the first frame): app rendered at ${warm.ready} ms, launch screen gone at ${warm.total} ms; statuses ${statuses.join(' → ')}`);
+  check(`warm relaunch (dark, Chinese from the first frame): app rendered at ${warm.ready} ms, workspace accepts input ${warm.inputDelay} ms later, launch screen gone at ${warm.total} ms; statuses ${statuses.join(' → ')}`);
   await delay(300); await shot('08-app-after-warm-dark.png');
 
   // 3. Reduced motion: a still composition that only fades once the app is ready.

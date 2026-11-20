@@ -362,7 +362,15 @@ function FileWorkspaceInstance({
         noGit: "Git status is unavailable for this directory.",
       };
 
-  const gitState = useGitStatus(scope, (toolsOpen || view === "diff" || view === "file") && !external, zh);
+  // PaneWorkspace retains visited tabs so editors keep their state.  A hidden
+  // file surface must not also subscribe to worktree events and run Git.
+  const gitState = useGitStatus(
+    scope,
+    active !== false && (toolsOpen || view === "diff" || view === "file") && !external,
+    zh,
+    [],
+    false,
+  );
   const conflictedFile = Boolean(document && gitState.status?.changes.some(change => change.path === document.path && isConflict(change)));
   const conflictStates = useConflictStates(scope, conflictedFile && document ? [document.path] : [], document?.fingerprint);
   const stageReason = conflictedFile && document ? conflictStageReason(conflictStates[document.path], zh) : undefined;

@@ -1,5 +1,5 @@
 import type { BrowserBridge, BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';
-import type { BrowserHandoffBridge, BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult } from '../../desktop/src/browser/handoffTypes';
+import type { BrowserHandoffBridge, BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult, BrowserHandoffResultFor } from '../../desktop/src/browser/handoffTypes';
 import type { BackgroundBridge } from '../../desktop/src/backgroundImagesCore';
 import type { PagePick, PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
 export type { ChatItem, NativeHistoryItem, ProviderId, Snapshot } from "@threadterm/protocol";
@@ -38,7 +38,7 @@ export const markPageTarget = (request: Parameters<typeof window.threadterm.mark
 export const inspectPageTarget = (request: Parameters<typeof window.threadterm.inspectPageTarget>[0]) => facade().inspectPageTarget(request);
 export const readPageShot = (shotId: string) => facade().readPageShot(shotId);
 export const deletePageShots = (shotIds: string[]) => facade().deletePageShots(shotIds);
-export const onPageContextMenu = (listener: (value: { frameName: string; x: number; y: number; pick?: PagePick; staticFrame?: boolean; selectionText: string }) => void) => facade().onPageContextMenu(listener);
+export const onPageContextMenu = (listener: (value: { frameName: string; x: number; y: number; pick?: PagePick; staticFrame?: boolean; contextSequence?: number; selectionText: string }) => void) => facade().onPageContextMenu(listener);
 
 /** Additive desktop capability; older/browser-only facades do not own native pages. */
 const browserFacade = () => facade() as typeof window.threadterm & Partial<BrowserBridge>;
@@ -49,9 +49,9 @@ export function browserCommand(command: BrowserCommand): Promise<BrowserState|Br
 }
 export const onBrowserEvent = (listener:(event:BrowserEvent)=>void) => browserFacade().onBrowserEvent?.(listener) ?? (()=>{});
 const browserHandoffFacade = () => facade() as typeof window.threadterm & Partial<BrowserHandoffBridge>;
-export const browserHandoff = (command:BrowserHandoffCommand):Promise<BrowserHandoffResult> => browserHandoffFacade().browserHandoff?.(command) ?? Promise.reject(new Error('The built-in browser requires the desktop application.'));
+export const browserHandoff = <C extends BrowserHandoffCommand>(command:C):Promise<BrowserHandoffResultFor<C>> => browserHandoffFacade().browserHandoff?.(command) ?? Promise.reject(new Error('The built-in browser requires the desktop application.'));
 export const onBrowserHandoffEvent = (listener:(event:BrowserHandoffEvent)=>void) => browserHandoffFacade().onBrowserHandoffEvent?.(listener) ?? (()=>{});
-export type { BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult } from '../../desktop/src/browser/handoffTypes';
+export type { BrowserHandoffCommand, BrowserHandoffEvent, BrowserHandoffResult, BrowserHandoffResultFor } from '../../desktop/src/browser/handoffTypes';
 export type { BrowserCommand, BrowserEvent, BrowserPreferences, BrowserState } from './browserTypes';
 
 /** Additive desktop capability; the browser build serves no background images. */

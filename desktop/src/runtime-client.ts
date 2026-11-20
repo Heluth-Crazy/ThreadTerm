@@ -304,6 +304,41 @@ const BACKUP_REQUEST_TIMEOUT_MS = 30 * 60_000;
  * account, thread resume, …), so a start that succeeds after 50 s must not be reported as failed here
  * while the runtime is still connecting it (11-18). */
 const CHAT_CONNECT_TIMEOUT_MS = 150_000;
+const SESSION_REQUEST_SHARD_COUNT = 8;
+const SESSION_REQUEST_IDLE_MS = 30_000;
+
+const ISOLATED_SESSION_MUTATIONS = new Set<Method>([
+  'chat.answer',
+  'chat.approve',
+  'chat.backgroundTask.stop',
+  'chat.cancel',
+  'chat.connect',
+  'chat.feedback.add',
+  'chat.feedback.dismiss',
+  'chat.option.set',
+  'chat.projectTrust.set',
+  'chat.queue.add',
+  'chat.queue.move',
+  'chat.queue.pause',
+  'chat.queue.remove',
+  'chat.queue.resume',
+  'chat.queue.send',
+  'chat.queue.update',
+  'chat.refreshHistory',
+  'chat.repair',
+  'chat.send',
+  'chat.steer',
+  'session.releaseResources',
+  'session.resume',
+  'session.stop',
+]);
+
+export function isolatedSessionMutationId<M extends Method>(method: M, params: RequestParams<M>): string | undefined {
+  if (!ISOLATED_SESSION_MUTATIONS.has(method)) return undefined;
+  const sessionId = (params as { sessionId?: unknown }).sessionId;
+  if (typeof sessionId !== 'string' || !sessionId) return undefined;
+  return sessionId;
+}
 
 export function requestTimeoutMs(method: Method): number {
   if (method === 'data.backup' || method === 'data.backup.verify') return BACKUP_REQUEST_TIMEOUT_MS;
@@ -311,8 +346,38 @@ export function requestTimeoutMs(method: Method): number {
   return DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
+interface RuntimeClientOptions {
+  autoLaunch?: boolean;
+  controlOnly?: boolean;
+  maxConsumerQueueBytes?: number;
+  profile?: { kind: 'local' } | PeerProfile;
+  /** Internal: request-only clients share the event-stream owner's lease principal. */
+  sharedClientId?: string;
+  /** Internal: a filtered mutation pipe is single-connection and must never reconnect unfiltered. */
+  requestOnly?: boolean;
+  onRequestOnlyDisconnect?: (error: Error) => void;
+}
+
+type SessionRequestPreparation = 'ready' | 'unsupported' | 'failed';
+
+interface SessionRequestShard {
+  sessionId: string;
+  client: RuntimeClient;
+  active: number;
+  lastUsed: number;
+  ready: Promise<SessionRequestPreparation>;
+  fallback: boolean;
+  idleTimer?: NodeJS.Timeout;
+}
+
 export class RuntimeClient {
-  constructor(private readonly options: { autoLaunch?: boolean; controlOnly?: boolean; maxConsumerQueueBytes?: number; profile?: { kind: 'local' } | PeerProfile } = {}) {}
+  private readonly options: RuntimeClientOptions;
+  private clientId: string;
+
+  constructor(options: RuntimeClientOptions = {}) {
+    this.options = options;
+    this.clientId = options.sharedClientId ?? randomUUID();
+  }
   private readonly peerHeartbeat = new PeerHeartbeat(
     () => { void this.request('runtime.health', {}).catch(() => {}); },
     () => this.handleDisconnect(new RuntimeUnavailableError('Computer did not respond for 45 seconds')),
@@ -328,7 +393,6 @@ export class RuntimeClient {
   private readonly browserPending = new Map<string, PendingBrowserRequest>();
   private readonly browserFrameListeners = new Set<(frame: BrowserPrivateFrame) => void>();
   private readonly browserDisconnectListeners = new Set<(error: Error) => void>();
-  private clientId = randomUUID();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly eventListeners = new Set<(event: RuntimeEvent) => void>();
   private readonly subscriptions = new Map<string, OutputSubscription>();
@@ -343,10 +407,27 @@ export class RuntimeClient {
   private disconnectRevision = 0;
   private incompatible?: ProtocolIncompatibleError | PeerTransportError;
   private qaReconnectPaused = false;
+  private readonly sessionRequestShards = new Map<string, SessionRequestShard>();
+  private readonly overflowSessionRequests = new Map<string, number>();
+  private sessionRequestRevision = 0;
+  private requestOnlyEventsSupported: boolean | undefined;
 
   async request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
     if (this.options.controlOnly && ['session.claim', 'session.renew', 'session.release'].includes(method)) throw new RuntimeUnavailableError('Watchers cannot claim terminal control');
     if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
+    if (!this.options.controlOnly) {
+      const sessionId = isolatedSessionMutationId(method, params);
+      if (sessionId !== undefined) {
+        await this.ensureConnected();
+        this.assertOpen();
+        if (!this.control) throw new RuntimeUnavailableError('Runtime control pipe is unavailable');
+        return this.requestOnSessionShard(sessionId, method, params);
+      }
+    }
+    return this.requestDirect(method, params);
+  }
+
+  private async requestDirect<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
     await this.ensureConnected();
     this.assertOpen();
     const id = randomUUID();
@@ -379,6 +460,125 @@ export class RuntimeClient {
     } catch (error) {
       if (trace) emitSendTrace('desktop.request.end', trace, 'error');
       throw error;
+    }
+  }
+
+  private createSessionRequestClient(onDisconnect: (error: Error) => void): RuntimeClient {
+    return new RuntimeClient({
+      autoLaunch: false,
+      controlOnly: true,
+      profile: this.options.profile,
+      sharedClientId: this.clientId,
+      requestOnly: true,
+      onRequestOnlyDisconnect: onDisconnect,
+    });
+  }
+
+  private async prepareSessionRequestClient(client: RuntimeClient): Promise<SessionRequestPreparation> {
+    try {
+      const result = await client.request('runtime.events.filter', { preset: 'none' });
+      return result.preset === 'none' ? 'ready' : 'failed';
+    } catch (error) {
+      if (error instanceof RuntimeRequestError && error.code === 'invalid_request') return 'unsupported';
+      return 'failed';
+    }
+  }
+
+  private async requestOnOverflowSession<M extends Method>(sessionId: string, method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
+    this.overflowSessionRequests.set(sessionId, (this.overflowSessionRequests.get(sessionId) ?? 0) + 1);
+    try {
+      return await this.requestDirect(method, params);
+    } finally {
+      const remaining = (this.overflowSessionRequests.get(sessionId) ?? 1) - 1;
+      if (remaining === 0) this.overflowSessionRequests.delete(sessionId);
+      else this.overflowSessionRequests.set(sessionId, remaining);
+    }
+  }
+
+  private async requestOnSessionShard<M extends Method>(sessionId: string, method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
+    const requestRevision = this.sessionRequestRevision;
+    let entry = this.sessionRequestShards.get(sessionId);
+    if (!entry && (this.requestOnlyEventsSupported === false || this.overflowSessionRequests.has(sessionId))) {
+      return this.requestOnOverflowSession(sessionId, method, params);
+    }
+    if (!entry) {
+      if (this.sessionRequestShards.size >= SESSION_REQUEST_SHARD_COUNT) {
+        const idle = [...this.sessionRequestShards.values()]
+          .filter(candidate => candidate.active === 0)
+          .sort((left, right) => left.lastUsed - right.lastUsed)[0];
+        if (!idle) return this.requestOnOverflowSession(sessionId, method, params);
+        this.sessionRequestShards.delete(idle.sessionId);
+        if (idle.idleTimer) clearTimeout(idle.idleTimer);
+        idle.sessionId = sessionId;
+        idle.idleTimer = undefined;
+        entry = idle;
+      } else {
+        let created: SessionRequestShard | undefined;
+        const client = this.createSessionRequestClient(() => {
+          if (!created || this.sessionRequestShards.get(created.sessionId) !== created) return;
+          this.sessionRequestShards.delete(created.sessionId);
+          if (created.idleTimer) clearTimeout(created.idleTimer);
+        });
+        entry = {
+          sessionId,
+          client,
+          active: 0,
+          lastUsed: Date.now(),
+          ready: Promise.resolve('failed'),
+          fallback: false,
+        };
+        created = entry;
+        entry.ready = this.prepareSessionRequestClient(client);
+      }
+      this.sessionRequestShards.set(sessionId, entry);
+    }
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.idleTimer = undefined;
+    entry.active++;
+    try {
+      const preparation = await entry.ready;
+      if (this.sessionRequestRevision !== requestRevision || this.suspended || this.expectedDisconnect || this.qaReconnectPaused) {
+        throw new RuntimeUnavailableError('Runtime connection changed before the session request was sent');
+      }
+      if (this.sessionRequestShards.get(sessionId) !== entry) {
+        throw new RuntimeUnavailableError('Request-only runtime connection closed before the session request was sent');
+      }
+      if (preparation !== 'ready') {
+        if (!entry.fallback) {
+          entry.fallback = true;
+          entry.client.dispose();
+          if (preparation === 'unsupported') this.requestOnlyEventsSupported = false;
+        }
+        return await this.requestDirect(method, params);
+      }
+      this.requestOnlyEventsSupported = true;
+      return await entry.client.request(method, params);
+    } finally {
+      entry.active--;
+      if (entry.active === 0 && this.sessionRequestShards.get(sessionId) === entry) {
+        if (entry.fallback) {
+          this.sessionRequestShards.delete(sessionId);
+        } else {
+          entry.lastUsed = Date.now();
+          entry.idleTimer = setTimeout(() => {
+            if (entry!.active !== 0 || this.sessionRequestShards.get(sessionId) !== entry) return;
+            this.sessionRequestShards.delete(sessionId);
+            entry!.client.dispose();
+          }, SESSION_REQUEST_IDLE_MS);
+          entry.idleTimer.unref();
+        }
+      }
+    }
+  }
+
+  private closeSessionRequestShards(): void {
+    this.sessionRequestRevision++;
+    const entries = [...this.sessionRequestShards.values()];
+    this.sessionRequestShards.clear();
+    this.overflowSessionRequests.clear();
+    for (const entry of entries) {
+      if (entry.idleTimer) clearTimeout(entry.idleTimer);
+      entry.client.dispose();
     }
   }
 
@@ -573,6 +773,7 @@ export class RuntimeClient {
   dropControlForQa(): boolean {
     if (env.THREADTERM_V3_RELOCATION_QA !== '1' || !this.control) return false;
     this.qaReconnectPaused = true;
+    this.closeSessionRequestShards();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.control.close();
@@ -748,6 +949,7 @@ export class RuntimeClient {
   private closeTunnels(): void { for (const socket of this.tunnels) socket.destroy(); this.tunnels.clear(); }
 
   dispose(): void {
+    this.closeSessionRequestShards();
     this.closeTunnels();
     this.expectedDisconnect = true;
     this.peerHeartbeat.stop();
@@ -770,6 +972,7 @@ export class RuntimeClient {
 
   setSuspended(suspended: boolean): void {
     this.suspended = suspended;
+    if (suspended) this.closeSessionRequestShards();
     if (suspended) this.peerHeartbeat.stop();
     if (suspended) this.invalidateBrowser(new RuntimeUnavailableError('Desktop shutdown is in progress'), true);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -869,7 +1072,7 @@ export class RuntimeClient {
 
   private async connectPeer(profile: PeerProfile): Promise<void> {
     this.assertOpen();
-    this.clientId = randomUUID();
+    if (!this.options.sharedClientId) this.clientId = randomUUID();
     const clientId = this.clientId;
     const control = await LengthPrefixedSocket.connectPeer(profile);
     let output: LengthPrefixedSocket | undefined;
@@ -1030,6 +1233,7 @@ export class RuntimeClient {
   }
 
   private handleDisconnect(error: Error): void {
+    this.closeSessionRequestShards();
     this.closeTunnels();
     if (this.expectedDisconnect || this.disconnecting) return;
     this.peerHeartbeat.stop();
@@ -1045,6 +1249,12 @@ export class RuntimeClient {
     this.disconnecting = false;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();
+    if (this.options.requestOnly) {
+      this.expectedDisconnect = true;
+      this.options.onRequestOnlyDisconnect?.(error);
+      return;
+    }
+    this.requestOnlyEventsSupported = undefined;
     if (error instanceof ProtocolIncompatibleError || error instanceof PeerTransportError) {
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;

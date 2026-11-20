@@ -2,20 +2,10 @@
    The prototype is a fixed 6 s study; the app version is tied to the real start-up instead:
    - the intro (agents float in, converge into the core, the wordmark rises) runs on its own clock up to SPLASH_GATE;
    - it HOLDS at the gate until the app has loaded, so it can never finish while the app is still loading;
-   - once loaded it plays the short "ready" finale (core lights up) and fades straight into the app;
-   - a load that completes before the gate speeds the rest of the intro up rather than making the user sit through it.
-   Timeline values are milliseconds at normal speed. */
+   - when the app can be used, the current frame fades without holding input. */
 
 export const SPLASH_GATE = 2200;
-/** Playback rate of the remaining intro once the app is ready before the gate. 8×: the app is usually ready about
- * 0.8 s into the intro; at 1.6× the launch screen stayed some 2.4 s after it, and start-up long tasks (each frame
- * advances the clock 100 ms at most) ate most of a 4× gain (perf 11-18). The finale and the fade are unchanged. */
-export const SPLASH_FAST_RATE = 8;
-const FAST_RAMP_MS = 220;
-/** Timeline ms from the gate (app ready) to the start of the exit fade. */
-export const SPLASH_FINALE = 420;
-export const SPLASH_EXIT = 320;
-const FAILED_EXIT = 240;
+export const SPLASH_EXIT = 180;
 /** A stalled frame (a long task during start-up) advances the clock by at most this much. */
 const MAX_FRAME_MS = 100;
 
@@ -64,7 +54,7 @@ export const SPLASH_AGENTS: readonly SplashAgent[] = [
 ];
 
 export type SplashOutcome = "ready" | "failed";
-export type SplashPhase = "intro" | "hold" | "finale" | "exit" | "done";
+export type SplashPhase = "intro" | "hold" | "exit" | "done";
 export type SplashStatus = "preparing" | "gathering" | "connecting" | "ready" | "failed";
 export type SplashClock = {
   /** Timeline ms. Never passes SPLASH_GATE before the outcome is known. */
@@ -96,45 +86,17 @@ export function settleClock(clock: SplashClock, outcome: SplashOutcome): SplashC
 
 export function splashPhase(clock: SplashClock): SplashPhase {
   if (clock.exit >= 1) return "done";
-  if (clock.exit > 0) return "exit";
-  if (!clock.outcome) return clock.t >= SPLASH_GATE ? "hold" : "intro";
-  return clock.outcome === "ready" && clock.t >= SPLASH_GATE ? "finale" : "intro";
+  if (clock.outcome) return "exit";
+  return clock.t >= SPLASH_GATE ? "hold" : "intro";
 }
 
 export function advanceClock(clock: SplashClock, elapsed: number): SplashClock {
+  if (clock.outcome) {
+    const since = clock.since + Math.max(0, elapsed);
+    return { ...clock, since, exit: Math.min(1, since / SPLASH_EXIT) };
+  }
   const dt = clamp(elapsed, 0, MAX_FRAME_MS);
-  const next: SplashClock = { ...clock, since: clock.outcome ? clock.since + dt : 0 };
-  if (next.outcome === "failed") {
-    // No celebration for a failed start: the error screen behind is the interface, reveal it promptly.
-    next.t = Math.min(SPLASH_GATE, next.t + dt);
-    next.exit = Math.min(1, next.exit + dt / FAILED_EXIT);
-    return next;
-  }
-  if (next.exit > 0) {
-    next.t += dt; // the finale (ring, sheen) keeps moving while the screen fades
-    next.exit = Math.min(1, next.exit + dt / SPLASH_EXIT);
-    return next;
-  }
-  if (!next.outcome) {
-    if (next.t >= SPLASH_GATE) next.held += dt;
-    next.t = Math.min(SPLASH_GATE, next.t + dt);
-    return next;
-  }
-  let budget = dt;
-  if (next.t < SPLASH_GATE) {
-    const rate = 1 + (SPLASH_FAST_RATE - 1) * clamp(next.since / FAST_RAMP_MS);
-    const step = Math.min(SPLASH_GATE - next.t, budget * rate);
-    next.t += step;
-    budget -= step / rate;
-  }
-  const end = SPLASH_GATE + (next.reduced ? 0 : SPLASH_FINALE);
-  if (next.t < end) {
-    const step = Math.min(end - next.t, budget);
-    next.t += step;
-    budget -= step;
-  }
-  if (next.t >= end && budget > 0) next.exit = Math.min(1, budget / SPLASH_EXIT);
-  return next;
+  return { ...clock, t: Math.min(SPLASH_GATE, clock.t + dt), held: clock.held + (clock.t >= SPLASH_GATE ? dt : 0) };
 }
 
 export type SplashSize = { width: number; height: number };
@@ -173,7 +135,7 @@ export function agentOffset(agent: SplashAgent, u: number, ambient: number, size
 
 export function splashFrame(clock: SplashClock, ambient: number, size: SplashSize): SplashFrame {
   const { t, reduced } = clock;
-  const finale = clock.outcome === "ready" ? Math.max(0, t - SPLASH_GATE) : 0;
+  const finale = clock.outcome === "ready" ? clock.since : 0;
   const hold = reduced ? 0 : smooth(clock.held / HOLD_EASE_MS) * (1 - smooth(finale / 300));
   const breath = hold * (0.5 - 0.5 * Math.cos(ambient * 2 * Math.PI / BREATH_MS));
   const agents = SPLASH_AGENTS.map((agent): AgentFrame => {
@@ -196,7 +158,7 @@ export function splashFrame(clock: SplashClock, ambient: number, size: SplashSiz
   const ring = reduced ? 0 : smooth((finale - 40) / 140) * (1 - smooth((finale - 180) / 520));
   const waiting = PROGRESS_AT_GATE * clamp(t / SPLASH_GATE) + (PROGRESS_HELD_MAX - PROGRESS_AT_GATE) * (1 - Math.exp(-clock.held / 3500));
   const status: SplashStatus = clock.outcome === "failed" ? "failed"
-    : clock.outcome === "ready" && t >= SPLASH_GATE ? "ready"
+    : clock.outcome === "ready" ? "ready"
       : clock.held >= CONNECTING_AFTER_MS ? "connecting"
         : t >= GATHERING_AT ? "gathering" : "preparing";
   return {

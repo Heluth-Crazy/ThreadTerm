@@ -1870,17 +1870,34 @@
       ]
     },
     "RequestParams<\"runtime.events.filter\">": {
-      "type": "object",
-      "properties": {
-        "preset": {
-          "type": "string",
-          "const": "tree"
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "preset": {
+              "type": "string",
+              "const": "tree"
+            }
+          },
+          "required": [
+            "preset"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "preset": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "preset"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "preset"
-      ],
-      "additionalProperties": false
+      ]
     },
     "RequestParams<\"runtime.health\">": {
       "type": "object",

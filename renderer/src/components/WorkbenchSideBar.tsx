@@ -13,6 +13,7 @@ import { workbenchError } from '../workbench/errors';
 import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
+import { sharedGitStatusRequest } from '../workbench/gitStatusRequest';
 import type { GitWorkbenchAction } from '../workbench/gitKeyboardCommand';
 import { sameFilesScope, type FilesRevealRequest } from '../workbench/revealInFiles';
 import '../workbench/workbench.css';
@@ -44,7 +45,7 @@ function readStored():Stored {
  * and file actions, an agent turn or terminal run finishing in the scope, window focus, the panel becoming visible
  * and the explicit Refresh button. There is no timer, so an open panel costs nothing while nothing happens; bursts
  * coalesce into one request with at most one waiting behind it. */
-export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath'>, active:boolean, zh:boolean, sessionIds:readonly string[] = []):GitState {
+export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath'>, active:boolean, zh:boolean, sessionIds:readonly string[] = [], loadWhenInactive=true):GitState {
  const [status, setStatus] = useState<GitStatus>();
  const [error, setError] = useState<string>();
  const [loading, setLoading] = useState(false);
@@ -56,16 +57,16 @@ export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath
  const load = useCallback(() => {
   const requested = scopeKey;
   setLoading(true);
-  return request('git.status', scopeParams(scope))
+  return sharedGitStatusRequest(scopeKey, () => request('git.status', scopeParams(scope)))
    .then(value => { if(key.current === requested) { setStatus(value); setError(undefined); } })
    .catch(failure => { if(key.current === requested) { setStatus(undefined); setError(workbenchError(failure, zh)); } })
    .finally(() => { if(key.current === requested) setLoading(false); });
  }, [scopeKey, zh]);
  const loadRef = useRef(load); loadRef.current = load;
  const refresh = useCallback(() => queue.current ? queue.current.request() : loadRef.current(), []);
- // A closed panel still reads once per scope (badge); an open one reads through its queue below, so a new scope
- // never costs two `git.status` calls.
- useEffect(() => { setStatus(undefined); setError(undefined); if(!active) void load(); }, [scopeKey]);
+ // A closed side bar reads once per scope for its SCM badge. Hidden file tabs opt out:
+ // PaneWorkspace keeps them mounted only to preserve editor state, not to do background Git work.
+ useEffect(() => { setStatus(undefined); setError(undefined); if(!active&&loadWhenInactive) void load(); }, [scopeKey, loadWhenInactive]);
  useEffect(() => {
   if(!active) return;
   const requests = createRefreshQueue(() => loadRef.current());

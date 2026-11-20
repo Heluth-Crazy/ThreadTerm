@@ -971,7 +971,7 @@ export interface RequestMap {
  'settings.import.apply': [{bundle:string;selected:string[];expectedRevision:number;operationId:string},Settings];
  'usage.query': [{from?:string;to?:string;sessionId?:string;projectId?:string;provider?:ProviderId;status?:SessionStatus;source?:UsageSource;sourceSessionId?:string},UsageResult];
 
- 'runtime.events.filter': [{preset:'tree'},{preset:'tree';tree:{worktrees:Worktree[];visibility?:CatalogVisibility[]}}];
+ 'runtime.events.filter': [{preset:'tree'}|{preset:'none'},{preset:'tree';tree:{worktrees:Worktree[];visibility?:CatalogVisibility[]}}|{preset:'none'}];
  'runtime.health': [{},{version:string;epoch:string;contract:number}];
  /** Whether Windows would show a notification now: `busy`/`fullscreen`/`presentation` mean a full-screen app, game or presentation runs. `unknown` off Windows. Local only; the task island hides on those. */
  'system.notificationState': [{},{state:'notPresent'|'busy'|'fullscreen'|'presentation'|'available'|'quietTime'|'app'|'unknown'}];
@@ -1286,7 +1286,7 @@ export interface ThreadTermBridge {
  readPageShot(shotId:string):Promise<string|undefined>;
  deletePageShots(shotIds:string[]):Promise<void>;
   /** Desktop preview element menu. This is an Electron-only event and never reaches the runtime. */
-  onPageContextMenu(listener:(value:{frameName:string;x:number;y:number;pick?:PagePick;staticFrame?:boolean;selectionText:string})=>void):()=>void;
+  onPageContextMenu(listener:(value:{frameName:string;x:number;y:number;pick?:PagePick;staticFrame?:boolean;contextSequence?:number;selectionText:string})=>void):()=>void;
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
  revealFile?(sessionId:string,path:string):Promise<void>;
  revealFileLocation?(request:FileLocationRequest):Promise<FileLocationResult>;
@@ -1450,7 +1450,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m==='device.iroh.set'&&(typeof params.enabled!=='boolean'||params.relayUrl!==undefined&&params.relayUrl!==null&&(typeof params.relayUrl!=='string'||params.relayUrl.length>2048))) throw new Error('Invalid cross-network option');
  if(m==='device.peer.dial'&&(typeof params.endpointId!=='string'||!/^[0-9a-f]{64}$/.test(params.endpointId)||params.relayUrl!==undefined&&(typeof params.relayUrl!=='string'||params.relayUrl.length>2048))) throw new Error('Invalid computer key');
  if(m==='session.claim'&&params.takeover!==undefined&&typeof params.takeover!=='boolean') throw new Error('Invalid takeover');
- if(m==='runtime.events.filter'&&(params.preset!=='tree'||Object.keys(params).length!==1)) throw new Error('Invalid event filter preset');
+ if(m==='runtime.events.filter'&&((params.preset!=='tree'&&params.preset!=='none')||Object.keys(params).length!==1)) throw new Error('Invalid event filter preset');
  if(m==='filesystem.readWindow'||m==='filesystem.external.readWindow') {
   const allowed=m==='filesystem.readWindow'?['projectId','worktreePath','path','offset','maxBytes','changeToken']:['id','offset','maxBytes','changeToken'];
   if(Object.keys(params).some(key=>!allowed.includes(key))||!Number.isSafeInteger(params.offset)||Number(params.offset)<0||params.maxBytes!==undefined&&(!Number.isSafeInteger(params.maxBytes)||Number(params.maxBytes)<4||Number(params.maxBytes)>256*1024)||params.changeToken!==undefined&&(typeof params.changeToken!=='string'||!params.changeToken||params.changeToken.length>128)) throw new Error('Invalid file window request');

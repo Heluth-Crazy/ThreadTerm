@@ -37,9 +37,10 @@ import { TerminalContextAction } from './TerminalContextAction';
 import { useTerminalContextMenu } from './TerminalContextMenu';
 import { claimDevServerOffer, createDevServerLineDetector, type DevServerOffer } from '../../../desktop/src/browser/devServer';
 import { replayRetentionBoundary, retainedOutputTrimmedNote } from './terminalReplayRetention';
+import { canResumeTerminalScreen, createTerminalScreenCache } from './terminalScreenCache';
 import { StoppedState } from './StoppedState';
 
-type Props = { sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
+type Props = { runtimeEpoch?: string; sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
 // A failed screen recovery is shown once, in the overlay: a plain-language reason for the
 // user and the technical detail behind a disclosure (never as a second .surface-error line).
 type ReplayFailure = { reason: "stalled" | "gap" | "error"; detail: string };
@@ -47,6 +48,15 @@ const isLive = (session?: Session) => Boolean(session && !session.readOnly && ["
 // Raw PTY logs can contain hours of animation, not merely conversation text.
 // Bound each read, not the history prefix needed by the terminal parser.
 const REPLAY_PAGE_BYTES = 1024 * 1024;
+function decodeTerminalPage(encoded: string): Uint8Array {
+  // Electron's native decoder avoids an intermediate megabyte-long JS string.
+  const bytes = Uint8Array as Uint8ArrayConstructor & { fromBase64?(text: string): Uint8Array };
+  if (bytes.fromBase64) return bytes.fromBase64(encoded);
+  const binary = atob(encoded);
+  const result = new Uint8Array(binary.length);
+  for (let i = 0; i < result.length; i++) result[i] = binary.charCodeAt(i);
+  return result;
+}
 const REPLAY_STALL_MS = 15_000;
 const offeredDevServers = new Set<string>();
 const hasVisibleTerminalFrame = (terminal: Terminal) => {
@@ -59,6 +69,7 @@ const hasVisibleTerminalFrame = (terminal: Terminal) => {
 // does not reveal a second cursor over a provider-painted input caret.
 const nativeCursorVisibility = () => {
   let state: 'text' | 'escape' | 'csi' | 'string' | 'string-escape' = 'text';
+  let utf8Remaining = 0;
   let privateMode = false;
   let validCsi = false;
   let intermediate = false;
@@ -75,6 +86,17 @@ const nativeCursorVisibility = () => {
   };
   return {
     observe(bytes: Uint8Array) {
+      // Only the last UTF-8 character can remain incomplete after this chunk.
+      // Start at its lead byte, or continue an incomplete character from the previous chunk.
+      let lead = bytes.length - 1;
+      while (lead >= 0 && lead >= bytes.length - 3 && (bytes[lead] & 0xc0) === 0x80) lead--;
+      if (lead >= 0) {
+        const byte = bytes[lead];
+        const width = byte >= 0xf0 && byte < 0xf5 ? 4 : byte >= 0xe0 && byte < 0xf0 ? 3 : byte >= 0xc2 && byte < 0xe0 ? 2 : 1;
+        utf8Remaining = Math.max(0, width - (bytes.length - lead));
+      } else {
+        utf8Remaining = Math.max(0, utf8Remaining - bytes.length);
+      }
       for (const byte of bytes) {
         if (state === 'string') {
           if (byte === 0x1b) state = 'string-escape';
@@ -106,10 +128,27 @@ const nativeCursorVisibility = () => {
       }
     },
     isVisible: () => visible !== false,
+    // A synthetic cursor command in the middle of a provider sequence would
+    // change how the next real bytes are decoded when this surface reopens.
+    atBoundary: () => state === 'text' && utf8Remaining === 0,
   };
 };
 
-export function TerminalSurface({ sessionId, provider, theme, terminalCompatibility, session, onConfigure, onCloseView, onChanged, onOpenSession, resumeCapture }: Props) {
+// Keep the actual parser, including partial UTF-8/VT sequences, modes and both buffers.
+const parkedScreens = createTerminalScreenCache<{
+  terminal: Terminal;
+  cursor: number;
+  retainedStart: number;
+  nativeCursor: ReturnType<typeof nativeCursorVisibility>;
+  decoder: TextDecoder;
+  outputTail: string;
+  appearance: string;
+  dispose(): void;
+}>(reset => subscribeEvents(event => {
+  if (event.event === 'runtime.transport') reset();
+}));
+
+export function TerminalSurface({ runtimeEpoch, sessionId, provider, theme, terminalCompatibility, session, onConfigure, onCloseView, onChanged, onOpenSession, resumeCapture }: Props) {
   const {locale} = useTranslation();
   const { resolved } = useThemeState();
   const terminalPalette = resolved ?? resolveTheme(theme, { systemDark: theme === 'dark' });
@@ -171,7 +210,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   // A durable byte watermark, not an idle timer, separates historical repaint
   // traffic from live interaction. Keep the host measurable but invisible until
   // xterm has consumed it. Never send historical terminal query replies to a PTY.
-  const replayKey = `${provider}:${sessionId}`;
+  const replayKey = JSON.stringify([runtimeEpoch, provider, sessionId, session?.createdAt]);
   const [replay, setReplay] = useState(() => ({ key: replayKey, phase: "catching" as "catching" | "ready" | "failed" }));
   const [replayAttempt, setReplayAttempt] = useState(0);
   const [replayFailure, setReplayFailure] = useState<ReplayFailure>();
@@ -181,7 +220,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const replayFailed = replay.key === replayKey && replay.phase === "failed";
   // A reserved resume is starting before its PTY exists. Acquire control only
   // once running, otherwise a premature resize fails and is never retriggered.
-  const canControl = replay.phase === "ready" && isLive(session) && session?.status !== "starting";
+  const canControl = replay.key === replayKey && replay.phase === "ready" && isLive(session) && session?.status !== "starting";
   const startupLaunchPending = provider === "codex" && session?.mode === "terminal"
     && (resuming || (isLive(session)
       && (launch?.phase === "preparing" || launch?.phase === "launching" || launch?.phase === "running" || (!launch && session?.status === "starting"))));
@@ -228,6 +267,8 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     }
     startupGenerationRef.current = { sessionId, attempt: launchAttempt, status: session?.status };
   }, [session?.status, sessionId, launchAttempt]);
+  const appearanceRef = useRef("");
+  appearanceRef.current = JSON.stringify([terminalPalette.colors, transparentBackground]);
   // xterm checks transparent black instead of the composited image; its correction would dim light-theme text.
   useEffect(() => { const terminal=terminalRef.current; if (terminal) { terminal.options.allowTransparency=transparentBackground; terminal.options.minimumContrastRatio=transparentBackground?1:4.5; terminal.options.theme={...xtermThemeFor(terminalPalette),...(transparentBackground?{background:'#00000000'}:{})}; } }, [terminalPalette,transparentBackground]);
   useEffect(() => {
@@ -250,17 +291,40 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     const pendingWrites = new Set<() => void>();
     let resizeRetried: string | undefined;
     const resizeFailureNote = "Terminal resize was rejected; the provider may keep using the previous size until the next successful resize.";
-    const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), allowTransparency: transparentBackground, cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.35, minimumContrastRatio: transparentBackground ? 1 : 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: {...xtermThemeFor(terminalPalette),...(transparentBackground?{background:'#00000000'}:{})} });
+    let parked = runtimeEpoch ? parkedScreens.take(replayKey) : undefined;
+    // A different PTY geometry can wrap a line differently. Replay normally if the
+    // saved grid cannot be verified against the runtime's last recorded geometry.
+    if (parked && (!fixedSize || fixedSize.cols !== parked.terminal.cols || fixedSize.rows !== parked.terminal.rows)) {
+      parked.dispose();
+      parked = undefined;
+    }
+    const terminal = parked?.terminal ?? new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), allowTransparency: transparentBackground, cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.35, minimumContrastRatio: transparentBackground ? 1 : 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: {...xtermThemeFor(terminalPalette),...(transparentBackground?{background:'#00000000'}:{})} });
     terminalRef.current = terminal;
     // xterm's Windows heuristics must match the console host the runtime really uses (terminalHost.ts).
     void conptyHost().then(host => { if (!disposed) terminal.options.windowsPty = windowsPtyFor(window.threadterm.windowsPty, host); });
-    const nativeCursor = nativeCursorVisibility();
+    const nativeCursor = parked?.nativeCursor ?? nativeCursorVisibility();
+    const decoder = parked?.decoder ?? new TextDecoder();
+    let outputTail = parked?.outputTail ?? "";
+    let retainedStart = 0, parsedThrough = 0, contiguous = true;
+    let checkedBoundary = false;
     const devServerDetector = createDevServerLineDetector(offer => {
       if (claimDevServerOffer(offeredDevServers, sessionId, offer, devServerOffersRef.current)) setDevServerOffer(offer);
     });
     devServerDetectorRef.current = devServerDetector;
     nativeCursorRef.current = nativeCursor;
-    const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(element);
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    if (parked && terminal.element) {
+      element.appendChild(terminal.element);
+      terminal.options.cursorBlink = true;
+      if (parked.appearance !== appearanceRef.current) {
+        terminal.options.allowTransparency = transparentBackground;
+        terminal.options.minimumContrastRatio = transparentBackground ? 1 : 4.5;
+        terminal.options.theme = {...xtermThemeFor(terminalPalette), ...(transparentBackground ? { background:'#00000000' } : {})};
+      }
+    } else {
+      terminal.open(element);
+    }
     // Shift+Enter as a newline for AI CLIs (xterm would send Enter); through onData, so lease and
     // read-only checks still apply.
     terminal.attachCustomKeyEventHandler(event => {
@@ -293,7 +357,8 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       resumeFramePendingRef.current = false;
       startupFrameSeenRef.current = true; setStartupFrameSeen(true);
     };
-    terminal.loadAddon(new WebLinksAddon((_event, url) => {if(terminalLinkOpensInPanel(url,isRemoteFiles())){void openExternal(url).catch(error=>setIssue(String(error)));return;}setSelectedLink(url);}));
+    const webLinks = new WebLinksAddon((_event, url) => {if(terminalLinkOpensInPanel(url,isRemoteFiles())){void openExternal(url).catch(error=>setIssue(String(error)));return;}setSelectedLink(url);});
+    terminal.loadAddon(webLinks);
     const fileLinkInteraction = createTerminalFileLinkInteraction(element);
     // Link only what the session's runtime can find, so `3.14` or half of a wrapped path is not offered.
     const fileLinkValidator = createFileLinkValidator((path, sourceSearch) => request('filesystem.resolve', sourceSearch ? { sessionId, path, sourceSearch: true } : { sessionId, path }).then(() => 'exists' as const, fileLinkStatusOf));
@@ -399,8 +464,6 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     }, 1000);
     void (async () => {
       try {
-        const decoder = new TextDecoder();
-        let outputTail = "";
         const boundary = await request('terminal.read', { sessionId, tail: true, limit: 1 });
         if (disposed || replayAborted) return;
         setStorageNote(storageNoteFromRead(boundary.storageDegraded));
@@ -410,9 +473,23 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         if (disposed || replayAborted) return;
         const retained = replayRetentionBoundary(initial, replayEnd);
         replayTotal = replayEnd;
-        // ANSI and UTF-8 are stateful across arbitrary byte boundaries. Until
-        // we have a real terminal checkpoint, replay every retained byte.
-        const replayStart = retained.cursor;
+        retainedStart = retained.cursor;
+        if (parked && !canResumeTerminalScreen(parked.cursor, parked.retainedStart, retainedStart, replayEnd)) {
+          // History was replaced or trimmed while detached. Drop the parser and
+          // recreate it before accepting any output or keyboard input.
+          replayAborted = true;
+          setReplayAttempt(attempt => attempt + 1);
+          return;
+        }
+        checkedBoundary = true;
+        const replayStart = parked?.cursor ?? retained.cursor;
+        parsedThrough = replayStart;
+        renderedOutputCursorRef.current = replayStart;
+        if (parked && session?.status !== "starting") {
+          startupFrameSeenRef.current = hasVisibleTerminalFrame(terminal);
+          setStartupFrameSeen(startupFrameSeenRef.current);
+          if (completionHintsRef.current) setCompletionHint(hasTentativeAiCompletionPrompt(provider, outputTail));
+        }
         const pagedReplay = replayStart > 0 || replayEnd > REPLAY_PAGE_BYTES;
         setReplayTrimmed(retained.trimmed);
         let replaySubscribed = false;
@@ -423,13 +500,14 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
           if (disposed || replayAborted || replayComplete || !replaySubscribed) return;
           replayComplete = true;
           window.clearInterval(replayTimer);
-          if (!canControlRef.current) terminal.write("\x1b[?25l", () => { if (!disposed) terminal.refresh(0, terminal.rows - 1); });
+          if (!canControlRef.current && nativeCursor.atBoundary()) terminal.write("\x1b[?25l", () => { if (!disposed) terminal.refresh(0, terminal.rows - 1); });
           setReplay({ key: replayKey, phase: "ready" });
           requestAnimationFrame(resize);
         };
         const consume = (chunk: import("@threadterm/protocol").OutputChunk) => {
           if (disposed || replayAborted) return;
           if (chunk.gap) {
+            contiguous = false;
             if (!replayComplete) {
               failReplay("gap", zh ? `保留的输出有缺口，从第 ${chunk.cursor} 字节才继续（已回放 ${replayCursor} / ${replayEnd}）。` : `Retained output has a gap and resumes at byte ${chunk.cursor} (replayed ${replayCursor} of ${replayEnd}).`);
               return;
@@ -452,14 +530,16 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
               pendingWrites.add(settle);
               terminal.write(chunk.data, () => {
                 if (disposed || replayAborted) { settle(); return; }
-                const advanced = Math.min(replayEnd, chunk.cursor + chunk.data.byteLength);
+                if (parsedThrough !== chunk.cursor) contiguous = false;
+                parsedThrough = chunk.cursor + chunk.data.byteLength;
+                const advanced = Math.min(replayEnd, parsedThrough);
                 if (advanced > replayCursor) {
                   replayCursor = advanced;
                   replayLastProgress = Date.now();
                 }
                 renderedOutputCursorRef.current = Math.max(renderedOutputCursorRef.current, chunk.cursor + chunk.data.byteLength);
                 noteRenderedStartupFrame(chunk.cursor + chunk.data.byteLength, chunk);
-                if (replayComplete && !canControlRef.current) terminal.write("\x1b[?25l", () => { if (!disposed) terminal.refresh(0, terminal.rows - 1); });
+                if (replayComplete && !canControlRef.current && nativeCursor.atBoundary()) terminal.write("\x1b[?25l", () => { if (!disposed) terminal.refresh(0, terminal.rows - 1); });
                 if (reading) setUnread(value => value + 1);
                 if (chunk.cursor + chunk.data.byteLength >= replayEnd) finishReplay();
                 if (replayComplete && chunk.cursor >= replayEnd && devServerOffersRef.current) devServerDetector.push(devServerDecoderRef.current.decode(chunk.data, { stream:true }));
@@ -478,11 +558,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
             const limit = Math.min(REPLAY_PAGE_BYTES, replayEnd - cursor);
             const page = await request('terminal.read', { sessionId, cursor, limit });
             if (disposed || replayAborted) return;
-            const binary = atob(page.data);
-            const data = new Uint8Array(binary.length);
-            // Avoid a per-character iterator/callback allocation across large
-            // histories; this still copies every decoded byte verbatim.
-            for (let index = 0; index < binary.length; index += 1) data[index] = binary.charCodeAt(index);
+            const data = decodeTerminalPage(page.data);
             if (page.fromCursor !== cursor || data.length === 0 || data.length > limit || page.nextCursor !== cursor + data.length) {
               throw new Error("Terminal history did not advance contiguously; retry screen recovery.");
             }
@@ -501,8 +577,53 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         failReplay(message.includes("terminal_history_gap") ? "gap" : "error", message);
       }
     })();
-    return () => { disposed = true; control.dispose(); unsubscribeControl(); unsubscribeStorage(); window.removeEventListener('focus', wakeControl); document.removeEventListener('visibilitychange', wakeControl); if (retryControlRef.current === retryControl) retryControlRef.current = undefined; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (devServerDetectorRef.current === devServerDetector) devServerDetectorRef.current = undefined; if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
-  }, [provider, sessionId, replayAttempt]);
+    return () => {
+      const canPark = runtimeEpoch && contiguous && replayComplete && !replayAborted && transportUp
+        && pendingWrites.size === 0 && parsedThrough - retainedStart >= REPLAY_PAGE_BYTES;
+      disposed = true;
+      control.dispose();
+      unsubscribeControl();
+      unsubscribeStorage();
+      window.removeEventListener('focus', wakeControl);
+      document.removeEventListener('visibilitychange', wakeControl);
+      if (retryControlRef.current === retryControl) retryControlRef.current = undefined;
+      resumeFrameProbeRef.current?.dispose();
+      resumeFrameProbeRef.current = undefined;
+      window.clearInterval(replayTimer);
+      for (const settle of pendingWrites) settle();
+      unregisterInput();
+      observer.disconnect();
+      resizeScheduler.dispose();
+      dataDisposable.dispose();
+      scrollDisposable.dispose();
+      selectionDisposable.dispose();
+      fileLinkDisposable.dispose();
+      fileLinkHitArea?.dispose();
+      fileLinkInteraction.dispose();
+      unsubscribeOutput?.();
+      webLinks.dispose();
+      fit.dispose();
+      // A development-mode remount or fast navigation can detach before even
+      // the boundary RPC returns. The original parked parser is still intact.
+      const untouched = !checkedBoundary && !replayAborted && transportUp ? parked : undefined;
+      if (canPark || untouched) {
+        terminal.options.disableStdin = true;
+        terminal.options.cursorBlink = false;
+        terminal.clearSelection();
+        terminal.blur();
+        terminal.element?.remove();
+        parkedScreens.park(replayKey, { terminal, cursor: untouched?.cursor ?? parsedThrough,
+          retainedStart: untouched?.retainedStart ?? retainedStart, nativeCursor, decoder, outputTail,
+          appearance: appearanceRef.current, dispose: () => terminal.dispose() });
+      } else {
+        terminal.dispose();
+      }
+      if (devServerDetectorRef.current === devServerDetector) devServerDetectorRef.current = undefined;
+      if (terminalRef.current === terminal) terminalRef.current = undefined;
+      if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined;
+      if (controlRef.current === setControl) controlRef.current = undefined;
+    };
+  }, [replayKey, replayAttempt]);
   useEffect(() => {
     const setControl = controlRef.current;
     setControl?.(canControl);
@@ -513,12 +634,12 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     // Ended/read-only surfaces replay history: hide the host cursor on this local
     // presentation instance only (never persisted, subscribed bytes stay untouched).
     const terminal = terminalRef.current;
-    if (!terminal) return;
+    if (!terminal || replaying || !nativeCursorRef.current?.atBoundary()) return;
     // A resumed session returns to the provider's own cursor mode, not an
     // unconditional visible host cursor (Claude paints its input caret).
     if (canControl) { terminal.write(nativeCursorRef.current?.isVisible() === false ? "\x1b[?25l" : "\x1b[?25h"); return; }
     terminal.write("\x1b[?25l", () => { if (terminalRef.current === terminal) terminal.refresh(0, terminal.rows - 1); });
-  }, [canControl]);
+  }, [canControl, replaying]);
   // Deferred Codex creation owns a durable launch record. Polling is limited to
   // its short-lived pending phases; old/synchronous sessions deliberately ignore
   // the unavailable error instead of being recast as deferred launches.

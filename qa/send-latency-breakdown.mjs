@@ -53,7 +53,7 @@ async function main() {
       TEMP: join(base, 'tmp'), TMP: join(base, 'tmp'), CODEX_HOME: join(base, 'codex-home'),
       KIMI_CODE_HOME: join(base, 'kimi-home'), XDG_CONFIG_HOME: join(base, 'config'), XDG_DATA_HOME: join(base, 'share'),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'empty.gitconfig'), GIT_TERMINAL_PROMPT: '0',
-      TT_QA_REAL_GIT: realGit, TT_QA_PROVIDER_DELAY_MS: String(providerDelay), TT_QA_LATENCY_LOG: join(base, 'native.jsonl'),
+      THREADTERM_QA_PROVIDER_BIN: bin, TT_QA_REAL_GIT: realGit, TT_QA_PROVIDER_DELAY_MS: String(providerDelay), TT_QA_LATENCY_LOG: join(base, 'native.jsonl'),
       TT_QA_OPENCODE_STATE: join(base, 'opencode.json'), TT_QA_OPENCODE_PORT_FILE: join(base, 'opencode.port'),
       THREADTERM_CLAUDE_NODE: process.execPath, THREADTERM_CLAUDE_SDK_HOST: fixture,
       THREADTERM_CLAUDE_PATH: join(bin, 'claude.cmd'), TT_QA_LATENCY_MODE: 'claude',
@@ -130,7 +130,6 @@ async function main() {
     await viteBuild({ configFile: false, root: join(root, 'renderer'), base: './', plugins: [react()],
       css: { postcss: { plugins: [] } }, logLevel: 'warn', build: { outDir: join(appDir, 'renderer'), emptyOutDir: true } });
     await writeFile(join(appDir, 'package.json'), JSON.stringify({ name: 'threadterm-send-breakdown-qa', version: '0.1.0', main: 'main.cjs' }));
-    process.env.TT_QA_DESKTOP = '1';
     releaseLock = await acquireElectronQaLock();
     for (const provider of providers) for (const project of ['small', 'user-shaped']) {
       const base = join(scratch, `${provider}-${project}`), env = environment(base);

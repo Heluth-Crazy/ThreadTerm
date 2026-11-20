@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
-import { isReplyTextPart, replyMarkdown, replyActionMarkdown } from './replyMarkdown';
+import { createReplyActionMarkdownCache, isReplyTextPart, replyMarkdown, replyActionMarkdown } from './replyMarkdown';
 
 const item = (role: ChatItem['role'], parts: ChatPart[]): ChatItem => ({ id: 'item', role, parts, createdAt: 'now' });
 const text = (value: string, phase?: ChatPart['phase']): ChatPart => ({ type: 'text', text: value, ...(phase ? { phase } : {}) });
@@ -94,4 +94,20 @@ test('a completed ACP reply remains copyable while a different turn runs', () =>
     { ...item('assistant', [{ type: 'tool', toolId: 'tool', status: 'running' }]), id: 'tool', turnId: 'current' },
   ];
   assert.deepEqual([...replyActionMarkdown(rows, 'running')], [['answer', 'Previous answer']]);
+});
+
+test('cached reply actions preserve settled turns while a live row changes', () => {
+  const cache = createReplyActionMarkdownCache();
+  const settled: ChatItem = { ...item('assistant', [text('Done')]), id: 'settled-answer', turnId: 'settled', turnStatus: 'completed' };
+  const live: ChatItem = { ...item('assistant', [{ ...text('a'), status: 'streaming' }]), id: 'live-answer', turnId: 'live' };
+  assert.deepEqual([...cache.get([settled, live], 'running', 'live')], [['settled-answer', 'Done']]);
+  assert.deepEqual([...cache.get([settled, { ...live, parts: [{ ...live.parts[0]!, text: 'ab' }] }], 'running', 'live')], [['settled-answer', 'Done']]);
+});
+
+test('cached reply actions invalidate a replaced settled row', () => {
+  const cache = createReplyActionMarkdownCache();
+  const before: ChatItem = { ...item('assistant', [text('Before')]), id: 'answer', turnId: 'turn', turnStatus: 'completed' };
+  const after: ChatItem = { ...before, parts: [text('After')] };
+  assert.equal(cache.get([before], 'idle').get('answer'), 'Before');
+  assert.equal(cache.get([after], 'idle').get('answer'), 'After');
 });

@@ -101,7 +101,12 @@ window.threadterm = {
   },
   request: async (method, params) => {
     window.qaMetrics.requests.push({ method, params });
-    if (method === 'terminal.read') return { nextCursor: (streams[params.sessionId] ?? []).reduce((n, text) => n + encoder.encode(text).byteLength, 0) };
+    if (method === 'terminal.read') {
+      const bytes = encoder.encode((streams[params.sessionId] ?? []).join(''));
+      const fromCursor = params.tail ? Math.max(0, bytes.length - params.limit) : params.cursor;
+      const page = bytes.subarray(fromCursor, fromCursor + params.limit);
+      return { fromCursor, nextCursor: fromCursor + page.length, data: page.toBase64() };
+    }
     if (method === 'session.claim' || method === 'session.renew') return { leaseEpoch: 55 };
     return null;
   },

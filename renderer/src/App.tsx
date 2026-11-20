@@ -1,3 +1,4 @@
+import { createRefreshQueue } from './workbench/refreshQueue';
 import { Select } from "./components/ui/Select";
 import { useBackgroundPreview } from './appearance/backgroundPreview';
 import {
@@ -128,7 +129,8 @@ function MachineApp() {
   }, []);
   const [rawData, setData] = useState<Snapshot>();
   const [catalogVisibility, setCatalogVisibility] = useState<CatalogVisibility[]>([]);
-  const data = rawData ? visibleCatalogSnapshot(rawData, catalogVisibility) : undefined;
+  const data = useMemo(() => rawData ? visibleCatalogSnapshot(rawData, catalogVisibility) : undefined,
+    [rawData, catalogVisibility]);
   const [route, setRoute] = useState<Route>(() =>
     {const initial=routeFromSearch(window.location.search);return initial.kind==="all"?{kind:"workbench"}:initial;},
   );
@@ -191,20 +193,26 @@ function MachineApp() {
   }, []);
   useEffect(() => { if (rawData) void ensureReviewCommentsImported().catch(() => undefined); }, [rawData]);
   useEffect(() => {
-    void refresh();
-    return subscribeEvents((event) => {
+    const updates = createRefreshQueue(refresh);
+    void updates.request();
+    const unsubscribe = subscribeEvents((event) => {
       if (event.event === "runtime.transport") {
         const state = (event.data as { state?: string } | undefined)?.state;
         if (state === "disconnected") setRuntimeState("reconnecting");
         if (state === "incompatible" || state === 'pin-mismatch') setRuntimeState("unavailable");
-        if (state === "reconnected") void refresh();
+        if (state === "reconnected") void updates.request();
         return;
       }
       if (event.event === "state.changed"
         || (event.event === "chat.item" && (event.data as { nativeSubagentsChanged?: unknown } | undefined)?.nativeSubagentsChanged === true)) {
-        void refresh();
+        void updates.request();
       }
     });
+    return () => {
+      unsubscribe();
+      updates.stop();
+      ++refreshGeneration.current;
+    };
   }, [refresh]);
   const visibleRuntimeProblem = useVisibleRuntimeProblem(runtimeState);
   const routedWorkspace =
