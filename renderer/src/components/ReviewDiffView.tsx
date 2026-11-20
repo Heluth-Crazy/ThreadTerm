@@ -29,13 +29,14 @@ type PaneProps = Window & {
  path:string;editorId:string;zh:boolean;onOpenFile?:(path:string)=>void;
  comments?:FileCommentsHost;worktreeSessionIds?:readonly string[];
  navigationDisabled?:boolean;unified:boolean;
+ revealFirstChange?:boolean;
  /** Standalone turn diff: it keeps the checkpoint label and the file navigation group. */
  navigation?:boolean;onNavigate?:(path:string)=>void;
 };
 
 /** One checkpoint → current file: editable right side, hunk revert, fenced save and line comments.
  * The stacked review mounts one of these per expanded file so a large review stays fast. */
-function ReviewFilePane({projectId,worktreePath,path,sessionId,checkpointId,toCheckpointId,editorId,zh,onOpenFile,comments,worktreeSessionIds,navigationDisabled,unified,navigation=false,onNavigate}:PaneProps) {
+function ReviewFilePane({projectId,worktreePath,path,sessionId,checkpointId,toCheckpointId,editorId,zh,onOpenFile,comments,worktreeSessionIds,navigationDisabled,unified,revealFirstChange,navigation=false,onNavigate}:PaneProps) {
  const identity = JSON.stringify([projectId, worktreePath, sessionId, checkpointId, toCheckpointId, path]);
  // Outside the stacked review a single pane carries its own file list and navigation group.
  const [fileList,setFileList]=useState<{scope:string;paths:string[]}>();
@@ -53,6 +54,12 @@ function ReviewFilePane({projectId,worktreePath,path,sessionId,checkpointId,toCh
  const [closePrompt, setClosePrompt] = useState(false);
  const closeResolver = useRef<((value:boolean) => void)|undefined>(undefined);
  const editor = useRef<MergeEditorHandle>(null);
+ const revealed = useRef(false);
+ useEffect(() => {
+  if (!revealFirstChange || chunks === 0 || revealed.current || !editor.current) return;
+  revealed.current = true;
+  editor.current.focusChunk(0);
+ }, [chunks, revealFirstChange]);
  const host = useRef<HTMLDivElement>(null), writing = useRef(false);
  const restore = useRef<{scope:string;ticket:number;text:string;positions:{view:EditorView;selection:EditorSelection;top:number;left:number}[]}|undefined>(undefined);
  const [diskPrompt, setDiskPrompt] = useState<'reload'|ReviewOverwrite>();
@@ -238,47 +245,78 @@ function ReviewFilePane({projectId,worktreePath,path,sessionId,checkpointId,toCh
  </div>;
 }
 
-/** Checkpoint review: every changed file stacked in one scroll (Cursor's Git review), unified by default and
- * split on demand. Each file mounts its diff only while expanded, so a large review stays fast.
- * `stack` is off for the inline turn diff in chat, which shows its single file. */
-export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkpointId, toCheckpointId, editorId, zh, onOpenFile, comments, worktreeSessionIds, navigationDisabled, stack = false, onNavigate}:Window & {
- path:string;editorId:string;zh:boolean;onOpenFile?:(path:string)=>void;
+type ReviewDiffViewProps = Window & {
+ editorId:string;zh:boolean;onOpenFile?:(path:string)=>void;
  comments?:FileCommentsHost;worktreeSessionIds?:readonly string[];
- onNavigate?:(path:string)=>void;navigationDisabled?:boolean;stack?:boolean;
-}) {
+ onNavigate?:(path:string)=>void;navigationDisabled?:boolean;
+} & ({ stack?:boolean; path:string } | {
+ stack:true; path?:undefined; toCheckpointId:string; readFiles:() => Promise<ReviewFile[]>;
+});
+
+/** A stacked review mounts only expanded files. A whole-turn review picks the first text file from the fixed comparison. */
+export function ReviewDiffView(props:ReviewDiffViewProps) {
+ const {projectId, worktreePath, path, sessionId, checkpointId, toCheckpointId, editorId, zh, onOpenFile, comments, worktreeSessionIds, navigationDisabled, stack, onNavigate} = props;
  const copy = (en:string, cn:string) => zh ? cn : en;
  const identity = JSON.stringify([projectId, worktreePath, sessionId, checkpointId, toCheckpointId]);
  const [fileList, setFileList] = useState<{scope:string;files:ReviewFile[]}>();
- const files = fileList?.scope===identity ? fileList.files : [];
- const [expanded, setExpanded] = useState<Set<string>>(() => new Set([path]));
+ const loaded = fileList?.scope === identity;
+ const files = loaded ? fileList.files : [];
+ const turn = path === undefined;
+ const firstFile = turn ? files.find(file => !file.binary) ?? files[0] : undefined;
+ const firstPath = path ?? firstFile?.path;
+ const [expanded, setExpanded] = useState<Set<string>>(() => new Set(path ? [path] : []));
  const [mode, setMode] = useState<'unified'|'split'>('unified');
  const [issue, setIssue] = useState<string>();
+ const ticket = useRef(0);
  const load = async () => {
+  const started = ++ticket.current;
+  setIssue(undefined);
   try {
-   const value = await request('review.changes', {sessionId, from:checkpointId, ...(toCheckpointId ? {to:toCheckpointId} : {})});
-   setFileList({scope:identity, files:value.files ?? []}); setIssue(undefined);
-  } catch(error) { setIssue(workbenchError(error, zh)); }
+   const next = 'readFiles' in props
+    ? await props.readFiles()
+    : (await request('review.changes', {sessionId, from:checkpointId, ...(toCheckpointId ? {to:toCheckpointId} : {})})).files;
+   if (started === ticket.current) setFileList({scope:identity, files:next});
+  } catch(error) {
+   if (started === ticket.current) setIssue(workbenchError(error, zh));
+  }
  };
- useEffect(() => { if(!stack) return; void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [identity, stack]);
+ useEffect(() => {
+  if (!stack) return;
+  void load();
+  return () => { ticket.current++; };
+  /* eslint-disable-next-line react-hooks/exhaustive-deps */
+ }, [identity, stack]);
  // Keep the opened file expanded when the surface first shows it.
- useEffect(() => { setExpanded(current => current.has(path) ? current : new Set(current).add(path)); }, [path]);
- if(!stack) return <ReviewFilePane projectId={projectId} worktreePath={worktreePath} path={path} sessionId={sessionId} checkpointId={checkpointId} toCheckpointId={toCheckpointId} editorId={editorId} zh={zh} onOpenFile={onOpenFile} comments={comments} worktreeSessionIds={worktreeSessionIds} navigationDisabled={navigationDisabled} unified={false} navigation onNavigate={onNavigate}/>;
- const listed: ReviewFile[] = files.length ? files : [{path, status:'M'}];
+ useEffect(() => {
+  if (firstPath) setExpanded(current => current.has(firstPath) ? current : new Set(current).add(firstPath));
+ }, [firstPath]);
+ if(!props.stack) return <ReviewFilePane projectId={projectId} worktreePath={worktreePath} path={props.path} sessionId={sessionId} checkpointId={checkpointId} toCheckpointId={toCheckpointId} editorId={editorId} zh={zh} onOpenFile={onOpenFile} comments={comments} worktreeSessionIds={worktreeSessionIds} navigationDisabled={navigationDisabled} unified={false} navigation onNavigate={onNavigate}/>;
+ let listed: ReviewFile[] = files;
+ if (firstFile && firstFile !== files[0]) listed = [firstFile, ...files.filter(file => file !== firstFile)];
+ if (!files.length && path) listed = [{path, status:'M'}];
  const totals = reviewChangeTotals(files);
  const changed = totals.added + totals.removed;
+ const caption = turn
+  ? copy('Start → end of turn (read-only)', '本轮开始 → 本轮结束（只读）')
+  : toCheckpointId
+   ? copy('Checkpoint → next checkpoint (read-only)', '检查点 → 下一个检查点（只读）')
+   : copy('Checkpoint → current file', '检查点 → 当前文件');
  return <section className="tt-diff-shell wb-review-diff wb-review-stack" data-testid="review-diff-surface">
   <div className="wb-rs-bar">
-   <b>{copy(`${listed.length} file${listed.length === 1 ? '' : 's'} changed`, `${listed.length} 个文件已更改`)}</b>
+   {(loaded || !turn) && <b>{copy(`${listed.length} file${listed.length === 1 ? '' : 's'} changed`, `${listed.length} 个文件已更改`)}</b>}
    {changed > 0 && <span className="cg-stat">{totals.added > 0 && <span className="cg-add">+{totals.added}</span>}{totals.removed > 0 && <span className="cg-del">−{totals.removed}</span>}</span>}
-   <span className="wb-rs-caption">{toCheckpointId ? copy('Checkpoint → next checkpoint (read-only)', '检查点 → 下一个检查点（只读）') : copy('Checkpoint → current file', '检查点 → 当前文件')}</span>
+   <span className="wb-rs-caption" title={caption}>{caption}</span>
    <span className="grow" />
    <div className="cg-seg" role="group" aria-label={copy('Diff layout', '差异布局')}>
     <button type="button" aria-pressed={mode === 'unified'} onClick={() => setMode('unified')}>{copy('Unified', '统一')}</button>
     <button type="button" aria-pressed={mode === 'split'} onClick={() => setMode('split')}>{copy('Split', '并排')}</button>
    </div>
-   <button type="button" className="cg-ghost cg-icon cg-sm" title={copy('Refresh', '刷新')} aria-label={copy('Refresh', '刷新')} onClick={() => void load()}><WbIcon name="refresh"/></button>
+   {!turn && <button type="button" className="cg-ghost cg-icon cg-sm" title={copy('Refresh', '刷新')} aria-label={copy('Refresh', '刷新')} onClick={() => void load()}><WbIcon name="refresh"/></button>}
   </div>
   {issue && <p className="wb-issue" role="alert">{issue}</p>}
+  {turn && issue && <div className="wb-rs-files"><button type="button" className="btn btn-sm" onClick={() => void load()}>{copy('Retry', '重试')}</button></div>}
+  {turn && !issue && !loaded && <p className="tt-editor-state" role="status">{copy('Loading changed files…', '正在读取更改文件…')}</p>}
+  {turn && loaded && files.length === 0 && <p className="tt-editor-state">{copy('No file changes in this comparison.', '这个范围内没有文件改动。')}</p>}
   <div className="wb-rs-files">
    {listed.map(file => {
     const open = expanded.has(file.path);
@@ -296,7 +334,7 @@ export function ReviewDiffView({projectId, worktreePath, path, sessionId, checkp
        {onOpenFile && <button type="button" className="cg-ghost cg-icon cg-sm" title={copy('Open file', '打开文件')} aria-label={copy('Open file', '打开文件')} onClick={() => onOpenFile(file.path)}><Icon name="popout" /></button>}
       </span>
      </div>
-     {open && <ReviewFilePane projectId={projectId} worktreePath={worktreePath} path={file.path} sessionId={sessionId} checkpointId={checkpointId} toCheckpointId={toCheckpointId} editorId={`${editorId}:${file.path}`} zh={zh} onOpenFile={onOpenFile} comments={comments} worktreeSessionIds={worktreeSessionIds} navigationDisabled={navigationDisabled} unified={mode === 'unified'}/>}
+     {open && <ReviewFilePane projectId={projectId} worktreePath={worktreePath} path={file.path} sessionId={sessionId} checkpointId={checkpointId} toCheckpointId={toCheckpointId} editorId={`${editorId}:${file.path}`} zh={zh} onOpenFile={onOpenFile} comments={comments} worktreeSessionIds={worktreeSessionIds} navigationDisabled={navigationDisabled} unified={mode === 'unified'} revealFirstChange={turn && file.path === firstPath}/>}
     </section>;
    })}
   </div>

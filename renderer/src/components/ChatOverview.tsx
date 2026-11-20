@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ChatItem, ChatPlanEntry, NativeSubagentSummary, Session } from '@threadterm/protocol';
+import { lazy, Suspense, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { ChatItem, ChatPlanEntry, NativeSubagentSummary, ReviewFile, Session } from '@threadterm/protocol';
 import { operationId, request, subscribeEvents } from '../bridge';
 import { attachedMessagesLabel, authorityLabel, delegationActive, delegationStateLabel } from '../delegation';
 import {
   OVERVIEW_COLLAPSED_KEY, OVERVIEW_FINISHED_OPEN_KEY, overviewBranchHead, overviewBranchName,
-  overviewChangeKindLabel, overviewChangeRowLabel, overviewChangesFileCount, overviewChangesLabel, overviewCompareStat,
+  overviewChangeKindLabel, overviewChangeRowLabel, overviewChangesLabel, overviewCompareStat,
   overviewDelegateGroups, overviewFinishedLabel, overviewHasSections, overviewPlan, overviewPlanText,
-  overviewReviewStat, overviewSessionCheckpoint, overviewStateText,
+  overviewReviewStat, overviewSessionCheckpoint, overviewStateText, overviewTurnChanges,
   readOverviewCollapsed, readOverviewFinishedOpen, toggleOverviewFinishedOpen, type Copy, type OverviewChangeStat,
 } from '../chatOverview';
 import { branchScopeKey, readBranchScopePreference } from '../workbench/branchScope';
@@ -16,11 +16,26 @@ import { FILES_CHANGED_EVENT, scopeParams } from '../workbench/types';
 import { useNativeSubagents } from '../nativeSubagents';
 import { subagentTitle } from '../subagentActivity';
 import { planEntryLabel, planPriorityLabel } from '../chatPlan';
+import { createTurnChangesCache } from '../turnFooter';
 import { AgentTile, Icon } from './PrototypeIcon';
+import { ContextHost } from './ContextHost';
 import { QuietMinutes } from './QuietMinutes';
-import { SurfaceActions } from './SessionSurfaceContext';
+import { SurfaceDialog } from './SurfaceDialog';
+import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
 import './chat-plan.css';
 import './chat-overview.css';
+
+const ReviewDiffView = lazy(async () => ({ default: (await import('./ReviewDiffView')).ReviewDiffView }));
+
+type OpenTurnReview = {
+  sessionId: string;
+  projectId: string;
+  worktreePath?: string;
+  from: string;
+  to: string;
+  title: string;
+  readFiles: () => Promise<ReviewFile[]>;
+};
 
 function readCollapsed(): boolean {
   try { return readOverviewCollapsed(localStorage.getItem(OVERVIEW_COLLAPSED_KEY)); } catch { return false; }
@@ -133,17 +148,21 @@ function useOverviewChangeRows(session: Session, delegateIds: readonly string[],
 }
 
 /** R1: one 变更 row — icon, label, the diff stat and a chevron, 28 px like every other row. */
-function ChangeRow({ kind, stat, copy, onClick }: {
-  kind: 'session' | 'branch'; stat: OverviewChangeStat; copy: Copy; onClick: () => void;
+function ChangeRow({ kind, stat, copy, onClick, previous }: {
+  kind: 'turn' | 'session' | 'branch';
+  stat: { files: number; added?: number; removed?: number };
+  copy: Copy;
+  onClick: () => void;
+  previous?: boolean;
 }) {
-  const label = overviewChangeRowLabel(kind, stat, copy);
-  return <button type="button" className={`chat-overview-change is-${kind}`} aria-label={label} title={label} onClick={onClick}>
-    <Icon name={kind === 'session' ? 'msg' : 'branch'} className="chat-overview-change-icon" />
-    <span className="chat-overview-change-label">{overviewChangeKindLabel(kind, copy)}</span>
+  const label = overviewChangeRowLabel(kind, stat, copy, previous);
+  return <button type="button" className={`chat-overview-change is-${kind}`} aria-label={label} aria-haspopup={kind === 'turn' ? 'dialog' : undefined} title={label} onClick={onClick}>
+    <Icon name={kind === 'turn' ? 'diff' : kind === 'session' ? 'msg' : 'branch'} className="chat-overview-change-icon" />
+    <span className="chat-overview-change-label">{overviewChangeKindLabel(kind, copy, previous)}</span>
     <span className="chat-overview-stat">
       <span className="chat-overview-stat-files">{overviewChangesLabel(stat.files, copy)}</span>
-      <span className={`chat-overview-stat-add${stat.added ? '' : ' is-zero'}`}>+{stat.added}</span>
-      <span className={`chat-overview-stat-del${stat.removed ? '' : ' is-zero'}`}>−{stat.removed}</span>
+      {stat.added !== undefined && <span className={`chat-overview-stat-add${stat.added ? '' : ' is-zero'}`}>+{stat.added}</span>}
+      {stat.removed !== undefined && <span className={`chat-overview-stat-del${stat.removed ? '' : ' is-zero'}`}>−{stat.removed}</span>}
     </span>
     <Icon name="chevR" className="chat-overview-change-chevron" />
   </button>;
@@ -181,7 +200,20 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   const nativeRunning = native.filter(agent => agent.status === 'running');
   const nativeFinished = native.filter(agent => agent.status !== 'running');
   const plan = useMemo(() => overviewPlan(items), [items]);
-  const cheapChanges = useMemo(() => overviewChangesFileCount(items), [items]);
+  const turnChanges = useMemo(() => overviewTurnChanges(items, liveTurnId), [items, liveTurnId]);
+  const turn = session.projectId ? turnChanges : undefined;
+  const turnKey = turn ? JSON.stringify([session.id, turn.review.from, turn.review.to]) : undefined;
+  // A fixed comparison doesn't change when the worktree does. Keep only the latest list for this card.
+  const turnFiles = useMemo(() => createTurnChangesCache<{ files: ReviewFile[]; stat: OverviewChangeStat }>(), [turnKey]);
+  const latestTurnKey = useRef(turnKey);
+  latestTurnKey.current = turnKey;
+  const [turnSummary, setTurnSummary] = useState<{ key: string; stat: OverviewChangeStat }>();
+  const [review, setReview] = useState<OpenTurnReview>();
+  const surface = useContext(SessionSurfaceContext);
+  const comments = useContext(ContextHost);
+  const visible = surface ? surface.actionsVisible ?? surface.focused : true;
+  const showReview = visible && review?.sessionId === session.id && review.projectId === session.projectId;
+  useEffect(() => { if (!showReview) setReview(undefined); }, [showReview]);
   const planActive = Boolean(plan?.turnId && liveTurnId && plan.turnId === liveTurnId);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [finishedOpen, setFinishedOpen] = useState<string[]>(readFinishedOpen);
@@ -191,14 +223,12 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   // R3: the card asks for its numbers only while it is on screen (docked, or the open popover) and has
   // a reason to exist. Without one — no delegates, subagents, plan or session changes — a Chat must not
   // run `git.status` and `git.compare.files` on every file event just to keep an invisible card current.
-  const cardWanted = delegates.length > 0 || native.length > 0 || Boolean(plan) || (cheapChanges ?? 0) > 0;
+  const cardWanted = delegates.length > 0 || native.length > 0 || Boolean(plan) || Boolean(turnChanges);
   const changeRows = useOverviewChangeRows(session, delegates.map(delegate => delegate.id), cardWanted && ((docked && !collapsed) || open));
   const sessionChanges = changeRows.session && changeRows.session.files > 0 ? changeRows.session : undefined;
   const branchChanges = changeRows.branch && changeRows.branch.stat.files > 0 ? changeRows.branch : undefined;
-  // R4: the cheap turn count stands in until the session row has loaded, then the loaded row decides.
-  const changesPresent = changeRows.sessionId === session.id && changeRows.loaded
-    ? Boolean(sessionChanges)
-    : (cheapChanges ?? 0) > 0;
+  // A turn can undo earlier edits, so its row survives an empty cumulative comparison.
+  const changesPresent = Boolean(turn || sessionChanges || (!changeRows.loaded && turnChanges));
   const hasSections = native.length > 0 || overviewHasSections({ delegates, plan, changes: changesPresent ? 1 : 0 });
   const showDocked = docked && !collapsed && hasSections;
   const showButton = !showDocked && hasSections;
@@ -213,8 +243,30 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
     : delegates.length > 0 || native.length > 0
       ? copy('Delegated agents', '委派的代理')
       : copy('Overview', '概览');
-  const accessibleLabel = `${buttonLabel}${groups.badge ? copy(`, ${groups.badge} need you`, `，${groups.badge} 个待处理`) : ''}`;
+  const turnPreview = turn && copy(
+    `${turn.previous ? 'Last' : 'Turn'} · ${overviewChangesLabel(turn.review.fileCount, copy)}`,
+    `${turn.previous ? '上次改动' : '本轮'} ${overviewChangesLabel(turn.review.fileCount, copy)}`,
+  );
+  const accessibleLabel = `${buttonLabel}${turnPreview ? `, ${turnPreview}` : ''}${groups.badge ? copy(`, ${groups.badge} need you`, `，${groups.badge} 个待处理`) : ''}`;
   const close = () => { setOpen(false); trigger.current?.focus({ preventScroll: true }); };
+  const openTurnReview = () => {
+    if (!turn || turnKey === undefined || !session.projectId) return;
+    const { from, to } = turn.review;
+    const sessionId = session.id;
+    close();
+    setReview({
+      sessionId, projectId: session.projectId, worktreePath: session.worktreePath, from, to,
+      title: turn.previous ? copy('Previous changes', '上次改动') : copy('Turn changes', '本轮改动'),
+      readFiles: async () => {
+        const { files, stat } = await turnFiles.load(turnKey, async () => {
+          const result = await request('review.changes', { sessionId, from, to });
+          return { files: result.files, stat: overviewReviewStat(result.files) };
+        });
+        if (latestTurnKey.current === turnKey) setTurnSummary(current => current?.stat === stat ? current : { key: turnKey, stat });
+        return files;
+      },
+    });
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -282,11 +334,13 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
         </div>}
       </>}
     </section>}
-    {sessionChanges || branchChanges ? <section className="chat-overview-section" aria-label={copy('Changes', '变更')}>
+    {turn || sessionChanges || branchChanges ? <section className="chat-overview-section" aria-label={copy('Changes', '变更')}>
       <div className="chat-overview-section-head">
         <span>{copy('Changes', '变更')}</span>
         {branchHead && <span className="chat-overview-branch-name" title={branchHead.title}>{branchHead.text}</span>}
       </div>
+      {turn && <ChangeRow kind="turn" stat={turnSummary && turnSummary.key === turnKey ? turnSummary.stat : { files: turn.review.fileCount }}
+        previous={turn.previous} copy={copy} onClick={openTurnReview} />}
       {sessionChanges && <ChangeRow kind="session" stat={sessionChanges} copy={copy} onClick={() => { close(); openChanges(); }} />}
       {branchChanges && <ChangeRow kind="branch" stat={branchChanges.stat} copy={copy} onClick={() => { close(); openBranchScope(); }} />}
     </section> : null}
@@ -322,11 +376,21 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
             : <Icon name="agents" />}
         </span>
         <span className="chat-overview-button-label">{buttonLabel}</span>
+        {turnPreview && <span className="chat-overview-turn-preview">{turnPreview}</span>}
         {groups.badge > 0 && <span className="chat-overview-badge" aria-hidden="true">{groups.badge > 99 ? '99+' : groups.badge}</span>}
       </button>}
       {open && !showDocked && <div id={popoverId} className="chat-overview-popover" role="dialog" aria-label={copy('Chat overview', '聊天概览')}>{card}</div>}
     </div></SurfaceActions>}
     {showDocked && <div className="chat-overview-dock">{card}</div>}
+    {showReview && review && <SurfaceDialog title={review.title} size="wide" icon="diff"
+      className="chat-overview-review sheet-fill sheet-edge-to-edge" onClose={() => setReview(undefined)}>
+      <Suspense fallback={<p className="note" role="status">{copy('Loading changes…', '正在读取改动…')}</p>}>
+        <ReviewDiffView stack projectId={review.projectId} worktreePath={review.worktreePath} sessionId={review.sessionId}
+          checkpointId={review.from} toCheckpointId={review.to} editorId={`overview:${popoverId}:${review.sessionId}:${review.from}:${review.to}`}
+          zh={zh} comments={comments} readFiles={review.readFiles}
+          onOpenFile={surface?.openFile ? path => { surface.openFile?.({ path }); setReview(undefined); } : undefined} />
+      </Suspense>
+    </SurfaceDialog>}
   </>;
 }
 

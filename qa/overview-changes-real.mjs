@@ -62,6 +62,7 @@ try {
     THREADTERM_QA_PROVIDER_BIN: bin,
     THREADTERM_QA_CODEX_PLAN_LOG: log,
     THREADTERM_QA_CODEX_PLAN_CWD: workspace,
+    THREADTERM_QA_OVERVIEW_NOTE: join(workspace, 'session-note.txt'),
   });
   await mkdir(env.CODEX_HOME, { recursive: true });
   app = await electron.launch({ args: [appDir], cwd: bin, env, timeout: 60_000 });
@@ -126,6 +127,33 @@ try {
   await branchRow().click();
   await until(async () => await scopeTab('Branch').first().getAttribute('aria-selected') === 'true', 'the row switches an open Changes scope to Branch');
   check('the row switches an already open Source Control from Changes to Branch');
+
+  // A genuine provider turn is snapshotted on both sides. A later disk edit must never appear in that diff.
+  await until(() => composer(chat.id).isEnabled(), 'composer available for the edit turn');
+  await composer(chat.id).fill('Edit the review note.');
+  await scope.locator('.chat-compose-send[type=submit]').click();
+  const captured = await until(async () => (await request('chat.read', { sessionId: chat.id }))
+    .find(item => item.turnReview?.fileCount === 1)?.turnReview, 'after-turn checkpoint pair');
+  assert.notEqual(captured.from, captured.to);
+  await writeFile(join(workspace, 'session-note.txt'), 'later disk edit\n');
+  overview = await card();
+  const turnRow = overview.locator('.chat-overview-change.is-turn');
+  await turnRow.waitFor();
+  assert.equal(await turnRow.getAttribute('aria-label'), 'This turn: 1 file');
+  await turnRow.click();
+  const review = page.locator('.chat-overview-review');
+  const noteDiff = review.locator('[data-review-file="session-note.txt"] .cm-editor').first();
+  await noteDiff.waitFor();
+  const code = await noteDiff.textContent();
+  assert.match(code, /first/);
+  assert.match(code, /the agent changed this note/);
+  assert.doesNotMatch(code, /later disk edit/);
+  await shot('overview-turn-review-real.png');
+  await page.keyboard.press('Escape');
+  await review.waitFor({ state: 'detached' });
+  if (await page.locator('.chat-overview-button').count()) await page.locator('.chat-overview-button').click();
+  assert.equal(await page.locator('.chat-overview-change.is-turn').getAttribute('aria-label'), 'This turn: 1 file, 1 added, 2 removed');
+  check('the overview opens the real start-to-end diff, and reuses its stats after closing');
 
   assert.deepEqual(report.errors, [], report.errors.join('\n'));
   report.passed = true;
