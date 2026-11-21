@@ -876,6 +876,76 @@ test('a disconnected child is retired and the next explicit request negotiates a
   } finally { client.dispose(); }
 });
 
+test('a real request-only child that cannot connect sends its session group on the primary connection in order', async () => {
+  const { client } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  const primaryOperations: string[] = [];
+  internal.control = {
+    write(payload) {
+      const request = JSON.parse(payload.toString('utf8')) as { id: string; params: { operationId?: string } };
+      primaryOperations.push(String(request.params.operationId));
+      internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, id: request.id, result: { turnId: 'primary-turn' } })));
+    },
+    close() {},
+  };
+  const create = internal.createSessionRequestClient.bind(client);
+  let children = 0;
+  let gate: Promise<void> | undefined;
+  let childDisconnected = false;
+  internal.createSessionRequestClient = (onDisconnect?: (error: Error) => void) => {
+    children++;
+    const child = create(onDisconnect);
+    // The child's own connect fails, as a second control connection for one client does on a peer.
+    (child as unknown as StartupInternals).connectAndAuthenticate = async () => {
+      const error = new Error('control already connected');
+      if (!gate) throw error;
+      // A pipe that fails during the attempt disconnects first; the caller sees the failure later.
+      await settle();
+      (child as unknown as ClientInternals).handleDisconnect(error);
+      childDisconnected = true;
+      await gate;
+      throw error;
+    };
+    return child;
+  };
+  try {
+    assert.deepEqual(await client.request('chat.send', { sessionId: 'no-child', text: 'zero', operationId: 'no-child-0', leaseEpoch: 1 }), { turnId: 'primary-turn' });
+    assert.equal(children, 1);
+    let release!: () => void;
+    gate = new Promise(resolve => { release = resolve; });
+    const first = client.request('chat.send', { sessionId: 'no-child', text: 'one', operationId: 'no-child-1', leaseEpoch: 1 });
+    while (!childDisconnected) await settle();
+    const second = client.request('chat.send', { sessionId: 'no-child', text: 'two', operationId: 'no-child-2', leaseEpoch: 1 });
+    await settle();
+    release();
+    assert.deepEqual(await Promise.all([first, second]), [{ turnId: 'primary-turn' }, { turnId: 'primary-turn' }]);
+    assert.deepEqual(primaryOperations, ['no-child-0', 'no-child-1', 'no-child-2']);
+    assert.equal(children, 2, 'a request arriving after the child disconnected joins its fallback group');
+    assert.equal(internal.sessionRequestShards.size, 0);
+  } finally { client.dispose(); }
+});
+
+test('a remote computer keeps session mutations on its one control connection', async () => {
+  const client = new RuntimeClient({ profile: { kind: 'peer', endpoint: 'peer.invalid:1', pin: 'pin', credential: () => 'credential' } });
+  const internal = client as unknown as ClientInternals;
+  const primaryMethods: string[] = [];
+  internal.control = {
+    write(payload) {
+      const request = JSON.parse(payload.toString('utf8')) as { id: string; method: string };
+      primaryMethods.push(request.method);
+      internal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, id: request.id, result: { turnId: 'peer-turn' } })));
+    },
+    close() {},
+  };
+  internal.output = { write() {}, close() {} };
+  internal.createSessionRequestClient = () => { throw new Error('a peer must not open a request-only child'); };
+  try {
+    assert.deepEqual(await client.request('chat.send', { sessionId: 'peer-session', text: 'hi', operationId: 'peer-send', leaseEpoch: 1 }), { turnId: 'peer-turn' });
+    assert.deepEqual(primaryMethods, ['chat.send']);
+    assert.equal(internal.sessionRequestShards.size, 0);
+  } finally { client.dispose(); }
+});
+
 test('eight active sessions get distinct bounded clients and overload stays on the primary ordered lane', async () => {
   const { client } = clientWithPipes();
   const internal = client as unknown as ClientInternals;

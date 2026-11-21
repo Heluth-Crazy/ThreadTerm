@@ -366,6 +366,8 @@ interface SessionRequestShard {
   active: number;
   lastUsed: number;
   ready: Promise<SessionRequestPreparation>;
+  /** False until `ready` settles. A child that fails to connect disconnects before that. */
+  prepared: boolean;
   fallback: boolean;
   idleTimer?: NodeJS.Timeout;
 }
@@ -415,7 +417,9 @@ export class RuntimeClient {
   async request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
     if (this.options.controlOnly && ['session.claim', 'session.renew', 'session.release'].includes(method)) throw new RuntimeUnavailableError('Watchers cannot claim terminal control');
     if (this.qaReconnectPaused) throw new RuntimeUnavailableError('Runtime reconnect is paused for QA');
-    if (!this.options.controlOnly) {
+    // A remote computer accepts one control connection per device and client (runtime/src/peer.rs), and a
+    // request-only child shares this client's id, so peers keep session mutations on this connection.
+    if (!this.options.controlOnly && this.options.profile?.kind !== 'peer') {
       const sessionId = isolatedSessionMutationId(method, params);
       if (sessionId !== undefined) {
         await this.ensureConnected();
@@ -515,7 +519,9 @@ export class RuntimeClient {
       } else {
         let created: SessionRequestShard | undefined;
         const client = this.createSessionRequestClient(() => {
-          if (!created || this.sessionRequestShards.get(created.sessionId) !== created) return;
+          // A child that cannot connect disconnects while it is still preparing. Its entry stays until the
+          // preparation settles as 'failed', so the waiting requests fall back as one FIFO group.
+          if (!created || !created.prepared || this.sessionRequestShards.get(created.sessionId) !== created) return;
           this.sessionRequestShards.delete(created.sessionId);
           if (created.idleTimer) clearTimeout(created.idleTimer);
         });
@@ -525,10 +531,14 @@ export class RuntimeClient {
           active: 0,
           lastUsed: Date.now(),
           ready: Promise.resolve('failed'),
+          prepared: false,
           fallback: false,
         };
         created = entry;
-        entry.ready = this.prepareSessionRequestClient(client);
+        entry.ready = this.prepareSessionRequestClient(client).then(preparation => {
+          created!.prepared = true;
+          return preparation;
+        });
       }
       this.sessionRequestShards.set(sessionId, entry);
     }
@@ -540,9 +550,6 @@ export class RuntimeClient {
       if (this.sessionRequestRevision !== requestRevision || this.suspended || this.expectedDisconnect || this.qaReconnectPaused) {
         throw new RuntimeUnavailableError('Runtime connection changed before the session request was sent');
       }
-      if (this.sessionRequestShards.get(sessionId) !== entry) {
-        throw new RuntimeUnavailableError('Request-only runtime connection closed before the session request was sent');
-      }
       if (preparation !== 'ready') {
         if (!entry.fallback) {
           entry.fallback = true;
@@ -551,6 +558,9 @@ export class RuntimeClient {
         }
         return await this.requestDirect(method, params);
       }
+      // The request-only pipe closed after it was ready but before this request was written to it, so the
+      // primary connection can still carry the request once.
+      if (this.sessionRequestShards.get(sessionId) !== entry) return await this.requestDirect(method, params);
       this.requestOnlyEventsSupported = true;
       return await entry.client.request(method, params);
     } finally {
