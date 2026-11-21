@@ -527,6 +527,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [ingressFailed, setIngressFailed] = useState(false);
   const [repairFollowup, setRepairFollowup] = useState(false);
   const [queue, setQueue] = useState<ChatQueue>();
+  // Counts queue states shown by the queue panel, so a slower reply cannot replace a newer queue.
+  const queueUpdates = useRef(0);
+  const changeQueue = (next: ChatQueue) => { queueUpdates.current += 1; setQueue(next); };
   // Presentation only: keep the recoverable draft until runtime acceptance.
   // This preview never becomes a canonical ChatItem or an active-turn source.
   const [submissionPreview, setSubmissionPreview] = useState<{ token: string; text: string; images: string[] }>();
@@ -1273,9 +1276,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       try {
         if(!dedicated)await persistCompose(text, epoch);
         if (lifecycle.current !== submittingLifecycle) { if(throwOnFailure)throw new Error('Chat is unavailable.'); return; }
+        const queueRevision = queueUpdates.current;
         const nextQueue = await request('chat.queue.add', {sessionId:session.id, text:value, ...(outboundImages.length ? {images:outboundImages} : {}), operationId:token, leaseEpoch:epoch});
         if (lifecycle.current !== submittingLifecycle) return;
-        setQueue(nextQueue);
+        // The reply crosses the session's own request pipe; when the queue panel has shown a newer read meanwhile,
+        // the add's state.changed event reloads the queue instead.
+        if (queueUpdates.current === queueRevision) changeQueue(nextQueue);
         if(!dedicated){clearMentions(); composerGeneration.current += 1; changeText(''); setImages([]); context.clear(); try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted queue item is already durable. */ } await persistCompose('', epoch);}
       } catch (caught) {
         if (lifecycle.current === submittingLifecycle) setError(asUserError(caught, copy('Message was not queued.', '消息未能加入队列。')));
@@ -1663,7 +1669,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const epoch=leaseSessionId.current===session.id?lease.current:undefined;
     if(!writable||trustBusy||liveTurn||!session.projectId||epoch===undefined)return;
     setTrustBusy(true);
-    try { setUi(await request('chat.projectTrust.set',{sessionId:session.id,decision,leaseEpoch:epoch,operationId:operationId()})); }
+    try { await requestUi(() => request('chat.projectTrust.set',{sessionId:session.id,decision,leaseEpoch:epoch,operationId:operationId()})); }
     catch(caught) { setError(asUserError(caught,copy('The trust decision or reconnection could not be completed. Review the connection before retrying.','信任决定或重新连接未完成，请检查连接后重试。'))); }
     finally { setTrustBusy(false); }
   }
@@ -1781,8 +1787,21 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     if ((!writable && !permissionOptionsWritable) || epoch === undefined) return;
     if (!writable && !ui.options.some(option => option.id === optionId && option.category === 'mode')) return;
     try {
-      setUi(await request("chat.option.set", { sessionId: session.id, optionId, value, leaseEpoch: epoch, operationId: operationId() }));
+      await requestUi(() => request("chat.option.set", { sessionId: session.id, optionId, value, leaseEpoch: epoch, operationId: operationId() }));
     } catch (caught) { setError(asUserError(caught, copy("Option was not updated.", "未能更新选项。"))); }
+  }
+  // Session mutations reply on their own request pipe while chat.ui events keep arriving on the event pipe, so a
+  // chat.ui event shown before the reply may be newer than it. The reply is shown only if none arrived; otherwise
+  // the current options are read again.
+  async function requestUi(mutate: () => Promise<ChatUiState>) {
+    const owner = lifecycle.current, generation = transportGeneration.current, revision = uiUpdates.current;
+    const reply = await mutate();
+    if (lifecycle.current !== owner || transportGeneration.current !== generation) return;
+    if (uiUpdates.current === revision) { setUi(reply); return; }
+    const settled = uiUpdates.current;
+    // The mutation succeeded; a failed read leaves the newer event on screen until the next chat.ui event.
+    const current = await request('chat.options', { sessionId: session.id }).catch(() => undefined);
+    if (current && lifecycle.current === owner && transportGeneration.current === generation && uiUpdates.current === settled) setUi(chatUiFromEvent(current));
   }
   useEffect(() => {
     const el = composeRef.current;
@@ -2188,7 +2207,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       : repairNotice.kind === 'superseded' ? copy('This chat changed during repair. Review it and try again.', '修复期间此对话发生了变化。请检查后重试。')
       : copy('Could not repair history. The local transcript is unchanged.', '未能修复历史。本地对话记录未更改。')}</p>}
     <ChatNotesPanel sessionId={session.id} liveTurn={liveTurn} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} busy={busy} zh={zh} onIssue={message => setError(message)} />
-    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} canNote={steerKind === 'split-note'} onSendNote={sendNoteFromQueue} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
+    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} canNote={steerKind === 'split-note'} onSendNote={sendNoteFromQueue} ingressFailed={ingressFailed} onChange={changeQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}
       {...(isRemoteFiles() ? { onDragOver: (event: React.DragEvent<HTMLFormElement>) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); } }, onDrop: (event: React.DragEvent<HTMLFormElement>) => { const paths = groupDropPaths(event.dataTransfer); if (paths.length) { event.preventDefault(); event.stopPropagation(); void attachPickedFiles(paths); } } } : {})}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
