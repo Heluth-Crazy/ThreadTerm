@@ -238,6 +238,8 @@ export function TerminalSurface({ runtimeEpoch, sessionId, provider, theme, term
   useLayoutEffect(() => { fixedSizeRef.current = fixedSize; }, [fixedSize]);
   const canControlRef = useRef(canControl);
   const nativeCursorRef = useRef<ReturnType<typeof nativeCursorVisibility> | undefined>(undefined);
+  // Control came back while the output stopped inside a sequence; restore the cursor at the next boundary.
+  const cursorRestorePending = useRef(false);
   // The banner belongs to opening a legacy replay. A session that was live in this surface
   // keeps its built frame when it ends (the banner would shrink the host and reflow the
   // viewport), so the latch is keyed by session and adjusted during render on switches.
@@ -539,7 +541,13 @@ export function TerminalSurface({ runtimeEpoch, sessionId, provider, theme, term
                 }
                 renderedOutputCursorRef.current = Math.max(renderedOutputCursorRef.current, chunk.cursor + chunk.data.byteLength);
                 noteRenderedStartupFrame(chunk.cursor + chunk.data.byteLength, chunk);
-                if (replayComplete && !canControlRef.current && nativeCursor.atBoundary()) terminal.write("\x1b[?25l", () => { if (!disposed) terminal.refresh(0, terminal.rows - 1); });
+                if (replayComplete && nativeCursor.atBoundary()) {
+                  if (!canControlRef.current) terminal.write("\x1b[?25l", () => { if (!disposed) terminal.refresh(0, terminal.rows - 1); });
+                  else if (cursorRestorePending.current) {
+                    cursorRestorePending.current = false;
+                    terminal.write(nativeCursor.isVisible() === false ? "\x1b[?25l" : "\x1b[?25h");
+                  }
+                }
                 if (reading) setUnread(value => value + 1);
                 if (chunk.cursor + chunk.data.byteLength >= replayEnd) finishReplay();
                 if (replayComplete && chunk.cursor >= replayEnd && devServerOffersRef.current) devServerDetector.push(devServerDecoderRef.current.decode(chunk.data, { stream:true }));
@@ -634,7 +642,10 @@ export function TerminalSurface({ runtimeEpoch, sessionId, provider, theme, term
     // Ended/read-only surfaces replay history: hide the host cursor on this local
     // presentation instance only (never persisted, subscribed bytes stay untouched).
     const terminal = terminalRef.current;
-    if (!terminal || replaying || !nativeCursorRef.current?.atBoundary()) return;
+    cursorRestorePending.current = false;
+    if (!terminal || replaying) return;
+    // The output path hides the cursor of a read-only surface at each boundary and applies a pending restore.
+    if (!nativeCursorRef.current?.atBoundary()) { cursorRestorePending.current = canControl; return; }
     // A resumed session returns to the provider's own cursor mode, not an
     // unconditional visible host cursor (Claude paints its input caret).
     if (canControl) { terminal.write(nativeCursorRef.current?.isVisible() === false ? "\x1b[?25l" : "\x1b[?25h"); return; }

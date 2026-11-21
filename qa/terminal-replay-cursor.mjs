@@ -344,6 +344,23 @@ try {
   }
   report.checks.push('running-to-ended preserves the terminal and hides the host cursor');
 
+  // --- Scenario 5: control returns while the output has stopped inside a sequence ---
+  const claims = () => page.evaluate(() => window.qaMetrics.requests.filter(call => call.method === 'session.claim').length);
+  const claimedBefore = await claims();
+  await page.evaluate(() => window.qaEmit('qa-live-transition', '\x1b['));
+  await page.evaluate(() => window.qaSetStatus('running'));
+  await page.waitForFunction(before => window.qaMetrics.requests.filter(call => call.method === 'session.claim').length > before, claimedBefore, { timeout: 10_000 });
+  await page.waitForTimeout(250);
+  const midSequence = await collectEvidence('control-mid-sequence');
+  if (!evidenceOnly) assert.equal(midSequence.cursorSpan, null, 'no cursor command is injected inside the provider sequence');
+  await page.evaluate(() => window.qaEmit('qa-live-transition', '0m'));
+  if (!evidenceOnly) {
+    await page.waitForFunction(() => Boolean(document.querySelector('.terminal-host .xterm-cursor')), null, { timeout: 10_000, polling: 50 });
+  }
+  const restored = await collectEvidence('control-mid-sequence:restored');
+  if (!evidenceOnly) assert.ok(restored.cursorSpan, 'the cursor returns at the next sequence boundary');
+  report.checks.push('control returning mid-sequence restores the cursor at the next boundary');
+
   assert.deepEqual(errors, []);
   report.passed = true;
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
