@@ -42,6 +42,21 @@ test('watcher sets filter then snapshots once, applies events incrementally, rec
   assert.equal(client.calls.length, 6); assert.equal(watcher.tree().machine.state, 'connected');
   watcher.stop(); assert.equal(client.disposed, true);
 });
+test('watcher rejects a mismatched negotiated filter before reading a tree projection', async () => {
+  const client = new FakeClient();
+  let snapshotRequested = false;
+  client.request = (async (method: string) => {
+    if (method === 'runtime.events.filter') return { preset: 'none' };
+    snapshotRequested = true;
+    return structuredClone(client.value);
+  }) as WatchClient['request'];
+  const target = machine('mismatch');
+  const watcher = new MachineWatcher(target, client, () => {}, () => {});
+  watcher.start(); await settled();
+  assert.equal(snapshotRequested, false);
+  assert.equal(target.state, 'disconnected');
+  watcher.stop();
+});
 test('machine keys isolate duplicate session ids; expansion and feeds are shared/debounced', async () => {
   const feeds: MachineTreeFeed[] = [], store = new MachineTreeStore(feed => feeds.push(feed), () => {}, 10);
   const a = new FakeClient(), b = new FakeClient();

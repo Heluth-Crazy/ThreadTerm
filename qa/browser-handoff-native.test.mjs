@@ -54,7 +54,7 @@ function fixture(savedFiles=new Map()) {
   const code=ts.transpileModule(readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
   const localRequire=name=>{
    if(name==='electron')return electron;
-   if(name.endsWith('/pageComments.js'))return {nativePageRegistered(){},nativePageClosed(){},deletePageShots:async ids=>{for(const key of savedFiles.keys())if(ids.some(id=>key.endsWith(`${id}.png`)||key.endsWith(`${id}.jpg`)))savedFiles.delete(key);}};
+   if(name.endsWith('/pageComments.js'))return {nativePageRegistered(){},nativePageClosed(){},captureNativePageShot:async contents=>{const image=await contents.capturePage();return image.isEmpty()?undefined:{id:'context-shot',path:'context-shot.png',width:1,height:1,thumbnail:'data:image/jpeg;base64,'};},deletePageShots:async ids=>{for(const key of savedFiles.keys())if(ids.some(id=>key.endsWith(`${id}.png`)||key.endsWith(`${id}.jpg`)))savedFiles.delete(key);}};
    if(name==='node:fs'||name==='node:fs/promises')return new Proxy(require(name),{get(target,key){
     // Browser preference persistence is deliberately isolated from the filesystem.
     if(key==='readFileSync')return path=>{if(savedFiles.has(path))return savedFiles.get(path);throw Object.assign(new Error('No saved preferences'),{code:'ENOENT'});};
@@ -152,6 +152,25 @@ test('capture handoff rejects a navigation race and malformed markup before file
  f.setCapture(()=>new Promise(resolve=>{finish=resolve;}));const pending=f.handoff({type:'capture',tabId:'page-one',documentGeneration:0});await new Promise(resolve=>setImmediate(resolve));wc.emit('did-finish-load');finish({isEmpty:()=>false,getSize:()=>({width:20,height:20}),toPNG:()=>Buffer.from('x'),toJPEG:()=>Buffer.from('x'),resize(){return this;}});await assert.rejects(pending,/Page changed/);
  await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:1,shotId:'../invalid',dataUrl:'data:image/png;base64,WA=='}),/Screenshot is not available/);
  await assert.rejects(f.handoff({type:'saveMarkup',tabId:'page-one',documentGeneration:0,shotId:'00000000-0000-4000-8000-000000000000',dataUrl:'data:image/png;base64,WA=='}),/Page changed/);
+});
+
+test('native context menus open before a screenshot, then capture only the matching generation and target',async()=>{
+ const f=fixture();await f.show();const wc=f.views[0].webContents;
+ const pick=selector=>({url:wc.url,title:'Context fixture',viewport:{width:400,height:300},target:{type:'element',selector,tag:'button',label:'button',attributes:{},html:'<button>',rect:{x:20,y:20,width:80,height:30}}});
+ let replay=0,captures=0;
+ wc.executeJavaScriptInIsolatedWorld=async()=>replay++===0?pick('#save'):pick('#save');
+ f.setCapture(async()=>{captures++;return f.bitmap();});
+ wc.emit('context-menu',{}, {x:40,y:35});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+ const menu=f.sent.find(row=>row.channel==='threadterm:page-context-menu')?.value;
+ assert.equal(menu.contextSequence,1,'the context-menu event is emitted without waiting for a screenshot');
+ assert.equal(captures,0,'right-click itself does not call capturePage');
+ const selected=await f.handoff({type:'contextCapture',tabId:'page-one',documentGeneration:0,contextSequence:1});
+ assert.equal(captures,1,'selecting Comment on element captures once');assert.equal(selected.pick.target.selector,'#save');assert.equal(selected.contextSequence,1);
+ await assert.rejects(f.handoff({type:'contextCapture',tabId:'page-one',documentGeneration:1,contextSequence:1}),/Page changed/,'a stale renderer generation cannot attach a screenshot');
+ replay=0;wc.executeJavaScriptInIsolatedWorld=async()=>replay++===0?pick('#save'):pick('#other');
+ wc.emit('context-menu',{}, {x:40,y:35});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+ await assert.rejects(f.handoff({type:'contextCapture',tabId:'page-one',documentGeneration:0,contextSequence:2}),/Page changed/,'a changed element cannot attach the old click screenshot');
+ assert.equal(captures,1,'a changed element is rejected before capturePage');
 });
 
 test('captured screenshot survives same-document hash and History API changes with its original URL',async()=>{

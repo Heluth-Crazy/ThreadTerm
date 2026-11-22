@@ -13,10 +13,10 @@ test("settled splash exits once when an occluded window pauses animation frames"
   let tick: FrameRequestCallback | undefined;
   let fallback: (() => void) | undefined;
   let delay = 0;
-  const node = () => ({ style: {}, classList: { add() {} }, append() {}, lastElementChild: { style: {} }, getContext: () => null });
+  const node = () => ({ textContent: '', style: {}, classList: { add() {} }, append() {}, lastElementChild: { style: {} }, getContext: () => null });
   const parts = new Map<string, ReturnType<typeof node>>();
   const root = {
-    lang: "en", dataset: {}, style: {}, clientWidth: 1000, clientHeight: 800,
+    lang: "en", inert: false, dataset: {} as { phase?: string }, style: {}, clientWidth: 1000, clientHeight: 800,
     querySelector: (selector: string) => {
       if (!parts.has(selector)) parts.set(selector, node());
       return parts.get(selector);
@@ -37,7 +37,10 @@ test("settled splash exits once when an occluded window pauses animation frames"
     assert.equal(scheduled, 0, "no timer before the app settles");
     settleBootSplash("ready");
     assert.equal(scheduled, 1);
-    assert.ok(delay >= 620 && delay <= 3240, "remaining animation plus exit and margin is bounded");
+    assert.equal(root.inert, true);
+    assert.equal(root.dataset.phase, "exit");
+    assert.equal(parts.get(".bs-status-text")?.textContent, "Workspace ready");
+    assert.ok(delay <= 250, "an occluded window releases its splash promptly");
     settleBootSplash("failed");
     assert.equal(scheduled, 1, "first outcome wins without rearming");
     assert.equal(removed, 0);

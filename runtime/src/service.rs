@@ -2104,7 +2104,21 @@ impl RuntimeService {
                         let source = source.as_str().ok_or_else(|| anyhow::anyhow!("invalid Pi terminal fork source"))?;
                         self.create_pi_terminal_fork(p, source)
                     } else {
-                        self.create_session(&p, None)
+                        let created = self.create_session(&p, None)?;
+                        // Public Chat creation is the earliest point at which
+                        // validation, durable binding and launch metadata have
+                        // all succeeded. Internal reviewer/delegate creation
+                        // calls `create_session` directly and deliberately
+                        // bypasses this user-session warm-up.
+                        if p.mode == "chat" {
+                            if let Some(session_id) = created.get("id").and_then(Value::as_str) {
+                                crate::review::warm_session_in_background(
+                                    Arc::clone(&self.db),
+                                    session_id.to_owned(),
+                                );
+                            }
+                        }
+                        Ok(created)
                     }
                 }
                 "history.import" => self.import_native_history(&request.params),
@@ -3382,7 +3396,12 @@ impl RuntimeService {
         Ok(state)
     }
     fn connect_chat(&self, session_id: &str, resume: bool) -> Result<()> {
-        connect_chat_session(&self.db, &self.providers, session_id, resume)
+        // Never spend Git I/O on a connect request rejected by admission,
+        // lifecycle or provider validation. The bounded warm-up begins only
+        // after the session is genuinely ready and cannot delay reconnect.
+        connect_chat_session(&self.db, &self.providers, session_id, resume)?;
+        crate::review::warm_session_in_background(Arc::clone(&self.db), session_id.to_owned());
+        Ok(())
     }
     /// Retry an auto-release after the child's queue changed: a removed or
     /// drained follow-up leaves nothing to keep the worker for.

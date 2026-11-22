@@ -6,7 +6,6 @@ import {
   CONVERGE_MS,
   SPLASH_AGENTS,
   SPLASH_EXIT,
-  SPLASH_FINALE,
   SPLASH_GATE,
   SUBLINE_AT,
   SUBLINE_MS,
@@ -78,26 +77,14 @@ test("no incoming agent crosses the wordmark or tagline while they are showing",
   }
 });
 
-test("a ready app enters as soon as the finale ends: finale then exit fade, no idle tail", () => {
-  const waiting = run(startClock(), clock => clock.held >= 3000).clock;
-  const ready = settleClock(waiting, "ready");
-  assert.equal(splashFrame(ready, 0, size).status, "ready");
-  const { clock, elapsed } = run(ready, clock => clock.exit >= 1);
-  assert.equal(splashPhase(clock), "done");
-  assert.ok(Math.abs(elapsed - (SPLASH_FINALE + SPLASH_EXIT)) <= 17, `took ${elapsed} ms after ready`);
-  const lit = splashFrame(run(ready, clock => clock.t >= SPLASH_GATE + SPLASH_FINALE).clock, 0, size);
-  assert.equal(lit.core.opacity, 1, "the core is fully lit when the exit starts");
-  assert.equal(lit.progress.fill, 1);
-});
-
-test("a fast load speeds the rest of the intro up instead of making the user wait it out", () => {
-  const atNormalSpeed = SPLASH_GATE + SPLASH_FINALE + SPLASH_EXIT;
-  const instant = run(settleClock(startClock(), "ready"), clock => clock.exit >= 1).elapsed;
-  assert.ok(instant < atNormalSpeed - 600, `instant load took ${instant} ms`);
-  assert.ok(instant <= 1200, `instant load took ${instant} ms`);
-  const partway = run(startClock(), clock => clock.t >= 1200).clock;
-  const later = run(settleClock(partway, "ready"), clock => clock.exit >= 1).elapsed;
-  assert.ok(later < SPLASH_GATE - 1200 + SPLASH_FINALE + SPLASH_EXIT, `ready at 1.2 s took ${later} ms more`);
+test("ready releases input immediately and needs only the fade, even at the first frame", () => {
+  for (const t of [0, 850, SPLASH_GATE]) {
+    const ready = settleClock({ ...startClock(), t }, "ready");
+    assert.equal(splashPhase(ready), "exit");
+    assert.equal(splashFrame(ready, 0, size).status, "ready");
+    assert.equal(advanceClock(ready, SPLASH_EXIT).exit, 1);
+    assert.equal(advanceClock(ready, 5000).exit, 1);
+  }
 });
 
 test("a failed start reveals the error screen promptly, without the finale", () => {

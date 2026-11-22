@@ -6,6 +6,7 @@ type Internals = {
   ensureConnected(): Promise<void>;
   control?: { write(payload: Buffer): void; close(): void };
   handleControlFrame(frame: Buffer): void;
+  createSessionRequestClient(): RuntimeClient;
 };
 
 test('backup requests outlive the ordinary request timeout while unrelated requests still expire', async context => {
@@ -48,16 +49,34 @@ test('a Chat connect may take as long as the runtime allows an agent start, but 
   const client = new RuntimeClient({ autoLaunch: false });
   const internal = client as unknown as Internals;
   const requests: Array<{ id: string; method: string }> = [];
+  const child = new RuntimeClient({ autoLaunch: false, controlOnly: true });
+  const childInternal = child as unknown as Internals;
+  const childRequests: Array<{ id: string; method: string }> = [];
   internal.ensureConnected = async () => undefined;
   internal.control = {
     write(payload) { requests.push(JSON.parse(payload.toString('utf8')) as { id: string; method: string }); },
     close() {},
   };
+  childInternal.ensureConnected = async () => undefined;
+  childInternal.control = {
+    write(payload) {
+      const request = JSON.parse(payload.toString('utf8')) as { id: string; method: string };
+      childRequests.push(request);
+      if (request.method === 'runtime.events.filter') {
+        childInternal.handleControlFrame(Buffer.from(JSON.stringify({ v: 1, id: request.id, result: { preset: 'none' } })));
+      }
+    },
+    close() {},
+  };
+  internal.createSessionRequestClient = () => child;
   try {
     const connect = client.request('chat.connect', { sessionId: 'chat-1', leaseEpoch: 1, operationId: 'connect-operation' });
     const ordinary = client.request('runtime.health', {});
     await Promise.resolve();
-    assert.deepEqual(requests.map(request => request.method), ['chat.connect', 'runtime.health']);
+    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(requests.map(request => request.method), ['runtime.health'], 'ordinary requests remain on the primary control');
+    assert.deepEqual(childRequests.map(request => request.method), ['runtime.events.filter', 'chat.connect'], 'the child suppresses events before handing off Chat connect');
     let connectSettled = false;
     void connect.then(() => { connectSettled = true; }, () => { connectSettled = true; });
     // A Codex start whose initialize and thread resume each took 25 s (11-18) is still connecting.

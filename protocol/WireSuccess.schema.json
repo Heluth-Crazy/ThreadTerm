@@ -4251,39 +4251,56 @@
       "additionalProperties": false
     },
     "RequestResult<\"runtime.events.filter\">": {
-      "type": "object",
-      "properties": {
-        "preset": {
-          "type": "string",
-          "const": "tree"
-        },
-        "tree": {
+      "anyOf": [
+        {
           "type": "object",
           "properties": {
-            "worktrees": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/Worktree"
-              }
+            "preset": {
+              "type": "string",
+              "const": "tree"
             },
-            "visibility": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/CatalogVisibility"
-              }
+            "tree": {
+              "type": "object",
+              "properties": {
+                "worktrees": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/Worktree"
+                  }
+                },
+                "visibility": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/CatalogVisibility"
+                  }
+                }
+              },
+              "required": [
+                "worktrees"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
-            "worktrees"
+            "preset",
+            "tree"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "preset": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "preset"
           ],
           "additionalProperties": false
         }
-      },
-      "required": [
-        "preset",
-        "tree"
-      ],
-      "additionalProperties": false
+      ]
     },
     "Worktree": {
       "type": "object",

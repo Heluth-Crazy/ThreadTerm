@@ -22,7 +22,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     fs,
     io::{Read, Write},
@@ -38,6 +38,9 @@ const REVIEW_BUDGET: Duration = Duration::from_secs(60);
 const MAX_LABEL_CHARS: usize = 160;
 const MAX_REVIEW_CACHES: usize = 256;
 const MAX_UNAVAILABLE_DETAIL: usize = 400;
+const BACKGROUND_BATCH_THRESHOLD: usize = 256;
+const UPDATE_BATCH_PATHS: usize = 1024;
+const DIRECTORY_METADATA_THRESHOLD: usize = 64;
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS review_checkpoints (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, kind TEXT NOT NULL, turn_id TEXT, label TEXT, operation_id TEXT UNIQUE, store TEXT, tree TEXT, status TEXT NOT NULL, error TEXT, skipped TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS review_checkpoints_session ON review_checkpoints(session_id, created_at);";
 
@@ -48,6 +51,18 @@ pub fn initialize(db: &Database) -> Result<()> {
 struct Snapshot {
     tree: String,
     skipped: Vec<String>,
+}
+
+enum SnapshotAttempt {
+    Complete(Snapshot),
+    Yielded,
+    Rescan,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotPriority {
+    Foreground,
+    Background,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -425,6 +440,93 @@ struct SnapshotState {
     tree: Option<String>,
 }
 
+#[derive(Default)]
+struct WarmRegistry {
+    active: Option<WarmJob>,
+    warmed: HashSet<String>,
+    foreground: usize,
+}
+
+enum WarmJob {
+    Pending,
+    Root(String),
+}
+
+impl WarmRegistry {
+    fn reserve(&mut self) -> bool {
+        if self.foreground > 0 || self.active.is_some() {
+            return false;
+        }
+        self.active = Some(WarmJob::Pending);
+        true
+    }
+    fn claim(&mut self, key: &str) -> bool {
+        if !matches!(self.active.as_ref(), Some(WarmJob::Pending)) {
+            return false;
+        }
+        self.active = Some(WarmJob::Root(key.to_owned()));
+        !self.warmed.contains(key)
+    }
+    fn finish_pending(&mut self) {
+        if matches!(self.active.as_ref(), Some(WarmJob::Pending)) {
+            self.active = None;
+        }
+    }
+    fn remember(&mut self, key: &str) {
+        if self.warmed.len() >= MAX_REVIEW_CACHES {
+            self.warmed.clear();
+        }
+        self.warmed.insert(key.to_owned());
+    }
+    fn finish(&mut self, key: &str, warmed: bool) {
+        if matches!(self.active.as_ref(), Some(WarmJob::Root(active)) if active == key) {
+            self.active = None;
+        }
+        if warmed {
+            self.remember(key);
+        }
+    }
+}
+
+fn warm_registry() -> &'static Mutex<WarmRegistry> {
+    static REGISTRY: OnceLock<Mutex<WarmRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(Mutex::default)
+}
+
+fn warm_key(db: &Database, root: &Path) -> String {
+    format!("{}\0{}", path_cache_key(db.path()), path_cache_key(root))
+}
+
+fn should_yield_snapshot(priority: SnapshotPriority) -> bool {
+    priority == SnapshotPriority::Background
+        && warm_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .foreground
+            > 0
+}
+
+struct ForegroundSnapshot;
+
+impl ForegroundSnapshot {
+    fn begin() -> Self {
+        let mut registry = warm_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry.foreground += 1;
+        Self
+    }
+}
+
+impl Drop for ForegroundSnapshot {
+    fn drop(&mut self) {
+        let mut registry = warm_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry.foreground = registry.foreground.saturating_sub(1);
+    }
+}
+
 fn object_writer_lock(path: &Path) -> Arc<Mutex<()>> {
     type Locks = HashMap<String, Weak<Mutex<()>>>;
     static LOCKS: OnceLock<Mutex<Locks>> = OnceLock::new();
@@ -613,6 +715,111 @@ fn changed_gitignore(status: &[u8]) -> bool {
         })
 }
 
+#[derive(Clone, Copy)]
+enum SnapshotMetadata {
+    Directory,
+    File(u64),
+    Other,
+}
+
+fn batched_worktree_metadata(top: &Path, paths: &[&str]) -> HashMap<PathBuf, SnapshotMetadata> {
+    let mut directory_paths = HashMap::<PathBuf, HashSet<PathBuf>>::new();
+    for path in paths {
+        let parent = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
+        directory_paths
+            .entry(top.join(parent))
+            .or_default()
+            .insert(top.join(path));
+    }
+    let mut metadata = HashMap::new();
+    for (directory, requested) in directory_paths {
+        if requested.len() < DIRECTORY_METADATA_THRESHOLD {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        // Do not turn a handful of changed paths in a huge directory into a
+        // full scan. After a bounded probe, missing entries use the exact
+        // per-path fallback below.
+        let probe_limit = requested.len().saturating_mul(4);
+        for entry in entries.flatten().take(probe_limit) {
+            let path = entry.path();
+            if !requested.contains(&path) {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let value = if file_type.is_dir() {
+                SnapshotMetadata::Directory
+            } else if file_type.is_file() {
+                let Ok(details) = entry.metadata() else {
+                    continue;
+                };
+                SnapshotMetadata::File(details.len())
+            } else {
+                SnapshotMetadata::Other
+            };
+            metadata.insert(path, value);
+        }
+    }
+    metadata
+}
+
+struct WorkingIndex {
+    directory: PathBuf,
+    path: PathBuf,
+}
+
+impl WorkingIndex {
+    fn cleanup(directory: &Path) {
+        let _ = fs::remove_file(directory.join("index.lock"));
+        let _ = fs::remove_file(directory.join("index"));
+        let _ = fs::remove_dir(directory);
+    }
+
+    fn new(stable: &Path) -> Result<Self> {
+        let parent = stable
+            .parent()
+            .ok_or_else(|| anyhow!("review_unavailable"))?;
+        let prefix = ".w-";
+        // Every Git mutation uses a unique directory. Old interrupted children
+        // can only touch their abandoned directory, which is safe to clean even
+        // if they are still alive because it is never a checkpoint seed.
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&prefix)
+                    && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                {
+                    Self::cleanup(&entry.path());
+                }
+            }
+        }
+        let directory = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir(&directory)?;
+        let path = directory.join("index");
+        if stable.is_file() {
+            fs::copy(stable, &path)?;
+        }
+        Ok(Self { directory, path })
+    }
+
+    fn publish(&self, stable: &Path) -> Result<()> {
+        let bytes = fs::read(&self.path)?;
+        let root = stable
+            .parent()
+            .ok_or_else(|| anyhow!("review_unavailable"))?;
+        replace_file_atomically(root, stable, &bytes)
+    }
+}
+
+impl Drop for WorkingIndex {
+    fn drop(&mut self) {
+        Self::cleanup(&self.directory);
+    }
+}
+
 /// Object-store context for one repository.
 struct Store {
     top: PathBuf,
@@ -640,7 +847,10 @@ impl Store {
         let indexes = plain_path(&base.join("review-indexes").join(&common_key));
         fs::create_dir_all(&objects)?;
         fs::create_dir_all(&indexes)?;
-        let private_index = indexes.join(worktree_key);
+        // V2 is a canonical seed only; Git children receive unique working
+        // copies. The suffix also fences late writers from older runtimes that
+        // used the unsuffixed path directly.
+        let private_index = indexes.join(format!("{worktree_key}.seed-v2"));
         let private_git_dir = plain_path(&base.join("review-git").join(hex::encode(
             Sha256::digest(path_cache_key(&private_index).as_bytes()),
         )));
@@ -734,7 +944,9 @@ impl Store {
                 return Err(error.into());
             }
             if let Some(shared) = linked_shared_index(&self.source_index, bytes)? {
-                self.flatten_private_split_index(&shared, deadline)?;
+                let working = WorkingIndex::new(&self.private_index)?;
+                self.flatten_private_split_index(&shared, &working.path, deadline)?;
+                working.publish(&self.private_index)?;
             }
         }
         state.source = Some(source.fingerprint.clone());
@@ -742,7 +954,12 @@ impl Store {
         Ok(())
     }
 
-    fn flatten_private_split_index(&self, shared: &SharedIndex, deadline: Instant) -> Result<()> {
+    fn flatten_private_split_index(
+        &self,
+        shared: &SharedIndex,
+        private_index: &Path,
+        deadline: Instant,
+    ) -> Result<()> {
         check_deadline(deadline)?;
         fs::create_dir_all(self.private_git_dir.join("objects"))?;
         fs::create_dir_all(self.private_git_dir.join("refs"))?;
@@ -777,7 +994,7 @@ impl Store {
         };
         fs::write(self.private_git_dir.join("config"), config)?;
         check_deadline(deadline)?;
-        let mut env = self.env(Some(&self.private_index), &[])?;
+        let mut env = self.env(Some(private_index), &[])?;
         env.push(("GIT_DIR", self.private_git_dir.as_os_str().to_owned()));
         env.push(("GIT_WORK_TREE", self.top.as_os_str().to_owned()));
         self.run(&["update-index", "--no-split-index"], &env, None, deadline)?;
@@ -788,6 +1005,17 @@ impl Store {
         let _ = fs::remove_file(sibling_path(&self.private_index, ".lock"));
         let _ = fs::remove_file(&self.private_index);
         *state = SnapshotState::default();
+    }
+
+    fn recover_snapshot_error(&self, state: &mut SnapshotState, error: &anyhow::Error) {
+        if error.to_string() == "git_timeout" && self.private_index.is_file() {
+            // Git only mutates the disposable working copy. Every completed
+            // batch publishes a full index image here, so timeout recovery keeps
+            // the last successful seed and abandons the isolated writer.
+            state.tree = None;
+        } else {
+            self.invalidate_private_index(state);
+        }
     }
 
     fn remember_gitignore_candidates(&self, state: &mut SnapshotState, path: &str) {
@@ -818,7 +1046,12 @@ impl Store {
         )
     }
 
-    fn snapshot_locked(&self, state: &mut SnapshotState, deadline: Instant) -> Result<Snapshot> {
+    fn snapshot_locked(
+        &self,
+        state: &mut SnapshotState,
+        deadline: Instant,
+        priority: SnapshotPriority,
+    ) -> Result<SnapshotAttempt> {
         let source = SourceIndex::read(&self.source_index, deadline)?;
         let stamp_deadline = marker_deadline(deadline);
         let external_ignores = stamp_paths(&self.ignore_files, stamp_deadline)?;
@@ -842,6 +1075,8 @@ impl Store {
         }
         state.external_ignores = external_ignores;
         state.worktree_ignores = worktree_ignores;
+        // `status` stays read-only with optional locks disabled. `write-tree`
+        // can still rewrite cache extensions, so it uses a working copy below.
         let env = self.env(Some(&self.private_index), &[])?;
         let mut status = self.status(&env, deadline)?;
         if !reset && changed_gitignore(&status) {
@@ -852,21 +1087,32 @@ impl Store {
             status = self.status(&env, deadline)?;
         }
         let text = String::from_utf8_lossy(&status);
-        let mut update = Vec::new();
-        let mut skipped = Vec::new();
-        for (x, y, path) in text
+        let changed_paths = text
             .split('\0')
             .filter(|record| record.len() > 3)
-            .map(|record| (&record[..1], &record[1..2], &record[3..]))
-        {
-            if !needs_update(x, y) {
-                continue;
-            }
+            .filter(|record| needs_update(&record[..1], &record[1..2]))
+            .map(|record| &record[3..])
+            .collect::<Vec<_>>();
+        let mut update = Vec::new();
+        let mut skipped = Vec::new();
+        let metadata = batched_worktree_metadata(&self.top, &changed_paths);
+        for path in changed_paths {
             self.remember_gitignore_candidates(state, path);
             let full = self.top.join(path);
-            match fs::symlink_metadata(&full) {
-                Ok(meta) if meta.is_dir() => continue,
-                Ok(meta) if meta.is_file() && meta.len() > MAX_SNAPSHOT_FILE => {
+            let observed = metadata.get(&full).copied().or_else(|| {
+                fs::symlink_metadata(&full).ok().map(|details| {
+                    if details.is_dir() {
+                        SnapshotMetadata::Directory
+                    } else if details.is_file() {
+                        SnapshotMetadata::File(details.len())
+                    } else {
+                        SnapshotMetadata::Other
+                    }
+                })
+            });
+            match observed {
+                Some(SnapshotMetadata::Directory) => continue,
+                Some(SnapshotMetadata::File(size)) if size > MAX_SNAPSHOT_FILE => {
                     if skipped.len() < MAX_SKIPPED {
                         if let Some(relative) = path.strip_prefix(&self.prefix) {
                             skipped.push(relative.to_owned());
@@ -876,26 +1122,97 @@ impl Store {
                 }
                 _ => {}
             }
-            update.extend_from_slice(path.as_bytes());
-            update.push(0);
+            update.push(path);
         }
+        // A partial batch is a reusable checkpoint seed. Record the ignore
+        // files that governed this status before publishing its first batch;
+        // otherwise the newly discovered paths themselves look like an ignore
+        // change on retry and unnecessarily reset every committed batch.
+        state.worktree_ignore_paths.sort();
+        state.worktree_ignore_paths.dedup();
+        let expanded_worktree_ignores = stamp_paths(
+            &state.worktree_ignore_paths,
+            marker_deadline(deadline),
+        )?;
+        let known_ignore_changed = state.worktree_ignores.iter().any(|known| {
+            expanded_worktree_ignores
+                .binary_search_by(|candidate| candidate.0.cmp(&known.0))
+                .ok()
+                .is_none_or(|index| expanded_worktree_ignores[index].1 != known.1)
+        });
+        if known_ignore_changed {
+            // Do not overwrite the pre-status marker with the later stamp: that
+            // would hide an ignore-rule change inside the observation window.
+            self.invalidate_private_index(state);
+            return Err(anyhow!("snapshot_changed"));
+        }
+        let discovered_real_ignore = expanded_worktree_ignores.iter().any(|candidate| {
+            !matches!(candidate.1, FileStamp::Missing)
+                && state
+                    .worktree_ignores
+                    .binary_search_by(|known| known.0.cmp(&candidate.0))
+                    .is_err()
+        });
+        state.worktree_ignores = expanded_worktree_ignores;
+        if discovered_real_ignore {
+            // A nested ignore file first discovered from this status has no
+            // pre-status marker. Establish its baseline, then explicitly scan
+            // again before publishing a batch. The bounded deadline prevents
+            // a changing ignore tree from looping indefinitely.
+            return Ok(SnapshotAttempt::Rescan);
+        }
+        if should_yield_snapshot(priority) && update.len() < BACKGROUND_BATCH_THRESHOLD {
+            return Ok(SnapshotAttempt::Yielded);
+        }
+        let mut working = None;
         if !update.is_empty() {
-            self.run(
-                &["update-index", "-z", "--add", "--remove", "--stdin"],
-                &env,
-                Some(&update),
-                deadline,
-            )?;
+            // Git mutates only this disposable copy. Each successful child then
+            // publishes its complete index image to the stable seed, so a
+            // timeout can reuse every prior batch without trusting its lock.
+            state.tree = None;
+            let candidate = WorkingIndex::new(&self.private_index)?;
+            let working_env = self.env(Some(&candidate.path), &[])?;
+            for paths in update.chunks(UPDATE_BATCH_PATHS) {
+                let mut input = Vec::new();
+                for path in paths {
+                    input.extend_from_slice(path.as_bytes());
+                    input.push(0);
+                }
+                self.run(
+                    &["update-index", "-z", "--add", "--remove", "--stdin"],
+                    &working_env,
+                    Some(&input),
+                    deadline,
+                )?;
+                candidate.publish(&self.private_index)?;
+                if should_yield_snapshot(priority) {
+                    return Ok(SnapshotAttempt::Yielded);
+                }
+            }
+            working = Some(candidate);
         }
         let tree = if update.is_empty() {
             match state.tree.as_ref() {
                 Some(tree) => tree.clone(),
-                None => String::from_utf8(self.run(&["write-tree"], &env, None, deadline)?)?
-                    .trim()
-                    .to_owned(),
+                None => {
+                    let candidate = WorkingIndex::new(&self.private_index)?;
+                    let write_env = self.env(Some(&candidate.path), &[])?;
+                    String::from_utf8(self.run(&["write-tree"], &write_env, None, deadline)?)?
+                        .trim()
+                        .to_owned()
+                }
             }
         } else {
-            String::from_utf8(self.run(&["write-tree"], &env, None, deadline)?)?
+            let write_env = self.env(
+                Some(
+                    &working
+                        .as_ref()
+                        .expect("updated snapshot keeps its working index")
+                        .path,
+                ),
+                &[],
+            )?;
+            String::from_utf8(self.run(&["write-tree"], &write_env, None, deadline)?)?
                 .trim()
                 .to_owned()
         };
@@ -904,22 +1221,72 @@ impl Store {
         }
         state.worktree_ignore_paths.sort();
         state.worktree_ignore_paths.dedup();
-        state.worktree_ignores = stamp_paths(
+        let final_external_ignores = stamp_paths(&self.ignore_files, marker_deadline(deadline))?;
+        let final_worktree_ignores = stamp_paths(
             &state.worktree_ignore_paths,
             marker_deadline(deadline),
         )?;
+        if final_external_ignores != state.external_ignores
+            || final_worktree_ignores != state.worktree_ignores
+        {
+            // Ignore rules changed while Git was hashing a batch. Discard this
+            // private seed explicitly; the next bounded capture rebuilds from
+            // the user's index under the new rules. Never publish a tree whose
+            // inclusion rules came from two observations.
+            self.invalidate_private_index(state);
+            return Err(anyhow!("snapshot_changed"));
+        }
+        state.external_ignores = final_external_ignores;
+        state.worktree_ignores = final_worktree_ignores;
         state.tree = Some(tree.clone());
-        Ok(Snapshot { tree, skipped })
+        Ok(SnapshotAttempt::Complete(Snapshot { tree, skipped }))
     }
 
     fn snapshot(&self, deadline: Instant) -> Result<Snapshot> {
+        let _foreground = ForegroundSnapshot::begin();
         let _writer = lock_until(&self.writer_lock, deadline)?;
         let mut state = lock_until(&self.state, deadline)?;
-        let result = self.snapshot_locked(&mut state, deadline);
-        if result.is_err() {
-            self.invalidate_private_index(&mut state);
+        let result = loop {
+            match self.snapshot_locked(&mut state, deadline, SnapshotPriority::Foreground) {
+                Ok(SnapshotAttempt::Complete(snapshot)) => break Ok(snapshot),
+                Ok(SnapshotAttempt::Yielded) => {
+                    unreachable!("foreground snapshot cannot yield")
+                }
+                Ok(SnapshotAttempt::Rescan) => continue,
+                Err(error) => break Err(error),
+            }
+        };
+        if let Err(error) = &result {
+            self.recover_snapshot_error(&mut state, error);
         }
         result
+    }
+
+    /// A warm-up never waits for a busy checkpoint store. If its earlier
+    /// reservation wins the writer lock, it uses the same recovery rules and
+    /// yields after at most one published batch once foreground work appears.
+    fn try_warm_snapshot(&self, deadline: Instant) -> Result<bool> {
+        let _writer = match self.writer_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(false),
+        };
+        let mut state = match self.state.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(false),
+        };
+        loop {
+            match self.snapshot_locked(&mut state, deadline, SnapshotPriority::Background) {
+                Ok(SnapshotAttempt::Complete(_)) => break Ok(true),
+                Ok(SnapshotAttempt::Yielded) => break Ok(false),
+                Ok(SnapshotAttempt::Rescan) => continue,
+                Err(error) => {
+                    self.recover_snapshot_error(&mut state, &error);
+                    break Err(error);
+                }
+            }
+        }
     }
 
     /// Resolves one file inside a checkpoint tree by reading the tree objects.
@@ -1195,11 +1562,20 @@ fn capture(
             return Ok(id);
         }
     }
+    // Cover discovery/open as foreground work too. `Store::snapshot` keeps its
+    // own guard for non-capture callers and nests safely here.
+    let _foreground = ForegroundSnapshot::begin();
     let scope = session_scope(db, session_id)?.ok_or_else(|| anyhow!("review_unavailable"))?;
     let deadline = Instant::now() + budget;
     let (store, tree, status, error, skipped) = match Store::open(db, &scope.root, deadline) {
         Ok(store) => match store.snapshot(deadline) {
-            Ok(snapshot) => (Some(store), Some(snapshot.tree), "ready", None, snapshot.skipped),
+            Ok(snapshot) => {
+                warm_registry()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remember(&warm_key(db, &store.top));
+                (Some(store), Some(snapshot.tree), "ready", None, snapshot.skipped)
+            }
             Err(error) => (Some(store), None, "failed", Some(error.to_string()), Vec::new()),
         },
         Err(error) if error.to_string().contains("git_unavailable") => {
@@ -1264,6 +1640,78 @@ pub fn capture_before_turn(
         .outcome(if checkpoint.is_some() { "recorded" } else { "unavailable" })
         .duration_us(trace_timer.elapsed_us()));
     checkpoint
+}
+
+/// Builds the reusable private checkpoint index after a Chat session is ready.
+/// There is one warm worker process-wide, equal roots share its result, and
+/// contention is skipped instead of queued. The resulting tree is only a cache
+/// seed: an admitted send still validates the current worktree.
+pub fn warm_session_in_background(db: Arc<Database>, session_id: String) {
+    {
+        let mut registry = warm_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !registry.reserve() {
+            return;
+        }
+    }
+    let spawned = std::thread::Builder::new()
+        .name("review-prewarm".into())
+        .spawn(move || {
+            let invalid = || {
+                let mut registry = warm_registry()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                registry.finish_pending();
+            };
+            if crate::code_review::is_hidden_reviewer(&db, &session_id).unwrap_or(false) {
+                invalid();
+                return;
+            }
+            let Ok(Some(scope)) = session_scope(&db, &session_id) else {
+                invalid();
+                return;
+            };
+            {
+                let registry = warm_registry()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !matches!(registry.active.as_ref(), Some(WarmJob::Pending)) {
+                    drop(registry);
+                    invalid();
+                    return;
+                }
+            }
+            let deadline = Instant::now() + TURN_BUDGET;
+            let store = match Store::open(&db, &scope.root, deadline) {
+                Ok(store) => store,
+                Err(_) => {
+                    invalid();
+                    return;
+                }
+            };
+            let worker_key = warm_key(&db, &store.top);
+            {
+                let mut registry = warm_registry()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !registry.claim(&worker_key) {
+                    registry.finish(&worker_key, false);
+                    return;
+                }
+            }
+            let result = store.try_warm_snapshot(deadline);
+            let mut registry = warm_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            registry.finish(&worker_key, matches!(result, Ok(true)));
+        });
+    if spawned.is_err() {
+        let mut registry = warm_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry.finish_pending();
+    }
 }
 
 /// Attaches the provider turn id once `chat.send` has returned one.
@@ -2419,6 +2867,157 @@ mod tests {
     }
 
     #[test]
+    fn timeout_keeps_the_last_atomically_published_private_index_for_retry() {
+        let (_temp, db, repo, _session) = setup();
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        let published = fs::read(&store.private_index).unwrap();
+
+        let error = match store.snapshot(Instant::now()) {
+            Ok(_) => panic!("expired snapshot must time out"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "git_timeout");
+        assert_eq!(fs::read(&store.private_index).unwrap(), published);
+        assert!(!sibling_path(&store.private_index, ".lock").exists());
+        assert!(store.state.lock().unwrap().tree.is_none());
+    }
+
+    #[test]
+    fn abandoned_working_index_lock_never_blocks_or_changes_the_stable_seed() {
+        let (_temp, db, repo, _session) = setup();
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        let published = fs::read(&store.private_index).unwrap();
+        let abandoned = WorkingIndex::new(&store.private_index).unwrap();
+        fs::write(&abandoned.path, b"late incomplete index").unwrap();
+        fs::write(
+            sibling_path(&abandoned.path, ".lock"),
+            b"permanent abandoned lock",
+        )
+        .unwrap();
+
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        assert_eq!(fs::read(&store.private_index).unwrap(), published);
+        assert!(abandoned.directory.exists());
+
+        fs::write(repo.join("a.txt"), "changed after abandoned writer\n").unwrap();
+        let changed = store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        assert_eq!(
+            store
+                .blob(
+                    &changed.tree,
+                    "a.txt",
+                    &[],
+                    Instant::now() + TURN_BUDGET,
+                )
+                .unwrap()
+                .unwrap(),
+            b"changed after abandoned writer\n"
+        );
+        assert!(!abandoned.directory.exists());
+        assert!(
+            fs::write(&abandoned.path, b"late publish").is_err(),
+            "an old descendant cannot recreate its removed private directory"
+        );
+    }
+
+    #[test]
+    fn write_tree_never_mutates_or_locks_the_stable_seed() {
+        let (_temp, db, repo, _session) = setup();
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        let stable = fs::read(&store.private_index).unwrap();
+        store.state.lock().unwrap().tree = None;
+        let sentinel = sibling_path(&store.private_index, ".lock");
+        fs::write(&sentinel, b"stable seed must stay read-only").unwrap();
+
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        assert_eq!(fs::read(&store.private_index).unwrap(), stable);
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            b"stable seed must stay read-only"
+        );
+        fs::remove_file(sentinel).unwrap();
+    }
+
+    #[test]
+    fn working_index_path_stays_short_with_git_longpaths_disabled() {
+        let (temp, _db, repo, _session) = setup();
+        let mut indexes = temp.path().join("long-data").join("review-indexes");
+        while indexes.to_string_lossy().encode_utf16().count() < 180 {
+            indexes = indexes.join("long-database-path");
+        }
+        fs::create_dir_all(&indexes).unwrap();
+        let stable = indexes.join(format!("{}.seed-v2", "a".repeat(64)));
+        fs::copy(repo.join(".git").join("index"), &stable).unwrap();
+        let old_shape = indexes
+            .join(format!(
+                ".working-{}-{}",
+                stable.file_name().unwrap().to_string_lossy(),
+                uuid::Uuid::nil()
+            ))
+            .join("index");
+        let working = WorkingIndex::new(&stable).unwrap();
+
+        #[cfg(windows)]
+        {
+            assert!(old_shape.to_string_lossy().encode_utf16().count() > 260);
+            assert!(working.path.to_string_lossy().encode_utf16().count() < 260);
+        }
+        #[cfg(not(windows))]
+        let _ = old_shape;
+        git(&repo, &["config", "core.longpaths", "false"]).unwrap();
+        let env = [("GIT_INDEX_FILE", working.path.as_os_str())];
+        run_git(
+            &repo,
+            &["-c", "core.longpaths=false", "update-index", "--refresh"],
+            &env,
+            None,
+            TURN_BUDGET,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn known_gitignore_change_during_status_is_not_hidden_by_expanded_stamps() {
+        let (_temp, db, repo, _session) = setup();
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        fs::create_dir(repo.join("new-ignore")).unwrap();
+        fs::write(repo.join("new-ignore").join("late.txt"), "late\n").unwrap();
+
+        crate::git_read::git_barrier::arm(&repo, 1);
+        let error = std::thread::scope(|threads| {
+            let capture = threads.spawn(|| store.snapshot(Instant::now() + TURN_BUDGET));
+            assert!(crate::git_read::git_barrier::wait_held(
+                1,
+                Duration::from_secs(1)
+            ));
+            fs::write(repo.join(".gitignore"), "ignored/\nnew-ignore/\n").unwrap();
+            crate::git_read::git_barrier::release();
+            match capture.join().unwrap() {
+                Ok(_) => panic!("a mixed ignore-rule observation must not publish a tree"),
+                Err(error) => error,
+            }
+        });
+        assert_eq!(error.to_string(), "snapshot_changed");
+
+        let recovered = store.snapshot(Instant::now() + TURN_BUDGET).unwrap();
+        assert_eq!(
+            store
+                .blob(
+                    &recovered.tree,
+                    "new-ignore/late.txt",
+                    &[],
+                    Instant::now() + TURN_BUDGET,
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn shared_object_writer_wait_obeys_the_checkpoint_deadline() {
         let (_temp, db, repo, _session) = setup();
         let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
@@ -2504,6 +3103,211 @@ mod tests {
             repeated.push(started.elapsed());
         }
         eprintln!("checkpoint performance: first={first:?}, repeated={repeated:?}");
+    }
+
+    #[test]
+    fn warm_registry_is_single_flight_per_process_and_reuses_finished_roots() {
+        let mut registry = WarmRegistry::default();
+        assert!(registry.reserve());
+        assert!(registry.claim("db-a\0root-a"));
+        assert!(
+            !registry.reserve(),
+            "a second root must not queue behind the active warm-up"
+        );
+        registry.finish("db-a\0root-a", true);
+        assert!(registry.reserve());
+        assert!(
+            !registry.claim("db-a\0root-a"),
+            "the same database/root must reuse its warm state"
+        );
+        registry.finish("db-a\0root-a", false);
+        registry.foreground = 1;
+        assert!(
+            !registry.reserve(),
+            "foreground checkpoint work has priority"
+        );
+        registry.foreground = 0;
+        assert!(registry.reserve());
+        assert!(registry.claim("db-a\0root-b"));
+        registry.finish("db-a\0root-b", false);
+        assert!(registry.reserve());
+        assert!(
+            registry.claim("db-a\0root-b"),
+            "a failed or skipped warm-up remains retryable"
+        );
+        registry.finish("db-a\0root-b", false);
+        assert!(registry.reserve());
+        registry.finish_pending();
+        assert!(registry.reserve(), "thread spawn failure must release its slot");
+    }
+
+    #[test]
+    fn warm_snapshot_skips_a_busy_checkpoint_store_without_waiting() {
+        let (_temp, db, repo, _session) = setup();
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline).unwrap();
+        let _busy = store.writer_lock.lock().unwrap();
+        assert!(!store.try_warm_snapshot(deadline).unwrap());
+    }
+
+    #[test]
+    fn yielded_batches_keep_ignore_stamps_and_reduce_the_next_status() {
+        let (_temp, db, repo, _session) = setup();
+        for directory in ["batch-a", "batch-b"] {
+            let root = repo.join(directory);
+            fs::create_dir(&root).unwrap();
+            for index in 0..550 {
+                fs::write(root.join(format!("file-{index}.txt")), format!("{index}\n")).unwrap();
+            }
+        }
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline).unwrap();
+        let foreground = ForegroundSnapshot::begin();
+        assert!(!store.try_warm_snapshot(deadline).unwrap());
+        drop(foreground);
+
+        {
+            let state = store.state.lock().unwrap();
+            let observed = stamp_paths(
+                &state.worktree_ignore_paths,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap();
+            assert_eq!(state.worktree_ignores, observed);
+        }
+        let env = store.env(Some(&store.private_index), &[]).unwrap();
+        let pending = String::from_utf8_lossy(&store.status(&env, deadline).unwrap())
+            .split('\0')
+            .filter(|record| record.len() > 3)
+            .filter(|record| needs_update(&record[..1], &record[1..2]))
+            .count();
+        assert_eq!(pending, 1100 - UPDATE_BATCH_PATHS);
+        let warmed = (0..100).any(|_| {
+            if store.try_warm_snapshot(Instant::now() + TURN_BUDGET).unwrap() {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(warmed);
+    }
+
+    #[test]
+    fn immediate_send_makes_an_inflight_warm_snapshot_yield_after_status() {
+        let (_temp, db, repo, session) = setup();
+        let batch = repo.join("batch");
+        fs::create_dir(&batch).unwrap();
+        for index in 0..600 {
+            fs::write(batch.join(format!("file-{index}.txt")), format!("{index}\n")).unwrap();
+        }
+        let store = Store::open(&db, &repo, Instant::now() + TURN_BUDGET).unwrap();
+        let exercised = (0..10).any(|_| {
+            crate::git_read::git_barrier::arm(&repo, 1);
+            let completed = std::thread::scope(|threads| {
+                let warm =
+                    threads.spawn(|| store.try_warm_snapshot(Instant::now() + TURN_BUDGET));
+                if !crate::git_read::git_barrier::wait_held(1, Duration::from_millis(250)) {
+                    crate::git_read::git_barrier::release();
+                    warm.join().unwrap().unwrap();
+                    return false;
+                }
+                let send = threads.spawn(|| {
+                    capture_before_turn(&db, &session, "send-during-warm", "send now")
+                });
+                let foreground_seen = (0..500).any(|_| {
+                    let foreground = warm_registry()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .foreground;
+                    if foreground > 0 {
+                        true
+                    } else {
+                        std::thread::sleep(Duration::from_millis(1));
+                        false
+                    }
+                });
+                crate::git_read::git_barrier::release();
+                assert!(foreground_seen, "send must register before warm status exits");
+                assert!(!warm.join().unwrap().unwrap(), "warm-up must yield its locks");
+                let checkpoint = send.join().unwrap().expect("foreground checkpoint");
+                assert_eq!(checkpoint_json(&db, &checkpoint).unwrap()["status"], "ready");
+                true
+            });
+            if !completed {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            completed
+        });
+        assert!(exercised, "the warm status command must reach the test barrier");
+    }
+
+    #[test]
+    fn warm_index_is_only_a_seed_and_send_captures_the_later_exact_worktree() {
+        let (_temp, db, repo, session) = setup();
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline).unwrap();
+        let warmed = (0..100).any(|_| {
+            if store.try_warm_snapshot(deadline).unwrap() {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(warmed, "warm-up should run once foreground contention clears");
+        let warmed_rows: i64 = db
+            .transaction(|tx| {
+                Ok(tx.query_row("SELECT COUNT(*) FROM review_checkpoints", [], |row| {
+                    row.get(0)
+                })?)
+            })
+            .unwrap();
+        assert_eq!(warmed_rows, 0, "warm-up must not create a durable baseline");
+
+        fs::write(repo.join("staged.txt"), "staged after warm\n").unwrap();
+        git(&repo, &["add", "staged.txt"]).unwrap();
+        fs::write(repo.join("a.txt"), "working after warm\n").unwrap();
+        fs::write(repo.join("untracked.txt"), "untracked after warm\n").unwrap();
+        fs::remove_file(repo.join("gone.txt")).unwrap();
+        fs::create_dir_all(repo.join("ignored")).unwrap();
+        fs::write(repo.join("ignored").join("late.txt"), "ignored after warm\n").unwrap();
+        let public_index = fs::read(repo.join(".git").join("index")).unwrap();
+
+        let checkpoint =
+            capture_before_turn(&db, &session, "send-after-warm", "capture now").unwrap();
+        let tree = ready_tree_for(&db, &checkpoint);
+        let deadline = Instant::now() + TURN_BUDGET;
+        let store = Store::open(&db, &repo, deadline).unwrap();
+        assert!(
+            warm_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .warmed
+                .contains(&warm_key(&db, &store.top)),
+            "a completed foreground send must suppress a redundant later warm-up"
+        );
+        for (path, expected) in [
+            ("staged.txt", Some(&b"staged after warm\n"[..])),
+            ("a.txt", Some(&b"working after warm\n"[..])),
+            ("untracked.txt", Some(&b"untracked after warm\n"[..])),
+            ("gone.txt", None),
+            ("ignored/late.txt", None),
+        ] {
+            assert_eq!(
+                store
+                    .blob(&tree, path, &[], deadline)
+                    .unwrap()
+                    .as_deref(),
+                expected,
+                "{path} must describe the worktree at send time"
+            );
+        }
+        assert_eq!(
+            fs::read(repo.join(".git").join("index")).unwrap(),
+            public_index,
+            "checkpoint capture must not rewrite the user's index"
+        );
     }
 
     #[test]

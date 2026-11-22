@@ -2,7 +2,7 @@
 // model or user account: one turn emits a plan update, a short answer and a
 // completion. Every request the runtime really sends must be answered here
 // (qa/chat-plan-fixture.test.mjs pins them); an unhandled one fails the connect.
-const { appendFileSync } = require('node:fs');
+const { appendFileSync, writeFileSync } = require('node:fs');
 const { createInterface } = require('node:readline');
 
 const log = process.env.THREADTERM_QA_CODEX_PLAN_LOG;
@@ -44,7 +44,9 @@ lines.on('line', (line) => {
       { step: 'Add the additive plan part to every adapter', status: 'inProgress' },
       { step: 'Build the pinned plan panel', status: 'pending' },
     ] });
-    event('item/completed', { threadId: nativeId, item: { id: 'qa-plan-answer', type: 'agentMessage', text: 'Still working.' } });
+    const note = process.env.THREADTERM_QA_OVERVIEW_NOTE;
+    if (note && params.input?.[0]?.text === 'Edit the review note.') writeFileSync(note, 'the agent changed this note\n');
+    event('item/completed', { threadId: nativeId, turnId: nativeTurn, item: { id: `${nativeTurn}-answer`, type: 'agentMessage', text: 'Still working.' } });
     event('turn/completed', { threadId: nativeId, turn: { id: nativeTurn, status: 'completed' } });
     return;
   }

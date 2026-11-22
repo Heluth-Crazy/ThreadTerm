@@ -20,6 +20,7 @@ import { createRoot } from 'react-dom/client';
 import { ChatOverview } from './renderer/src/components/ChatOverview';
 import { ChatMessageNavigation } from './renderer/src/components/ChatMessageNavigation';
 import { SessionSurfaceContext } from './renderer/src/components/SessionSurfaceContext';
+import { I18nProvider } from './renderer/src/i18n';
 import './renderer/src/styles.css';
 
 const now = Date.now();
@@ -51,18 +52,20 @@ const items = [
   { id: 'u1', role: 'user', createdAt: iso(100), parts: [text(messages[0])] },
   { id: 'a1', role: 'assistant', createdAt: iso(99), parts: [text(messages[1])] },
   { id: 'u2', role: 'user', createdAt: iso(90), parts: [text(messages[2])] },
-  { id: 'a2', role: 'assistant', createdAt: iso(89), parts: [text(messages[3])], turnReview: { from: 'a', to: 'b', fileCount: 7 } },
+  { id: 'a2', role: 'assistant', turnId: 't2', createdAt: iso(89), parts: [text(messages[3])], turnReview: { from: 'a', to: 'b', fileCount: 3 } },
   { id: 'u3', role: 'user', createdAt: iso(80), parts: [text(messages[4])] },
   { id: 'p1', role: 'assistant', createdAt: iso(79), parts: [plan] },
 ];
 
-function ChatFrame({ locale, docked, project }) {
+function ChatFrame({ locale, docked, project, reviewOnly, nextTurn }) {
   const zh = locale === 'zh-CN';
   const copy = (en, cn) => zh ? cn : en;
   const [host, setHost] = React.useState(null);
   const surface = { primaryHost: host, menuHost: null, focused: true };
   // Case 2: a session without a project has no branch row to load.
   const current = project ? parent : { ...parent, projectId: undefined };
+  const turns = reviewOnly ? items.slice(0, 4) : items;
+  const transcript = nextTurn ? [...turns, { id: 'a4', role: 'assistant', turnId: 't4', createdAt: iso(1), parts: [text('Next change')], turnReview: { from: 'c', to: 'd', fileCount: 1 } }] : turns;
   return <div className="qa-app">
     <header className="qa-top">
       <span className="qa-brand">ThreadTerm</span><span className="qa-title">Office preview spike</span><span className="qa-spacer" />
@@ -71,7 +74,7 @@ function ChatFrame({ locale, docked, project }) {
     <div className="qa-body"><section className="chat-view v3-session-chat qa-chat">
       <SessionSurfaceContext.Provider value={surface}>
         <div className="chat-log-shell qa-log-shell">
-          <ChatOverview session={current} delegates={delegates} items={items} copy={copy} zh={zh} docked={docked}
+          <ChatOverview session={current} delegates={reviewOnly ? [] : delegates} items={transcript} copy={copy} zh={zh} docked={docked}
             onOpenSession={() => {}}
             navigation={<ChatMessageNavigation items={items} copy={copy} onNavigate={() => {}} />} />
           <div className="chat-scroll qa-scroll" data-qa-scroll>
@@ -92,6 +95,11 @@ const reviewFiles = [
   { path: 'renderer/src/components/chat-overview.css', status: 'M', added: 20, removed: 0 },
   { path: 'qa/logo.png', status: 'A', binary: true },
 ];
+const turnFiles = [
+  { path: 'assets/image.png', status: 'A', binary: true },
+  { path: 'src/change.ts', status: 'M', added: 1, removed: 1 },
+  { path: 'src/change.test.ts', status: 'A', added: 3, removed: 0 },
+];
 // The branch row: 3 files, +30 -5, the same sums Source Control's branch scope shows.
 const compareFiles = [
   { path: 'renderer/src/chatOverview.ts', status: 'modified', additions: 18, deletions: 3, binary: false },
@@ -104,7 +112,12 @@ const fixtureRpc = () => ({
     { id: 'cp-new', sessionId: parent.id, kind: 'turn', turnId: 't9', createdAt: iso(20), status: 'ready', skipped: [] },
     { id: 'cp-old', sessionId: parent.id, kind: 'launch', createdAt: iso(110), status: 'ready', skipped: [] },
   ] }),
-  'review.changes': params => ({ files: params.from === 'cp-old' ? reviewFiles : [] }),
+  'review.changes': params => ({ files: params.from === 'cp-old' ? reviewFiles : params.from === 'a' && params.to === 'b' ? turnFiles : [] }),
+  'review.diff': params => {
+    if (params.from !== 'a' || params.to !== 'b') throw Error('Unexpected review range');
+    const context = Array.from({ length: 120 }, (_, i) => '// context ' + i).join('\n') + '\n';
+    return { path: params.path, oldText: context + 'const before = 1;\n', newText: context + 'const after = 2;\n', binary: false, exists: true };
+  },
   'git.status': () => ({ branch: 'feat/office-preview', upstream: 'origin/feat/office-preview', ahead: 2, behind: 0, changes: [] }),
   'git.compare.files': () => ({ base: { ref: 'main', oid: oid('a') }, mergeBase: oid('a'), head: oid('b'), files: compareFiles, truncated: false }),
 });
@@ -127,10 +140,13 @@ window.threadterm = {
 };
 const root = createRoot(document.getElementById('root'));
 let renders = 0;
-window.qaRender = ({ locale = 'en', theme = 'light', docked = false, project = true } = {}) => {
+window.qaRender = ({ locale = 'en', theme = 'light', docked = false, project = true, reviewOnly = false, nextTurn = false, keep = false } = {}) => {
   document.documentElement.lang = locale;
   document.documentElement.dataset.theme = theme;
-  flushSync(() => root.render(<ChatFrame key={++renders} locale={locale} docked={docked} project={project} />));
+  if (!keep) renders++;
+  flushSync(() => root.render(<I18nProvider locale={locale}>
+    <ChatFrame key={renders} locale={locale} docked={docked} project={project} reviewOnly={reviewOnly} nextTurn={nextTurn} />
+  </I18nProvider>));
 };
 window.qaRender();
 `;
@@ -146,8 +162,8 @@ const setSize = async (width, height) => {
   await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(size.width, size.height), { width, height });
   await page.setViewportSize({ width, height });
 };
-const render = async ({ locale, theme, docked, project }) => {
-  await page.evaluate(next => window.qaRender(next), { locale, theme, docked, project });
+const render = async options => {
+  await page.evaluate(next => window.qaRender(next), options);
   await page.waitForTimeout(250);
 };
 const rect = (locator) => locator.evaluate(node => { const value = node.getBoundingClientRect(); return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height }; });
@@ -188,9 +204,11 @@ try {
   assert.match(await dock.innerText(), /3 finished/);
   assert.match(await dock.innerText(), /1 failed/);
   assert.match(await dock.innerText(), /2\/5 · Now: Build the overview card/);
-  // R1/R2: the replaced single "7 files" row is two rows, each with its own stat and the head above.
+  // Each scope has its own numbers and destination.
   const changeRows = page.locator('.chat-overview-change');
-  assert.equal(await changeRows.count(), 2, 'a session row and a branch row');
+  const turnRow = page.locator('.chat-overview-change.is-turn');
+  assert.equal(await changeRows.count(), 3, 'a turn, a session and a branch row');
+  assert.equal(await changeRows.first().getAttribute('aria-label'), 'Previous changes: 3 files');
   const MINUS = '\u2212';
   const rowStat = async locator => ({
     label: await locator.getAttribute('aria-label'),
@@ -299,11 +317,11 @@ try {
   await page.evaluate(() => window.qaSetRpc());
   await render({ locale: 'en', theme: 'light', docked: true });
   await settle('git.compare.files');
-  assert.equal(await changeRows.count(), 2, 'case 1: both rows show');
+  assert.equal(await changeRows.count(), 3, 'case 1: all scopes show');
   await shot('chat-overview-changes-both-light');
   await render({ locale: 'en', theme: 'dark', docked: true });
   await settle('git.compare.files');
-  assert.equal(await changeRows.count(), 2, 'case 1: both rows show in the dark theme too');
+  assert.equal(await changeRows.count(), 3, 'case 1: all scopes show in the dark theme too');
   await shot('chat-overview-changes-both-dark');
 
   await page.evaluate(() => { window.qaRpcLog.length = 0; window.qaSetRpc(); });
@@ -326,7 +344,7 @@ try {
   assert.equal(await branchName.getAttribute('title'), 'main compared with main, uncommitted changes included');
   await shot('chat-overview-changes-uncommitted-dark');
 
-  // Case 4: every changes RPC rejects. The section disappears and nothing reaches the console.
+  // Case 4: every live changes RPC rejects. The saved turn's metadata remains useful.
   const consoleBefore = report.consoleErrors.length;
   await page.evaluate(() => {
     const fail = () => { throw Error('changes unavailable'); };
@@ -335,9 +353,9 @@ try {
   await render({ locale: 'en', theme: 'light', docked: true });
   await settle('git.compare.files');
   await page.waitForTimeout(150);
-  assert.equal(await changeRows.count(), 0, 'case 4: no change row survives a failure');
-  assert.equal(await page.locator('.chat-overview-section[aria-label="Changes"]').count(), 0, 'case 4: no empty changes section');
-  assert.equal(await page.locator('.chat-overview-section').count(), 2, 'case 4: delegates and plan remain');
+  assert.equal(await changeRows.count(), 1, 'case 4: only the fixed turn row remains');
+  assert.equal(await turnRow.count(), 1, 'case 4: the turn metadata requires no Git read');
+  assert.equal(await page.locator('.chat-overview-section').count(), 3, 'case 4: delegates and plan remain');
   assert.equal(await caseDock.count(), 1, 'case 4: the card stays for its other sections');
   assert.deepEqual(report.consoleErrors.slice(consoleBefore), [], 'case 4: a rejected RPC logs nothing');
   await shot('chat-overview-changes-rpc-errors-light');
@@ -359,6 +377,77 @@ try {
   assert.equal(scm.action, undefined, 'case 5: the branch row runs no git action');
   assert.equal(typeof scm.key, 'string', 'case 5: the command carries a key');
   report.checks.push('changes: session row opens Agent Changes, branch row requests the branch scope');
+
+  // A turn can return the worktree to its original state, and still has edits to review.
+  const fixedCalls = () => page.evaluate(() => window.qaRpcLog.filter(call =>
+    call.method === 'review.diff' || (call.method === 'review.changes' && call.params.to)));
+  await page.evaluate(() => {
+    window.qaRpcLog.length = 0;
+    const { 'review.changes': read } = window.qaRpc;
+    window.qaSetRpc({
+      'review.changes': params => params.to ? read(params) : { files: [] },
+      'git.compare.files': () => { throw Error('No branch comparison'); },
+    });
+  });
+  await render({ docked: true, reviewOnly: true });
+  assert.equal(await turnRow.getAttribute('aria-label'), 'This turn: 3 files');
+  assert.equal(await changeRows.count(), 1, 'the saved turn keeps the card visible after a zero cumulative diff');
+  assert.deepEqual(await fixedCalls(), [], 'no paired comparison or code request while the card is showing');
+  await turnRow.click();
+  const review = page.locator('.chat-overview-review');
+  const firstFile = review.locator('[data-review-file="src/change.ts"]');
+  await firstFile.locator('.cm-editor').first().waitFor();
+  assert.equal(await review.locator('[data-review-file]').count(), 3);
+  assert.equal(await review.locator('[data-review-file]').first().getAttribute('data-review-file'), 'src/change.ts');
+  assert.match(await review.locator('.wb-rs-caption').innerText(), /Start → end of turn/);
+  assert.equal(await review.getByRole('button', { name: 'Save' }).count(), 0);
+  assert.deepEqual(await fixedCalls(), [
+    { method: 'review.changes', params: { sessionId: 'parent', from: 'a', to: 'b' } },
+    { method: 'review.diff', params: { sessionId: 'parent', from: 'a', to: 'b', path: 'src/change.ts' } },
+  ], 'one paired list request and only the first text diff');
+  await shot('chat-overview-turn-review-light');
+  await page.keyboard.press('Escape');
+  await review.waitFor({ state: 'detached' });
+  assert.equal(await turnRow.getAttribute('aria-label'), 'This turn: 3 files, 4 added, 1 removed');
+  await turnRow.click();
+  await firstFile.locator('.cm-editor').first().waitFor();
+  assert.equal((await fixedCalls()).filter(call => call.method === 'review.changes').length, 1, 'reopening reuses the fixed file list');
+  await render({ docked: true, reviewOnly: true, nextTurn: true, keep: true });
+  assert.equal(await turnRow.getAttribute('aria-label'), 'This turn: 1 file');
+  const secondFile = review.locator('[data-review-file="src/change.test.ts"]');
+  await secondFile.getByRole('button', { name: 'Expand file' }).click();
+  await secondFile.locator('.cm-editor').first().waitFor();
+  assert.deepEqual((await fixedCalls()).at(-1), { method: 'review.diff', params: { sessionId: 'parent', from: 'a', to: 'b', path: 'src/change.test.ts' } });
+  await page.keyboard.press('Escape');
+  await review.waitFor({ state: 'detached' });
+  report.checks.push('turn review: no background fixed reads, independent of cumulative changes, lazy per-file diffs, cached list, fixed endpoints through the next turn');
+
+  await setSize(420, 880);
+  await render({ locale: 'zh-CN', theme: 'dark', docked: false, reviewOnly: true });
+  assert.match(await button.getAttribute('aria-label'), /本轮 3 个文件/);
+  await button.click();
+  await popover.locator('.chat-overview-change.is-turn').click();
+  await firstFile.locator('.cm-editor').first().waitFor();
+  assert.match(await review.locator('.wb-rs-caption').getAttribute('title'), /本轮开始 → 本轮结束/);
+  await shot('chat-overview-turn-review-compact-dark');
+  await page.keyboard.press('Escape');
+  await review.waitFor({ state: 'detached' });
+  assert.equal(await button.evaluate(node => document.activeElement === node), true, 'closing the review returns focus to the overview button');
+  report.checks.push('compact turn review: visible count, Chinese title, Escape and focus return');
+
+  for (const width of [1280, 1440, 1920]) for (const theme of ['light', 'dark']) {
+    const docked = width === 1920;
+    await setSize(width, 900);
+    await render({ locale: 'zh-CN', theme, docked, reviewOnly: true });
+    if (!docked) await button.click();
+    await turnRow.click();
+    await firstFile.locator('.cm-editor').first().waitFor();
+    const bounds = await rect(review);
+    assert.ok(bounds.left >= 0 && bounds.right <= width, 'the wide review fits the window');
+    await shot(`chat-overview-turn-review-${width}-${theme}`);
+    await page.keyboard.press('Escape');
+    await review.waitFor({ state: 'detached' });
+  }
 
   assert.deepEqual(report.consoleErrors, [], 'no renderer console errors');
   assert.deepEqual(report.errors, [], 'no renderer page errors');

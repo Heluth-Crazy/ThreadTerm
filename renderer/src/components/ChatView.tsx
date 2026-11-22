@@ -1,4 +1,4 @@
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatProviderNotice } from './ChatProviderNotice';
@@ -32,7 +32,8 @@ import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
-import { isReplyTextPart, replyActionMarkdown } from '../replyMarkdown';
+import { createReplyActionMarkdownCache, isReplyTextPart } from '../replyMarkdown';
+import { createTranscriptTurnCache } from '../transcriptTurnCache';
 import { MessageActions } from './MessageActions';
 import { TurnFooter } from './TurnFooter';
 import { createTurnChangesCache } from '../turnFooter';
@@ -498,6 +499,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [codeReviewOpen, setCodeReviewOpen] = useState(false);
   const [codeReviewFocus, setCodeReviewFocus] = useState("");
   const turnChangesCache = useMemo(() => createTurnChangesCache<import('@threadterm/protocol').ReviewFile[]>(), [session.id]);
+  const replyActionsCache = useMemo(() => createReplyActionMarkdownCache(), [session.id]);
+  const transcriptTurnCache = useMemo(() => createTranscriptTurnCache<ChatItem, object, unknown, ReactNode>(), [session.id]);
   // The overview docks only when the empty gutter beside the 920 px message column fits it.
   // Keep only the decision in state: a resize must not re-render the whole Chat per pixel.
   const chatShellRef = useRef<HTMLDivElement>(null);
@@ -524,6 +527,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [ingressFailed, setIngressFailed] = useState(false);
   const [repairFollowup, setRepairFollowup] = useState(false);
   const [queue, setQueue] = useState<ChatQueue>();
+  // Counts queue states shown by the queue panel, so a slower reply cannot replace a newer queue.
+  const queueUpdates = useRef(0);
+  const changeQueue = (next: ChatQueue) => { queueUpdates.current += 1; setQueue(next); };
   // Presentation only: keep the recoverable draft until runtime acceptance.
   // This preview never becomes a canonical ChatItem or an active-turn source.
   const [submissionPreview, setSubmissionPreview] = useState<{ token: string; text: string; images: string[] }>();
@@ -716,11 +722,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const sessionLifecycle: ChatLifecycle = {sessionId: session.id};
     lifecycle.current = sessionLifecycle;
     let resync: ChatResync | undefined = beginResync(session.id, 0);
-    const newCodexStream = () => session.provider === "codex"
-      ? createCodexStreamQueue((item) => {
-        if (!disposed) setItems(current => upsertChatItem(current, item));
-      })
-      : undefined;
+    // Every provider can produce fine-grained text chunks. Pace only the
+    // cumulative streaming snapshots; canonical cards still paint now.
+    const newCodexStream = () => createCodexStreamQueue(item => {
+      if (!disposed) setItems(current => upsertChatItem(current, item));
+    });
     let codexStream = newCodexStream();
     let repairRevision = -1;
     let integrityError: string | undefined;
@@ -874,8 +880,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       if (event.event === 'state.changed' && data.sessionId === session.id && ['chat.turn.completed', 'chat.error'].includes(String((event.data as { kind?: unknown }).kind))) refreshRepair();
       if (event.event !== 'chat.item' || data.sessionId !== session.id || !data.item) return;
       if (resync) resync.buffered.push({seq: event.seq, item: data.item});
-      else if (codexStream) codexStream.push(data.item);
-      else setItems(current => upsertChatItem(current, data.item!));
+      else codexStream.push(data.item);
     });
     // Reading does not require the write lease: other windows remain viewers.
     const pendingDraftSettlement = pendingDraftSettlements.get(session.id);
@@ -1271,9 +1276,12 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       try {
         if(!dedicated)await persistCompose(text, epoch);
         if (lifecycle.current !== submittingLifecycle) { if(throwOnFailure)throw new Error('Chat is unavailable.'); return; }
+        const queueRevision = queueUpdates.current;
         const nextQueue = await request('chat.queue.add', {sessionId:session.id, text:value, ...(outboundImages.length ? {images:outboundImages} : {}), operationId:token, leaseEpoch:epoch});
         if (lifecycle.current !== submittingLifecycle) return;
-        setQueue(nextQueue);
+        // The reply crosses the session's own request pipe; when the queue panel has shown a newer read meanwhile,
+        // the add's state.changed event reloads the queue instead.
+        if (queueUpdates.current === queueRevision) changeQueue(nextQueue);
         if(!dedicated){clearMentions(); composerGeneration.current += 1; changeText(''); setImages([]); context.clear(); try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted queue item is already durable. */ } await persistCompose('', epoch);}
       } catch (caught) {
         if (lifecycle.current === submittingLifecycle) setError(asUserError(caught, copy('Message was not queued.', '消息未能加入队列。')));
@@ -1661,12 +1669,13 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const epoch=leaseSessionId.current===session.id?lease.current:undefined;
     if(!writable||trustBusy||liveTurn||!session.projectId||epoch===undefined)return;
     setTrustBusy(true);
-    try { setUi(await request('chat.projectTrust.set',{sessionId:session.id,decision,leaseEpoch:epoch,operationId:operationId()})); }
+    try { await requestUi(() => request('chat.projectTrust.set',{sessionId:session.id,decision,leaseEpoch:epoch,operationId:operationId()})); }
     catch(caught) { setError(asUserError(caught,copy('The trust decision or reconnection could not be completed. Review the connection before retrying.','信任决定或重新连接未完成，请检查连接后重试。'))); }
     finally { setTrustBusy(false); }
   }
   const presentation = useMemo(() => chatPresentationIndex(items), [items]);
-  const liveTurn = ended ? undefined : activeTurnIdFromIndex(presentation, session.status);
+  const presentationLiveTurn = activeTurnIdFromIndex(presentation, session.status);
+  const liveTurn = ended ? undefined : presentationLiveTurn;
   const liveSpeed = liveTurnSpeed(liveTurn, liveTurnUsage);
   const turnGroups = useMemo(() => groupCodexTranscript(items, session.provider === "codex"), [items, session.provider]);
   const speedGroupIndex = liveSpeed ? liveSpeedGroupIndex(turnGroups, liveTurnUsage?.turnId) : -1;
@@ -1778,8 +1787,21 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     if ((!writable && !permissionOptionsWritable) || epoch === undefined) return;
     if (!writable && !ui.options.some(option => option.id === optionId && option.category === 'mode')) return;
     try {
-      setUi(await request("chat.option.set", { sessionId: session.id, optionId, value, leaseEpoch: epoch, operationId: operationId() }));
+      await requestUi(() => request("chat.option.set", { sessionId: session.id, optionId, value, leaseEpoch: epoch, operationId: operationId() }));
     } catch (caught) { setError(asUserError(caught, copy("Option was not updated.", "未能更新选项。"))); }
+  }
+  // Session mutations reply on their own request pipe while chat.ui events keep arriving on the event pipe, so a
+  // chat.ui event shown before the reply may be newer than it. The reply is shown only if none arrived; otherwise
+  // the current options are read again.
+  async function requestUi(mutate: () => Promise<ChatUiState>) {
+    const owner = lifecycle.current, generation = transportGeneration.current, revision = uiUpdates.current;
+    const reply = await mutate();
+    if (lifecycle.current !== owner || transportGeneration.current !== generation) return;
+    if (uiUpdates.current === revision) { setUi(reply); return; }
+    const settled = uiUpdates.current;
+    // The mutation succeeded; a failed read leaves the newer event on screen until the next chat.ui event.
+    const current = await request('chat.options', { sessionId: session.id }).catch(() => undefined);
+    if (current && lifecycle.current === owner && transportGeneration.current === generation && uiUpdates.current === settled) setUi(chatUiFromEvent(current));
   }
   useEffect(() => {
     const el = composeRef.current;
@@ -1919,7 +1941,19 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const usageCards = useMemo(() => usageCardsForItems(session.provider, items), [session.provider, items]);
   // A usage card owns its whole item, so the segment pass must not split it part by part.
   const usageCardIds = useMemo(() => new Set(usageCards.keys()), [usageCards]);
-  const replyActions = useMemo(() => replyActionMarkdown(items, session.status), [items, session.status]);
+  // `presentationLiveTurn` already came from the presentation index. Reusing it here avoids
+  // a second whole-transcript liveness pass for reply actions on every chunk.
+  const replyActions = useMemo(() => replyActionsCache.get(items, session.status, presentationLiveTurn), [items, session.status, presentationLiveTurn, replyActionsCache]);
+  // This token contains every mutable input read while rendering a historical
+  // turn. Live item text is deliberately absent; per-turn item references and
+  // outcome/reply versions below cover transcript data without invalidating
+  // every historical subtree.
+  const historicalTurnContext = useMemo(() => ({}), [
+    zh, writable, surface,
+    session.id, session.provider, session.projectId, session.worktreePath, session.status,
+    connection.runtimeEpoch, connection.connectionGeneration, link.transportGeneration,
+    forkActions.busy, forkActions.disabledReason, liveTurn,
+  ]);
   function copyCodeBlock(event: ReactMouseEvent<HTMLElement>) {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button[data-copy-code]') : null;
     if (!button || !event.currentTarget.contains(button)) return;
@@ -2076,6 +2110,36 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       group.items.some(item => item.role !== 'user' && item.role !== 'system') && <TurnFooter key={`${group.id}-footer`} items={group.items} elapsedMs={group.elapsedMs} session={session} zh={zh} copy={copy} cache={turnChangesCache} openFile={openFile} />,
     ];
   }
+  const mountedTurnIds = new Set(turnGroups.map(group => group.id));
+  transcriptTurnCache.prune(mountedTurnIds);
+  const renderedTurns = turnGroups.map((group, groupIndex) => {
+    const turnId = group.items.find(item => item.turnId)?.turnId;
+    const outcome = turnId ? presentation.outcomes.get(turnId) : undefined;
+    // User/system boundary rows are historical too, even though the grouping
+    // model does not mark them `settled`. Exclude every possible live/working
+    // group; replacement item identities still invalidate any other row.
+    const cacheable = group.settled || (groupIndex !== workingGroupIndex
+      && groupIndex !== speedGroupIndex
+      && turnId !== liveTurn
+      && !group.items.some(item => item.parts.some(part => ['streaming', 'running', 'pending'].includes(part.status ?? ''))));
+    const hasSubagent = group.items.some(item => item.parts.some(isSubagentPart));
+    const hasApproval = group.items.some(item => item.parts.some(part => part.type === 'approval'));
+    const ownsDesignAttachment = designAttachment && group.items.some(item => designAttachment.part.startsWith(`${item.id}:`));
+    const version = [
+      outcome?.completed,
+      outcome?.notCompleted,
+      hasSubagent ? sessions : undefined,
+      hasSubagent ? onOpenSession : undefined,
+      hasSubagent ? text : undefined,
+      hasApproval ? approvalBusy : undefined,
+      ownsDesignAttachment ? designAttachment.part : undefined,
+      ownsDesignAttachment ? designAttachment.index : undefined,
+      ...group.items.map(item => replyActions.get(item.id)),
+    ];
+    return transcriptTurnCache.render({ ...group, cacheable }, historicalTurnContext, version, () => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
+      {renderTurn(group, groupIndex)}
+    </section>);
+  });
   return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
     {surface?.openTaskMap && <SurfaceActions slot="primary"><button type="button" className="icon-btn" aria-label={copy('Task map', '任务图')} title={copy('Task map', '任务图')} onClick={() => surface.openTaskMap?.(session.id, flowSync.topItemId())}><Icon name="flow"/></button></SurfaceActions>}
     <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>
@@ -2111,9 +2175,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       event.preventDefault();
       const url = anchor.getAttribute('href') ?? '';
       if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
-    }} onScroll={() => { viewport.onScroll(); const log = logRef.current; if (log && shouldLoadEarlier(log.scrollTop, earlierPageRef.current.hasEarlier, loadingEarlierRef.current)) loadEarlierRef.current(); }}><div ref={logContentRef}>{(loadingEarlier || earlierPage.hasEarlier) && <div className="chat-earlier-page"><button type="button" className="btn" disabled={loadingEarlier} role={loadingEarlier ? 'status' : undefined} aria-live="polite" onClick={() => loadEarlierRef.current()}>{loadingEarlier ? copy('Loading earlier messages…', '正在加载更早的消息…') : copy('Load earlier messages', '加载更早的消息')}</button></div>}{items.length ? turnGroups.map((group, groupIndex) => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
-      {renderTurn(group, groupIndex)}
-    </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
+    }} onScroll={() => { viewport.onScroll(); const log = logRef.current; if (log && shouldLoadEarlier(log.scrollTop, earlierPageRef.current.hasEarlier, loadingEarlierRef.current)) loadEarlierRef.current(); }}><div ref={logContentRef}>{(loadingEarlier || earlierPage.hasEarlier) && <div className="chat-earlier-page"><button type="button" className="btn" disabled={loadingEarlier} role={loadingEarlier ? 'status' : undefined} aria-live="polite" onClick={() => loadEarlierRef.current()}>{loadingEarlier ? copy('Loading earlier messages…', '正在加载更早的消息…') : copy('Load earlier messages', '加载更早的消息')}</button></div>}{items.length ? renderedTurns : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
       {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
         <div className="chat-part text">
           {!!submissionPreview.images.length && <div className="chat-message-images">{submissionPreview.images.map((image, index) => <img key={index} src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} />)}</div>}
@@ -2145,7 +2207,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       : repairNotice.kind === 'superseded' ? copy('This chat changed during repair. Review it and try again.', '修复期间此对话发生了变化。请检查后重试。')
       : copy('Could not repair history. The local transcript is unchanged.', '未能修复历史。本地对话记录未更改。')}</p>}
     <ChatNotesPanel sessionId={session.id} liveTurn={liveTurn} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} busy={busy} zh={zh} onIssue={message => setError(message)} />
-    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} canNote={steerKind === 'split-note'} onSendNote={sendNoteFromQueue} ingressFailed={ingressFailed} onChange={setQueue} onIssue={message => setError(message)} zh={zh} />
+    <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} canNote={steerKind === 'split-note'} onSendNote={sendNoteFromQueue} ingressFailed={ingressFailed} onChange={changeQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}
       {...(isRemoteFiles() ? { onDragOver: (event: React.DragEvent<HTMLFormElement>) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); } }, onDrop: (event: React.DragEvent<HTMLFormElement>) => { const paths = groupDropPaths(event.dataTransfer); if (paths.length) { event.preventDefault(); event.stopPropagation(); void attachPickedFiles(paths); } } } : {})}>
       {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>

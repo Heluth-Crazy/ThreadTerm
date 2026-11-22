@@ -5,8 +5,6 @@ import { agentTileMarkup } from "./components/PrototypeIcon";
 import {
   SPLASH_AGENTS,
   SPLASH_EXIT,
-  SPLASH_FINALE,
-  SPLASH_GATE,
   advanceClock,
   agentOffset,
   clamp,
@@ -173,10 +171,10 @@ function startBootSplash(root: HTMLElement): { settle: (outcome: SplashOutcome) 
   return { settle: (outcome) => {
     if (finished || clock.outcome) return;
     clock = settleClock(clock, outcome);
-    // Occluded windows can stop rAF entirely. Allow the remaining choreography plus a
-    // small margin, then remove the overlay even if no animation frame arrived.
-    const remainingIntro = outcome === "ready" ? Math.max(0, SPLASH_GATE - clock.t) : 0;
-    const finale = outcome === "ready" && !reduced ? SPLASH_FINALE : 0;
-    exitFallback = setTimeout(finish, remainingIntro + finale + SPLASH_EXIT + 300);
+    root.inert = true;
+    root.dataset.phase = shownPhase = "exit";
+    statusText.textContent = STATUS_TEXT[locale][shownStatus = outcome];
+    // An occluded window may not draw another frame.
+    exitFallback = setTimeout(finish, SPLASH_EXIT + 50);
   } };
 }

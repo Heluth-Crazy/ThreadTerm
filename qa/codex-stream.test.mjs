@@ -11,18 +11,19 @@ const item = (text, status = "streaming") => ({
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("Codex snapshots are delivered as visible cumulative frames", async () => {
+test("Codex snapshots are delivered as visible cumulative frames", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const delivered = [];
   const queue = createCodexStreamQueue((next) => delivered.push(next.parts[0]?.text ?? ""), 20);
   queue.push(item("A"));
   queue.push(item("AB"));
   queue.push(item("ABC", "complete"));
   assert.deepEqual(delivered, ["A"]);
-  await wait(10);
+  t.mock.timers.tick(10);
   assert.deepEqual(delivered, ["A"]);
-  await wait(20);
+  t.mock.timers.tick(10);
   assert.deepEqual(delivered, ["A", "AB"]);
-  await wait(20);
+  t.mock.timers.tick(20);
   assert.deepEqual(delivered, ["A", "AB", "ABC"]);
   queue.dispose();
 });

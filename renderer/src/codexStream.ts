@@ -1,11 +1,7 @@
 import type { ChatItem } from "@threadterm/protocol";
 
-/**
- * Codex can deliver several cumulative snapshots in one runtime poll. Keeping
- * those snapshots in a short queue gives the renderer a chance to paint each
- * intermediate state instead of replacing it with the final snapshot in one
- * React batch.
- */
+/** Provider readers can deliver several cumulative snapshots together. Pace
+ * their rendering while keeping the item's final update behind its text. */
 export const CODEX_STREAM_INTERVAL_MS = 32;
 const MAX_PENDING_SNAPSHOTS = 32;
 
@@ -15,12 +11,6 @@ type Deliver = (item: ChatItem) => void;
 export function isStreamingChatItem(item: ChatItem): boolean {
   return item.role === "assistant"
     && item.parts.some((part) => part.status === "streaming" || part.status === "running");
-}
-
-function snapshotSignature(item: ChatItem): string {
-  // Chat items are small cumulative snapshots. A stable signature prevents a
-  // repeated runtime event from consuming a visible streaming frame.
-  return JSON.stringify(item);
 }
 
 export interface CodexStreamQueue {
@@ -39,37 +29,19 @@ export function createCodexStreamQueue(
   let timer: Timer | undefined;
   let disposed = false;
   const activeItemIds = new Set<string>();
-  const lastDelivered = new Map<string, string>();
-  // Signature of the newest queued snapshot per item, so an older repeated
-  // frame cannot extend the queue.
-  const queuedSignatures = new Map<string, string>();
-
-  const deliverNow = (item: ChatItem) => {
-    const signature = snapshotSignature(item);
-    if (lastDelivered.get(item.id) === signature) return;
-    lastDelivered.set(item.id, signature);
-    deliver(item);
-  };
-
-  const dropQueued = (item: ChatItem) => {
-    if (!pending.some((entry) => entry.id === item.id)) queuedSignatures.delete(item.id);
-  };
 
   const deliverQueued = (item: ChatItem) => {
-    dropQueued(item);
-    deliverNow(item);
+    deliver(item);
     if (!isStreamingChatItem(item)) activeItemIds.delete(item.id);
   };
 
-  // A burst of frames must never discard state. Collapse superseded snapshots
-  // of one item first (latest snapshot wins, first appearance order kept) and
-  // then deliver the oldest frames immediately instead of dropping them.
+  // A burst must never discard final state. Cumulative snapshots for one item
+  // supersede one another once the animation queue reaches its bound.
   const relieve = () => {
     if (pending.length <= MAX_PENDING_SNAPSHOTS) return;
     const latest = new Map<string, ChatItem>();
     for (const item of pending) latest.set(item.id, item);
     pending = [...latest.values()];
-    for (const [id, item] of latest) queuedSignatures.set(id, snapshotSignature(item));
     while (pending.length > MAX_PENDING_SNAPSHOTS) deliverQueued(pending.shift()!);
   };
 
@@ -89,16 +61,13 @@ export function createCodexStreamQueue(
   return {
     push(item) {
       if (disposed) return;
-      const signature = snapshotSignature(item);
-      if (lastDelivered.get(item.id) === signature || queuedSignatures.get(item.id) === signature) return;
       // A snapshot for an item that is not animating is a canonical state
       // change: paint it now, even while another item streams.
       if (!isStreamingChatItem(item) && !activeItemIds.has(item.id)) {
-        deliverNow(item);
+        deliver(item);
         return;
       }
       activeItemIds.add(item.id);
-      queuedSignatures.set(item.id, signature);
       pending.push(item);
       relieve();
       if (timer === undefined) {
@@ -114,8 +83,6 @@ export function createCodexStreamQueue(
       timer = undefined;
       pending = [];
       activeItemIds.clear();
-      lastDelivered.clear();
-      queuedSignatures.clear();
     },
   };
 }

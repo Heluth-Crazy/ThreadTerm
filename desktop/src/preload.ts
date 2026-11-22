@@ -147,7 +147,9 @@ const bridge: ThreadTermBridge & BrowserBridge & BrowserHandoffBridge & Backgrou
   onPageContextMenu: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
       if (!isRecord(value) || typeof value.frameName !== 'string' || !/^tt-preview-[a-z0-9-]{8,64}$/.test(value.frameName) || typeof value.x !== 'number' || !Number.isFinite(value.x) || typeof value.y !== 'number' || !Number.isFinite(value.y) || (!isPagePick(value.pick) && value.staticFrame !== true)) return;
-      listener({ frameName: value.frameName, x: value.x, y: value.y, ...(isPagePick(value.pick) ? { pick: value.pick } : { staticFrame: true }), selectionText: typeof value.selectionText === 'string' && value.selectionText.length <= 10000 ? value.selectionText : '' });
+      const rawContextSequence = value.contextSequence;
+      const contextSequence = typeof rawContextSequence === 'number' && Number.isSafeInteger(rawContextSequence) && rawContextSequence >= 1 ? rawContextSequence : undefined;
+      listener({ frameName: value.frameName, x: value.x, y: value.y, ...(isPagePick(value.pick) ? { pick: value.pick } : { staticFrame: true }), ...(contextSequence === undefined ? {} : { contextSequence }), selectionText: typeof value.selectionText === 'string' && value.selectionText.length <= 10000 ? value.selectionText : '' });
     };
     ipcRenderer.on('threadterm:page-context-menu', handler);
     return () => ipcRenderer.removeListener('threadterm:page-context-menu', handler);

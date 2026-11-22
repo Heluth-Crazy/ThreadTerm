@@ -176,11 +176,56 @@ export function WebPreview({activeSessionId,tabId,url,visible,zh,commentScope,co
   const element=placeholder.current;if(!element)return;
   const radius=()=>{const pane=element.closest('.pane-card')??element.closest('.workspace-pane')??element.closest('.wb-panel');return browserInnerRadius(pane?getComputedStyle(pane):undefined);};
   const stopWatching=watchBrowserOverlays(element);
-  const bounds=()=>{const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open);updateBrowserOverlayBounds();const rect=element.getBoundingClientRect(),devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;if(currentDevtoolsOpen){const paneHeight=devtoolsPaneHeight();if(paneHeight>0)setDevtoolsHeight(current=>{const next=clampDevtoolsHeight(current||paneHeight*.4,paneHeight);if(next!==current)try{localStorage.setItem('threadterm.browser.devtoolsHeight',String(next));}catch{}return next;});}if(handoffRef.current?.kind==='markup')setMarkupBounds(current=>current&&current.x===rect.x&&current.y===rect.y&&current.width===rect.width&&current.height===rect.height?current:{x:rect.x,y:rect.y,width:rect.width,height:rect.height});command({type:'bounds',tabId,radius:radius(),bounds:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},...(devtoolsRect&&{devtools:{x:Math.round(devtoolsRect.x),y:Math.round(devtoolsRect.y),width:Math.round(devtoolsRect.width),height:Math.round(devtoolsRect.height)}})});};
+  const rectBounds=(rect:DOMRect)=>({x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)});
+  const updateBounds=()=>{
+   const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open);
+   updateBrowserOverlayBounds();
+   const rect=element.getBoundingClientRect();
+   const devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;
+   if(currentDevtoolsOpen){
+    const paneHeight=devtoolsPaneHeight();
+    if(paneHeight>0)setDevtoolsHeight(current=>{
+     const next=clampDevtoolsHeight(current||paneHeight*.4,paneHeight);
+     if(next!==current)try{localStorage.setItem('threadterm.browser.devtoolsHeight',String(next));}catch{}
+     return next;
+    });
+   }
+   if(handoffRef.current?.kind==='markup')setMarkupBounds(current=>
+    current&&current.x===rect.x&&current.y===rect.y&&current.width===rect.width&&current.height===rect.height
+     ?current:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+   );
+   const next={
+    type:'bounds' as const,
+    tabId,
+    radius:radius(),
+    bounds:rectBounds(rect),
+    ...(devtoolsRect&&{devtools:rectBounds(devtoolsRect)}),
+   };
+   command(next);
+  };
+  const bounds=updateBounds;
   sendBounds.current=bounds;
-  const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open),rect=element.getBoundingClientRect(),devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;command({type:'show',tabId,url:pageUrl,frameName:preview.frameName,radius:radius(),bounds:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},...(devtoolsRect&&{devtools:{x:Math.round(devtoolsRect.x),y:Math.round(devtoolsRect.y),width:Math.round(devtoolsRect.width),height:Math.round(devtoolsRect.height)}})});
+  const currentDevtoolsOpen=Boolean(latest.current.state.devtools?.open);
+  const rect=element.getBoundingClientRect();
+  const devtoolsRect=currentDevtoolsOpen?devtools.current?.getBoundingClientRect():undefined;
+  command({
+   type:'show',
+   tabId,
+   url:pageUrl,
+   frameName:preview.frameName,
+   radius:radius(),
+   bounds:rectBounds(rect),
+   ...(devtoolsRect&&{devtools:rectBounds(devtoolsRect)}),
+  });
   const observer=new ResizeObserver(bounds);boundsObserver.current=observer;observer.observe(element);addEventListener('scroll',bounds,true);
-  return()=>{if(boundsObserver.current===observer)boundsObserver.current=undefined;if(sendBounds.current===bounds)sendBounds.current=undefined;observer.disconnect();removeEventListener('scroll',bounds,true);command({type:'hide',tabId});stopWatching();};
+  return()=>{
+   if(boundsObserver.current===observer)boundsObserver.current=undefined;
+   if(sendBounds.current===bounds)sendBounds.current=undefined;
+   observer.disconnect();
+   removeEventListener('scroll',bounds,true);
+   command({type:'hide',tabId});
+   stopWatching();
+  };
  },[tabId,pageUrl,blank,visible,preview.frameName]);
  useEffect(()=>{
   if(!visible)return;
@@ -195,10 +240,44 @@ export function WebPreview({activeSessionId,tabId,url,visible,zh,commentScope,co
   const key=(event:KeyboardEvent)=>{if(event.target instanceof Node&&surface.current?.contains(event.target))handleBrowserKey(event);};addEventListener('keydown',key);return()=>removeEventListener('keydown',key);
  },[visible,tabId,state.zoom,findOpen,blank,onNewTab,preview.active,preview.picking,preview.pick]);
  useEffect(()=>{const element=surface.current;if(!element)return;const toggle=()=>{if(visible&&!blank&&preview.enabled)preview.toggle();};element.addEventListener('threadterm:toggle-design-mode',toggle);return()=>element.removeEventListener('threadterm:toggle-design-mode',toggle);},[visible,blank,preview.active,preview.picking]);
- useEffect(()=>onPageContextMenu(({frameName,x,y,pick})=>{
+ useEffect(()=>onPageContextMenu(({frameName,x,y,pick,contextSequence})=>{
   if(frameName!==preview.frameName||!pick)return;
-  showContextMenu({x,y,restoreFocus:placeholder.current,onDismiss:selected=>{if(selected?.testId!=='web-preview-comment-element'&&pick.shot)void deletePageShots([pick.shot.id]).catch(()=>undefined);},items:webContextMenuItems({pick,zh,enabled:preview.enabled,comment:()=>preview.acceptPick(pick),reload:()=>{preview.cancel(false);command({type:'reload',tabId});},copy:()=>navigator.clipboard.writeText(pick.target.type==='element' ? (pick.target.text ?? '') : ''),inspect:()=>command({type:'devtools',tabId,action:'inspect'})})});
- }),[preview.frameName,preview.acceptPick,zh]);
+  const acceptContextPick=async()=>{
+   // Older native senders already attached a shot. Keep that path until all clients update.
+   if(contextSequence===undefined){
+    if(!pick.shot)throw new Error('Page changed; open the menu again.');
+    preview.acceptPick(pick);
+    return;
+   }
+   const result=await browserHandoff({
+    type:'contextCapture',
+    tabId,
+    documentGeneration:state.documentGeneration,
+    contextSequence,
+   });
+   if(result.contextSequence!==contextSequence)throw new Error('Could not capture the selected page area.');
+   preview.acceptPick({...result.pick,shot:result.shot});
+  };
+  showContextMenu({
+   x,
+   y,
+   restoreFocus:placeholder.current,
+   onDismiss:selected=>{
+    if(contextSequence===undefined&&pick.shot&&selected?.testId!=='web-preview-comment-element'){
+     void deletePageShots([pick.shot.id]).catch(()=>undefined);
+    }
+   },
+   items:webContextMenuItems({
+    pick,
+    zh,
+    enabled:preview.enabled,
+    comment:acceptContextPick,
+    reload:()=>{preview.cancel(false);command({type:'reload',tabId});},
+    copy:()=>navigator.clipboard.writeText(pick.target.type==='element' ? (pick.target.text ?? '') : ''),
+    inspect:()=>command({type:'devtools',tabId,action:'inspect'}),
+   }),
+  });
+ }),[preview.frameName,preview.acceptPick,preview.enabled,zh,tabId,state.documentGeneration]);
  useEffect(()=>{live.current=true;return()=>{live.current=false;captureSequence.current++;const current=handoffRef.current;if(!handoffBusy.current&&current&&current.kind!=='console')void deletePageShots([current.capture.shot.id]).catch(()=>undefined);};},[tabId]);
  useEffect(()=>{const current=handoffRef.current;if(!handoffBusy.current&&current&&((current.kind==='console'?current.console.documentGeneration:current.capture.documentGeneration)!==state.documentGeneration))cancelHandoff();setConsoleCounts({errors:0,warnings:0});},[state.documentGeneration]);
  useEffect(()=>onBrowserHandoffEvent(event=>{if(event.type==='console'&&event.tabId===tabId)setConsoleCounts({errors:event.errors,warnings:event.warnings});}),[tabId]);

@@ -76,6 +76,7 @@ export class MachineWatcher {
     this.syncing = (async () => {
       try {
         const filter = await this.client.request('runtime.events.filter', { preset: 'tree' });
+        if (filter.preset !== 'tree') throw new Error('Runtime did not enable the machine tree event filter');
         const snapshot = await this.client.request('runtime.snapshot', {});
         if (this.stopped || generation !== this.generation) return;
         Object.assign(this.state, { projects: snapshot.projects, sessions: snapshot.sessions, inbox: snapshot.inbox,

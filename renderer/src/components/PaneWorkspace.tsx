@@ -500,7 +500,7 @@ function Pane({
     <ImportedHistoryView session={itemSession} onResumed={onResumed} onOpenSession={onOpenSession}/>
   ) : itemSession ? (
     itemSession.mode === "terminal" ? (
-      <TerminalSurface sessionId={itemSession.id} provider={itemSession.provider} session={itemSession} theme={theme} terminalCompatibility={terminalCompatibility} resumeCapture={providers.find((candidate) => candidate.id === itemSession.provider)?.terminalResumeCapture} onChanged={onSessionChanged} onOpenSession={onOpenSession} />
+      <TerminalSurface runtimeEpoch={data?.epoch} sessionId={itemSession.id} provider={itemSession.provider} session={itemSession} theme={theme} terminalCompatibility={terminalCompatibility} resumeCapture={providers.find((candidate) => candidate.id === itemSession.provider)?.terminalResumeCapture} onChanged={onSessionChanged} onOpenSession={onOpenSession} />
     ) : (
       <ChatView session={itemSession} sessions={sessions} delegates={sessions.filter(candidate => candidate.delegation?.parentSessionId === itemSession.id)} delegatedBy={itemSession.delegation ? sessions.find(candidate => candidate.id === itemSession.delegation?.parentSessionId) : undefined} onOpenSession={onOpenSession} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} />
     )

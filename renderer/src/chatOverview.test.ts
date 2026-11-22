@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { ChatItem, ChatPlanEntry, Session, SessionDelegationState } from '@threadterm/protocol';
 import {
   boundedOverviewParents, delegateQuietSeconds, overviewBranchHead, overviewBranchName, overviewChangeKindLabel,
-  overviewChangeRowLabel, overviewChangesFileCount, overviewChangesLabel, overviewCompareStat,
+  overviewChangeRowLabel, overviewChangesLabel, overviewCompareStat, overviewTurnChanges,
   overviewDelegateGroups, overviewDocked, overviewFinishedLabel, overviewHasSections, overviewPlan,
   overviewPlanText, overviewReviewStat, overviewSessionCheckpoint, overviewStateText, overviewStatText,
   readOverviewCollapsed, readOverviewFinishedOpen, toggleOverviewFinishedOpen, OVERVIEW_MAX_PARENTS,
@@ -95,14 +95,21 @@ test('the plan section summarizes progress and the current step', () => {
   assert.equal(overviewPlan([planItem([])]), undefined, 'an unusable plan is not a section');
 });
 
-test('changes use the newest turn review count and never fetch', () => {
+test('changes use the newest fixed comparison from the transcript', () => {
   const items: ChatItem[] = [
-    { id: 'a', role: 'assistant', createdAt: '2026-11-11T11:00:00Z', parts: [], turnReview: { from: 'a', to: 'b', fileCount: 3 } },
-    { id: 'b', role: 'assistant', createdAt: '2026-11-11T11:10:00Z', parts: [], turnReview: { from: 'b', to: 'c', fileCount: 7 } },
+    { id: 'a', role: 'assistant', turnId: 'one', createdAt: '2026-11-11T11:00:00Z', parts: [], turnReview: { from: 'a', to: 'b', fileCount: 3 } },
+    { id: 'b', role: 'assistant', turnId: 'two', createdAt: '2026-11-11T11:10:00Z', parts: [], turnReview: { from: 'b', to: 'c', fileCount: 7 } },
   ];
-  assert.equal(overviewChangesFileCount(items), 7);
-  assert.equal(overviewChangesFileCount([items[0]!]), 3);
-  assert.equal(overviewChangesFileCount([]), undefined);
+  const latest = { review: items[1]!.turnReview, previous: false };
+  const previous = { ...latest, previous: true };
+  assert.deepEqual(overviewTurnChanges(items), latest);
+  assert.deepEqual(overviewTurnChanges([...items, { ...items[1]!, id: 'later-item-in-same-turn', turnReview: undefined }]), latest);
+  assert.deepEqual(overviewTurnChanges(items, 'three'), previous);
+  const noChanges = { ...items[1]!, id: 'c', turnId: 'three', turnReview: { from: 'c', to: 'd', fileCount: 0 } };
+  assert.deepEqual(overviewTurnChanges([...items, noChanges]), previous);
+  assert.equal(overviewTurnChanges([noChanges]), undefined);
+  assert.equal(overviewTurnChanges([{ ...noChanges, turnReview: { from: 'c', to: '', fileCount: 1 } }]), undefined);
+  assert.equal(overviewTurnChanges([]), undefined);
 });
 
 test('session changes start at the oldest ready checkpoint, ignoring failed ones', () => {

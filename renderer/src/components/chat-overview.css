@@ -10,6 +10,7 @@
 .chat-overview-stack > *:first-child { margin-left:0; }
 .chat-overview-stack > .ico { width:14px; height:14px; margin:0 1px; background:none; box-shadow:none; color:currentColor; }
 .chat-overview-button-label { white-space:nowrap; }
+.chat-overview-turn-preview { flex:none; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .chat-overview-badge { min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--st-needs, #e2b340); color:var(--bg); font-size:10px; font-weight:700; display:grid; place-items:center; }
 .chat-overview-popover { position:absolute; top:calc(100% + 6px); right:0; z-index:40; width:300px; max-height:min(56vh, 520px); overflow:auto; border-radius:14px; }
 /* The header button lives in the pane tab bar, which clips (`.workspace-tabbar.ws-strip`, workspace-parity.css)
@@ -72,6 +73,10 @@
 .chat-overview-stat-del { color:var(--st-failed-text); font-weight:600; }
 .chat-overview-stat .is-zero { color:var(--faint); font-weight:400; }
 .chat-overview-change-chevron { width:12px; height:12px; color:var(--faint); }
+.chat-overview-change.is-turn .chat-overview-change-label { font-weight:600; }
+.dialog.sheet.wide.chat-overview-review { width:min(1100px, 92%); height:min(760px, calc(100% - 32px)); max-height:calc(100% - 32px); }
+.chat-overview-review .wb-rs-bar { flex:0 0 auto; flex-wrap:wrap; height:auto; min-height:38px; padding-block:6px; }
+.chat-overview-review .cm-editor .cm-collapsedLines { background:var(--soft); color:var(--muted); }
 .chat-overview-plan { display:flex; align-items:center; gap:8px; width:calc(100% + 16px); height:26px; margin:0 -8px; padding:0 8px; border:0; border-radius:7px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
 .chat-overview-plan:hover, .chat-overview-plan:focus-visible { background:var(--soft); }
 .chat-overview-plan-bar { flex:none; width:46px; height:4px; border-radius:999px; background:var(--border); overflow:hidden; }

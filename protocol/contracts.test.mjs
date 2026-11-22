@@ -1246,10 +1246,12 @@ test('agent run list composes repo entries, own proposals, and dependency sequen
   proposals:[{proposalId:'q',name:'Suggested',state:'pending',createdAt:'now'}],truncated:false});
 });
 
-test('tree event filter accepts only the server-owned preset and terminal takeover is explicit', () => {
+test('event filter accepts only server-owned presets and terminal takeover is explicit', () => {
  validateRequest('runtime.events.filter', { preset: 'tree' });
  validateResult('runtime.events.filter', { preset: 'tree', tree: { worktrees: [] } });
- for (const params of [{ preset: 'all' }, { events: ['chat.item'] }, { preset: 'tree', events: [] }]) assert.throws(() => validateRequest('runtime.events.filter', params));
+ validateRequest('runtime.events.filter', { preset: 'none' });
+ validateResult('runtime.events.filter', { preset: 'none' });
+ for (const params of [{ preset: 'all' }, { preset: ['none'] }, { events: ['chat.item'] }, { preset: 'tree', events: [] }]) assert.throws(() => validateRequest('runtime.events.filter', params));
  validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window', takeover: true });
  validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window' });
  assert.throws(() => validateRequest('session.claim', { sessionId: 'terminal', clientId: 'window', takeover: 'yes' }));

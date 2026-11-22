@@ -1,4 +1,4 @@
-import type { ChatItem, ChatPlanEntry, GitCompareFile, ReviewCheckpoint, ReviewFile, Session } from '@threadterm/protocol';
+import type { ChatItem, ChatPlanEntry, ChatTurnReview, GitCompareFile, ReviewCheckpoint, ReviewFile, Session } from '@threadterm/protocol';
 import { delegationQuiet, delegationQuietLabel, quietMinutesText } from './delegation';
 import { latestPlan, planProgress } from './chatPlan';
 import { reviewChangeTotals } from './agentChangeCounts';
@@ -145,11 +145,17 @@ export function overviewPlanText(plan: Pick<OverviewPlanSummary, 'done' | 'total
   return `${plan.done}/${plan.total}${plan.current ? copy(` · Now: ${plan.current}`, ` · 当前：${plan.current}`) : ''}`;
 }
 
-/** The newest turn's review file count; no request, no +/− totals. */
-export function overviewChangesFileCount(items: readonly ChatItem[]): number | undefined {
+/** The newest captured change, kept under its own label if there is a later turn. */
+export function overviewTurnChanges(items: readonly ChatItem[], liveTurnId?: string): { review: ChatTurnReview; previous: boolean } | undefined {
+  let newest: ChatItem | undefined;
   for (let index = items.length - 1; index >= 0; index -= 1) {
-    const review = items[index]!.turnReview;
-    if (review && review.fileCount > 0) return review.fileCount;
+    const item = items[index]!;
+    if (item.role === 'system') continue;
+    const review = item.turnReview;
+    if (!newest && (item.turnId || review || item.role === 'user')) newest = item;
+    if (!review?.from || !review.to || !(review.fileCount > 0)) continue;
+    const newerTurn = newest !== item && (!item.turnId || newest?.turnId !== item.turnId);
+    return { review, previous: liveTurnId ? liveTurnId !== item.turnId : newerTurn };
   }
   return undefined;
 }
@@ -192,16 +198,19 @@ export function overviewStatText(stat: OverviewChangeStat, copy: Copy): string {
   return `${overviewChangesLabel(stat.files, copy)} +${stat.added} −${stat.removed}`;
 }
 
-export function overviewChangeKindLabel(kind: 'session' | 'branch', copy: Copy): string {
+export function overviewChangeKindLabel(kind: 'turn' | 'session' | 'branch', copy: Copy, previous = false): string {
+  if (kind === 'turn') return previous ? copy('Previous changes', '上次改动') : copy('This turn', '本轮改动');
   return kind === 'session' ? copy('This session', '本会话') : copy('Current branch', '当前分支');
 }
 
 /** `This session: 7 files, 205 added, 29 removed` / `本会话：7 个文件，新增 205 行，删除 29 行`. */
-export function overviewChangeRowLabel(kind: 'session' | 'branch', stat: OverviewChangeStat, copy: Copy): string {
-  const label = overviewChangeKindLabel(kind, copy);
+export function overviewChangeRowLabel(kind: 'turn' | 'session' | 'branch', stat: { files: number; added?: number; removed?: number }, copy: Copy, previous = false): string {
+  const label = overviewChangeKindLabel(kind, copy, previous);
+  const files = overviewChangesLabel(stat.files, copy);
+  if (stat.added === undefined || stat.removed === undefined) return copy(`${label}: ${files}`, `${label}：${files}`);
   return copy(
-    `${label}: ${stat.files} ${stat.files === 1 ? 'file' : 'files'}, ${stat.added} added, ${stat.removed} removed`,
-    `${label}：${stat.files} 个文件，新增 ${stat.added} 行，删除 ${stat.removed} 行`,
+    `${label}: ${files}, ${stat.added} added, ${stat.removed} removed`,
+    `${label}：${files}，新增 ${stat.added} 行，删除 ${stat.removed} 行`,
   );
 }
 
