@@ -582,3 +582,49 @@ fn v2_missing_native_model_evidence_stays_missing() {
         assert!(event.data.get("model").is_none(), "a missing model is not filled in");
     }
 }
+
+#[test]
+fn v2_partial_model_catalogue_preserves_explicit_next_turn_settings() {
+    let rows = crate::providers::conformance::fixture("opencode-v2-partial-model-catalogue.jsonl");
+    let floor = rows.iter().find(|row| row["case"] == "live-floor").unwrap();
+    let legacy = OpenCodeOptions::from_catalogues(Ok(floor["providers"].clone()), Ok(floor["agents"].clone()));
+    assert!(legacy.error.is_none());
+    assert!(!legacy.models.is_empty(), "recorded floor catalogue remains supported");
+    let complete = rows.iter().find(|row| row["case"] == "complete").unwrap();
+    let payload = |row: &Value, key: &str| row[key].get("data").unwrap_or(&row[key]).clone();
+    let mut ui = OpenCodeOptions::from_catalogues_v2(
+        Ok(payload(complete, "providers")), Ok(payload(complete, "models")), Ok(payload(complete, "agents")),
+    );
+    let selected = ui.models.iter().find(|model| model.model["providerID"] == "qa-plugin").expect("fixture plugin model").clone();
+    ui.select("next-model", &selected.value).unwrap();
+    let variant = selected.variants.first().expect("fixture model variant");
+    ui.select("variant", variant).unwrap();
+    let expected = ui.model_ref().unwrap();
+    for case in ["partial", "empty", "live-empty", "live-complete", "complete", "complete"] {
+        let row = rows.iter().find(|row| row["case"] == case).unwrap();
+        ui.refresh_catalogues_v2(
+            Ok(payload(row, "providers")), Ok(payload(row, "models")),
+            Ok(payload(row, "agents")), Ok(payload(row, "commands")),
+        );
+        assert_eq!(ui.model_ref(), Some(expected.clone()), "{case} must retain the explicit native model and variant");
+        assert!(ui.accepts_images(), "retained model capabilities survive the startup gap");
+        assert_eq!(ui.wire()["loadState"], "ready");
+        assert_eq!(ui.models.iter().filter(|model| model.value == selected.value).count(), 1);
+        assert!(ui.dispatch_v2("keep this model", &[]).is_ok());
+        println!("partial-model-ui:{}", json!({"case":case,"ui":ui.wire()}));
+    }
+    // A positive disabling signal is different from omission during startup.
+    for status in ["disabled", "unavailable", "not-enabled"] {
+        let mut models = payload(complete, "models");
+        let model = models.as_array_mut().unwrap().iter_mut()
+            .find(|model| model["providerID"] == "qa-plugin").unwrap();
+        if status == "not-enabled" { model["enabled"] = json!(false); } else { model["status"] = json!(status); }
+        let mut disabled = ui.clone();
+        disabled.refresh_catalogues_v2(
+            Ok(payload(complete, "providers")), Ok(models),
+            Ok(payload(complete, "agents")), Ok(payload(complete, "commands")),
+        );
+        assert!(disabled.model_ref().is_none(), "explicit {status} must not revive a cached model");
+        assert_eq!(disabled.wire()["loadState"], "error");
+    }
+}
