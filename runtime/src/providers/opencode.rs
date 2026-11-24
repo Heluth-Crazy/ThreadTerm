@@ -1012,6 +1012,16 @@ impl OpenCodeOptions {
         agents: Result<Value, ProviderError>,
         commands: Result<Value, ProviderError>,
     ) {
+        // Successful catalogues can omit plugins while activation is in progress.
+        // Retain only a previously validated selection whose raw row is absent;
+        // an explicit disabled/unavailable model must still revoke the choice.
+        let omitted_model = self.selected_model().filter(|selected| {
+            models.as_ref().ok().and_then(Self::catalogue_rows).is_some_and(|rows| {
+                !rows.iter().any(|row| row["providerID"] == selected.model["providerID"] && row["id"] == selected.model["id"])
+            }) && !providers.as_ref().ok().and_then(Self::catalogue_rows).is_some_and(|rows| {
+                rows.iter().any(|row| row["id"] == selected.model["providerID"] && row["activation"] == "disabled")
+            })
+        }).cloned();
         let mut refreshed = Self::from_catalogues_v2(providers, models, agents);
         if refreshed.error.is_some() {
             // A failed refresh keeps the last usable options (R5).
@@ -1021,6 +1031,7 @@ impl OpenCodeOptions {
             return;
         }
         refreshed.commands = self.commands.clone();
+        if let Some(model) = omitted_model { refreshed.models.push(model); }
         refreshed.load_commands_v2(commands);
         refreshed.effective_model = self.effective_model.clone();
         if !self.model.is_empty() && refreshed.models.iter().all(|model| model.value != self.model) {
