@@ -31,7 +31,8 @@ const settledThoughts = [
   row('settled-reply','settled',[text('Settled final answer')],{elapsedMs:8000,turnStatus:'completed'}),
 ];
 const activeThoughts = [
-  ...Array.from({length:14}, (_, i) => row('active-'+i,'active',[thought('Thought entry '+(i+1))])),
+  // 11-23: a one-line thought is its own title and has nothing to open; these carry a detail line to open.
+  ...Array.from({length:14}, (_, i) => row('active-'+i,'active',[thought('Thought entry '+(i+1)+'\\nDetail of thought '+(i+1))])),
   row('active-note','active',[text('Message between runs'),thought('First after message')]),
   row('active-more','active',[thought('Second after message')]),
   row('active-stream','active',[thought('Current thinking text','streaming')]),

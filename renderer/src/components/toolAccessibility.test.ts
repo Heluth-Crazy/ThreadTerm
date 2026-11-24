@@ -28,7 +28,7 @@ test('a delegation tool row carries the same name as the drawer header', () => {
   // Live Claude delegate_start through the threadterm MCP server.
   const part: ChatPart = { type: 'tool', toolId: 'd1', toolName: 'mcp__threadterm__delegate_start', status: 'complete', data: { server: 'threadterm', tool: 'delegate_start', type: 'mcpToolCall' } };
   const html = renderToStaticMarkup(createElement(ToolCard, { entry: { id: 'd1', itemId: 'item', part }, index: 0, open: false, active: false, awaitingApproval: false, copy }));
-  assert.match(html, /class="tool-card-title" title="Start delegate">Start delegate</);
+  assert.match(html, /class="call-row-label" title="Start delegate">Start delegate</);
   assert.doesNotMatch(html, /threadterm: delegate_start/);
 });
 

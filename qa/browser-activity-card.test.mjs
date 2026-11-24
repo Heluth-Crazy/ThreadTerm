@@ -20,7 +20,8 @@ const part = { type: 'tool', toolId: 'read-1', toolName: 'mcp__threadterm__brows
   images: [rawImage], result: { content: [{ type: 'text', text: 'PRIVATE READ BODY' }] },
 } };
 const render = (open, candidate = part, locale = 'en') => renderToStaticMarkup(React.createElement(ToolCard, {
-  entry: { id: 'entry-1', itemId: 'item-1', part: candidate }, index: 0, open, active: false,
+  // `open` is an open fold with the call's own line open (11-23 tool rows): the full body is rendered.
+  entry: { id: 'entry-1', itemId: 'item-1', part: candidate }, index: 0, open, defaultExpanded: open, active: false,
   awaitingApproval: false, copy: (en, zh) => locale === 'zh' ? zh : en,
 }));
 

@@ -96,6 +96,15 @@ async function setState({ theme = 'light', locale = 'en', width = 1280, scenario
   await page.locator('.chat-tool-activity').first().waitFor();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
+/** Opens every closed call line in the fold; returns how many lines can open. */
+async function openRows() {
+  const heads = page.locator('.chat-tool-activity button.call-row-head');
+  const count = await heads.count();
+  for (let index = 0; index < count; index += 1) if (await heads.nth(index).getAttribute('aria-expanded') !== 'true') await heads.nth(index).evaluate(node => node.click());
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  return count;
+}
+
 async function drawerOpen(open) {
   const current = await page.locator('.chat-tool-activity').first().evaluate(node => node.open);
   if (current !== open) await page.locator('.chat-tool-activity').first().locator('> summary').click();
@@ -121,13 +130,17 @@ try {
 
   // Expanded: typed bodies render, never as nested drawers.
   await drawerOpen(true);
-  assert.equal(await page.locator('.tool-card-body').count(), corpus.length - 1, 'expanded entries render bodies except the resultless web card whose target is in its title');
+  // 11-23 tool rows: an open fold shows one line per call; each line opens to its body on its own.
+  assert.equal(await page.locator('.tool-card-body').count(), 0, 'an open fold renders lines, not bodies');
+  const openable = await openRows();
+  assert.ok(openable >= corpus.length - 2, `most calls have details to open (${openable})`);
+  assert.equal(await page.locator('.tool-card-body').count(), openable, 'every opened line renders its body');
   assert.equal(await page.locator('.chat-tool-entry details details').count(), 0, 'cards never nest per-tool drawers');
   assert.ok(await page.locator('.tool-diff-rows').count() >= 1, 'the edit card renders a diff');
   assert.ok(await page.locator('.tool-json-tree, .tool-argument-lines').count() >= 1, 'the MCP/generic cards render their arguments (compact lines when flat, else a JSON tree)');
   assert.ok(await page.locator('.tool-todos .tool-todo').count() >= 1, 'the todo card renders its checklist');
-  assert.match(await page.locator('.tool-card-status').first().textContent(), /Completed|已?完成/, 'status chips are labelled');
-  report.checks.push('expanded cards render diff, JSON tree, checklist and status chips without nested drawers');
+  assert.equal(await page.locator('.tool-card-status, .chat-tool-step').count(), 0, 'no status pills or row numbers: success is quiet');
+  report.checks.push('opened lines render diff, JSON tree and checklist without nested drawers; no status pills');
 
   // Matrix screenshots.
   for (const theme of ['light', 'dark']) for (const locale of ['en', 'zh-CN']) for (const width of [1280, 420]) {
@@ -135,6 +148,7 @@ try {
     await drawerOpen(false);
     await shot(`cards-${theme}-${locale}-${width}-collapsed.png`);
     await drawerOpen(true);
+    await openRows();
     assert.equal(await page.locator('.v3-chat-log').evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, `${theme}/${locale}/${width}: collapsed drawer has no horizontal clipping`);
     assert.equal(await page.locator('.v3-chat-log').evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, `${theme}/${locale}/${width}: expanded drawer has no horizontal clipping`);
     await shot(`cards-${theme}-${locale}-${width}-expanded.png`);
@@ -145,6 +159,7 @@ try {
   // it into view so no control is missed by the clipping guard.
   await setState({ theme: 'light', locale: 'en', width: 1280, scenario: 'cards' });
   await drawerOpen(true);
+  await openRows();
   const entryCount = await page.locator('.chat-tool-entry').count();
   let cardControls = 0;
   for (let index = 0; index < entryCount; index += 1) {
@@ -177,8 +192,11 @@ try {
   assert.equal(await page.locator('.chat-tool-output-preview').count(), 0, 'the collapsed fold shows no latest-output line');
   await shot('running-light-en-1280-collapsed.png');
   await drawerOpen(true);
-  assert.match(await page.locator('.tool-card-status').first().textContent(), /Running/, 'a live command card reports Running');
-  assert.match(await page.locator('.tool-output').first().textContent(), /compiled 42 modules/, 'the expanded running card shows its streamed output');
+  // 11-23 tool rows: a running call is a line with a spinner (a live turn) or an ended note (a stopped one), and opens to its output.
+  const runningLine = page.locator('.call-row[data-tool-status="running"]').first();
+  assert.equal(await runningLine.locator('.chat-tool-spinner, .call-row-note.is-inactive').count(), 1, 'a live command line reports its running state');
+  await runningLine.locator('button.call-row-head').first().click();
+  assert.match(await page.locator('.tool-output').first().textContent(), /compiled 42 modules/, 'the opened running line shows its streamed output');
   await shot('running-light-en-1280-expanded.png');
   await setState({ theme: 'dark', locale: 'zh-CN', width: 420, scenario: 'running' });
   await drawerOpen(true);
@@ -202,11 +220,11 @@ try {
       void document.body.offsetHeight; // force a layout of the expanded bodies
       resolve({ elapsed: performance.now() - start, commit: committed - start, entries, bodies });
     };
-    setTimeout(() => (document.querySelectorAll('.tool-card-body').length >= 300 ? commit() : setTimeout(commit, 0)), 0);
+    setTimeout(commit, 0);
   }));
   const warmup = await measureExpansion();
   assert.equal(warmup.entries, 300, 'the warmup keeps every entry shell');
-  assert.equal(warmup.bodies, 300, 'the warmup builds every card body');
+  assert.equal(warmup.bodies, 0, 'opening the fold builds no bodies: each line opens on its own (11-23)');
   const samples = [];
   for (let index = 0; index < 5; index += 1) {
     await drawerOpen(false);
@@ -214,10 +232,10 @@ try {
     const sample = await measureExpansion();
     samples.push(sample);
     assert.equal(sample.entries, 300, `sample ${index + 1}: the drawer keeps every entry shell`);
-    assert.equal(sample.bodies, 300, `sample ${index + 1}: expanding builds all 300 card bodies`);
+    assert.equal(sample.bodies, 0, `sample ${index + 1}: expanding builds no card bodies`);
   }
   const median = values => [...values].sort((left, right) => left - right)[2];
-  const perf = { warmup, samples, elapsed: median(samples.map(sample => sample.elapsed)), commit: median(samples.map(sample => sample.commit)), entries: 300, bodies: 300 };
+  const perf = { warmup, samples, elapsed: median(samples.map(sample => sample.elapsed)), commit: median(samples.map(sample => sample.commit)), entries: 300, bodies: 0 };
   report.perf = perf;
   assert.ok(perf.elapsed < 100, `the median of 5 expansions took ${perf.elapsed.toFixed(1)} ms including forced layout (budget 100 ms); samples: ${samples.map(sample => sample.elapsed.toFixed(1)).join(', ')}`);
   report.checks.push(`after one warmup, 5 expansions had median commit ${perf.commit.toFixed(1)} ms and median layout-inclusive duration ${perf.elapsed.toFixed(1)} ms (budget 100 ms)`);

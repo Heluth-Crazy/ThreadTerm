@@ -3,11 +3,13 @@ import type { ChatPart, FileReference } from '@threadterm/protocol';
 import { commandDisplayCwd, compactToolArguments, diffView, editFileStats, mcpResultView, moreFilesLabel, outputView, runToolSummaryFromPart, runToolSummaryLabel, toolCardHasBody, toolStatusLabel, type DiffView, type RunToolSummary } from '../toolCards';
 import { partBody } from '../chatPresentation';
 import { isChatImage } from '../chatImages';
-import { toolView, type ToolView } from '../toolView';
+import { toolView, type ToolEditFile, type ToolView } from '../toolView';
 import { hasRedactedBrowserResult } from '../browserToolActivity';
 import { feedbackNotesFromPart } from '../feedbackNotes';
 import { extractFileReferences } from '../fileReferences';
-import { describeTool, type ToolActivityEntry } from '../toolActivity';
+import { toolOutputPreview, type ToolActivityEntry } from '../toolActivity';
+import { toolRow, type ToolRowLine } from '../toolRow';
+import { delegationTool } from '../delegation';
 import { FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { JsonTree } from './JsonTree';
 import { Icon } from './PrototypeIcon';
@@ -17,18 +19,6 @@ type OpenFile = (reference: FileReference) => void;
 
 /** How many edited files render their own diff before "+N more files". */
 const EDIT_FILE_LIMIT = 3;
-
-const icons: Record<ToolView['kind'], string> = {
-  edit: 'file', command: 'terminal', read: 'file', search: 'search', web: 'globe',
-  todo: 'check', skill: 'spark', subagent: 'agents', mcp: 'plug', image: 'image',
-  compaction: 'layers', generic: 'wrench',
-};
-
-/** Maps a tool status key to the shared status-chip colours. */
-const statusChip: Record<string, string> = {
-  running: 'st-running', awaiting: 'st-needs', complete: 'st-ended',
-  recorded: 'st-ended', inactive: 'st-ended', failed: 'st-failed', cancelled: 'st-failed',
-};
 
 function changeLabel(change: string, copy: Copy): string {
   switch (change) {
@@ -73,7 +63,7 @@ export function EditBody({ view, copy, openFile, openDiff, canOpenDiff, fileLimi
           <Icon name="file" />
           <span className="tool-edit-path"><FileLinkedText text={file.path} openFile={openFile} /></span>
           <span className={`tool-edit-change is-${file.change}`}>{changeLabel(file.change, copy)}</span>
-          <span className="tool-edit-counts"><b>+{stats.added}</b> <i>−{stats.removed}</i></span>
+          <Stats added={stats.added} removed={stats.removed} />
         </div>
         {file.movePath && <p className="tool-card-note">→ {file.movePath}</p>}
         {file.diff && <DiffBlock diff={file.diff} copy={copy} rowLimit={rowLimits?.[index]} />}
@@ -113,15 +103,6 @@ function CommandBody({ view, sessionCwd, copy }: { view: Extract<ToolView, { kin
     </div>}
     {view.output && <OutputBody text={view.output} copy={copy} />}
   </>;
-}
-
-function ReadTitle({ view, openFile, references }: { view: Extract<ToolView, { kind: 'read' }>; openFile?: OpenFile; references?: FileReference[] }) {
-  if (!view.path) return view.title;
-  const reference = references?.find(value => value.path === view.path);
-  const label = reference ? `${reference.path}${reference.line ? `:${reference.line}${reference.column ? `:${reference.column}` : ''}` : ''}` : view.path;
-  return reference && openFile
-    ? <button type="button" className="file-reference-link" onClick={() => openFile(reference)} title={reference.path}>{label}</button>
-    : <FileLinkedText text={label} openFile={openFile} />;
 }
 
 function ReadBody({ view, copy }: { view: Extract<ToolView, { kind: 'read' }>; copy: Copy }) {
@@ -270,14 +251,51 @@ function CardImages({ part, copy }: { part: ChatPart; copy: Copy }) {
   return <div className="chat-message-images">{images.map((image, index) => <img src={image} key={index} alt={`${copy('Tool image', '工具图片')} ${index + 1}`} loading="lazy" />)}</div>;
 }
 
+/** A command's details once its row is open: the command itself when the label paraphrased it, its folder when it ran elsewhere, then its output. */
+function CommandDetail({ view, humanized, sessionCwd, copy }: { view: Extract<ToolView, { kind: 'command' }>; humanized: boolean; sessionCwd?: string; copy: Copy }) {
+  const cwd = commandDisplayCwd(view.cwd, sessionCwd);
+  return <>
+    {humanized && <div className="call-row-command"><span aria-hidden="true">$</span><code>{view.display}</code></div>}
+    {cwd && <p className="tool-card-note">{copy('Folder', '目录')}: {cwd}</p>}
+    {view.output && <OutputBody text={view.output} copy={copy} />}
+  </>;
+}
+
+function EditFileDetail({ file, copy, openFile, openDiff, canOpenDiff }: { file: ToolEditFile; copy: Copy; openFile?: OpenFile; openDiff?: (path: string) => void; canOpenDiff?: (path: string) => boolean }) {
+  // Only offer Open diff when the working-tree diff can actually open this path.
+  const diffable = openDiff && (canOpenDiff ? canOpenDiff(file.path) : true);
+  return <>
+    {file.movePath && <p className="tool-card-note">→ {file.movePath}</p>}
+    {file.diff && <DiffBlock diff={file.diff} copy={copy} />}
+    {(openFile || diffable) && <div className="tool-card-actions">
+      {openFile && file.change !== 'delete' && <button type="button" className="btn btn-sm tool-card-action" onClick={() => openFile({ path: file.movePath ?? file.path })}>{copy('Open file', '打开文件')}</button>}
+      {diffable && <button type="button" className="btn btn-sm tool-card-action" onClick={() => openDiff!(file.path)}>{copy('Open diff', '查看差异')}</button>}
+    </div>}
+  </>;
+}
+
+function rowHasDetail(part: ChatPart, view: ToolView, line: ToolRowLine, sessionCwd: string | undefined, openFile: OpenFile | undefined): boolean {
+  if (line.file) return Boolean(line.file.diff || line.file.movePath || openFile);
+  if (view.kind === 'command') return Boolean(!line.mono || view.output || commandDisplayCwd(view.cwd, sessionCwd));
+  if (view.kind === 'read') return Boolean(openFile && view.path) || toolCardHasBody(view, sessionCwd);
+  return Boolean(feedbackNotesFromPart(part) || runToolSummaryFromPart(part)) || toolCardHasBody(view, sessionCwd);
+}
+
+function Stats({ added, removed }: { added?: number; removed?: number }) {
+  if (!added && !removed) return null;
+  return <span className="call-row-stats">{added ? <span className="is-added">+{added}</span> : null}{removed ? <span className="is-removed">−{removed}</span> : null}</span>;
+}
+
 /**
- * One typed tool card inside the shared per-turn drawer. The entry shell is
- * always rendered so identity, ordering and inspection keep working while the
- * drawer is collapsed; the body is built only when `open`.
+ * One tool call in a fold: a line per call (a line per file for edits) that says what it did in plain words,
+ * marks only failures, and opens to its command, output or diff (prototypes/chat-tool-rows, approved 11-23).
+ * The entry shell is always rendered so identity, ordering and inspection keep working while the fold is
+ * collapsed; details are built only for an open fold and an open line.
  */
-export function ToolCard({ entry, index, open, active, awaitingApproval, sessionCwd, copy, openFile, openDiff, canOpenDiff }: {
+export function ToolCard({ entry, open, active, awaitingApproval, sessionCwd, copy, openFile, openDiff, canOpenDiff, defaultExpanded = false, onInspect }: {
   entry: ToolActivityEntry;
-  index: number;
+  /** Kept for callers that number their own lists; rows are not numbered. */
+  index?: number;
   open: boolean;
   active: boolean;
   awaitingApproval: boolean;
@@ -286,30 +304,72 @@ export function ToolCard({ entry, index, open, active, awaitingApproval, session
   openFile?: OpenFile;
   openDiff?: (path: string) => void;
   canOpenDiff?: (path: string) => boolean;
+  /** Inspectors that show one call at a time start with its details open. */
+  defaultExpanded?: boolean;
+  /** Opening a line is inspection: it pauses follow like opening the fold, so a long output does not move the reader. */
+  onInspect?: () => void;
 }) {
   const view = toolView(entry.part);
+  const row = toolRow(entry.part, copy, sessionCwd);
+  // Delegation keeps the drawer header's localized name; other MCP calls keep their native identity in the tooltip.
+  const delegation = delegationTool(entry.part);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(defaultExpanded ? row.lines.map(line => line.key) : []));
   const redactedBrowser = hasRedactedBrowserResult(entry.part);
-  // Delegation tools keep the drawer header's localized name, not the raw "threadterm: delegate_start".
-  const described = describeTool(entry.part, copy);
-  const title = described.kind === 'delegation' ? described.name : view.kind === 'command' ? view.display : view.kind === 'read' ? view.path || view.title : view.kind === 'mcp' ? redactedBrowser ? view.title : view.tool : view.title;
-  const suffix = view.kind === 'mcp' && described.kind !== 'delegation' && !redactedBrowser ? view.server : undefined;
-  const status = view.kind === 'mcp' && view.browserActivity?.outcome === 'outcome_unknown'
-    ? { key: 'failed', label: copy('Outcome unknown', '操作结果未知') }
-    : toolStatusLabel(view.status, active, awaitingApproval, copy);
+  const outcomeUnknown = view.kind === 'mcp' && view.browserActivity?.outcome === 'outcome_unknown';
+  const status = outcomeUnknown ? { key: 'failed', label: copy('Outcome unknown', '操作结果未知') } : toolStatusLabel(view.status, active, awaitingApproval, copy);
+  const spinning = status.key === 'running';
+  // Success is quiet; only states that need a look carry a word.
+  const statusNote = status.key === 'awaiting' || status.key === 'inactive' || status.key === 'cancelled' || outcomeUnknown ? status.label : undefined;
+  const failed = status.key === 'failed';
+  const tail = spinning ? toolOutputPreview(entry.part) : undefined;
   const references = redactedBrowser ? undefined : entry.part.fileReferences;
   const body = entry.part.text ?? (entry.part.fileReferences?.length ? partBody(entry.part) : '');
-  return <div role="listitem" className={`chat-tool-entry tool-card is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
-    <div className="chat-tool-entry-label tool-card-head">
-      <span className="chat-tool-step">{index + 1}</span>
-      <Icon name={described.kind === 'delegation' ? 'agents' : icons[view.kind]} />
-      <strong className={`tool-card-title${view.kind === 'command' ? ' is-command' : ''}`} title={view.kind === 'command' ? view.command : [title, suffix].filter(Boolean).join(' · ')}>{view.kind === 'command' ? <code>{view.display}</code> : view.kind === 'read' ? <ReadTitle view={view} openFile={openFile} references={references} /> : title}{suffix && <span className="tool-card-title-suffix"> · {suffix}</span>}</strong>
-      <span className={`chip tool-card-status ${statusChip[status.key] ?? 'flat'}`}>{status.label}</span>
-    </div>
-    {open && toolCardHasBody(view, sessionCwd) && <div className="tool-card-body">
-      <CardBody part={entry.part} view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />
-    </div>}
+  const toggle = (key: string) => { onInspect?.(); setExpanded(current => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  }); };
+  return <div role="listitem" className={`chat-tool-entry tool-card call-row is-${status.key} is-${view.kind}`} data-tool-id={entry.part.toolId || entry.id} data-tool-kind={view.kind} data-tool-status={view.status}>
+    {row.lines.map((line, index) => {
+      const detail = rowHasDetail(entry.part, view, line, sessionCwd, openFile);
+      const isOpen = detail && expanded.has(line.key);
+      const lead = spinning ? <span className="chat-tool-spinner call-row-lead" aria-hidden="true" />
+        : failed ? <Icon name="close" className="call-row-lead is-failed" />
+          : status.key === 'cancelled' ? <Icon name="info" className="call-row-lead" />
+            : <Icon name={line.icon} className="call-row-lead" />;
+      const right = <>
+        <Stats added={line.added} removed={line.removed} />
+        {line.note && <span className="call-row-note">{line.note}</span>}
+        {index === 0 && statusNote && <span className={`call-row-note is-${status.key}`}>{statusNote}</span>}
+        {index === 0 && failed && row.exitCode !== undefined && <span className="call-row-note is-failed">{copy(`exit ${row.exitCode}`, `退出码 ${row.exitCode}`)}</span>}
+        {index === 0 && failed && row.exitCode === undefined && <span className="call-row-note is-failed">{status.label}</span>}
+        {detail && <Icon name="chevR" className="call-row-chevron" />}
+      </>;
+      const head = <>
+        {lead}
+        <span className={`call-row-label${line.mono ? ' is-mono' : ''}`} title={view.kind === 'command' ? view.command : view.kind === 'mcp' && !delegation ? view.title : line.label}>{line.label}</span>
+        {line.where && <span className="call-row-where" title={line.where}>{line.where}</span>}
+        <span className="call-row-right">{right}</span>
+      </>;
+      return <div className={`call-row-line${isOpen ? ' is-open' : ''}`} key={line.key}>
+        {detail
+          ? <button type="button" className="call-row-head" aria-expanded={isOpen} onClick={() => toggle(line.key)}>{head}</button>
+          : <div className="call-row-head">{head}</div>}
+        {index === 0 && failed && row.reason && <p className="call-row-reason" title={row.reason}>{row.reason}</p>}
+        {index === 0 && tail && <p className="call-row-tail" title={tail}>{tail}</p>}
+        {open && isOpen && <div className="call-row-body tool-card-body">
+          {line.file ? <EditFileDetail file={line.file} copy={copy} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} />
+            : view.kind === 'command' ? <CommandDetail view={view} humanized={!line.mono} sessionCwd={sessionCwd} copy={copy} />
+              : <>
+                {view.kind === 'read' && view.path && openFile && <div className="tool-card-actions"><button type="button" className="btn btn-sm tool-card-action" onClick={() => openFile({ path: view.path })}>{copy('Open file', '打开文件')}</button></div>}
+                {toolCardHasBody(view, sessionCwd) || feedbackNotesFromPart(entry.part) || runToolSummaryFromPart(entry.part)
+                  ? <CardBody part={entry.part} view={view} copy={copy} sessionCwd={sessionCwd} openFile={openFile} openDiff={openDiff} canOpenDiff={canOpenDiff} /> : null}
+              </>}
+          {view.kind !== 'read' && view.kind !== 'edit' && <FileReferenceChips references={references} visibleText={body} visibleReferences={view.kind === 'search' && view.path ? [...extractFileReferences(body), { path: view.path }] : undefined} openFile={openFile} />}
+        </div>}
+      </div>;
+    })}
+    {row.moreFiles > 0 && <p className="call-row-more">{copy(`${row.moreFiles} more files`, `另有 ${row.moreFiles} 个文件`)}</p>}
     <CardImages part={entry.part} copy={copy} />
-    {/* A search card's folder chip already names its path. */}
-    {view.kind !== 'read' && <FileReferenceChips references={references} visibleText={body} visibleReferences={view.kind === 'search' && view.path ? [...extractFileReferences(body), { path: view.path }] : undefined} openFile={openFile} />}
   </div>;
 }

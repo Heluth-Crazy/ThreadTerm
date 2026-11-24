@@ -10,9 +10,14 @@ export function compactTokens(value: number): string {
 }
 
 /** Only use this turn's saved usage. Session context totals and current model are never fallbacks. */
+/** 「用时 2m 14s」 / "Worked for 2m 14s": the footer's duration, or the title of a turn's only fold. */
+export function turnDurationText(elapsedMs: number, zh: boolean): string {
+  return zh ? formatChatDuration(elapsedMs, true) : `Worked for ${formatChatDuration(elapsedMs, false)}`;
+}
+
 export function turnFooterSegments(items: readonly ChatItem[], elapsedMs: number | undefined, zh: boolean): FooterSegment[] {
   const segments: FooterSegment[] = [];
-  if (elapsedMs !== undefined) segments.push({ kind: 'duration', text: zh ? formatChatDuration(elapsedMs, true) : `Worked for ${formatChatDuration(elapsedMs, false)}` });
+  if (elapsedMs !== undefined) segments.push({ kind: 'duration', text: turnDurationText(elapsedMs, zh) });
   const model = items.find(item => item.turnModel)?.turnModel;
   if (model) segments.push({ kind: 'model', text: model });
   const saved = [...items].reverse().find(item => item.turnUsage)?.turnUsage;

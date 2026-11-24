@@ -19,6 +19,9 @@ function harness() {
     document: { createElement: () => ({ innerHTML: '', content: { querySelectorAll: () => [] }, querySelectorAll: () => [] }) },
     sanitizeMarkdownHtml: (html: string) => { sanitizes += 1; return html === '<p></p>' ? '' : `safe:${html}`; },
     parseMarkdownFileReference: () => undefined,
+    hasCodeFence: () => false,
+    codeHighlightVersion: () => 0,
+    highlightCodeBlocks: () => undefined,
   }) as (text: string) => string;
   return { render, parses: () => parses, sanitizes: () => sanitizes };
 }

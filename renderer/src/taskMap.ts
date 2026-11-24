@@ -8,8 +8,8 @@ import { isStreamingChatItem } from './codexStream';
 import { groupCodexTranscript } from './codexTranscript';
 import { delegationActive, delegationTool, delegationToolLabel, type DelegationTool } from './delegation';
 import { isSubagentPart, subagentInfo, subagentTitle, subagentToolCount } from './subagentActivity';
-import { describeTool, hiddenQuestionTool, toolSummary, toolSummarySegments } from './toolActivity';
-import type { ToolSummary } from './toolActivity';
+import { describeTool, hiddenQuestionTool, summarizeToolViews, toolSummarySegments } from './toolActivity';
+
 import { toolStatus, toolView } from './toolView';
 import type { ToolView } from './toolView';
 import { turnReview } from './turnFooter';
@@ -94,20 +94,6 @@ function toolStep(view: ToolView, described: ReturnType<typeof describeTool>, de
 }
 
 // Keep the shared summary vocabulary while consuming views already parsed for the map.
-function addToolView(summary: ToolSummary, view: ToolView, delegation: ReturnType<typeof delegationTool>): void {
-  if (view.status === 'failed') summary.failed += 1;
-  if (view.status === 'cancelled') summary.interrupted += 1;
-  // Delegation follow-ups are labelled from delegation.ts (delegationGroupLabel), not from the shared summary.
-  if (delegation) return;
-  if (view.kind === 'read') summary.explored += 1;
-  else if (view.kind === 'search' || view.kind === 'web') summary.searched += 1;
-  else if (view.kind === 'command') {
-    summary.ran += 1;
-    if (view.actions?.some(action => action === 'read' || action === 'list')) summary.explored += 1;
-    if (view.actions?.includes('search')) summary.searched += 1;
-  } else if (view.kind !== 'edit' && view.kind !== 'subagent') summary.other += 1;
-}
-
 /** One call: its own label ("Waited for delegates"); several: one follow-up label with the count. */
 export function delegationGroupLabel(tools: readonly DelegationTool[], copy: TaskMapInput['copy']): string {
   return tools.length === 1 ? delegationToolLabel(tools[0]!, copy) : copy(`Followed delegates (${tools.length})`, `跟进委派（${tools.length}）`);
@@ -201,7 +187,7 @@ export function buildTaskMap(input: TaskMapInput): TaskMapGraph {
     while (lo < hi) { const mid = (lo + hi) >>> 1; if (timed[mid]!.at <= at) lo = mid + 1; else hi = mid; }
     return timed[Math.max(0, lo - 1)]!.index;
   };
-  const laneNodes = new Map<string, TaskMapNode[]>(), groups = new Map<TaskMapNode, { summary: ToolSummary; fallback: boolean; delegations: DelegationTool[] }>();
+  const laneNodes = new Map<string, TaskMapNode[]>(), groups = new Map<TaskMapNode, { calls: { view: ToolView; delegation?: DelegationTool }[]; fallback: boolean; delegations: DelegationTool[] }>();
   const turnNodes = new Map<string, TaskMapNode[]>(), turnItems = new Map<string, ChatItem[]>();
   const partData = new Map<string, ChatPart>();
   const starts = new Map<string, { node?: TaskMapNode; phase: number; order: number }>();
@@ -349,9 +335,9 @@ export function buildTaskMap(input: TaskMapInput): TaskMapGraph {
             if (!(node.parts.length === 1 && node.parts[0]!.itemId === item.id && node.parts[0]!.partIndex === partIndex)) node.parts.push(ref);
             node.step = step; node.detail = detail; node.status = combineStatus(node.status, partState(part, live));
             if (files.length) node.files = [...new Set([...(node.files ?? []), ...files])];
-            const group = groups.get(node) ?? { summary: toolSummary([]), fallback: false, delegations: [] };
+            const group = groups.get(node) ?? { calls: [], fallback: false, delegations: [] };
             if (delegation) group.delegations.push(delegation);
-            if (view) addToolView(group.summary, view, delegation); else group.fallback = true;
+            if (view) group.calls.push({ view, delegation }); else group.fallback = true;
             groups.set(node, group); node.count = (node.count ?? 0) + 1;
           } else previous = undefined;
         }
@@ -370,10 +356,12 @@ export function buildTaskMap(input: TaskMapInput): TaskMapGraph {
   };
   visit(root, 0, 0);
   for (const [node, group] of groups) {
-    group.summary.edited = node.files?.length ?? 0;
+    // The fold's own counting (toolSummary), so a task-map node and its fold always agree.
+    const summary = summarizeToolViews(group.calls);
+    summary.edited = node.files?.length ?? 0;
     node.label = node.step === 'delegation' && group.delegations.length ? delegationGroupLabel(group.delegations, copy)
       : group.fallback ? copy(`Used ${node.count} tools`, `使用 ${node.count} 项工具`)
-      : toolSummarySegments(group.summary, copy).join(' · ') || copy('Tools', '工具');
+      : toolSummarySegments(summary, copy).join(' · ') || copy('Tools', '工具');
   }
   for (const session of sessions.slice(1)) {
     const start = starts.get(session.id)?.node;

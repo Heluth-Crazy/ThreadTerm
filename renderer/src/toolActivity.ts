@@ -1,8 +1,8 @@
 import type { ChatItem, ChatPart } from '@threadterm/protocol';
 import { browserToolActivityFromPart, browserToolIdentity, hasRedactedBrowserResult } from './browserToolActivity';
-import { delegationTool } from './delegation';
+import { delegationTool, type DelegationTool } from './delegation';
 import { isSubagentPart, subagentItemsOf } from './subagentActivity';
-import { toolInputs, toolStatus, toolView } from './toolView';
+import { toolInputs, toolStatus, toolView, type ToolView } from './toolView';
 import { shouldRenderPart } from './chatPresentation';
 
 export { toolStatus } from './toolView';
@@ -363,40 +363,85 @@ export interface ToolSummary { delegates: number; followedDelegates: number; exp
 
 /**
  * Describe a turn's tool work by view kind (B3). `delegationTool` keeps
- * ThreadTerm delegation separate; `toolView` counts shell reads/searches and
- * distinct edit paths. Failed and interrupted calls remain separate signals.
+ * ThreadTerm delegation separate. A command the provider parsed into reads,
+ * lists and searches only counts as those, never also as a command (11-23); reads
+ * and edits count distinct paths. Failed and interrupted calls remain separate signals.
  */
 export function toolSummary(entries: readonly ToolActivityEntry[]): ToolSummary {
+  return summarizeToolViews(entries.map(entry => ({ view: toolView(entry.part), delegation: delegationTool(entry.part) })));
+}
+
+/** `toolSummary` over views a caller already built (the task map groups calls itself). */
+export function summarizeToolViews(calls: readonly { view: ToolView; delegation?: DelegationTool }[]): ToolSummary {
   const summary: ToolSummary = { delegates: 0, followedDelegates: 0, explored: 0, searched: 0, ran: 0, edited: 0, other: 0, failed: 0, interrupted: 0 };
   const files = new Set<string>();
-  for (const entry of entries) {
-    const view = toolView(entry.part);
+  const read = new Set<string>();
+  let unnamedReads = 0;
+  const readPath = (path: string | undefined): boolean => {
+    const key = path?.trim().replace(/\\/g, '/').toLowerCase();
+    if (key) read.add(key);
+    return !!key;
+  };
+  for (const { view, delegation } of calls) {
     if (view.status === 'failed') summary.failed += 1;
     if (view.status === 'cancelled') summary.interrupted += 1;
-    const delegation = delegationTool(entry.part);
     if (delegation) {
       if (delegation === 'delegate_start') summary.delegates += 1;
       else summary.followedDelegates += 1;
       continue;
     }
     switch (view.kind) {
-      case 'read': summary.explored += 1; break;
+      case 'read': if (!readPath(view.path)) unnamedReads += 1; break;
       case 'search': summary.searched += 1; break;
       case 'web': summary.searched += 1; break;
       case 'edit': for (const file of view.files) if (file.path) files.add(file.path); break;
       case 'command': {
-        summary.ran += 1;
-        const actions = view.actions ?? [];
-        if (actions.some(action => action === 'read' || action === 'list')) summary.explored += 1;
-        if (actions.includes('search')) summary.searched += 1;
+        const steps = view.steps ?? [];
+        if (!steps.length || steps.some(step => step.type === 'other')) { summary.ran += 1; break; }
+        if (steps.some(step => step.type === 'search')) summary.searched += 1;
+        const looks = steps.filter(step => step.type !== 'search');
+        if (looks.length && !looks.map(step => readPath(step.path ?? step.name)).some(Boolean)) unnamedReads += 1;
         break;
       }
       case 'subagent': break;
       default: summary.other += 1;
     }
   }
+  summary.explored = read.size + unnamedReads;
   summary.edited = files.size;
   return summary;
+}
+
+/** What a call acted on, so a later call on the same target can be recognised as its retry. */
+function retryKey(part: ChatPart): string | undefined {
+  const view = toolView(part);
+  switch (view.kind) {
+    case 'command': return `command:${view.display}`;
+    case 'edit': return view.files.length ? `edit:${view.files.map(file => file.path).sort().join('\n')}` : undefined;
+    case 'read': return view.path ? `read:${view.path}` : undefined;
+    case 'search': return `search:${view.query}:${view.path ?? ''}`;
+    case 'mcp': return `mcp:${view.server ?? ''}:${view.tool}:${JSON.stringify(view.args ?? null)}`;
+    default: return undefined;
+  }
+}
+
+/**
+ * Drops failed or interrupted calls that a later call on the same target completed: the turn got past
+ * them, so the fold header does not report them in red (owner, 11-23). The rows still show each failure.
+ */
+export function withoutRecoveredFailures(entries: readonly ToolActivityEntry[]): ToolActivityEntry[] {
+  const completed = new Map<string, number>();
+  entries.forEach((entry, index) => {
+    if (toolStatus(entry.part) !== 'complete') return;
+    const key = retryKey(entry.part);
+    if (key) completed.set(key, index);
+  });
+  return entries.filter((entry, index) => {
+    const status = toolStatus(entry.part);
+    if (status !== 'failed' && status !== 'cancelled') return true;
+    const key = retryKey(entry.part);
+    return !key || (completed.get(key) ?? -1) < index;
+  });
 }
 
 const plural = (count: number, one: string, many: string): string => count === 1 ? one : many;
