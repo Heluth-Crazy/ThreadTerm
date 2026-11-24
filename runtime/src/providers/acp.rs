@@ -32,6 +32,8 @@ use tokio::sync::broadcast;
 pub struct AcpAdapter {
     descriptor: AgentDescriptor,
     kimi_native: bool,
+    /// Google Antigravity (`agy acp`): its sign-in method and API key (providers/antigravity.rs).
+    antigravity: Option<Arc<super::antigravity::Antigravity>>,
     events: crate::provider_events::Sender,
 }
 
@@ -58,6 +60,7 @@ impl AcpAdapter {
                 plugin_dir: None,
             },
             kimi_native: true,
+            antigravity: None,
             events,
         }
     }
@@ -69,7 +72,117 @@ impl AcpAdapter {
         Self {
             descriptor,
             kimi_native: false,
+            antigravity: None,
             events,
+        }
+    }
+
+    /// Google's official ACP server, `agy acp`, as a built-in agent. ThreadTerm gives it only the chosen sign-in
+    /// method's credential and lets the CLI sign in by itself (policy in providers/antigravity.rs).
+    pub(crate) fn antigravity(
+        events: crate::provider_events::Sender,
+        state: Arc<super::antigravity::Antigravity>,
+    ) -> Self {
+        use super::antigravity as agy;
+        Self {
+            descriptor: AgentDescriptor {
+                id: agy::ID.into(),
+                name: agy::NAME.into(),
+                plugin_id: None,
+                icon: None,
+                homepage: Some(agy::HOMEPAGE.into()),
+                command: agy::CLI.into(),
+                args: Vec::new(),
+                version_args: vec!["--version".into()],
+                // The interactive CLI is Google's own terminal UI; Chat reopens its conversations through ACP.
+                terminal: Some(TerminalConfig { args: Vec::new(), resume_args: Vec::new() }),
+                chat_args: Some(vec!["acp".into()]),
+                sign_in_args: None,
+                install_package: None,
+                plugin_dir: None,
+            },
+            kimi_native: false,
+            antigravity: Some(state),
+            events,
+        }
+    }
+
+    /// The descriptor to launch with. Antigravity resolves its executable at each launch, so a CLI that
+    /// ThreadTerm installed a moment ago is used without a restart.
+    fn launch_descriptor(&self) -> std::borrow::Cow<'_, AgentDescriptor> {
+        if self.antigravity.is_none() || self.descriptor.command != super::antigravity::CLI {
+            return std::borrow::Cow::Borrowed(&self.descriptor);
+        }
+        let mut descriptor = self.descriptor.clone();
+        descriptor.command = super::antigravity::command();
+        std::borrow::Cow::Owned(descriptor)
+    }
+
+    /// Antigravity starts with the chosen method's credential and without inherited ones that would win instead;
+    /// every other ACP agent keeps the provider environment unchanged.
+    fn launch_environment(
+        &self,
+        spec: &CommandSpec,
+    ) -> Result<(Vec<(String, String)>, Option<crate::environment::Vars>), ProviderError> {
+        let Some(state) = &self.antigravity else { return Ok((Vec::new(), None)) };
+        let env = state.launch_env()?;
+        let cleared = |key: &std::ffi::OsString| {
+            key.to_str().is_some_and(|key| super::antigravity::CLEARED_ENV.iter().any(|name| key.eq_ignore_ascii_case(name)))
+        };
+        let vars = spec.environment_vars().iter().filter(|(key, _)| !cleared(key)).cloned().collect();
+        Ok((env, Some(vars)))
+    }
+
+    /// Antigravity's agent row: no ACP probe (starting a 240 MB CLI on every refresh), the version gate, its own
+    /// install and update, and the sign-in choice.
+    fn antigravity_capability(&self, state: &super::antigravity::Antigravity) -> ProviderCapability {
+        use super::antigravity as agy;
+        let descriptor = self.launch_descriptor();
+        let (installed, version, probe_error) = descriptor.version_probe();
+        let too_old = agy::version_problem(version.as_deref());
+        let ready = installed && too_old.is_none();
+        let google = state.method().is_some_and(super::antigravity::AuthMethod::browser);
+        let command = |args: &[&str]| {
+            descriptor
+                .command_spec(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+                .ok()
+                .map(super::ProviderCommand::from_spec)
+        };
+        let mut setup = super::ProviderSetup {
+            executable_path: installed.then(|| command(&[]).map(|spec| spec.executable)).flatten(),
+            auth_methods: Some(agy::auth_methods()),
+            auth_method: state.method().map(super::antigravity::AuthMethod::id),
+            api_key_set: Some(state.api_key_set()),
+            ..super::ProviderSetup::default()
+        };
+        // ThreadTerm installs and updates only its own copy; a CLI installed another way updates itself.
+        if !installed {
+            setup.install = agy::installer_command();
+        } else if agy::managed_executable().is_some() {
+            setup.install_source = Some("vendor");
+            setup.update = agy::installer_command();
+        }
+        ProviderCapability {
+            id: self.descriptor.id.clone(),
+            name: self.descriptor.name.clone(),
+            installed,
+            version,
+            terminal: ready,
+            chat: ready,
+            history: ready,
+            resume: ready,
+            terminal_resume_capture: super::TerminalCapture::None.as_str(),
+            reason: too_old.or(probe_error),
+            auth: state.auth_state().to_owned(),
+            source: "builtin",
+            plugin_id: None,
+            icon: None,
+            // Google's own sign-in, offered only once a Google method is chosen (and so its notice was seen): the
+            // interactive CLI here, its code-paste login from another computer.
+            sign_in: if ready && google { command(&[]) } else { None },
+            remote_sign_in: if ready && google { command(&["acp", "--login"]) } else { None },
+            setup,
+            homepage: self.descriptor.homepage.clone(),
         }
     }
 
@@ -88,8 +201,10 @@ impl AcpAdapter {
         tool_policy: ChatToolPolicy,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
         let spec = self
-            .descriptor
+            .launch_descriptor()
             .command_spec(self.descriptor.chat_args.as_deref().unwrap_or(&[]))?;
+        let (launch_env, launch_vars) = self.launch_environment(&spec)?;
+        let launch_env: Vec<(&str, &str)> = launch_env.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
         let provider = self.descriptor.id.clone();
         let owned_session = session_id.to_owned();
         let think_open = Arc::new(Mutex::new(false));
@@ -124,11 +239,12 @@ impl AcpAdapter {
             }
             dispatch_acp_message(&reader_startup, &reader_ready, raw);
         });
-        let process = JsonLineProcess::spawn(
+        let process = JsonLineProcess::spawn_with_environment(
             format!("{}-acp", self.descriptor.id),
             &spec,
             None,
-            &[],
+            &launch_env,
+            launch_vars.as_ref(),
             EnvelopeStyle::JsonRpc2,
             on_message,
         )?;
@@ -145,6 +261,15 @@ impl AcpAdapter {
             "clientInfo": {"name":"threadterm","title":"ThreadTerm","version":env!("CARGO_PKG_VERSION")}
         }))?;
         process.notification("initialized", json!({}))?;
+        if let Some(state) = &self.antigravity {
+            if let Some(method) = state.method().filter(|method| !method.browser()) {
+                // An API key or a Cloud project counts only once the CLI is told to use it; a cached Google
+                // sign-in would win otherwise. Non-interactive, so every launch selects it.
+                process
+                    .request("authenticate", json!({"methodId": method.id()}))
+                    .map_err(|error| antigravity_auth_error(error, method))?;
+            }
+        }
         Ok((process, initialized))
     }
 
@@ -173,6 +298,9 @@ impl ProviderAdapter for AcpAdapter {
     }
 
     fn capability(&self) -> ProviderCapability {
+        if let Some(state) = &self.antigravity {
+            return self.antigravity_capability(state);
+        }
         let (installed, version, probe_error) = self.descriptor.version_probe();
         let protocol = if installed {
             self.temporary(None)
@@ -236,7 +364,7 @@ impl ProviderAdapter for AcpAdapter {
                 .descriptor
                 .terminal_command(resume_id.or(assign_id), None);
         }
-        self.descriptor.terminal_command(resume_id, assign_id)
+        self.launch_descriptor().terminal_command(resume_id, assign_id)
     }
 
     fn terminal_capture(&self) -> super::TerminalCapture {
@@ -456,7 +584,7 @@ impl ProviderAdapter for AcpAdapter {
             true,
             policy,
         )?;
-        let response = if let Some(id) = native_id {
+        let request_session = || -> Result<Value, ProviderError> { if let Some(id) = native_id {
             validate_native_id(id)?;
             replay_gate.store(true, Ordering::SeqCst);
             let loaded = if has_capability(&initialized, "load") {
@@ -483,9 +611,38 @@ impl ProviderAdapter for AcpAdapter {
                 ))
             };
             replay_gate.store(false, Ordering::SeqCst);
-            loaded?
+            loaded
         } else {
-            process.request("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers}))?
+            process.request("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers}))
+        } };
+        let mut response = request_session();
+        if let (Some(state), Err(error)) = (&self.antigravity, &response) {
+            if super::antigravity::is_auth_required(error) {
+                // `agy acp` asks for a sign-in: run the chosen method once (a Google sign-in opens the browser
+                // from the CLI and may take minutes), then ask for the session again.
+                state.note_sign_in(false);
+                let method = state.method().ok_or_else(|| ProviderError::new("provider_auth_required", "Choose how Antigravity signs in in Settings → Agents."))?;
+                process
+                    .request_with_timeout("authenticate", json!({"methodId": method.id()}), super::antigravity::SIGN_IN_TIMEOUT)
+                    .map_err(|error| antigravity_auth_error(error, method))?;
+                response = request_session();
+            }
+        }
+        if let Some(state) = &self.antigravity {
+            match &response {
+                Ok(_) => state.note_sign_in(true),
+                Err(error) if super::antigravity::is_auth_required(error) => state.note_sign_in(false),
+                Err(_) => {}
+            }
+        }
+        let response = match (&self.antigravity, response) {
+            (Some(state), Err(error)) if super::antigravity::is_auth_required(&error) => {
+                return Err(match state.method() {
+                    Some(method) => antigravity_auth_error(error, method),
+                    None => error,
+                });
+            }
+            (_, response) => response?,
         };
         let bound_id = response
             .get("sessionId")
@@ -575,6 +732,27 @@ impl ProviderAdapter for AcpAdapter {
         }
         Ok(chat)
     }
+}
+
+/// A sign-in that did not work, with the method in `details` so the agent row and Chat can point at it.
+fn antigravity_auth_error(error: ProviderError, method: super::antigravity::AuthMethod) -> ProviderError {
+    use super::antigravity::AuthMethod;
+    let detail = error.message.clone();
+    let message = match method {
+        AuthMethod::OauthPersonal | AuthMethod::OauthBusiness if error.code == "provider_timeout" =>
+            "Antigravity is waiting for the Google sign-in. Finish it in the browser, or sign in from Settings → Agents, then connect again.".to_owned(),
+        AuthMethod::OauthPersonal | AuthMethod::OauthBusiness =>
+            format!("Antigravity needs a Google sign-in ({detail}). Sign in from Settings → Agents, then connect again."),
+        AuthMethod::GeminiApiKey =>
+            format!("Antigravity did not accept the Gemini API key ({detail}). Check it in Settings → Agents."),
+        AuthMethod::AgentPlatform =>
+            format!("Antigravity could not use Agent Platform ({detail}). Check the project, location and Google Cloud credentials in Settings → Agents."),
+    };
+    if error.code == "provider_auth_required" {
+        return error;
+    }
+    ProviderError::new("provider_auth_required", message)
+        .with_details(json!({"provider": super::antigravity::ID, "authMethod": method.id(), "cause": error.details}))
 }
 
 fn acp_probe_failure_reason(name: &str, probe_error: Option<String>) -> String {
@@ -4814,6 +4992,139 @@ createInterface({{input:process.stdin}}).on('line', line=>{{
         assert!(!acp_option_is_boolean(&json!({}), &[json!({"value":"yes"}), json!({"value":"no"}), json!({"value":"on"})]));
         assert!(acp_option_is_boolean(&json!({"type":"boolean"}), &[]));
         assert!(!acp_option_is_boolean(&json!({"type":"boolean"}), &choices("yes", "no")));
+    }
+
+    /// A fake `agy acp`: announces the four sign-in methods, refuses sessions until `authenticate` names the method
+    /// the scenario accepts, and logs every request with the credential variables it was started with.
+    #[cfg(windows)]
+    fn fake_antigravity(
+        scenario: &str,
+        method: &str,
+        api_key: Option<&str>,
+    ) -> Option<(AcpAdapter, Arc<super::super::antigravity::Antigravity>, std::path::PathBuf, tempfile::TempDir)> {
+        let node = crate::providers::common::find_executable("node")?;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("agy-acp.mjs");
+        let log = dir.path().join("calls.jsonl");
+        let source = serde_json::to_string(&log.to_string_lossy()).unwrap();
+        std::fs::write(&script, format!(r#"import {{createInterface}} from 'node:readline'; import {{appendFileSync}} from 'node:fs';
+const log={source}, scenario='{scenario}';
+let signedIn=false;
+createInterface({{input:process.stdin}}).on('line', line=>{{
+ const r=JSON.parse(line); appendFileSync(log,JSON.stringify({{...r,env:{{gemini:process.env.GEMINI_API_KEY??null,project:process.env.GOOGLE_CLOUD_PROJECT??null}}}})+'\n'); if(!r.id)return;
+ const ok=x=>process.stdout.write(JSON.stringify({{jsonrpc:'2.0',id:r.id,result:x}})+'\n');
+ const fail=(code,message)=>process.stdout.write(JSON.stringify({{jsonrpc:'2.0',id:r.id,error:{{code,message}}}})+'\n');
+ if(r.method==='initialize')return ok({{protocolVersion:1,agentCapabilities:{{loadSession:true,sessionCapabilities:{{load:{{}},resume:{{}},list:{{}}}}}},authMethods:[{{id:'oauth-personal'}},{{id:'oauth-business'}},{{id:'gemini-api-key'}},{{id:'agent-platform'}}]}});
+ if(r.method==='authenticate'){{
+   if(scenario==='refuse')return fail(-32000,'Authentication required');
+   if(r.params.methodId==='gemini-api-key'&&!process.env.GEMINI_API_KEY)return fail(-32000,'GEMINI_API_KEY is not set');
+   signedIn=true; return ok({{}});
+ }}
+ if(r.method==='session/new')return signedIn?ok({{sessionId:'native-1'}}):fail(-32000,'Authentication required');
+ ok({{}});
+}});"#)).unwrap();
+        let state = Arc::new(super::super::antigravity::Antigravity::new(dir.path()));
+        state.update(&json!({"providerAuth":{"antigravity":{"method":method}}})).unwrap();
+        state.set_api_key(api_key).unwrap();
+        let descriptor = AgentDescriptor { id:"antigravity".into(), name:"Antigravity".into(), plugin_id:None, icon:None, homepage:None, command:node.to_string_lossy().into_owned(), args:vec![script.to_string_lossy().into_owned()], version_args:vec![], terminal:None, chat_args:None, sign_in_args:None, install_package:None, plugin_dir:None };
+        let adapter = AcpAdapter { descriptor, kimi_native: false, antigravity: Some(Arc::clone(&state)), events: crate::provider_events::tap_channel(8).0 };
+        Some((adapter, state, log, dir))
+    }
+
+    #[cfg(windows)]
+    fn logged_calls(log: &std::path::Path) -> Vec<Value> {
+        std::fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn antigravity_signs_in_with_the_chosen_google_method_when_agy_asks_then_opens_the_session() {
+        let Some((adapter, state, log, _dir)) = fake_antigravity("accept", "oauth-business", None) else { return; };
+        assert_eq!(state.auth_state(), "unknown");
+        let chat = adapter.open_chat_with_tools("s1", "C:/", None, "w1", None).unwrap_or_else(|error| panic!("{}", error.message));
+        drop(chat);
+        let methods: Vec<_> = logged_calls(&log).iter().filter(|call| call["id"].is_number()).map(|call| call["method"].as_str().unwrap_or_default().to_owned()).collect();
+        assert_eq!(methods, ["initialize", "session/new", "authenticate", "session/new"], "a Google sign-in is asked for only when agy needs it");
+        let authenticate = logged_calls(&log).into_iter().find(|call| call["method"] == "authenticate").unwrap();
+        assert_eq!(authenticate["params"], json!({"methodId":"oauth-business"}));
+        assert_eq!(authenticate["env"], json!({"gemini":null,"project":null}), "a Google sign-in gets no key or project");
+        assert_eq!(state.auth_state(), "authenticated");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn antigravity_with_an_api_key_selects_it_at_launch_and_passes_only_the_key() {
+        let Some((adapter, state, log, _dir)) = fake_antigravity("accept", "gemini-api-key", Some("AIzaFakeKey")) else { return; };
+        let chat = adapter.open_chat_with_tools("s1", "C:/", None, "w1", None).unwrap_or_else(|error| panic!("{}", error.message));
+        drop(chat);
+        let calls = logged_calls(&log);
+        let methods: Vec<_> = calls.iter().filter(|call| call["id"].is_number()).map(|call| call["method"].as_str().unwrap_or_default().to_owned()).collect();
+        assert_eq!(methods, ["initialize", "authenticate", "session/new"], "the key wins over a cached Google sign-in");
+        assert_eq!(calls[0]["env"], json!({"gemini":"AIzaFakeKey","project":null}));
+        assert_eq!(state.auth_state(), "authenticated");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn antigravity_reports_a_refused_sign_in_with_its_method() {
+        let Some((adapter, state, _log, _dir)) = fake_antigravity("refuse", "oauth-personal", None) else { return; };
+        let error = match adapter.open_chat_with_tools("s1", "C:/", None, "w1", None) {
+            Err(error) => error,
+            Ok(_) => panic!("a refused sign-in cannot open a session"),
+        };
+        assert_eq!(error.code, "provider_auth_required");
+        assert_eq!(error.details.as_ref().and_then(|details| details.get("authMethod")).and_then(Value::as_str), Some("oauth-personal"));
+        assert_eq!(state.auth_state(), "unauthenticated");
+        // A missing key fails before agy starts, with the same code.
+        let Some((adapter, _state, log, _dir)) = fake_antigravity("accept", "gemini-api-key", None) else { return; };
+        let error = match adapter.open_chat_with_tools("s1", "C:/", None, "w1", None) { Err(error) => error, Ok(_) => panic!("no key") };
+        assert_eq!(error.code, "provider_auth_required");
+        assert!(!log.exists(), "agy is not started without the key");
+    }
+
+    /// Manual check against Google's real CLI (task 11-24), never run by the gate:
+    /// `THREADTERM_REAL_AGY=<path to agy.exe> cargo test --lib real_agy -- --ignored --test-threads=1 --nocapture`.
+    /// The CLI gets an isolated `--gemini-dir`, so no account or profile is touched, and no Google sign-in is started
+    /// (that would open the browser).
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn real_agy_reports_its_row_refuses_to_start_without_a_method_and_takes_an_api_key() {
+        let agy = std::env::var("THREADTERM_REAL_AGY").expect("THREADTERM_REAL_AGY=<path to agy.exe>");
+        let dir = tempfile::tempdir_in(std::env::var("TEMP").unwrap()).unwrap();
+        let home = dir.path().join("gemini-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let state = Arc::new(super::super::antigravity::Antigravity::new(dir.path()));
+        let descriptor = AgentDescriptor {
+            id: "antigravity".into(), name: "Antigravity".into(), plugin_id: None, icon: None, homepage: None,
+            command: agy, args: vec![], version_args: vec!["--version".into()], terminal: None,
+            chat_args: Some(vec!["acp".into(), "--gemini-dir".into(), home.to_string_lossy().into_owned()]),
+            sign_in_args: None, install_package: None, plugin_dir: None,
+        };
+        let adapter = AcpAdapter { descriptor, kimi_native: false, antigravity: Some(Arc::clone(&state)), events: crate::provider_events::tap_channel(8).0 };
+
+        let row = adapter.capability();
+        println!("row: version={:?} chat={} auth={} authMethod={:?} signIn={:?} reason={:?}", row.version, row.chat, row.auth, row.setup.auth_method, row.sign_in.as_ref().map(|c| &c.display), row.reason);
+        assert!(row.chat && row.installed, "agy 1.5.16 is ready");
+        assert_eq!(row.auth, "unauthenticated", "no method chosen");
+        assert!(row.sign_in.is_none(), "no sign-in before a method is chosen");
+        assert_eq!(row.setup.auth_methods.as_ref().map(Vec::len), Some(4));
+
+        let started = std::time::Instant::now();
+        let error = match adapter.open_chat_with_tools("s1", &dir.path().to_string_lossy(), None, "w1", None) { Err(error) => error, Ok(_) => panic!("no method") };
+        println!("no method: {} {} ({:?})", error.code, error.message, started.elapsed());
+        assert_eq!(error.code, "provider_auth_required");
+
+        state.update(&json!({"providerAuth":{"antigravity":{"method":"gemini-api-key"}}})).unwrap();
+        state.set_api_key(Some("AIzaThreadTermProbeNotARealKey000000000")).unwrap();
+        let started = std::time::Instant::now();
+        match adapter.open_chat_with_tools("s2", &dir.path().to_string_lossy(), None, "w2", None) {
+            Ok(mut chat) => {
+                println!("bogus key: session opened in {:?}; auth={}", started.elapsed(), state.auth_state());
+                let _ = chat.stop();
+            }
+            Err(error) => println!("bogus key: {} {} details={:?} ({:?})", error.code, error.message, error.details, started.elapsed()),
+        }
     }
 
     /// A JSON-RPC ACP fixture: rejects `thinking`, normalizes accepted model

@@ -952,6 +952,12 @@ test('provider refresh is additive and carries the claimed generation',()=>{
  assert.throws(()=>validateResult('provider.refresh',{}));
  assert.throws(()=>validateResult('provider.refresh',{refreshId:'1'}));
  assert.throws(()=>validateRequest('provider.refresh',{callerToken:'secret'}));
+ // Antigravity's API key (11-24): set or cleared, and only whether one is stored comes back.
+ validateRequest('provider.secret.set',{provider:'antigravity',value:'AIzaKey'});
+ validateRequest('provider.secret.set',{provider:'antigravity',value:null});
+ validateResult('provider.secret.set',{apiKeySet:true});
+ assert.throws(()=>validateRequest('provider.secret.set',{provider:'antigravity'}));
+ assert.throws(()=>validateResult('provider.secret.set',{apiKeySet:true,value:'AIzaKey'}));
 });
 
 test('group prerequisites preserve duplicate providers and explicit degradation',()=>{

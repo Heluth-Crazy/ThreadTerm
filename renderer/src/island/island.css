@@ -149,6 +149,7 @@ html.task-island-page,
 .task-island-page .agent-tile-shell::after { opacity: 0.6; }
 .task-island-page .agent-tile-shell svg,
 .task-island-page .agent-tile-gemini-mark svg { filter: none; }
+.task-island-page .agent-tile-antigravity-mark svg { filter: none; }
 .task-island-page .agent-tile-codex-mark svg { width: 84%; height: 84%; }
 .task-island-page .agent-tile-opencode-mark svg { width: 56%; height: 56%; }
 @keyframes agent-tile-pop {

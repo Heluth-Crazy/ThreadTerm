@@ -1,0 +1,15 @@
+/* Antigravity sign-in (AntigravitySettings.tsx). Shares the Grok proxy card's layout; colours come from the status
+ * tokens only. */
+.agy-risk { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--st-needs) 55%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--st-needs) 10%, var(--surface)); }
+.agy-risk strong { color: var(--st-needs-text); }
+.agy-risk p { margin: 0 !important; font-size: 12px; line-height: 1.55; }
+.agy-ack { display: flex !important; align-items: flex-start; gap: 8px; margin: 2px 0 0 !important; font-size: 12px; cursor: pointer; }
+.agy-ack input { margin: 2px 0 0; accent-color: var(--primary); }
+.agy-link { justify-self: start; padding: 0; border: 0; background: none; color: var(--primary); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.agy-key { display: grid; gap: 6px; }
+.agy-key-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }
+.agy-key-state { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; }
+.agy-key-state.is-set { border-color: color-mix(in srgb, var(--st-running) 50%, var(--border)); color: var(--text); }
+.agy-key-row { display: flex; gap: 8px; }
+.agy-key-row input { flex: 1 1 auto; min-width: 0; box-sizing: border-box; }
+.agy-key small { color: var(--muted); font-size: 12px; line-height: 1.45; }

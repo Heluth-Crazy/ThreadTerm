@@ -10,6 +10,7 @@ import { Icon } from "./PrototypeIcon";
 import { SettingsTools } from "./SettingsTools";
 import { SettingsChatTools } from "./SettingsChatTools";
 import { ProviderNetworkSettings } from "./ProviderNetworkSettings";
+import { AntigravitySettings } from "./AntigravitySettings";
 import { DeviceSettings } from "./DeviceSettings";
 import { MachineSettings } from './MachineSettings';
 import { settingsPageVisible, useMachines } from '../machines';
@@ -77,7 +78,7 @@ export function SettingsDialog({ initialTab = "appearance", data, onClose, onSav
       {!remote && <section className={`settings-group ${tab === "data" ? "active" : ""}`}><SettingsData settings={data.settings} zh={zh} onSaved={onSaved} active={tab === "data"} sessions={data.sessions} projects={data.projects} onOpenSession={onOpenSession} /></section>}
       {!remote && <section className={`settings-group ${tab === "mobile" ? "active" : ""}`}><DeviceSettings language={zh ? "zh-CN" : "en"} active={tab === "mobile"} /></section>}
       {!remote && tab === 'computers' && <section className="settings-group active"><MachineSettings settings={data.settings} zh={zh} update={update} /></section>}
-      {tab === "agents" && <section className="settings-group active"><Suspense fallback={<p role="status">{zh ? "正在加载…" : "Loading…"}</p>}><AgentsSettings data={data} zh={zh} onSignInSession={presentSignIn} /></Suspense><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /></section>}
+      {tab === "agents" && <section className="settings-group active"><Suspense fallback={<p role="status">{zh ? "正在加载…" : "Loading…"}</p>}><AgentsSettings data={data} zh={zh} onSignInSession={presentSignIn} /></Suspense><AntigravitySettings settings={data.settings} capability={data.providers.find(provider => provider.id === "antigravity")} zh={zh} update={update} /><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /></section>}
       <section className={`settings-group ${tab === "tools" ? "active" : ""}`}><SettingsChatTools settings={data.settings} zh={zh} update={update} /><SettingsTools data={data} onSaved={onSaved} /></section>
       {tab === "plugins" && <section className="settings-group active"><SettingsPlugins zh={zh} onSaved={onSaved} /></section>}
       {tab === "usage" && <section className="settings-group active"><SettingsUsage zh={zh} data={data} /></section>}

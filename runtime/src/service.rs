@@ -1313,6 +1313,9 @@ impl RuntimeService {
                 if let Err(error) = providers.configure_network(&settings) {
                     eprintln!("provider network settings could not be loaded: {error}");
                 }
+                if let Err(error) = providers.configure_agent_auth(&settings) {
+                    eprintln!("agent sign-in settings could not be loaded: {error}");
+                }
             }
             Err(error) => eprintln!("provider network settings could not be read: {error}"),
         }
@@ -2306,10 +2309,15 @@ impl RuntimeService {
                         crate::code_review::forget_provider_options(&self.db);
                     }
                     self.providers.configure_network(&settings.value)?;
+                    self.providers.configure_agent_auth(&settings.value)?;
                     if p.patch.get("modelPrices").is_some() { crate::usage_ledger::schedule_pricing(&self.db)?; }
                     Ok(serde_json::to_value(settings)?)
                 }
                 "provider.list" => Ok(Value::Array(self.providers.capability_snapshot_result()?)),
+                "provider.secret.set" => {
+                    let p: ProviderSecretSet = parse(&request.params)?;
+                    Ok(self.providers.set_agent_secret(&p.provider, p.value.as_deref())?)
+                }
                 "provider.refresh" => {
                     crate::code_review::forget_provider_options(&self.db);
                     Ok(json!({"refreshId": self.providers.request_capability_refresh()}))
@@ -4688,6 +4696,13 @@ struct SettingsUpdate {
     patch: Value,
     expected_revision: i64,
     operation_id: String,
+}
+/// `provider.secret.set`: an agent's API key, or null to remove it. Never echoed back.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderSecretSet {
+    provider: String,
+    value: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
