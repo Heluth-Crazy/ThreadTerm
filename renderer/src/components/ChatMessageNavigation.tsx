@@ -1,21 +1,23 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ChatItem } from '@threadterm/protocol';
 import { messageDestinations, messageWindow } from '../chatMessageNavigation';
 import { useBrowserOcclusion } from '../browserOcclusion';
 import { Icon } from './PrototypeIcon';
 import './chat-message-navigation.css';
 
-type Props = { items: readonly ChatItem[]; copy: (en: string, zh: string) => string; onNavigate: (id: string) => void; stats?: ReadonlyMap<string, { additions: number; deletions: number }> };
-export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props) {
+/** `icon`: a header icon; `row`: a row in the Chat overview card (11-24); `chip`: a button in the overview's small pill. */
+type Props = { items: readonly ChatItem[]; copy: (en: string, zh: string) => string; onNavigate: (id: string) => void; stats?: ReadonlyMap<string, { additions: number; deletions: number }>; variant?: 'icon' | 'row' | 'chip' };
+export function ChatMessageNavigation({ items, copy, onNavigate, stats, variant = 'icon' }: Props) {
   const messages = useMemo(() => messageDestinations(items, stats), [items, stats]);
   const [open, setOpen] = useState(false), [top, setTop] = useState(0);
   const popoverId = useId();
   useBrowserOcclusion(open);
   const [placement, setPlacement] = useState<{ left: number; top: number; width: number; maxHeight: number }>();
-  const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), list = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), list = useRef<HTMLDivElement>(null), popover = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) { setOpen(false); trigger.current?.focus({ preventScroll: true }); } };
+    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node) && !popover.current?.contains(event.target as Node)) { setOpen(false); trigger.current?.focus({ preventScroll: true }); } };
     // The list is a dialog. Escape must close it even when programmatic focus
     // could not move into the list (the key then targets document, not this div).
     const onKey = (event: KeyboardEvent) => {
@@ -39,8 +41,10 @@ export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props)
     if (!open || !trigger.current) return;
     const anchor = trigger.current.getBoundingClientRect();
     const width = Math.min(340, window.innerWidth - 16);
-    const left = Math.max(8, Math.min(anchor.right - width, window.innerWidth - width - 8));
-    const top = Math.min(anchor.bottom + 6, window.innerHeight - 120);
+    // A card row opens the list beside the card (to its left) so the card stays readable.
+    const beside = variant === 'row' && anchor.left - width - 8 >= 8;
+    const left = beside ? anchor.left - width - 8 : Math.max(8, Math.min(anchor.right - width, window.innerWidth - width - 8));
+    const top = beside ? Math.max(8, Math.min(anchor.top, window.innerHeight - 200)) : Math.min(anchor.bottom + 6, window.innerHeight - 120);
     setPlacement({ left, top, width, maxHeight: Math.max(160, Math.min(420, window.innerHeight - top - 16)) });
   }, [open]);
   if (messages.length < 3) return null;
@@ -56,8 +60,18 @@ export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props)
       requestAnimationFrame(() => list.current?.querySelector<HTMLButtonElement>(`button[data-message-index="${next}"]`)?.focus({ preventScroll: true }));
     }
   }}>
-    <button ref={trigger} type="button" className="icon-btn chat-message-navigation-trigger" aria-expanded={open} aria-controls={popoverId} aria-label={copy(`Messages ${messages.length}`, `消息 ${messages.length}`)} title={copy(`Messages ${messages.length}`, `消息 ${messages.length}`)} onClick={() => { setTop(0); setOpen(value => !value); }}><Icon name="layers" /></button>
-    {open && <div id={popoverId} className="chat-message-popover" style={placement} role="dialog" aria-label={copy('Message navigation', '消息导航')}>
+    {variant === 'row'
+      ? <button ref={trigger} type="button" className="chat-overview-link is-messages chat-message-navigation-trigger" aria-expanded={open} aria-controls={popoverId} aria-label={copy(`Messages ${messages.length}`, `消息 ${messages.length}`)} onClick={() => { setTop(0); setOpen(value => !value); }}>
+        <Icon name="layers" className="chat-overview-change-icon" />
+        <span className="chat-overview-change-label">{copy('Messages', '消息导航')}</span>
+        <span className="chat-overview-change-count">{copy(`${messages.length}`, `${messages.length} 条`)}</span>
+        <Icon name="chevR" className="chat-overview-change-chevron" />
+      </button>
+      : variant === 'chip'
+        ? <button ref={trigger} type="button" className="chat-overview-mini-button chat-message-navigation-trigger" aria-expanded={open} aria-controls={popoverId} aria-label={copy(`Messages ${messages.length}`, `消息 ${messages.length}`)} onClick={() => { setTop(0); setOpen(value => !value); }}><Icon name="layers" />{copy(`Messages ${messages.length}`, `消息 ${messages.length}`)}</button>
+        : <button ref={trigger} type="button" className="icon-btn chat-message-navigation-trigger" aria-expanded={open} aria-controls={popoverId} aria-label={copy(`Messages ${messages.length}`, `消息 ${messages.length}`)} title={copy(`Messages ${messages.length}`, `消息 ${messages.length}`)} onClick={() => { setTop(0); setOpen(value => !value); }}><Icon name="layers" /></button>}
+    {/* In a portal: the overview card's backdrop blur would otherwise become this fixed popover's frame and clip it. */}
+    {open && createPortal(<div ref={popover} id={popoverId} className="chat-message-popover" style={placement} role="dialog" aria-label={copy('Message navigation', '消息导航')}>
       <div className="chat-message-list" ref={list} onScroll={event => setTop(event.currentTarget.scrollTop)}>
         {!!visible.before && <div aria-hidden="true" style={{ height: visible.before }} />}
         {messages.slice(visible.start, visible.end).map((message, offset) => <div className="chat-message-destination" key={message.id}>
@@ -66,6 +80,6 @@ export function ChatMessageNavigation({ items, copy, onNavigate, stats }: Props)
         </div>)}
         {!!visible.after && <div aria-hidden="true" style={{ height: visible.after }} />}
       </div>
-    </div>}
+    </div>, document.body)}
   </div>;
 }

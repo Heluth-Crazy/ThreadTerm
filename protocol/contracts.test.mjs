@@ -342,6 +342,17 @@ test('chat allows image-only input while retaining empty-message and type guards
  assert.throws(()=>validateResult('chat.steer',{disposition:'sent'}));
 });
 
+test('side-bar browser pages save with a workspace under the runtime rules (11-24)',()=>{
+ const layout={kind:'pane',id:'pane',tabs:[],activeTabId:null};
+ const page=n=>({id:`workspace-browser:0f8e1c1e-6a52-4d36-9d0e-6f3f7b6d2a1${n}`,url:'http://localhost:5173/',title:'Vite'});
+ const params={name:'Browser',layout,expectedRevision:0,operationId:'panel'};
+ validateRequest('workspace.save',params);
+ validateRequest('workspace.save',{...params,panelTabs:[]});
+ validateRequest('workspace.save',{...params,panelTabs:[page(1),page(2)]});
+ validateResult('workspace.save',{id:'w',name:'Browser',revision:1,layout,panelTabs:[page(1)]});
+ for(const panelTabs of [[{id:'web',url:'http://localhost/'}],[page(1),page(1)],[{...page(1),url:'file:///C:/x'}],[{...page(1),title:'a'}],[{...page(1),extra:1}],{},Array.from({length:21},(_,i)=>({...page(1),id:`workspace-browser:0f8e1c1e-6a52-4d36-9d0e-6f3f7b6d2a${String(i).padStart(2,'0')}`}))])
+  assert.throws(()=>validateRequest('workspace.save',{...params,panelTabs}),JSON.stringify(panelTabs).slice(0,80));
+});
 test('file preview owners are additive and validated without changing file scope',()=>{
  const file={id:'file',kind:'preview',projectId:'p',path:'README.md'};
  const layout={kind:'pane',id:'pane',tabs:[file],activeTabId:'file'};

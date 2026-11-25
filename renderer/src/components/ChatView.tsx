@@ -2141,7 +2141,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     </section>);
   });
   return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
-    {surface?.openTaskMap && <SurfaceActions slot="primary"><button type="button" className="icon-btn" aria-label={copy('Task map', '任务图')} title={copy('Task map', '任务图')} onClick={() => surface.openTaskMap?.(session.id, flowSync.topItemId())}><Icon name="flow"/></button></SurfaceActions>}
     <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>
     <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}
@@ -2167,7 +2166,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     </CatalogPopover>}
     <SelectionBubble rootRef={logRef} visible={surface?.focused !== false && overlay !== 'full'} copy={copy} quoteEnabled={writable} askEnabled={!!onOpenSession} onQuote={text => insertChatText(session.id, quoteSelection(text))} onAsk={(text, current) => askSelectionChat(session, text, current, id => onOpenSession?.(id))} />
     <div className="chat-log-shell" ref={chatShellRef} onKeyDown={viewport.onKeyDown}>
-    <ChatOverview session={session} delegates={delegates} items={items} copy={copy} zh={zh} docked={overviewIsDocked} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} onOpenSession={onOpenSession} navigation={items.filter(item => item.role === 'user' && !automaticText(item)).length >= 3 ? <ChatMessageNavigation items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} />
+    <ChatOverview session={session} delegates={delegates} items={items} copy={copy} zh={zh} docked={overviewIsDocked} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} onOpenSession={onOpenSession} navigation={items.filter(item => item.role === 'user' && !automaticText(item)).length >= 3 ? variant => <ChatMessageNavigation variant={variant} items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined}
+      onOpenTaskMap={surface?.openTaskMap ? () => surface.openTaskMap?.(session.id, flowSync.topItemId()) : undefined} />
     <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onFocusCapture={viewport.onFocus} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onTouchMoveCapture={viewport.onTouchMove} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
       // Links never navigate the app window (the desktop blocks that, so they used to do nothing).
       const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;

@@ -3986,6 +3986,16 @@
         "sessions.idleReleaseMinutes": {
           "type": "number"
         },
+        "sessions.autoSettleDays": {
+          "type": "number",
+          "enum": [
+            0,
+            3,
+            7,
+            14,
+            30
+          ]
+        },
         "quickMessages": {
           "type": "array",
           "items": {
@@ -4578,6 +4588,12 @@
         },
         "worktreePath": {
           "type": "string"
+        },
+        "panelTabs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WorkspacePanelTab"
+          }
         }
       },
       "required": [
@@ -5015,6 +5031,26 @@
       ],
       "additionalProperties": false,
       "description": "What a compare diff tab compares against. `base` is the short ref the user picked (or the OID), `mergeBase` the commit the file list came from, so a moved base is detected instead of silently recomputed."
+    },
+    "WorkspacePanelTab": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "url"
+      ],
+      "additionalProperties": false,
+      "description": "A page open in the side-bar browser, saved with its workspace so it can be shared with agents like a page tab."
     },
     "InboxItem": {
       "type": "object",

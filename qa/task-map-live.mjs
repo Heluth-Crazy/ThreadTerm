@@ -41,6 +41,13 @@ const check = message => { report.checks.push(message); console.log(`PASS ${mess
 const textOf = item => (item.parts ?? []).filter(part => part.type === 'text').map(part => part.text ?? '').join('');
 const chat = id => page.locator(`[data-testid="session-chat-${id}"]`);
 const map = () => page.locator(`.task-map[data-session-id="${parent.id}"][data-visible="true"]`);
+// 11-24: Task map moved from the header into the Chat overview: a card row or the small pill in a wide Chat, inside the
+// header button's popover in a narrow one.
+async function openTaskMap() {
+  const visible = page.locator('.chat-overview-link.is-task-map, .chat-overview-mini-button[aria-label="Task map"]').filter({ visible: true });
+  if (!(await visible.count())) await page.locator('.workspace-primary-actions .chat-overview-button').click();
+  await page.locator('.chat-overview-link.is-task-map, .chat-overview-mini-button[aria-label="Task map"]').filter({ visible: true }).first().click();
+}
 const mapTabs = () => page.locator('.workspace-tab').filter({ has: page.locator('.workspace-tab-select[title^="Task map ·"], .workspace-tab-select[title^="任务图 ·"]') });
 const tabFor = title => page.locator('.workspace-tab-select').filter({ hasText: title });
 
@@ -278,7 +285,7 @@ async function setSync(on) {
 async function openMap() {
   if (!(await mapTabs().count())) {
     await present(parent);
-    await page.locator('.workspace-primary-actions').getByRole('button', { name: 'Task map', exact: true }).click();
+    await openTaskMap();
   } else await mapTabs().locator('.workspace-tab-select').click();
   await until(async () => Number(await map().getAttribute('data-node-count')) > 0, 'visible task map loads real persisted items');
   await expandAll();
@@ -457,7 +464,7 @@ async function checkNavigation() {
   await until(async () => (await tabFor('QA map delegate').getAttribute('aria-selected')) === 'true', 'delegate workspace title QA map delegate is selected');
   await evidence('08-open-session', 'Open session shows the QA map delegate Chat');
   // The delegate's own Task map button opens the same map focused on the delegate box.
-  await page.locator('.workspace-primary-actions').getByRole('button', { name: 'Task map', exact: true }).click();
+  await openTaskMap();
   await until(async () => (await mapTabs().locator('.workspace-tab-select').getAttribute('aria-selected')) === 'true', 'the delegate Chat opens the existing map tab');
   assert.equal(await mapTabs().count(), 1, 'the delegate reuses the parent task map tab');
   await until(() => steps('delegate', parent.id).first().evaluate(node => node.classList.contains('is-selected')), 'the map selects the delegate box');

@@ -172,7 +172,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             "draft.list" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let mut stmt=tx.prepare("SELECT id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at FROM drafts WHERE project_id=? AND worktree_path=? ORDER BY updated_at")?; let rows=stmt.query_map(params![id,scope],|r| Ok(json!({"id":r.get::<_,String>(0)?,"projectId":r.get::<_,String>(1)?,"worktreePath":r.get::<_,String>(2)?,"path":r.get::<_,String>(3)?,"content":r.get::<_,String>(4)?,"baseFingerprint":r.get::<_,String>(5)?,"revision":r.get::<_,i64>(6)?,"updatedAt":r.get::<_,String>(7)?})))?; Ok(json!(rows.collect::<rusqlite::Result<Vec<_>>>()?)) }
             "draft.put" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; if content.len()>MAX_DOCUMENT_BYTES||content.as_bytes().contains(&0){return Err(anyhow!("invalid_content"))} let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? {return Ok(value)} let current:Option<(String,i64)>=tx.query_row("SELECT id,revision FROM drafts WHERE project_id=? AND worktree_path=? AND path=?",params![id,scope,path],|r|Ok((r.get(0)?,r.get(1)?))).optional()?; if current.as_ref().map(|x|x.1).unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let draft_id=current.map(|x|x.0).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let revision=expected+1; let base=object.get("baseFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,worktree_path,path) DO UPDATE SET content=excluded.content,base_fingerprint=excluded.base_fingerprint,revision=excluded.revision,updated_at=excluded.updated_at",params![draft_id,id,scope,path,content,base,revision,now])?; complete(tx,op,method,&json!({"id":draft_id,"projectId":id,"worktreePath":scope,"path":path,"content":content,"baseFingerprint":base,"revision":revision,"updatedAt":now}),None) }
             "draft.delete"|"workspace.delete" => { let id=object.get("id").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let table=if method=="draft.delete"{"drafts"}else{"workspaces"}; let revision:i64=tx.query_row(&format!("SELECT revision FROM {table} WHERE id=?"),[id],|r|r.get(0))?; if revision!=expected{return Err(anyhow!("revision_conflict"))} tx.execute(&format!("DELETE FROM {table} WHERE id=?"),[id])?; complete(tx,op,method,&Value::Null,None) }
-            "workspace.save" => { let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let id=object.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let existing:Option<i64>=tx.query_row("SELECT revision FROM workspaces WHERE id=?",[&id],|r|r.get(0)).optional()?; if existing.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let name=object.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let layout=object.get("layout").ok_or_else(||anyhow!("invalid_request"))?; validate_layout(layout)?; let project=object.get("projectId").and_then(Value::as_str); let worktree=object.get("worktreePath").and_then(Value::as_str); if let Some(project)=project{root_for(tx,project,worktree)?;}else if worktree.is_some(){return Err(anyhow!("invalid_request"))} let next=expected+1; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,worktree_path=excluded.worktree_path,revision=excluded.revision,layout=excluded.layout,updated_at=excluded.updated_at",params![id,name,project,worktree,next,serde_json::to_string(layout)?,now])?; let mut value=serde_json::Map::new(); value.insert("id".into(),json!(id)); value.insert("name".into(),json!(name)); value.insert("revision".into(),json!(next)); value.insert("layout".into(),layout.clone()); if let Some(project)=project{value.insert("projectId".into(),json!(project));} if let Some(worktree)=worktree{value.insert("worktreePath".into(),json!(worktree));} complete(tx,op,method,&Value::Object(value),None) }
+            "workspace.save" => { let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let id=object.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let existing:Option<i64>=tx.query_row("SELECT revision FROM workspaces WHERE id=?",[&id],|r|r.get(0)).optional()?; if existing.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let name=object.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let layout=object.get("layout").ok_or_else(||anyhow!("invalid_request"))?; validate_layout(layout)?; /* The side-bar browser's tabs: absent keeps the stored list, an array replaces it. */ let panel_tabs=match object.get("panelTabs"){Some(tabs)=>Some(validate_panel_tabs(tabs)?),None=>None}; let project=object.get("projectId").and_then(Value::as_str); let worktree=object.get("worktreePath").and_then(Value::as_str); if let Some(project)=project{root_for(tx,project,worktree)?;}else if worktree.is_some(){return Err(anyhow!("invalid_request"))} let next=expected+1; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at,panel_tabs) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,worktree_path=excluded.worktree_path,revision=excluded.revision,layout=excluded.layout,updated_at=excluded.updated_at,panel_tabs=COALESCE(excluded.panel_tabs,workspaces.panel_tabs)",params![id,name,project,worktree,next,serde_json::to_string(layout)?,now,panel_tabs.as_ref().map(serde_json::to_string).transpose()?])?; let mut value=serde_json::Map::new(); value.insert("id".into(),json!(id)); value.insert("name".into(),json!(name)); value.insert("revision".into(),json!(next)); value.insert("layout".into(),layout.clone()); if let Some(tabs)=&panel_tabs{value.insert("panelTabs".into(),tabs.clone());} if let Some(project)=project{value.insert("projectId".into(),json!(project));} if let Some(worktree)=worktree{value.insert("worktreePath".into(),json!(worktree));} complete(tx,op,method,&Value::Object(value),None) }
             _ => unreachable!()
         }
     })?;
@@ -1557,6 +1557,45 @@ pub(crate) fn root_for(
 }
 /// Validates the persisted workspace-pane tree used by both saved workspaces
 /// and workspace layouts.
+/// Same rule as the protocol's `isWebPreviewUrl`: absolute http(s) with a host, at most 2048 characters.
+fn valid_web_url(url: &str) -> bool {
+    !url.is_empty()
+        && url.encode_utf16().count() <= 2048
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+        && reqwest::Url::parse(url).is_ok_and(|url| {
+            matches!(url.scheme(), "http" | "https") && url.host_str().is_some_and(|host| !host.is_empty())
+        })
+}
+
+/// The side-bar browser's open pages, saved with the workspace so a page there can be shared with agents
+/// exactly like a page tab in the layout. At most 20, each `{id, url, title?}`: the id is the panel's own
+/// `workspace-browser:<uuid>`, the page an http(s) URL, the title bounded like a web tab's.
+pub fn validate_panel_tabs(tabs: &Value) -> Result<Value> {
+    let invalid = || anyhow!("invalid_workspace_panel_tabs");
+    let list = tabs.as_array().filter(|list| list.len() <= 20).ok_or_else(invalid)?;
+    let mut ids = HashSet::new();
+    for tab in list {
+        let tab = tab.as_object().ok_or_else(invalid)?;
+        if tab.keys().any(|key| !matches!(key.as_str(), "id" | "url" | "title")) {
+            return Err(invalid());
+        }
+        let id = tab.get("id").and_then(Value::as_str).ok_or_else(invalid)?;
+        let uuid = id.strip_prefix("workspace-browser:").ok_or_else(invalid)?;
+        if uuid::Uuid::parse_str(uuid).is_err() || !ids.insert(id.to_owned()) {
+            return Err(invalid());
+        }
+        if !tab.get("url").and_then(Value::as_str).is_some_and(valid_web_url) {
+            return Err(invalid());
+        }
+        if tab.get("title").is_some_and(|title| {
+            !title.as_str().is_some_and(|title| title.len() <= 512 && !title.chars().any(char::is_control))
+        }) {
+            return Err(invalid());
+        }
+    }
+    Ok(tabs.clone())
+}
+
 pub fn validate_layout(layout: &Value) -> Result<()> {
     fn valid_external_path(path: &str) -> bool {
         if path.len() > 16 * 1024 || path.chars().any(char::is_control) {
@@ -1572,15 +1611,6 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                 && parts.next().is_some_and(|part| !part.is_empty())
         });
         path.starts_with('/') || drive || unc
-    }
-    /// Same rule as the protocol's `isWebPreviewUrl`: absolute http(s) with a host, at most 2048 characters.
-    fn valid_web_url(url: &str) -> bool {
-        !url.is_empty()
-            && url.encode_utf16().count() <= 2048
-            && !url.chars().any(|c| c.is_whitespace() || c.is_control())
-            && reqwest::Url::parse(url).is_ok_and(|url| {
-                matches!(url.scheme(), "http" | "https") && url.host_str().is_some_and(|host| !host.is_empty())
-            })
     }
     fn visit(
         node: &Value,
@@ -3464,6 +3494,39 @@ mod tests {
             assert!(validate_layout(&layout(tab.clone())).is_err(), "{tab}");
         }
     }
+    #[test]
+    fn side_bar_browser_pages_save_with_the_workspace_and_survive_layout_only_saves() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(&temp.path().join("runtime.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let layout = json!({"kind":"pane","id":"p","tabs":[],"activeTabId":null});
+        let page = |n: u8| json!({"id":format!("workspace-browser:0f8e1c1e-6a52-4d36-9d0e-6f3f7b6d2a1{n}"),"url":"http://localhost:5173/","title":"Vite"});
+        let saved = dispatch(&db,"workspace.save",&json!({"name":"w","layout":layout,"panelTabs":[page(1)],"expectedRevision":0,"operationId":"panel-1"})).unwrap().unwrap();
+        assert_eq!(saved["panelTabs"][0]["id"], page(1)["id"]);
+        let listed = || db.snapshot().unwrap().workspaces.into_iter().find(|w| w["id"] == saved["id"]).unwrap();
+        assert_eq!(listed()["panelTabs"], json!([page(1)]));
+        // A layout-only save (pane changes) keeps the pages; an array replaces them; an empty array clears them.
+        dispatch(&db,"workspace.save",&json!({"id":saved["id"],"name":"w","layout":layout,"expectedRevision":1,"operationId":"panel-2"})).unwrap().unwrap();
+        assert_eq!(listed()["panelTabs"], json!([page(1)]));
+        dispatch(&db,"workspace.save",&json!({"id":saved["id"],"name":"w","layout":layout,"panelTabs":[page(2)],"expectedRevision":2,"operationId":"panel-3"})).unwrap().unwrap();
+        assert_eq!(listed()["panelTabs"], json!([page(2)]));
+        dispatch(&db,"workspace.save",&json!({"id":saved["id"],"name":"w","layout":layout,"panelTabs":[],"expectedRevision":3,"operationId":"panel-4"})).unwrap().unwrap();
+        assert!(listed().get("panelTabs").is_none());
+        for invalid in [
+            json!([{"id":"web","url":"http://localhost/"}]),
+            json!([{"id":"workspace-browser:not-a-uuid","url":"http://localhost/"}]),
+            json!([page(1), page(1)]),
+            json!([{"id":page(1)["id"],"url":"file:///C:/x"}]),
+            json!([{"id":page(1)["id"],"url":"threadterm://new-tab"}]),
+            json!([{"id":page(1)["id"],"url":"http://localhost/","title":"a\u{7}"}]),
+            json!([{"id":page(1)["id"],"url":"http://localhost/","extra":1}]),
+            json!({"id":page(1)["id"]}),
+            json!((0..21).map(|i| json!({"id":format!("workspace-browser:0f8e1c1e-6a52-4d36-9d0e-6f3f7b6d2a{i:02}"),"url":"http://localhost/"})).collect::<Vec<_>>()),
+        ] {
+            assert_eq!(validate_panel_tabs(&invalid).unwrap_err().to_string(), "invalid_workspace_panel_tabs", "{invalid}");
+        }
+    }
+
     #[test]
     fn web_tabs_accept_only_http_pages_without_an_owner() {
         let layout = |tab: Value| json!({"kind":"pane","id":"p","tabs":[tab],"activeTabId":"w"});

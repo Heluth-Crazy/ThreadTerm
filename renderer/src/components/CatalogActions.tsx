@@ -12,16 +12,35 @@ import './catalog-active-delete-dialog.css';
 import './project-catalog.css';
 import { canAcknowledgeActivity } from '../sessionActivity';
 import { isLiveSession, idleMenuLabel, releaseBlockedReason, releaseErrorText, releaseMenuLabel } from '../sessionRelease';
+import { settleGroup, settleSessions, unsettleSessions } from '../sessionSettle';
 
 type Kind=CatalogVisibility['kind'];
 export type CatalogTarget={kind:Kind;id:string;name:string;path:string;projectId:string;worktreeId?:string};
 type Props={target:CatalogTarget;projects:ProjectCatalogItem[];trees:Worktree[];sessions:Session[];providers?:ProviderCapability[];visibility:CatalogVisibility[];onChanged:()=>void;onHidden:()=>void;onWorktree?:(id:string,path?:string)=>void;onNewSession?:(id?:string,path?:string)=>void;onMenuOpenChange?:(open:boolean)=>void};
 const ChatExportDialog = lazy(() => import('./ChatExportDialog').then(module => ({ default: module.ChatExportDialog })));
-type Dialog='rename'|'archive'|'remove'|'remove-active'|'discover'|'export';
+type Dialog='rename'|'archive'|'remove'|'remove-active'|'discover'|'export'|'archived';
+/** Owner 11-24: a menu lists at most this many archived items; the rest open in a dialog with a filter. */
+export const ARCHIVED_MENU_ROWS=5;
 type DeleteNotice='scope-changed'|'stop-failed';
 
 const isActiveSession=(session:Session)=>!session.readOnly&&['starting','running','idle','waiting'].includes(session.status);
 const sessionsInCatalogScope=(target:CatalogTarget,sessions:Session[],projectPath?:string)=>sessions.filter(session=>target.kind==='session'?session.id===target.id:session.projectId===target.projectId&&(target.kind==='project'||sameCanonicalScope(session.worktreePath??projectPath,target.path)));
+
+/** Every archived branch or project, filtered by name, each with Restore (the menus show the first few). */
+export function ArchivedListDialog({title,subtitle,rows,icon,zh,onRestore,onClose}:{title:string;subtitle?:string;rows:{id:string;name:string}[];icon:string;zh:boolean;onRestore:(id:string)=>Promise<void>;onClose:()=>void}){
+  const text=(en:string,cn:string)=>zh?cn:en;
+  const [filter,setFilter]=useState(''),[busy,setBusy]=useState<string>(),[issue,setIssue]=useState<string>();
+  const shown=rows.filter(row=>row.name.toLowerCase().includes(filter.trim().toLowerCase()));
+  return <SurfaceDialog title={title} subtitle={subtitle} icon="archive" size="sm" onClose={onClose} footer={<button className="btn" onClick={onClose}>{text('Close','关闭')}</button>}>
+    <input className="input catalog-archived-filter" value={filter} placeholder={text('Filter by name','按名称筛选')} aria-label={text('Filter by name','按名称筛选')} autoFocus onChange={event=>setFilter(event.target.value)}/>
+    <div className="catalog-archived-list" role="list">
+      {shown.map(row=><div className="catalog-archived-row" role="listitem" key={row.id}><Icon name={icon}/><span className="grow" title={row.name}>{row.name}</span>
+        <button type="button" className="btn btn-sm" disabled={Boolean(busy)} onClick={()=>{setBusy(row.id);setIssue(undefined);void onRestore(row.id).catch(error=>setIssue(error instanceof Error?error.message:String(error))).finally(()=>setBusy(undefined));}}>{busy===row.id?text('Restoring…','正在恢复…'):text('Restore','恢复')}</button></div>)}
+      {!shown.length&&<p className="note">{text('Nothing matches.','没有匹配的项目。')}</p>}
+    </div>
+    {issue&&<p className="surface-error" role="alert">{issue}</p>}
+  </SurfaceDialog>;
+}
 
 export async function restoreCatalogTarget(target:CatalogTarget,visibility:CatalogVisibility[],session?:Session){
   const entry=visibility.find(row=>row.kind===target.kind&&row.id===target.id);
@@ -151,9 +170,13 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
       <div className="menu-sep"/>
       {liveSession&&<button type="button" role="menuitem" className="menu-item" disabled={busy||Boolean(releaseBlocked(liveSession))} title={releaseBlocked(liveSession)} onClick={()=>void run(releaseSession)}><Icon name="terminal"/>{releaseMenuLabel(zh)}</button>}
       {liveSession&&releaseBlocked(liveSession)&&<div className="menu-note">{releaseBlocked(liveSession)}</div>}
-      {archived?item(text('Restore','恢复'),'archive',()=>void run(()=>changeVisibility('active'))):item(text('Archive','归档'),'archive',()=>begin('archive'))}
+      {target.kind==='session'
+        ? archived?item(text('Back to the list','回到列表'),'back',()=>void run(async()=>{await unsettleSessions(settleGroup(target.id,sessions).map(row=>row.id));onChanged();close();}))
+          :item(text('Settle','收尾'),'check',()=>void run(async()=>{await settleSessions(settleGroup(target.id,sessions).map(row=>row.id),zh);onHidden();onChanged();close();}))
+        : archived?item(text('Restore','恢复'),'archive',()=>void run(()=>changeVisibility('active'))):item(text('Archive','归档'),'archive',()=>begin('archive'))}
       {item(text('Delete','删除'),'trash',beginDelete,true)}
-      {target.kind!=='session'&&<><div className="menu-sep"/><div className="menu-label">{target.kind==='project'?text('Archived branches','归档的分支'):text('Archived sessions','归档的会话')}</div>{archivedTargets.length?archivedTargets.map(row=><button type="button" role="menuitem" className="menu-item" disabled={busy} key={row.id} onClick={()=>void run(async()=>{await restoreCatalogTarget(row,visibility,sessions.find(session=>session.id===row.id));onChanged();close();})}><Icon name={row.kind==='session'?'terminal':'branch'}/><span className="grow">{row.name}</span><span className="dim">{text('Restore','恢复')}</span></button>):<div className="menu-note">{text('No archived items','暂无归档内容')}</div>}</>}
+      {target.kind==='project'&&<><div className="menu-sep"/><div className="menu-label">{text('Archived branches','归档的分支')}</div>{archivedTargets.length?archivedTargets.slice(0,ARCHIVED_MENU_ROWS).map(row=><button type="button" role="menuitem" className="menu-item" disabled={busy} key={row.id} onClick={()=>void run(async()=>{await restoreCatalogTarget(row,visibility);onChanged();close();})}><Icon name="branch"/><span className="grow">{row.name}</span><span className="dim">{text('Restore','恢复')}</span></button>):<div className="menu-note">{text('No archived branches','暂无归档的分支')}</div>}
+        {archivedTargets.length>ARCHIVED_MENU_ROWS&&<button type="button" role="menuitem" className="menu-item" onClick={()=>begin('archived')}><Icon name="more"/>{text(`All ${archivedTargets.length}…`,`全部 ${archivedTargets.length} 个…`)}</button>}</>}
       <div className="menu-sep"/>
       {target.kind!=='session'&&onNewSession&&item(text('New terminal','新建终端'),'plus',()=>{close();onNewSession(target.projectId,target.path);})}
       {session&&<>
@@ -167,6 +190,8 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
       <div className="menu-note">{text('Local catalogue only; files and Agent CLI history are retained.','仅本应用归档，不影响磁盘或 Agent CLI')}</div>
       {issue&&<p className="surface-error" role="alert">{issue}</p>}
     </CatalogPopover>}
+    {dialog==='archived'&&<ArchivedListDialog title={text('Archived branches','归档的分支')} subtitle={target.name} icon="branch" zh={zh} rows={archivedTargets.map(row=>({id:row.id,name:row.name}))} onClose={()=>setDialog(undefined)}
+      onRestore={async id=>{const row=archivedTargets.find(value=>value.id===id);if(!row)return;await restoreCatalogTarget(row,(await request('catalog.visibility.list',{})));onChanged();}}/>}
     {dialog==='rename'&&<SurfaceDialog title={target.kind==='project'?text('Rename project','重命名项目'):text('Rename session','重命名会话')} subtitle={text('Update the display name in ThreadTerm.','更新 ThreadTerm 中的显示名称。')} onClose={()=>{if(!busy)setDialog(undefined);}} size="sm" footer={<><button className="btn" disabled={busy} onClick={()=>setDialog(undefined)}>{text('Cancel','取消')}</button><button className="btn btn-primary" disabled={busy||!name.trim()} onClick={()=>void run(rename)}>{text('Save','保存')}</button></>}><div className="field"><label>{text('Display name','显示名称')}<input autoFocus maxLength={60} value={name} onChange={event=>setName(event.target.value)} onKeyDown={event=>{if(event.key==='Enter')void run(rename);}}/></label></div>{issue&&<p className="surface-error" role="alert">{issue}</p>}</SurfaceDialog>}
     {(dialog==='archive'||dialog==='remove'||dialog==='remove-active')&&<SurfaceDialog title={dialog==='archive'?text('Archive in ThreadTerm','在 ThreadTerm 中归档'):dialog==='remove-active'?text('End sessions before deleting','会话需要结束后才可删除'):text('Delete catalogue entry','删除目录记录')} subtitle={target.name} icon={dialog==='archive'?'archive':'trash'} className={`catalog-confirm-dialog${dialog==='remove-active'?' catalog-active-delete-dialog':''}`} onClose={()=>{if(!busy)setDialog(undefined);}} size="sm" footer={<><button className="btn" disabled={busy} onClick={()=>setDialog(undefined)}>{text('Cancel','取消')}</button><button className={`btn ${dialog==='archive'?'btn-primary':'btn-danger'}`} disabled={busy} onClick={()=>void run(dialog==='remove-active'?endSessionsAndDelete:dialog==='archive'?archiveTarget:deleteCatalogRecord)}>{dialog==='archive'?text('Confirm archive','确认归档'):dialog==='remove-active'?(busy?text('Ending sessions…','正在结束…'):text('End and delete','结束并删除')):text('Confirm delete','确认删除')}</button></>}><p className="dlg-text">{dialog==='archive'?text('Hide this entry from the catalogue. Restore it from its parent menu.','从目录中隐藏此记录，可以从上级菜单恢复。'):dialog==='remove-active'?text(`${deleteActiveSessions.length} active session${deleteActiveSessions.length===1?'':'s'} in this scope will be ended before this catalogue entry is removed.`, `此范围内有 ${deleteActiveSessions.length} 个活动会话。结束后会删除该目录记录。`):text('Remove this entry from the ThreadTerm catalogue.','从 ThreadTerm 目录中删除此记录。')}</p>{dialog==='remove-active'&&<p className="note">{text(`Sessions to end: ${deleteActiveSessions.map(row=>row.title).join(', ')}`,`需要结束：${deleteActiveSessions.map(row=>row.title).join('、')}`)}</p>}{dialog==='archive'&&activeSessions.length>0&&<p className="note">{text('Active sessions are stopped to free resources first; open them again to resume.','将先停止活动会话以释放资源；再次打开即可恢复。')}</p>}<p className="note">{dialog==='archive'?text('Files and Agent CLI history are retained. End active sessions in this scope before proceeding.','磁盘文件和 Agent CLI 历史会保留。此范围仍有活动会话时，请先结束会话。'):text('Files and Agent CLI history are retained. Only this catalogue record is removed.','磁盘文件和 Agent CLI 历史会保留；仅删除本应用中的目录记录。')}</p>{deleteNotice==='scope-changed'&&<p className="catalog-active-delete-notice" role="status">{text('The active sessions in this scope changed. Review the updated list, then choose End and delete again.','此范围内的活动会话已变化。请查看更新后的列表，然后再次选择结束并删除。')}</p>}{issue&&<div className="surface-error" role="alert">{dialog==='remove-active'&&<strong>{deleteNotice==='stop-failed'?text('Unable to end every listed session. Review the reason below, then retry.','未能结束列表中的全部会话。请查看以下原因后重试。'):text('The catalogue entry was not deleted.','目录记录尚未删除。')}</strong>}<span>{issue.includes('end_active_sessions')?text('End active sessions in this scope before changing its catalogue visibility.','请先结束此范围内的活动会话，再进行归档或删除。'):issue}</span></div>}</SurfaceDialog>}
     {dialog==='discover'&&<SurfaceDialog title={text('Discover existing worktrees','发现已有分支工作树')} subtitle={displayPath(target.path)} icon="branch" size="wide" onClose={()=>setDialog(undefined)} footer={<button className="btn" onClick={()=>setDialog(undefined)}>{text('Cancel','取消')}</button>}><div className="catalog-discovery">{trees.map(tree=><button type="button" className="menu-item" key={tree.id} onClick={()=>{setDialog(undefined);onWorktree?.(tree.projectId,tree.path);}}><Icon name="branch"/><span>{tree.branch??text('Local directory','本地目录')}<small>{displayPath(tree.path)}</small></span>{tree.missing&&<span className="dim">{text('Missing','目录缺失')}</span>}</button>)}</div></SurfaceDialog>}

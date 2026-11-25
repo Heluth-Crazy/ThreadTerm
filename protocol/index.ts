@@ -242,14 +242,16 @@ export interface TerminalIconRule { id:string; match:string; /** A built-in mark
 /** A user's icon: only ever drawn as an <img> data URL (png, svg+xml, webp, jpeg or gif), at most about 64 KB. */
 export interface TerminalIconImage { id:string; name:string; src:string }
 export interface TerminalIconSettings { rules:TerminalIconRule[]; images:TerminalIconImage[] }
-export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; /** Wake the parent agent automatically when a delegate finishes, needs a decision or goes quiet (missing means on). */ 'chatTools.autoWake'?:boolean; /** Minutes before a hidden idle chat worker is released; 0 disables it (default 30). */ 'sessions.idleReleaseMinutes'?:number; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
+export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; 'chatTools.ask'?:boolean; 'chatTools.sessionInfo'?:boolean; 'chatTools.feedback'?:boolean; 'chatTools.run'?:boolean; 'chatTools.delegation'?:boolean; /** Wake the parent agent automatically when a delegate finishes, needs a decision or goes quiet (missing means on). */ 'chatTools.autoWake'?:boolean; /** Minutes before a hidden idle chat worker is released; 0 disables it (default 30). */ 'sessions.idleReleaseMinutes'?:number; /** Days without activity before a session settles (收尾); 0 turns it off. Default 7. */ 'sessions.autoSettleDays'?:0|3|7|14|30; quickMessages?:QuickMessage[]; terminalIcons?:TerminalIconSettings; remoteMachines?:{enabled:boolean}; [key:string]:unknown }
 /** A file picked through the desktop's native open dialog. */
 export interface AttachedFile { path:string; name:string; dataUrl?:string }
 export type ExternalFileSource = 'dialog'|'drop'|'link'|'recent';
 /** A locally user-registered file outside the active workspace. It remains read-only. */
 export interface ExternalFile { id:string; path:string; name:string; size:number; modifiedAt:string; openedAt:string; image:boolean }
 export type ExternalFileOpenResult = {file:ExternalFile}|{inWorkspace:FileScope&{path:string}};
-export interface Workspace { id:string; name:string; revision:number; layout:PaneLayout; projectId?:string; worktreePath?:string }
+/** A page open in the side-bar browser, saved with its workspace so it can be shared with agents like a page tab. */
+export interface WorkspacePanelTab { id:string; url:string; title?:string }
+export interface Workspace { id:string; name:string; revision:number; layout:PaneLayout; projectId?:string; worktreePath?:string; /** The side-bar browser's pages; absent when there are none. */ panelTabs?:WorkspacePanelTab[] }
 /** A renderer-owned review-comment payload persisted canonically by the runtime. */
 export interface ReviewDraft { draftId:string; scopeProjectId?:string; scopeRoot?:string; draft:unknown; revision:number; deleted?:boolean; updatedAt:string }
 export type ReviewDraftMutation =
@@ -1637,6 +1639,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m==='worktree.create'&&params.startPoint!==undefined&&(params.createBranch!==true||typeof params.startPoint!=='string'||!params.startPoint||params.startPoint.length>255||params.startPoint.startsWith('-'))) throw new Error('Invalid start point');
  if(m==='inbox.read'&&(!Array.isArray(params.ids)||params.ids.length>500||params.ids.some(id=>typeof id!=='string'||!id))) throw new Error('Invalid inbox ids');
  if(m==='workspace.save') validateLayout(params.layout);
+ if(m==='workspace.save'&&params.panelTabs!==undefined&&!validPanelTabs(params.panelTabs)) throw new Error('Invalid side-bar browser pages');
  if(m==='terminal.read') {
   if(params.cursor!==undefined&&(!Number.isSafeInteger(params.cursor)||Number(params.cursor)<0)) throw new Error('Invalid output cursor');
   if(params.tail===true&&params.cursor!==undefined) throw new Error('tail and cursor are mutually exclusive');
@@ -1883,6 +1886,14 @@ export function validateResult<M extends Method>(method:M,result:unknown):assert
  }
 }
 /** A page a `web` tab may show: an absolute http(s) URL of at most 2048 characters, no whitespace or control characters. */
+/** Mirrors the runtime's `validate_panel_tabs`: at most 20 `{id,url,title?}` with the panel's own ids and http(s) pages. */
+export function validPanelTabs(value:unknown):value is WorkspacePanelTab[] {
+ if(!Array.isArray(value)||value.length>20)return false;
+ const ids=new Set<string>();
+ return value.every(tab=>isRecord(tab)&&Object.keys(tab).every(key=>['id','url','title'].includes(key))
+  &&typeof tab.id==='string'&&/^workspace-browser:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tab.id)&&!ids.has(tab.id)&&Boolean(ids.add(tab.id))
+  &&isWebPreviewUrl(tab.url)&&(tab.title===undefined||(typeof tab.title==='string'&&new TextEncoder().encode(tab.title).length<=512&&!/\p{Cc}/u.test(tab.title))));
+}
 export function isWebPreviewUrl(value:unknown):value is string {
  if(typeof value!=='string'||!value||value.length>2048||/[\s\u0000-\u001f\u007f-\u009f]/.test(value)) return false;
  try { const url=new URL(value); return (url.protocol==='http:'||url.protocol==='https:')&&Boolean(url.hostname); } catch { return false; }
@@ -2055,7 +2066,7 @@ export interface CodeReviewScopeChoice { kind:CodeReviewScope['kind']; available
 export interface Worktree { id:string; projectId:string; path:string; branch:string|null; head:string; isMain:boolean; locked:boolean; missing:boolean; upstream?:string; lastCommit?:CommitSummary }
 export type ContentRef = {id:string;kind:'map';sessionId:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'group';groupId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;/** Persisted v16 workspace-tab compatibility only; no Roundtable runtime API remains. */kind:'roundtable';roundtableId:string;/** User-supplied room title, bounded before persistence. */title:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined}|{id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;/** Registered external file (`filesystem.external.*`); `path` is then its absolute display path and the tab is read-only. */externalId?:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean;/** Branch-versus-base diff tab (`git.compare.diff`); never combined with `staged`. */compare?:GitCompareRef}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;/** Sanitized page title, at most 512 UTF-8 bytes. */title?:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined}|{id:string;kind:'usage';/** Optional ThreadTerm project filter; absent = every project. */projectId?:string;ownerSessionId?:undefined};
 export type PaneLayout = {kind:'pane';id:string;tabs:ContentRef[];activeTabId:string|null}|{kind:'split';id:string;direction:'horizontal'|'vertical';ratio:number;first:PaneLayout;second:PaneLayout};
-export interface WorkspaceSave { id?:string;name:string;projectId?:string;worktreePath?:string;layout:PaneLayout;expectedRevision:number;operationId:string }
+export interface WorkspaceSave { id?:string;name:string;projectId?:string;worktreePath?:string;layout:PaneLayout;/** Replaces the saved side-bar pages; absent keeps them. */ panelTabs?:WorkspacePanelTab[];expectedRevision:number;operationId:string }
 
 
 export function protocolContractOf(value:unknown):number|undefined {

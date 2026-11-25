@@ -1,6 +1,6 @@
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
-import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree } from '@threadterm/protocol';
+import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree, WorkspacePanelTab } from '@threadterm/protocol';
 import { browserCommand, onBrowserEvent, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
 import { isRemoteFiles, uploadRemotePaths } from '../remoteFiles';
@@ -17,7 +17,7 @@ import { sameDiffTabKey } from '../workbench/branchScope';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { PanelBrowser, PanelBrowserTabs } from './PanelBrowser';
 import { WbIcon } from '../workbench/icons';
-import { usePanelBrowser } from '../panelBrowser';
+import { panelPagesForWorkspace, usePanelBrowser } from '../panelBrowser';
 import { BROWSER_NEW_TAB_URL } from '../browserNewTab';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
 import { currentRunEntry, runCurrentConfigs, runKeyCommand, type RunCommandRequest } from '../workbench/runView';
@@ -159,11 +159,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const state=session.readOnly?'ended':session.status==='waiting'?'needs':session.status==='error'?'failed':session.status==='interrupted'?'stalled':working(session)?'running':'ended';
  const stateLabel=session.released?(zh?'已停止':'Stopped'):zh?({needs:'待处理',failed:'失败',stalled:'已中断',running:'运行中',ended:session.readOnly?'只读历史':'已结束'}[state]):({needs:'Attention',failed:'Failed',stalled:'Interrupted',running:'Running',ended:session.readOnly?'Read-only history':'Ended'}[state]);
  const fail=(error:unknown)=>setIssue(error instanceof Error?error.message:String(error));
- const save=(next:PaneLayout)=>{
+ /** Saves the layout; `panelTabs` also replaces the side-bar browser pages saved with it (absent keeps them). */
+ const save=(next:PaneLayout,panelTabs?:WorkspacePanelTab[])=>{
   latestLayout.current=next;
   setLayout(next);
   const persisted=saving.current.catch(()=>undefined).then(async()=>{
-   const value=await request('workspace.save',{id:saved.current.id,name:session.title,projectId:session.projectId,worktreePath:path,layout:next,expectedRevision:saved.current.revision,operationId:operationId()});
+   const value=await request('workspace.save',{id:saved.current.id,name:session.title,projectId:session.projectId,worktreePath:path,layout:next,...(panelTabs?{panelTabs}:{}),expectedRevision:saved.current.revision,operationId:operationId()});
    saved.current={id:value.id,revision:value.revision};persistedLayout.current=next;
   });
   saving.current=persisted.catch(error=>{fail(error);});
@@ -171,6 +172,16 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  };
  const prepareBrowserShare=async(tabId:string)=>{
   if(!project||!path)throw new Error('Save this tab in a project workspace before sharing.');
+  // A side-bar browser page (11-24): saved with the workspace, then shared exactly like a page tab.
+  if(panelBrowser.latestTabs().some(tab=>tab.tabId===tabId)){
+   const pages=()=>panelPagesForWorkspace(panelBrowser.latestTabs());
+   if(!pages().some(page=>page.id===tabId))throw new Error('Open a web page in this tab before sharing it.');
+   await saving.current;
+   await save(latestLayout.current,pages());
+   await saving.current;
+   if(!live.current||!saved.current.id||!pages().some(page=>page.id===tabId))throw new Error('The current browser workspace could not be saved.');
+   return {id:saved.current.id,revision:saved.current.revision,sessionId:previewSessionId};
+  }
   const contains=()=>workspaceTabs(latestLayout.current).some(item=>item.tab.kind==='web'&&item.tab.id===tabId);
   if(!contains())throw new Error('The browser tab is no longer in this workspace.');
   await saving.current;
@@ -723,7 +734,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
      /></ContextHost.Provider><ContextSendDialogHost/>
     </div>
    </div>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} filesActions={filesActionsForScope} sessions={workspaceSessions} allSessions={data.sessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} headerHost={headerTools} zh={zh}
-    browser={()=> <PanelBrowser key={panelBrowser.key} browser={panelBrowser} sessions={treeSessions} zh={zh} activeSessionId={previewSessionId} commentScope={project&&path?{projectId:project.id,root:path}:undefined} commentsHost={commentsHost}/>}
+    browser={()=> <PanelBrowser key={panelBrowser.key} browser={panelBrowser} sessions={treeSessions} zh={zh} activeSessionId={previewSessionId} prepareBrowserShare={prepareBrowserShare} commentScope={project&&path?{projectId:project.id,root:path}:undefined} commentsHost={commentsHost}/>}
     browserTitle={panelBrowser.tabs.length>1&&<PanelBrowserTabs browser={panelBrowser} zh={zh}/>}
     browserActions={<>
      {(panelBrowser.tabs.length>1||panelBrowser.url!==BROWSER_NEW_TAB_URL)&&<button type="button" className="icon-btn" aria-label={zh?'新标签页':'New tab'} title={zh?'新标签页（Ctrl+T）':'New tab (Ctrl+T)'} onClick={panelBrowser.newTab}><WbIcon name="plus"/></button>}

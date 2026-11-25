@@ -34,6 +34,8 @@ type EvalPreparation = { key: string; request: BrowserEvalPreparation; fingerpri
 type EvalOperation = { kind: 'eval'; key: string; request: BrowserEvalExecution; fingerprint: string; preparation: EvalPreparation; controller: AbortController; state: 'queued' | 'running' | 'done'; nativePending: boolean; monotonicDeadline: number; result?: BrowserEvalReceipt; timer?: ReturnType<typeof setTimeout> };
 type LaneOperation = Operation | EvalOperation;
 type Lane = { active?: LaneOperation; queued: LaneOperation[] };
+// A page the workspace holds: a web tab in its layout, or a side-bar browser page saved with it (11-24).
+const workspaceHasPage = (workspace: Workspace, id: string): boolean => layoutHas(workspace.layout, id) || (workspace.panelTabs ?? []).some(tab => tab.id === id);
 const layoutHas = (layout: PaneLayout, id: string): boolean => layout.kind === 'pane' ? layout.tabs.some(tab => tab.kind === 'web' && tab.id === id) : layoutHas(layout.first, id) || layoutHas(layout.second, id);
 const sameAttachment = (a: BrowserAttachment, b: BrowserAttachment): boolean => a.attachmentId === b.attachmentId && a.attachmentGeneration === b.attachmentGeneration && a.runtimeEpoch === b.runtimeEpoch && a.viewGeneration === b.viewGeneration;
 const sameRegistration = (a: BrowserRegistration, b: BrowserRegistration): boolean => sameAttachment(a, b) && a.tabId === b.tabId && a.sourceTabId === b.sourceTabId;
@@ -153,7 +155,7 @@ export class BrowserAgentController {
       await this.release(previousRegistration, previousAttachment); check();
       const snapshot = await this.runtime.snapshot(); check();
       const workspace = snapshot.workspaces.find(value => value.id === command.workspace.id);
-      if (!workspace || workspace.revision !== command.workspace.revision || !workspace.projectId || !layoutHas(workspace.layout, command.tabId)) throw new BrowserAgentError('browser_unavailable', 'Save this browser tab in its current project workspace before sharing.');
+      if (!workspace || workspace.revision !== command.workspace.revision || !workspace.projectId || !workspaceHasPage(workspace, command.tabId)) throw new BrowserAgentError('browser_unavailable', 'Save this browser tab in its current project workspace before sharing.');
       const attached = await this.runtime.browserRequest('browser.attach', { viewId: record.viewId, workspaceId: workspace.id, workspaceRevision: workspace.revision, viewGeneration: tab.document.viewGeneration });
       if (!isBrowserAttachment(attached) || attached.viewGeneration !== expected.viewGeneration) throw new BrowserAgentError('browser_unavailable', 'Browser attachment was not confirmed.');
       attachment = attached; check();
@@ -194,7 +196,7 @@ export class BrowserAgentController {
       check();
       const snapshot = await this.runtime.snapshot(); check();
       const workspace = snapshot.workspaces.find(value => value.id === command.workspace.id);
-      if (!workspace || workspace.revision !== command.workspace.revision || !workspace.projectId || !layoutHas(workspace.layout, command.tabId)) throw new BrowserAgentError('browser_unavailable', 'Save this browser tab in its current project workspace before sharing.');
+      if (!workspace || workspace.revision !== command.workspace.revision || !workspace.projectId || !workspaceHasPage(workspace, command.tabId)) throw new BrowserAgentError('browser_unavailable', 'Save this browser tab in its current project workspace before sharing.');
       const attached = await this.runtime.browserRequest('browser.attach', { viewId: record.viewId, workspaceId: workspace.id, workspaceRevision: workspace.revision, viewGeneration: tab.document.viewGeneration, controlSessionId: sessionId });
       if (!isBrowserAttachment(attached) || attached.viewGeneration !== expected.viewGeneration) throw new BrowserAgentError('browser_unavailable', 'Browser attachment was not confirmed.');
       attachment = attached; check();
@@ -308,7 +310,7 @@ export class BrowserAgentController {
       for (const [id, record] of bound) {
         if (this.tabs.get(id) !== record) continue;
         const bindings = [...record.controls.values(), ...(record.registration && record.attachment && record.workspace && record.origin ? [{ registration: record.registration, attachment: record.attachment, workspace: record.workspace, origin: record.origin, refs: record.refs, grants: this.grants }] : [])];
-        if (bindings.some(binding => { const workspace = snapshot.workspaces.find(value => value.id === binding.workspace.id); return !workspace || workspace.projectId !== binding.workspace.projectId || workspace.worktreePath !== binding.workspace.worktreePath || !layoutHas(workspace.layout, id); })) this.invalidate(id, 'Sharing stopped — the workspace changed.');
+        if (bindings.some(binding => { const workspace = snapshot.workspaces.find(value => value.id === binding.workspace.id); return !workspace || workspace.projectId !== binding.workspace.projectId || workspace.worktreePath !== binding.workspace.worktreePath || !workspaceHasPage(workspace, id); })) this.invalidate(id, 'Sharing stopped — the workspace changed.');
       }
     } catch { if (generation === this.bindingRefresh) void this.stopAll('Browser workspace validation is unavailable.').catch(() => undefined); }
   }

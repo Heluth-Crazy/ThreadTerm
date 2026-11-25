@@ -1,4 +1,5 @@
 import { useReducer, useRef } from 'react';
+import { isWebPreviewUrl, type WorkspacePanelTab } from '@threadterm/protocol';
 import { BROWSER_NEW_TAB_URL } from './browserNewTab';
 import { canonicalScopePath } from './projectScope';
 
@@ -8,6 +9,13 @@ type PanelBrowserState = {tabs:PanelBrowserTab[];active:string;recent:RecentPage
 const TAB_ID=/^workspace-browser:[0-9a-f-]{36}$/;
 const blankTab=(url=BROWSER_NEW_TAB_URL):PanelBrowserTab=>({tabId:`workspace-browser:${crypto.randomUUID()}`,url});
 const fresh=():PanelBrowserState=>{const tab=blankTab();return {tabs:[tab],active:tab.tabId,recent:[]};};
+/** The panel's pages as the workspace saves them: loaded http(s) pages only, titles bounded like a web tab's
+ * (512 UTF-8 bytes, no control characters), so the runtime accepts the list. */
+export function panelPagesForWorkspace(tabs:readonly PanelBrowserTab[]):WorkspacePanelTab[] {
+ const encoder=new TextEncoder();
+ const bounded=(title:string)=>{let text=title.replace(/\p{Cc}/gu,' ').trim();while(encoder.encode(text).length>512)text=[...text].slice(0,-1).join('');return text;};
+ return tabs.filter(tab=>tab.url!==BROWSER_NEW_TAB_URL&&isWebPreviewUrl(tab.url)).slice(0,20).map(tab=>{const title=tab.title?bounded(tab.title):'';return {id:tab.tabId,url:tab.url,...(title?{title}:{})};});
+}
 export const panelBrowserKey=(projectId:string,root:string)=>`threadterm.workspace.browser:${JSON.stringify([projectId,canonicalScopePath(root)])}`;
 function readPanelBrowser(key:string):PanelBrowserState {
  try {
@@ -53,6 +61,8 @@ export function usePanelBrowser(projectId:string,root:string) {
  };
  const front=current.tabs.find(tab=>tab.tabId===current.active)??current.tabs[0];
  return {key,tabs:current.tabs,active:front.tabId,tabId:front.tabId,url:front.url,recent:current.recent,
+  /** The tabs as they are now, for async work that outlives this render. */
+  latestTabs:()=>latest().tabs,
   request:store.current.request,
   /** Show a page here: the tab that already has it, else the empty tab in front, else a new tab after it. */
   open:(url:string)=>{

@@ -473,6 +473,8 @@ function MachineApp() {
             onSession={(id) => void navigate({ kind: "session", id })}
             onScopeChange={setScopeProjectId}
             onAddProject={() => setProjectCreatorOpen(true)}
+            autoSettleDays={rawData?.settings["sessions.autoSettleDays"]}
+            onAutoSettleDays={async days => { if (!data) return; await request("settings.update", { patch: { "sessions.autoSettleDays": days as 0 | 3 | 7 | 14 | 30 }, expectedRevision: data.settings.revision, operationId: operationId() }); await refresh(); }}
             onNewSession={(projectId,path) => {const selected=data?.projects.find(item=>item.id===projectId);if(selected)setCreatorDefaults({projectId:selected.id,path:path??selected.path});setCreatorOpen(true);}}
           />
           </MachineRows>

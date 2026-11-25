@@ -6443,6 +6443,12 @@
         "layout": {
           "$ref": "#/definitions/PaneLayout"
         },
+        "panelTabs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WorkspacePanelTab"
+          }
+        },
         "expectedRevision": {
           "type": "number"
         },
@@ -6885,6 +6891,26 @@
       ],
       "additionalProperties": false,
       "description": "What a compare diff tab compares against. `base` is the short ref the user picked (or the OID), `mergeBase` the commit the file list came from, so a moved base is detected instead of silently recomputed."
+    },
+    "WorkspacePanelTab": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "url"
+      ],
+      "additionalProperties": false,
+      "description": "A page open in the side-bar browser, saved with its workspace so it can be shared with agents like a page tab."
     },
     "RequestParams<\"workspace.delete\">": {
       "type": "object",
