@@ -189,6 +189,18 @@ test('a finished announcement expires on its own and reports when the next one i
   assert.equal(tracker.nextExpiry(), undefined);
 });
 
+test('holding keeps finished announcements up to a time and never shortens one', () => {
+  const tracker = new IslandTracker();
+  tracker.update([source()], 0);
+  tracker.finish(source().key, 'done', 1000, 5000);
+  tracker.hold(3000);
+  assert.equal(tracker.nextExpiry(), 6000, 'an earlier hold leaves the announcement its own time');
+  tracker.hold(9000);
+  assert.equal(tracker.nextExpiry(), 9000);
+  assert.equal(tracker.expire(8999), false);
+  assert.equal(tracker.expire(9000), true);
+});
+
 test('a result line attaches to the finished item, and the next turn replaces it with a running one', () => {
   const tracker = new IslandTracker();
   tracker.update([source()], 0);
