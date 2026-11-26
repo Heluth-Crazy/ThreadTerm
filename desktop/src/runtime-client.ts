@@ -340,9 +340,22 @@ export function isolatedSessionMutationId<M extends Method>(method: M, params: R
   return sessionId;
 }
 
+/** Git writes and worktree changes run Git with the runtime's own bounds: 120 s for network commands, 300 s
+ * for hooks (runtime/src/git_read.rs, git_actions.rs). At 30 s a push or a commit with a lint hook was reported
+ * as failed while it still ran, and then succeeded (11-25). They run in the runtime's background lane, so a
+ * long wait here holds nothing else up. */
+const GIT_WRITE_TIMEOUT_MS = 330_000;
+const GIT_WRITES = new Set<Method>([
+  'git.fetch', 'git.pull', 'git.push', 'git.commit', 'git.commit.selected', 'git.merge', 'git.merge.abort',
+  'git.cherryPick', 'git.revert', 'git.reset', 'git.operation.abort', 'git.operation.continue', 'git.stage',
+  'git.unstage', 'git.index.write', 'git.discard', 'git.checkout', 'git.branch.delete', 'git.stash.push',
+  'git.stash.apply', 'git.stash.drop', 'git.undo', 'worktree.create', 'worktree.remove', 'worktree.relocate',
+]);
+
 export function requestTimeoutMs(method: Method): number {
   if (method === 'data.backup' || method === 'data.backup.verify') return BACKUP_REQUEST_TIMEOUT_MS;
   if (method === 'chat.connect') return CHAT_CONNECT_TIMEOUT_MS;
+  if (GIT_WRITES.has(method)) return GIT_WRITE_TIMEOUT_MS;
   return DEFAULT_REQUEST_TIMEOUT_MS;
 }
 

@@ -260,6 +260,16 @@ enum Lane {
     /// revision-checked transaction; queued behind a slow `chat.connect` they timed out and the
     /// later, still-applied write left the view's next revision stale (11-18).
     State,
+    /// Agent starts (`chat.connect`): a start can take a minute (network model refresh, MCP servers,
+    /// antivirus on new binaries). Run beside everything else, a few at a time, without holding live
+    /// events; a later request for the same session still waits for its start (`ConnectGate`), and
+    /// the provider's per-session admission lock serializes the start with sends and approvals.
+    /// In the ordered lane one start froze every other chat's writes and all live updates (11-25).
+    Connect,
+    /// Git writes, worktree creation/removal and backups: arrival order among themselves (one Git
+    /// operation at a time), but a 120 s push or a 300 s commit hook no longer holds unrelated writes
+    /// or the live events; their replies are not sequenced with events (11-25).
+    Background,
     /// Everything else: one at a time in arrival order, as before.
     Ordered,
 }
@@ -299,6 +309,24 @@ fn request_lane(method: &str) -> Lane {
         // The cached option state; the provider's catalogue refresh it starts never blocks the reply,
         // and the view drops a reply that a newer `chat.ui` event already replaced.
         "chat.options" => Lane::Concurrent,
+        // More reads a view needs to render, moved out of the ordered lane (11-25: "worktree.list timed
+        // out" behind an agent start). `worktree.list` re-registers what Git lists with idempotent upserts.
+        "worktree.list" | "group.list" | "group.read" | "provider.list" | "plugin.list"
+        | "chat.subagent.read" | "chat.backgroundTasks.list" | "agentReview.list" | "reviewDrafts.list"
+        | "session.documents.list" | "session.config.read" | "session.retry.read"
+        | "quickLaunch.list" | "quickLaunch.setup.read" | "quickLaunch.setup.status"
+        | "data.status" | "data.relocation.status" | "device.list" | "device.status"
+        | "usage.ledger.summary" | "usage.ledger.series" | "usage.ledger.breakdown" | "usage.ledger.sessions"
+        | "usage.ledger.session" | "usage.ledger.sources" | "usage.ledger.settings"
+        | "filesystem.image" | "filesystem.preview.read" | "attachment.read" | "filesystem.resolve"
+        | "runtime.health" | "terminal.host" | "browser.approval.read" => Lane::Concurrent,
+        "chat.connect" => Lane::Connect,
+        "git.fetch" | "git.pull" | "git.push" | "git.commit" | "git.commit.selected" | "git.merge"
+        | "git.merge.abort" | "git.cherryPick" | "git.revert" | "git.reset" | "git.operation.abort"
+        | "git.operation.continue" | "git.stage" | "git.unstage" | "git.index.write" | "git.discard"
+        | "git.checkout" | "git.branch.delete" | "git.stash.push" | "git.stash.apply" | "git.stash.drop"
+        | "git.undo" | "worktree.create" | "worktree.remove" | "worktree.relocate"
+        | "data.backup" | "data.backup.verify" => Lane::Background,
         "workspace.save" | "workspace.delete" | "draft.put" | "draft.delete" | "chat.draft.save" => Lane::State,
         // The run reads never wait for the user; `run.start`/`run.restart` do, and stay
         // ordered so one approval cannot reorder a stop behind a start.
@@ -367,6 +395,53 @@ const MAX_CONCURRENT_READS: usize = 16;
 #[cfg(windows)]
 /// Queued requests per sequenced lane before the reader waits (the old loop read nothing while busy).
 const LANE_QUEUE: usize = 64;
+#[cfg(windows)]
+/// Agent starts in flight per connection.
+const MAX_CONCURRENT_CONNECTS: usize = 3;
+
+#[cfg(windows)]
+/// Sessions whose agent start is in flight on this connection. A sequenced request for one of them
+/// waits until the start replied, so per-session order is what it was in the single ordered lane.
+#[derive(Default)]
+struct ConnectGate {
+    sessions: Mutex<std::collections::HashMap<String, usize>>,
+    changed: tokio::sync::Notify,
+}
+
+#[cfg(windows)]
+impl ConnectGate {
+    fn enter(&self, session_id: &str) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            *sessions.entry(session_id.to_owned()).or_default() += 1;
+        }
+    }
+    fn leave(&self, session_id: &str) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            if let Some(count) = sessions.get_mut(session_id) {
+                *count -= 1;
+                if *count == 0 {
+                    sessions.remove(session_id);
+                }
+            }
+        }
+        self.changed.notify_waiters();
+    }
+    async fn wait(&self, session_id: &str) {
+        loop {
+            // Created before the check: `notify_waiters` wakes futures that exist, polled or not.
+            let changed = self.changed.notified();
+            if !self.sessions.lock().map(|sessions| sessions.contains_key(session_id)).unwrap_or(false) {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn request_session(request: &RpcRequest) -> Option<String> {
+    request.params.get("sessionId").and_then(Value::as_str).map(str::to_owned)
+}
 
 #[cfg(windows)]
 struct Reply {
@@ -550,6 +625,8 @@ fn lane_worker(
     principal: String,
     replies: tokio::sync::mpsc::UnboundedSender<Reply>,
     traced: bool,
+    sequenced: bool,
+    gate: Arc<ConnectGate>,
 ) -> LaneSender {
     let (sender, mut requests) = tokio::sync::mpsc::channel::<QueuedRequest>(LANE_QUEUE);
     let active = (traced && send_trace::enabled())
@@ -572,7 +649,10 @@ fn lane_worker(
                     .queue_wait_us(queued.queued.as_ref().and_then(SendTraceTimer::elapsed_us)));
             }
             let request = queued.request;
-            let reply = run_request(Arc::clone(&service), principal.clone(), request, true).await;
+            if let Some(session_id) = request_session(&request) {
+                gate.wait(&session_id).await;
+            }
+            let reply = run_request(Arc::clone(&service), principal.clone(), request, sequenced).await;
             if let Some(state) = &worker_active {
                 if let Ok(mut active) = state.lock() {
                     *active = None;
@@ -635,9 +715,12 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
     let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
-    let ordered = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), true);
-    let terminal = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false);
-    let state = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false);
+    let gate = Arc::new(ConnectGate::default());
+    let ordered = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), true, true, Arc::clone(&gate));
+    let terminal = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false, true, Arc::clone(&gate));
+    let state = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false, true, Arc::clone(&gate));
+    let background = lane_worker(Arc::clone(&service), principal.clone(), replies.clone(), false, false, Arc::clone(&gate));
+    let connects = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTS));
     let reads = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS));
     // Sequenced requests without a reply yet. Events wait for them, as in the old one-at-a-time
     // loop, so a mutation's reply is still written before the events it caused.
@@ -676,6 +759,31 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                     Lane::State => {
                         sequenced_in_flight += 1;
                         state.send(request).await.context("state lane stopped")?;
+                    }
+                    // Not counted as sequenced: live events keep flowing while a push or a backup runs.
+                    Lane::Background => {
+                        background.send(request).await.context("background lane stopped")?;
+                    }
+                    Lane::Connect => {
+                        let session_id = request_session(&request);
+                        if let Some(session_id) = &session_id {
+                            gate.enter(session_id);
+                        }
+                        let connects = Arc::clone(&connects);
+                        let service = Arc::clone(&service);
+                        let principal = principal.clone();
+                        let replies = replies.clone();
+                        let gate = Arc::clone(&gate);
+                        // The permit is taken inside the task: a start beyond the limit waits there, never in the reader.
+                        tokio::spawn(async move {
+                            let permit = connects.acquire_owned().await;
+                            let reply = run_request(service, principal, request, false).await;
+                            drop(permit);
+                            let _ = replies.send(reply);
+                            if let Some(session_id) = &session_id {
+                                gate.leave(session_id);
+                            }
+                        });
                     }
                     Lane::Concurrent => {
                         let permit = Arc::clone(&reads).acquire_owned().await.context("read pool closed")?;
@@ -1059,6 +1167,34 @@ async fn write_output<T: tokio::io::AsyncWrite + Unpin>(
     write_binary(stream, &bytes).await
 }
 
+#[cfg(all(test, windows))]
+mod connect_gate_tests {
+    use super::*;
+
+    /// A request for a session whose agent start is in flight waits for that start; other sessions
+    /// never wait, and a second start for the same session keeps the gate closed until both replied.
+    #[tokio::test]
+    async fn a_session_request_waits_for_its_own_start_only() {
+        let gate = Arc::new(ConnectGate::default());
+        gate.wait("other").await;
+        gate.enter("chat");
+        gate.enter("chat");
+        let waiting = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            async move { gate.wait("chat").await }
+        });
+        tokio::time::timeout(std::time::Duration::from_millis(20), gate.wait("other")).await
+            .expect("another session is never held by this start");
+        gate.leave("chat");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!waiting.is_finished(), "one start for the session is still in flight");
+        gate.leave("chat");
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await
+            .expect("the waiter wakes when the last start replied")
+            .unwrap();
+    }
+}
+
 #[cfg(test)]
 mod decoder_tests {
     use super::*;
@@ -1361,22 +1497,8 @@ mod decoder_tests {
         }
         // Mutations and anything unlisted stay one at a time in arrival order.
         for method in [
-            "git.fetch",
             "filesystem.external.open",
             "filesystem.external.forget",
-            "git.push",
-            "git.commit",
-            "git.commit.selected",
-            "git.index.write",
-            "git.stash.push",
-            "git.stash.apply",
-            "git.stash.drop",
-            "git.undo",
-            "git.cherryPick",
-            "git.revert",
-            "git.reset",
-            "git.operation.abort",
-            "git.operation.continue",
             "session.resume",
             "session.stop",
             "chat.tool.run.start",
@@ -1387,21 +1509,46 @@ mod decoder_tests {
             "quickLaunch.proposals.reject",
             "quickLaunch.restart",
             "quickLaunch.sequence.cancel",
-            "worktree.list",
             "filesystem.write",
             "review.checkpoint",
             "review.revert",
             "runtime.shutdown",
             "provider.refresh",
             // The Chat requests that drive the provider or write stay in arrival order.
-            "chat.connect",
             "chat.send",
             "chat.queue.add",
             "chat.repair",
             "inbox.read",
+            "session.lookup",
             "not.a.method",
         ] {
             assert_eq!(request_lane(method), Lane::Ordered, "{method}");
+        }
+
+        // 11-25: reads a view renders from never wait behind an agent start, a push or a backup.
+        for read in [
+            "worktree.list", "group.list", "group.read", "provider.list", "plugin.list",
+            "chat.subagent.read", "chat.backgroundTasks.list", "agentReview.list", "reviewDrafts.list",
+            "session.documents.list", "session.config.read", "session.retry.read", "quickLaunch.list",
+            "quickLaunch.setup.read", "quickLaunch.setup.status", "data.status", "data.relocation.status",
+            "device.list", "device.status", "usage.ledger.summary", "usage.ledger.settings",
+            "filesystem.image", "filesystem.preview.read", "attachment.read", "filesystem.resolve",
+            "runtime.health", "terminal.host", "browser.approval.read",
+        ] {
+            assert_eq!(request_lane(read), Lane::Concurrent, "{read}");
+        }
+        // Agent starts run beside the ordered lane; the connect gate keeps the session's own order.
+        assert_eq!(request_lane("chat.connect"), Lane::Connect);
+        // Git writes, worktree changes and backups keep their own order without holding other writes.
+        for write in [
+            "git.fetch", "git.pull", "git.push", "git.commit", "git.commit.selected", "git.merge",
+            "git.merge.abort", "git.cherryPick", "git.revert", "git.reset", "git.operation.abort",
+            "git.operation.continue", "git.stage", "git.unstage", "git.index.write", "git.discard",
+            "git.checkout", "git.branch.delete", "git.stash.push", "git.stash.apply", "git.stash.drop",
+            "git.undo", "worktree.create", "worktree.remove", "worktree.relocate", "data.backup",
+            "data.backup.verify",
+        ] {
+            assert_eq!(request_lane(write), Lane::Background, "{write}");
         }
 
         // The agent run tools specifically: a status/log list poll must never wait behind
