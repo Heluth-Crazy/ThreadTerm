@@ -19,12 +19,14 @@ export interface ToolEditDiff { unified?: string; oldText?: string; newText?: st
 export interface ToolEditFile { path: string; change: ToolEditChange; movePath?: string; diff?: ToolEditDiff; truncated?: boolean }
 export interface ToolTodoItem { text: string; status: ToolTodoStatus }
 export interface ToolSearchFlags { caseInsensitive?: boolean; multiline?: boolean }
+/** One step of a command as the provider parsed it (Codex `commandActions`); `other` is anything else. */
+export interface ToolCommandStep { type: ToolCommandAction | 'other'; path?: string; name?: string; query?: string }
 
 interface ToolViewBase { status: ToolStatus; title: string }
 
 export type ToolView =
   | (ToolViewBase & { kind: 'edit'; files: ToolEditFile[]; truncated?: boolean })
-  | (ToolViewBase & { kind: 'command'; command: string; display: string; shell?: string; cwd?: string; output?: string; exitCode?: number; background?: boolean; actions?: ToolCommandAction[]; noMatches?: boolean })
+  | (ToolViewBase & { kind: 'command'; command: string; display: string; shell?: string; cwd?: string; output?: string; exitCode?: number; background?: boolean; actions?: ToolCommandAction[]; steps?: ToolCommandStep[]; noMatches?: boolean })
   | (ToolViewBase & { kind: 'read'; path: string; offset?: number; limit?: number; pages?: number })
   | (ToolViewBase & { kind: 'search'; query: string; path?: string; glob?: string; flags?: ToolSearchFlags; matches?: number; files?: number; omitted?: boolean })
   | (ToolViewBase & { kind: 'web'; url?: string; query?: string; result?: string })
@@ -314,10 +316,20 @@ function classify(part: ChatPart): ToolView {
     const displayed = commandDisplay(command, actionCommand);
     const actions = commandActions.map(action => text(action.type) === 'listFiles' ? 'list' : text(action.type))
       .filter((value): value is ToolCommandAction => value === 'read' || value === 'search' || value === 'list');
+    const steps = commandActions.map((action): ToolCommandStep => {
+      const type = text(action.type) === 'listFiles' ? 'list' : text(action.type);
+      return {
+        type: type === 'read' || type === 'search' || type === 'list' ? type : 'other',
+        ...(text(action.path) ? { path: text(action.path) } : {}),
+        ...(text(action.name) ? { name: text(action.name) } : {}),
+        ...(text(action.query) ? { query: text(action.query) } : {}),
+      };
+    });
     const exitCode = number(data.exitCode) ?? number(record(record(data.state).metadata).exit);
     const background = arg('run_in_background') === true || data.processId !== undefined || /background/.test(nameLc);
     return { kind: 'command', status, title: `Run ${compact(displayed.display)}`, command, display: displayed.display, ...(displayed.shell ? { shell: displayed.shell } : {}), cwd: text(data.cwd), output: commandOutput(data), exitCode,
       ...(background ? { background: true } : {}), ...(actions.length ? { actions: [...new Set(actions)] } : {}),
+      ...(steps.length ? { steps } : {}),
       ...(noMatchSearch(part) ? { noMatches: true } : {}) };
   }
 

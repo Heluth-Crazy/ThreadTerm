@@ -75,8 +75,9 @@ try {
       await page.locator('.chat-fold .chat-tool-entries').waitFor({state:'visible'});
       // 11-18 chat-activity-fold: the settled header says the segment is done and counts it; the tool row inside
       // the expanded fold still names the command itself (10-20-delegation-tool-ux).
-      assert.match(await page.locator('.chat-fold .chat-tool-current-action').textContent() ?? '', /已完成|Done/);
-      assert.match(await page.locator('.chat-fold .chat-tool-entry').first().innerText(), /Get-Content AGENTS\.md/);
+      // 11-23 tool rows: the settled header leads with the duration or the counts; a read command reads as the file it read.
+      assert.doesNotMatch(await page.locator('.chat-fold > summary').innerText(), /已完成|\bDone\b/);
+      assert.match(await page.locator('.chat-fold .chat-tool-entry').first().innerText(), /AGENTS\.md/);
       await page.screenshot({path:join(out,`${theme}-${width}-expanded.png`)});
       await page.keyboard.press('Space');
       await page.locator('.chat-fold .chat-tool-entries').waitFor({state:'hidden'});
@@ -88,6 +89,8 @@ try {
   if (!(await drawer.evaluate(element => element.open))) await drawer.locator('> summary').click();
   // B2/B3 replaced the generic entry with typed cards; the expanded card body
   // renders the command output instead of a bare entry <pre>.
+  // 11-23 tool rows: a call's body mounts when its own line is opened.
+  await drawer.locator('button.call-row-head').first().click();
   await page.locator('.chat-tool-entry .tool-card-body').first().waitFor();
   // State survives transcript updates, and intentional user line breaks survive.
   await page.evaluate(() => window.qaUpdate({id:'u2',role:'user',turnId:'t2',createdAt:'now',parts:[{type:'text',text:'First line\nSecond line'}]}));

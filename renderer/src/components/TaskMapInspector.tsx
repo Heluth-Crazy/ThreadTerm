@@ -132,7 +132,7 @@ export function TaskMapDetails({ node, lane, sessions, items, zh, visible, targe
       {node.kind === 'document' && node.path && <button type="button" className="btn btn-sm" onClick={() => openFile(node.path!)}>{copy('Open', '打开')}</button>}
     </div>
     <div className="task-map-inspector-body">
-      {node.kind === 'tools' && <div className="chat-tool-entries" role="list">{toolParts.map((value, index) => <ToolCard key={`${value.item.id}:${value.partIndex}`} entry={{ id: `${value.item.id}:${value.partIndex}`, itemId: value.item.id, part: value.part }} index={index} open active={node.status === 'running'} awaitingApproval={node.status === 'waiting'} copy={copy} openFile={reference => openFile(reference.path)} />)}</div>}
+      {node.kind === 'tools' && <div className="chat-tool-entries" role="list">{toolParts.map((value, index) => <ToolCard key={`${value.item.id}:${value.partIndex}`} entry={{ id: `${value.item.id}:${value.partIndex}`, itemId: value.item.id, part: value.part }} index={index} open defaultExpanded active={node.status === 'running'} awaitingApproval={node.status === 'waiting'} copy={copy} openFile={reference => openFile(reference.path)} />)}</div>}
       {node.kind === 'prompt' && <pre className="task-map-inspector-pre">{promptText}</pre>}
       {node.kind === 'reply' && replyText && <ChatMarkdown sanitizedHtml={renderCodexMarkdown(replyText, zh)} copy={copy} zh={zh} />}
       {node.kind === 'plan' && <PlanDetails parts={parts} copy={copy} />}
@@ -180,7 +180,7 @@ function SubagentDetails({ info, transcript, copy, zh, openFile, retry }: { info
       {info.summary && <><dt>{copy('Result', '结果')}</dt><dd>{info.summary}</dd></>}
     </dl>
     {transcript?.error && <DetailError error={transcript.error} retry={retry} copy={copy} />}
-    {transcript?.value && <Field label={copy('Transcript', '记录')}><div className="chat-tool-entries" role="list">{rows.flatMap(item => item.parts.map((part, index) => part.type === 'tool' ? <ToolCard key={`${item.id}:${index}`} entry={{ id: `${item.id}:${index}`, itemId: item.id, part }} index={index} open active={part.status === 'running'} awaitingApproval={false} copy={copy} openFile={reference => openFile(reference.path)} /> : part.text ? <pre className="task-map-inspector-pre" key={`${item.id}:${index}`}>{part.text}</pre> : null))}</div>{(transcript.value.truncated || transcript.value.items.length > rows.length) && <p className="note">{copy('Open the Chat to see everything.', '打开对话以查看全部内容。')}</p>}</Field>}
+    {transcript?.value && <Field label={copy('Transcript', '记录')}><div className="chat-tool-entries" role="list">{rows.flatMap(item => item.parts.map((part, index) => part.type === 'tool' ? <ToolCard key={`${item.id}:${index}`} entry={{ id: `${item.id}:${index}`, itemId: item.id, part }} index={index} open defaultExpanded active={part.status === 'running'} awaitingApproval={false} copy={copy} openFile={reference => openFile(reference.path)} /> : part.text ? <pre className="task-map-inspector-pre" key={`${item.id}:${index}`}>{part.text}</pre> : null))}</div>{(transcript.value.truncated || transcript.value.items.length > rows.length) && <p className="note">{copy('Open the Chat to see everything.', '打开对话以查看全部内容。')}</p>}</Field>}
   </>;
 }
 

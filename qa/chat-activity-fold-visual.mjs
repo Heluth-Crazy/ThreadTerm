@@ -220,10 +220,12 @@ try {
   check('the settled turn is one fold, the answer and the footer', settledState.foldCount === 1 && settledState.footer !== undefined, settledState.footer);
   check('the answer stays outside the fold', settledState.outsideText.includes('已修复登录偶尔超时的问题。'), settledState.outsideText);
   check('nothing is open at the end', settledState.openDetails.length === 0, settledState.openDetails);
-  check('the settled header says it is done and carries no duration', /已完成/.test(fold(settledState).head) && !/2m 14s/.test(fold(settledState).head), fold(settledState).head);
-  check('the duration lives only in the footer', /用时 2m 14s/.test(settledState.footer ?? ''), settledState.footer);
+  // 11-23 tool rows: the turn's only fold leads with how long it worked; the footer no longer repeats it.
+  check('the settled header leads with the turn duration and says no 已完成', /用时 2m 14s/.test(fold(settledState).head) && !/已完成/.test(fold(settledState).head), fold(settledState).head);
+  check('the footer leaves the duration to the fold', !/用时/.test(settledState.footer ?? ''), settledState.footer);
   check('the fold counts what it did', /运行 3 条命令/.test(fold(settledState).head) && /修改 2 个文件|查看/.test(fold(settledState).head), fold(settledState).head);
-  check('a failed call is reported in the header', /1 项失败|1 次失败/.test(fold(settledState).head), fold(settledState).head);
+  // 11-23 (owner): cmd-2 failed and cmd-3 re-ran the same command and passed, so the header reports no failure.
+  check('a failure that a later run of the same command fixed is not red in the header', !/项失败|次失败/.test(fold(settledState).head), fold(settledState).head);
   check('the layout does not overflow horizontally', settledState.scrollWidth <= settledState.clientWidth + 1, [settledState.scrollWidth, settledState.clientWidth]);
   await shot('light-end');
 
@@ -278,7 +280,7 @@ try {
   }
   const claudeEnd = await state();
   check('the Claude answer stays outside the fold', claudeEnd.outsideText.includes('已改成按总时长限制，并补了一条测试。'), claudeEnd.outsideText);
-  check('the Claude fold is settled and counted', /已完成/.test(fold(claudeEnd).head), fold(claudeEnd).head);
+  check('the Claude fold is settled and counted', !/正在|思考中/.test(fold(claudeEnd).head) && /用时|查看|运行|修改|搜索/.test(fold(claudeEnd).head), fold(claudeEnd).head);
   check('the Claude turn keeps one fold', claudeEnd.foldCount === 1, claudeEnd.foldCount);
 
   // ── The real Claude shape: one growing prose item before its tool items ──
@@ -301,7 +303,7 @@ try {
   const realEnd = await state();
   check('the real Claude answer is outside the fold, after it', realEnd.outsideText.some(text => text.includes('当前目录有 README.md 和 notes.txt')) && realEnd.answerAfterFold === true, [realEnd.outsideText, realEnd.answerAfterFold]);
   check('the real Claude fold holds the thinking and both tool calls', realEnd.steps.filter(step => step.startsWith('tool:')).length === 2 && realEnd.steps.some(step => step.startsWith('think:')), realEnd.steps);
-  check('the real Claude fold is settled', /已完成/.test(fold(realEnd).head), fold(realEnd).head);
+  check('the real Claude fold is settled', !/正在|思考中/.test(fold(realEnd).head) && /用时|查看|运行|修改|搜索/.test(fold(realEnd).head), fold(realEnd).head);
   await shot('light-claude-real-end');
 
   // ── Screenshots in dark, replayed to the states that matter ──

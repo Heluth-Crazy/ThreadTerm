@@ -46,7 +46,7 @@ test('actual exact-code leaf displays escaped plaintext with whitespace and CRLF
 test('actual eval tool cards and imported history hide scalar, exception, code, raw images and references',()=>{
  const candidate={type:'tool',toolName:'mcp__threadterm__browser_eval',status:'completed',text:'PRIVATE',fileReferences:[{path:'D:/PRIVATE'}],data:{server:'threadterm',tool:'browser_eval',input:{code:snippet},result:{scalar:'PRIVATE',error:'PRIVATE'},images:[rawImage],browserActivity:{tool:'browser_eval',outcome:'outcome_unknown',origin:'https://source.test',code:snippet,result:'PRIVATE',error:'PRIVATE',thumbnail:rawImage}}};
  for(const open of [false,true]){
-  const html=renderToStaticMarkup(React.createElement(ToolCard,{entry:{id:'tool-a',itemId:'item-a',part:candidate},index:0,open,active:false,awaitingApproval:false,copy}));
+  const html=renderToStaticMarkup(React.createElement(ToolCard,{entry:{id:'tool-a',itemId:'item-a',part:candidate},index:0,open,defaultExpanded:open,active:false,awaitingApproval:false,copy}));
   assert.equal(html.includes('PRIVATE'),false);assert.equal(html.includes(rawImage),false);assert.match(html,/Outcome unknown/);assert.equal(html.includes('Completed'),false);
  }
  for(const item of [candidate,part]){
@@ -54,7 +54,7 @@ test('actual eval tool cards and imported history hide scalar, exception, code, 
   assert.equal(html.includes('PRIVATE'),false);assert.equal(html.includes(rawImage),false);assert.equal(html.includes('<button'),false);
  }
  const ordinary={...candidate,toolName:'mcp__foreign__browser_eval',data:{server:'foreign',tool:'browser_eval',input:{code:'ordinary foreign input'},result:'ordinary foreign output'}};
- const html=renderToStaticMarkup(React.createElement(ToolCard,{entry:{id:'tool-b',itemId:'item-b',part:ordinary},index:0,open:true,active:false,awaitingApproval:false,copy}));assert.match(html,/ordinary foreign input/);assert.match(html,/ordinary foreign output/);
+ const html=renderToStaticMarkup(React.createElement(ToolCard,{entry:{id:'tool-b',itemId:'item-b',part:ordinary},index:0,open:true,defaultExpanded:true,active:false,awaitingApproval:false,copy}));assert.match(html,/ordinary foreign input/);assert.match(html,/ordinary foreign output/);
 });
 
 test('runtime eval setting defaults off and accepts only main-confirmed strict Boolean',()=>{

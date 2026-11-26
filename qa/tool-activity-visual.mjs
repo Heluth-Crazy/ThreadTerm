@@ -121,7 +121,8 @@ try {
     assert.deepEqual(await drawer.locator('.chat-tool-entry').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tool-id'))), ['command-codex','browser-mcp','command-claude','browser-acp','file-read','search','delegate','failed-command','cancelled-browser'], `${provider}: entries retain call order rather than category sort`);
     assert.equal(await drawer.locator('.chat-fold-step.is-note').count(), 2, `${provider}: the two interim texts are notes inside the same fold`);
     const summary = drawer.locator('> summary');
-    assert.match(await summary.locator('.chat-tool-current-action').textContent() ?? '', /^Done$/, `${provider}: a settled fold says Done`);
+    // 11-23 tool rows: a settled fold leads with its duration or its counts, never a bare Done.
+    assert.doesNotMatch(await summary.innerText(), /\bDone\b/, `${provider}: a settled fold does not say Done`);
     assert.match(await summary.locator('.chat-fold-counts').textContent() ?? '', /Explored 1 file.*Searched 1.*Ran 3 commands.*Used 4 tools/, `${provider}: the settled fold counts the turn's tool work`);
     assert.equal(await summary.locator('.chat-tool-active-count').count(), 0, `${provider}: completed turn never claims an active tool`);
     assert.equal(await drawer.evaluate(node => Boolean(node.closest('.codex-work'))), false, `${provider}: completed tool activity stays outside elapsed commentary fold`);

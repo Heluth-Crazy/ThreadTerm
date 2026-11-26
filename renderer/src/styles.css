@@ -515,6 +515,16 @@ textarea.create-input { height:88px; min-height:88px; max-height:240px; padding:
 .codex-markdown code { padding:.12em .38em; border-radius:4px; background:var(--soft); font:0.86em/1.4 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
 .codex-markdown pre { margin:12px 0; padding:10px 12px; overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--soft); }
 .codex-markdown pre code { padding:0; background:transparent; font-size:12.5px; line-height:1.55; }
+/* Fenced code colours (codeHighlight.ts): the editor's token groups and --syn-* colours (workbench.css). */
+.codex-markdown pre code .hl-keyword, .codex-markdown pre code .hl-heading { color:var(--syn-keyword); }
+.codex-markdown pre code .hl-string, .codex-markdown pre code .hl-inserted { color:var(--syn-string); }
+.codex-markdown pre code .hl-number { color:var(--syn-number); }
+.codex-markdown pre code .hl-comment { color:var(--syn-comment); font-style:italic; }
+.codex-markdown pre code .hl-function { color:var(--syn-function); }
+.codex-markdown pre code .hl-type { color:var(--syn-type); }
+.codex-markdown pre code .hl-property { color:var(--syn-property); }
+.codex-markdown pre code .hl-meta { color:var(--syn-meta); }
+.codex-markdown pre code .hl-deleted { color:var(--syn-deleted); }
 /* Chat reply copy row (A2): reserved space so hover never changes message height. */
 .v3-chat-message.is-native.assistant.has-reply-actions { position:relative; padding-bottom:26px; }
 .chat-message-actions { position:absolute; right:0; bottom:0; display:flex; align-items:center; gap:4px; opacity:0; transition:opacity .12s ease; }

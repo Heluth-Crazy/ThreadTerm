@@ -139,3 +139,50 @@
 .tool-json-value.is-null { color:var(--faint); }
 .tool-json-raw { max-width:100%; max-height:300px; margin:0; padding:8px 10px; overflow:auto; color:var(--muted); font:11px/1.45 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); white-space:pre-wrap; overflow-wrap:anywhere; }
 .tool-json-label { display:block; margin-top:6px; color:var(--muted); font-size:11px; }
+
+/* Tool rows (11-23, prototypes/chat-tool-rows): one line per call (per file for edits), plain-language
+   labels, quiet success, failures marked with their reason; a line opens to its command, output or diff. */
+.chat-fold .chat-tool-entry.call-row { padding:0; }
+.call-row, .call-row-line { min-width:0; }
+.call-row-head { display:flex; align-items:center; gap:8px; width:calc(100% + 6px); min-width:0; min-height:26px; margin:0 0 0 -6px; padding:2px 6px; border:0; border-radius:6px; background:none; color:inherit; font:inherit; font-size:12.5px; line-height:1.45; text-align:left; }
+button.call-row-head { cursor:pointer; }
+button.call-row-head:hover { background:var(--fill-hover); }
+button.call-row-head:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.call-row-lead { flex:none; width:14px; height:14px; color:var(--faint); }
+.call-row-lead.is-failed { color:var(--st-failed-text); }
+.call-row .chat-tool-spinner.call-row-lead { width:12px; height:12px; margin:0 1px; color:var(--muted); }
+.call-row-label { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+.call-row-label.is-mono { font:12px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
+.call-row-where { flex:0 100 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); font-size:12px; }
+.call-row-right { margin-left:auto; flex:none; display:flex; align-items:center; gap:8px; padding-left:8px; color:var(--faint); font-size:12px; }
+.call-row-stats, .tool-edit-counts { display:inline-flex; gap:4px; font:11.5px/1 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.call-row-stats .is-added { color:var(--st-running-text); }
+.call-row-stats .is-removed { color:var(--st-failed-text); }
+.call-row-note.is-failed { color:var(--st-failed-text); }
+.call-row-note.is-awaiting { color:var(--st-needs-text); }
+.call-row-chevron { width:11px; height:11px; color:var(--faint); opacity:0; transition:transform .12s ease; }
+button.call-row-head:hover .call-row-chevron, button.call-row-head:focus-visible .call-row-chevron, .call-row-line.is-open .call-row-chevron { opacity:1; }
+.call-row-line.is-open .call-row-chevron { transform:rotate(90deg); }
+.call-row-reason, .call-row-tail { min-width:0; margin:-3px 0 2px 22px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
+.call-row-reason { color:var(--st-failed-text); }
+.call-row-tail { color:var(--faint); }
+.call-row-body { min-width:0; margin:2px 0 8px 22px; }
+.call-row-body > .tool-diff:first-child, .call-row-body > .tool-output:first-child { margin-top:2px; }
+.call-row-command { display:flex; gap:6px; min-width:0; color:var(--muted); font:12px/1.6 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
+.call-row-command > span { flex:none; color:var(--faint); }
+.call-row-command code { min-width:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.call-row .tool-output { margin-top:4px; border-radius:6px; background:var(--soft); }
+.call-row-more { margin:2px 0 4px 22px; color:var(--faint); font-size:12px; }
+.task-map-inspector-body .call-row-head { width:100%; margin-left:0; }
+/* Thought rows: a spark and the thought's title, opening to the rest. */
+.chat-fold-step.is-thinking > summary, .chat-fold-step-line { display:inline-flex; align-items:center; gap:8px; max-width:100%; min-width:0; min-height:26px; }
+.chat-fold-step.is-thinking { align-items:center; padding:0; }
+.chat-fold-step-icon { flex:none; width:13px; height:13px; color:var(--faint); }
+/* Live header: the timer, and the running command's newest output line. */
+.chat-fold-elapsed { flex:none; color:var(--faint); font-size:12px; font-variant-numeric:tabular-nums; }
+.chat-fold-note.is-output { font:12px/1.5 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
+@media (prefers-reduced-motion:reduce) { .call-row-chevron { transition:none; } }
+.tool-edit-file-head .call-row-stats { margin-left:auto; flex:none; }
+.chat-fold-step.is-thinking .chat-fold-step-chevron { opacity:0; }
+.chat-fold-step.is-thinking > summary:hover .chat-fold-step-chevron, .chat-fold-step.is-thinking > summary:focus-visible .chat-fold-step-chevron, .chat-fold-step.is-thinking[open] .chat-fold-step-chevron { opacity:1; }
+.chat-fold .chat-fold-counts.is-lead { color:var(--muted); }

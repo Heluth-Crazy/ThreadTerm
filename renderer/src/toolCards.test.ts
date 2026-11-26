@@ -212,7 +212,7 @@ test('toolSummary counts by kind, distinct edited files and failures', () => {
   ]);
   assert.equal(summary.explored, 2, 'read + one command read/list');
   assert.equal(summary.searched, 3, 'grep + web + one command search');
-  assert.equal(summary.ran, 4);
+  assert.equal(summary.ran, 2, 'the read and search commands count as reads and searches only (11-23)');
   assert.equal(summary.edited, 2, 'src/a.ts is only counted once');
   assert.equal(summary.other, 1, 'todo');
   assert.equal(summary.failed, 1);

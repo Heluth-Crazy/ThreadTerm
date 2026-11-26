@@ -23,7 +23,7 @@ const building = command('build', 'inProgress', { command: 'npm run build' });
 
 test('a running command is the whole headline: no output preview line and no separate failures line', () => {
   const html = render({ entries: entries(failed, building) });
-  assert.match(html, /正在执行命令: npm run build/);
+  assert.match(html, /正在运行 npm run build/);
   assert.doesNotMatch(html, /chat-tool-output-preview/, 'the latest-output line is gone (11-18 chat-activity-fold)');
   assert.doesNotMatch(html, /chat-tool-failures/, 'failures are a count in the header, not a second line');
   assert.equal((html.match(/class="chat-tool-failed-count"/g) ?? []).length, 0, 'a running call owns the headline, so no failure badge beside it');
@@ -72,7 +72,7 @@ test('a collapsed live fold spins, names the running step, counts the work and s
   ]);
   const html = renderFold({ steps, live: true });
   assert.match(html, /chat-tool-spinner/);
-  assert.match(html, /正在执行命令: npm run build/);
+  assert.match(html, /正在运行 npm run build/);
   assert.match(html, /运行 2 条命令/);
   assert.match(html, /chat-fold-note/);
   // The note keeps the whole commentary in the DOM; the CSS ellipsis makes it one visual line.
@@ -82,14 +82,54 @@ test('a collapsed live fold spins, names the running step, counts the work and s
   assert.equal((html.match(/chat-fold-note/g) ?? []).length, 1, 'at most one note line');
 });
 
-test('a settled fold says it is done with the counts and no duration', () => {
+test('a settled fold leads with its counts, or with the turn duration when it is the turn\'s only fold', () => {
   const steps = foldSteps([command('read', 'completed', { command: 'ls' }), command('bad', 'failed', { command: 'false', exitCode: 1, aggregatedOutput: 'nope' })]);
   const html = renderFold({ steps });
   assert.doesNotMatch(html, /chat-tool-spinner/);
-  assert.match(html, /已完成/);
+  assert.match(html, /class="chat-fold-counts is-lead">运行 2 条命令</, 'the counts lead; no 已完成 word');
+  assert.doesNotMatch(html, /chat-tool-current-action/);
+  assert.doesNotMatch(html, /已完成/);
   assert.match(html, /项失败/);
   assert.doesNotMatch(html, /chat-fold-note/, 'the note line belongs to the live header only');
-  assert.doesNotMatch(html, /秒|用时|\bs\b/, 'the duration lives only in TurnFooter');
+  assert.doesNotMatch(html, /用时/, 'without a duration the fold names none');
+  const timed = renderFold({ steps, durationLabel: '用时 2m 14s' });
+  assert.match(timed, /class="chat-tool-current-action"[^>]*>用时 2m 14s</);
+  assert.match(timed, /class="chat-fold-counts">· 运行 2 条命令</);
+});
+
+test('a failure that a later run of the same command fixed is not reported in red', () => {
+  const failing = command('t1', 'failed', { command: 'npm test', exitCode: 1, aggregatedOutput: 'Tests  1 failed | 13 passed (14)' });
+  const passing = command('t2', 'completed', { command: 'npm test', exitCode: 0, aggregatedOutput: 'Tests  14 passed (14)' });
+  assert.doesNotMatch(renderFold({ steps: foldSteps([failing, passing]) }), /项失败/);
+  assert.match(renderFold({ steps: foldSteps([passing, failing]) }), /1 项失败/, 'a failure after the last success is still open');
+  const open = renderFold({ steps: foldSteps([failing, passing]) }).replace('<details class="chat-tool-activity chat-fold is-settled"', '<details class="chat-tool-activity chat-fold is-settled" open=""');
+  assert.match(open, /class="call-row-reason"[^>]*>Tests {2}1 failed \| 13 passed \(14\)</, 'the failed row itself still says why it failed');
+  assert.match(open, /退出码 1/);
+});
+
+test('rows read like what the call did: reads and searches in words, no numbers, success unmarked', () => {
+  const steps = foldSteps([
+    command('s', 'completed', { command: 'pwsh -Command "rg -n saveNote src"', cwd: 'D:\\work', aggregatedOutput: 'src/notes/api.ts:12:export async function saveNote(note) {\nsrc/notes/editor.tsx:88:    await saveNote(draft);',
+      commandActions: [{ type: 'search', command: 'rg -n saveNote src', query: 'saveNote', path: 'src' }] }),
+    command('r', 'completed', { command: 'pwsh -Command "Get-Content -Raw src/notes/api.ts"', aggregatedOutput: 'x',
+      commandActions: [{ type: 'read', command: 'Get-Content -Raw src/notes/api.ts', name: 'api.ts', path: 'D:\\work\\src\\notes\\api.ts' }] }),
+    command('t', 'completed', { command: 'npm test', exitCode: 0 }),
+  ]);
+  const html = renderFold({ steps, sessionCwd: 'D:\\work' });
+  assert.match(html, /class="call-row-label" title="[^"]*">搜索 saveNote</);
+  assert.match(html, /class="call-row-where" title="src · 2 处">src · 2 处</);
+  assert.match(html, /class="call-row-label" title="[^"]*">读取 api\.ts</);
+  assert.match(html, /class="call-row-where" title="src\/notes">src\/notes</, 'paths are shown relative to the session folder');
+  assert.match(html, /class="call-row-label is-mono" title="npm test">npm test</);
+  assert.match(html, /查看 1 个文件 · 搜索 1 次 · 运行 1 条命令/, 'a read or search command is not also counted as a command');
+  assert.doesNotMatch(html, /chat-tool-step|tool-card-status|已完成|>pwsh<|>read<|>search</, 'no row numbers, status pills or raw action chips');
+});
+
+test('a thought row shows a Codex summary heading without Markdown markers', () => {
+  const steps = foldSteps([{ type: 'thinking', text: '**Finding where notes are saved**\n\nI need the save path first.', status: 'complete' }, command('t', 'completed', { command: 'ls' })]);
+  const html = renderFold({ steps });
+  assert.match(html, /class="chat-fold-step-value is-dim" title="Finding where notes are saved">Finding where notes are saved</);
+  assert.doesNotMatch(html, /\*\*/);
 });
 
 test('a thinking-only fold reads 思考过程 when settled and the turn outcome otherwise', () => {
@@ -113,4 +153,13 @@ test('an expanded fold is one dense row per step, in order, with each item addre
   assert.match(details, /data-chat-item="item"/, 'steps keep their item address while folded');
   assert.match(details, /已作出决定/, 'a resolved approval is one row');
   assert.match(details, /cargo test --lib auth/);
+});
+
+test('a live fold shows how long the turn has run', () => {
+  const steps = foldSteps([command('build', 'inProgress', { command: 'npm run build', aggregatedOutput: 'Checking 214 files…' })]);
+  const startedAt = new Date(Date.now() - 12_000).toISOString();
+  const html = renderFold({ steps, live: true, startedAt });
+  assert.match(html, /class="chat-fold-elapsed"[^>]*>1[23]s</);
+  assert.match(html, /class="chat-fold-note is-output">Checking 214 files…</, 'the running command\'s newest output is the second line');
+  assert.doesNotMatch(renderFold({ steps }), /chat-fold-elapsed/, 'a settled fold has no timer');
 });

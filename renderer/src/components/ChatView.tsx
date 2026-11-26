@@ -1,4 +1,4 @@
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatProviderNotice } from './ChatProviderNotice';
@@ -36,7 +36,8 @@ import { createReplyActionMarkdownCache, isReplyTextPart } from '../replyMarkdow
 import { createTranscriptTurnCache } from '../transcriptTurnCache';
 import { MessageActions } from './MessageActions';
 import { TurnFooter } from './TurnFooter';
-import { createTurnChangesCache } from '../turnFooter';
+import { createTurnChangesCache, turnDurationText } from '../turnFooter';
+import { codeHighlightVersion, hasCodeFence, highlightCodeBlocks, subscribeCodeHighlight } from '../codeHighlight';
 import { liveSpeedGroupIndex, liveTurnSpeed, nextLiveTurnUsage, turnSpeedText, turnSpeedTooltip, type LiveTurnUsage } from '../turnSpeed';
 import { BackgroundTasksStrip } from './BackgroundTasksStrip';
 import { backgroundHasOutput, revealBackgroundOutput } from '../backgroundTasks';
@@ -128,7 +129,8 @@ function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; str
 const codexMarkdownCache = new Map<string, string>();
 const codexMarkdownCacheLimit = 300;
 function renderCodexMarkdown(text: string, zh: boolean): string {
-  const cacheKey = `${zh ? "zh" : "en"}\u0000${text}`;
+  const fenced = hasCodeFence(text);
+  const cacheKey = `${zh ? "zh" : "en"}\u0000${fenced ? codeHighlightVersion() : ''}\u0000${text}`;
   const cached = codexMarkdownCache.get(cacheKey);
   if (cached !== undefined) return cached;
   const rendered = parseChatMarkdown(text);
@@ -146,6 +148,7 @@ function renderCodexMarkdown(text: string, zh: boolean): string {
   // and the read-only pre content is never carried into an attribute.
   const holder = document.createElement('div');
   holder.innerHTML = sanitized;
+  if (fenced) highlightCodeBlocks(holder);
   for (const pre of Array.from(holder.querySelectorAll('pre'))) {
     const block = document.createElement('div');
     block.className = 'md-code-block';
@@ -501,6 +504,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const turnChangesCache = useMemo(() => createTurnChangesCache<import('@threadterm/protocol').ReviewFile[]>(), [session.id]);
   const replyActionsCache = useMemo(() => createReplyActionMarkdownCache(), [session.id]);
   const transcriptTurnCache = useMemo(() => createTranscriptTurnCache<ChatItem, object, unknown, ReactNode>(), [session.id]);
+  // A grammar that finishes loading re-renders the turns whose replies have fenced code (codeHighlight).
+  const highlightVersion = useSyncExternalStore(subscribeCodeHighlight, codeHighlightVersion);
   // The overview docks only when the empty gutter beside the 920 px message column fits it.
   // Keep only the decision in state: a resize must not re-render the whole Chat per pixel.
   const chatShellRef = useRef<HTMLDivElement>(null);
@@ -2070,6 +2075,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const newestFold = lastFoldIndex(blocks);
     const live = !group.settled;
     const outcome = turnOutcome(group.turnStatus, group.items);
+    // A turn with one fold says how long it worked in that fold's title instead of the footer (11-23).
+    const durationInFold = !live && group.elapsedMs !== undefined && blocks.filter(block => block.kind === 'fold').length === 1;
+    const startedAt = live && active ? items.find(item => item.turnId === liveTurn && item.role === 'user')?.createdAt : undefined;
     const visible = blocks.map((block, index) => block.kind === 'item'
       ? <Fragment key={block.id}>{renderItem(block.item, false, true)}</Fragment>
       : <ActivityFold
@@ -2077,6 +2085,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
         steps={block.steps}
         live={live && active && index === newestFold}
         outcome={index === newestFold ? outcome : undefined}
+        durationLabel={durationInFold ? turnDurationText(group.elapsedMs!, zh) : undefined}
+        startedAt={index === newestFold ? startedAt : undefined}
         awaitingApproval={active && index === newestFold && awaitingApproval}
         awaitingQuestion={active && index === newestFold && awaitingQuestion}
         provider={session.provider}
@@ -2107,7 +2117,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     return [
       outcomeLabel && newestFold < 0 ? <p className="chat-duration" key={`${group.id}-status`}>{outcomeLabel}</p> : null,
       ...visible,
-      group.items.some(item => item.role !== 'user' && item.role !== 'system') && <TurnFooter key={`${group.id}-footer`} items={group.items} elapsedMs={group.elapsedMs} session={session} zh={zh} copy={copy} cache={turnChangesCache} openFile={openFile} />,
+      group.items.some(item => item.role !== 'user' && item.role !== 'system') && <TurnFooter key={`${group.id}-footer`} items={group.items} elapsedMs={durationInFold ? undefined : group.elapsedMs} session={session} zh={zh} copy={copy} cache={turnChangesCache} openFile={openFile} />,
     ];
   }
   const mountedTurnIds = new Set(turnGroups.map(group => group.id));
@@ -2135,6 +2145,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       ownsDesignAttachment ? designAttachment.part : undefined,
       ownsDesignAttachment ? designAttachment.index : undefined,
       ...group.items.map(item => replyActions.get(item.id)),
+      group.items.some(item => item.parts.some(part => typeof part.text === 'string' && hasCodeFence(part.text))) ? highlightVersion : undefined,
     ];
     return transcriptTurnCache.render({ ...group, cacheable }, historicalTurnContext, version, () => <section className="codex-turn chat-turn" key={group.id} data-chat-turn={group.id}>
       {renderTurn(group, groupIndex)}
