@@ -71,12 +71,31 @@ try{
     await more('.proj-row-wrap','orbit-web');await choose('重命名项目');await page.getByRole('dialog').locator('input').fill('orbit-renamed');await confirm('保存');await page.locator('.proj-row').filter({hasText:'orbit-renamed'}).waitFor();
   });
   await caseOf('active-session-archive-stops-first',async()=>{
-    await more('.sess-row-wrap','开发服务器');await choose('归档');await confirm('确认归档');await page.locator('.sess-row').filter({hasText:'开发服务器'}).waitFor({state:'detached'});
+    // Owner 11-24: a session's menu settles it (收尾) in one click: stop first, then hide; no dialog.
+    await more('.sess-row-wrap','开发服务器');await choose('收尾');await page.locator('.sess-row:not(.catalog-settled-row)').filter({hasText:'开发服务器'}).waitFor({state:'detached'});
     const calls=await page.evaluate(()=>window.__parityFixture.calls);assert.ok(calls.some(call=>call.method==='session.releaseResources.bulk'&&call.params.sessionIds.includes('orbit-shell')),'archive stops the active session first');
   });
+  // 收尾 (owner 11-24): the hover ✓ settles in one click with an undo notice; the folded 已收尾 shelf lists them.
+  await caseOf('settle-hover-undo-and-shelf',async()=>{
+    const live=()=>page.locator('.sess-row-wrap:not(.catalog-settled-row-wrap)').filter({hasText:'性能基线记录'});
+    await live().hover();await page.screenshot({path:join(out,'settle-hover.png')});
+    await live().locator('.catalog-settle-btn').click();await live().waitFor({state:'detached'});
+    const notice=page.locator('.catalog-settle-notice');await notice.waitFor();assert.match(await notice.innerText(),/已收尾「性能基线记录」/);
+    await page.screenshot({path:join(out,'settle-notice.png')});
+    await notice.getByRole('button',{name:'撤销',exact:true}).click();await live().waitFor();
+    for(const title of ['性能基线记录','抽取共享焦点组件']){const row=page.locator('.sess-row-wrap:not(.catalog-settled-row-wrap)').filter({hasText:title});await row.hover();await row.locator('.catalog-settle-btn').click();await row.waitFor({state:'detached'});}
+    const head=page.locator('.catalog-settled-head');assert.equal(await head.getAttribute('aria-expanded'),'false','the shelf starts folded');
+    await head.click();await page.locator('.catalog-settled-row-wrap').filter({hasText:'抽取共享焦点组件'}).waitFor();
+    await page.screenshot({path:join(out,'settled-shelf.png')});
+    for(const title of ['性能基线记录','抽取共享焦点组件']){const row=page.locator('.catalog-settled-row-wrap').filter({hasText:title});await row.hover();await row.locator('.catalog-settle-btn').click();await page.locator('.sess-row-wrap:not(.catalog-settled-row-wrap)').filter({hasText:title}).waitFor();}
+    await head.click();
+  });
   await caseOf('session-archive-and-parent-restore',async()=>{
-    await more('.sess-row-wrap','依赖升级巡检');await choose('归档');await confirm('确认归档');await page.locator('.sess-row').filter({hasText:'依赖升级巡检'}).waitFor({state:'detached'});
-    const tree=page.locator('.proj-group').filter({has:page.locator('.proj-row').filter({hasText:'orbit-renamed'})}).locator('.tree-row-wrap').first();await tree.hover();await tree.locator('.row-more').click();await menu().getByRole('menuitem').filter({hasText:'依赖升级巡检'}).click();await page.locator('.sess-row').filter({hasText:'依赖升级巡检'}).waitFor();
+    await more('.sess-row-wrap','依赖升级巡检');await choose('收尾');await page.locator('.sess-row:not(.catalog-settled-row)').filter({hasText:'依赖升级巡检'}).waitFor({state:'detached'});
+    // Settled sessions live in the sidebar's 已收尾 shelf (folded), not in the worktree menu; Restore brings one back.
+    const shelf=page.locator('.catalog-settled-head');await shelf.click();
+    const settledRow=page.locator('.catalog-settled-row-wrap').filter({hasText:'依赖升级巡检'});await settledRow.hover();await settledRow.locator('.catalog-settle-btn').click();
+    await page.locator('.sess-row:not(.catalog-settled-row)').filter({hasText:'依赖升级巡检'}).waitFor();
   });
   await caseOf('tree-archive-and-project-restore',async()=>{
     await more('.tree-row-wrap','chore/demo-clean');await choose('归档');await confirm('确认归档');await page.locator('.tree-row').filter({hasText:'chore/demo-clean'}).waitFor({state:'detached'});

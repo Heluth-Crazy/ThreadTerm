@@ -232,6 +232,16 @@ impl Database {
                 [],
             )?;
         }
+        // Additive migration (11-24): the side-bar browser's pages, saved with their workspace.
+        let has_panel_tabs = connection
+            .prepare("PRAGMA table_info(workspaces)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "panel_tabs");
+        if !has_panel_tabs {
+            connection.execute("ALTER TABLE workspaces ADD COLUMN panel_tabs TEXT", [])?;
+        }
         let has_read_only = connection
             .prepare("PRAGMA table_info(sessions)")?
             .query_map([], |r| r.get::<_, String>(1))?
@@ -2940,7 +2950,7 @@ fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
     Ok(sessions)
 }
 fn collect_workspaces(conn: &Connection) -> Result<Vec<Value>> {
-    let mut stmt = conn.prepare("SELECT id,name,revision,layout,project_id,worktree_path FROM workspaces ORDER BY updated_at,id")?;
+    let mut stmt = conn.prepare("SELECT id,name,revision,layout,project_id,worktree_path,panel_tabs FROM workspaces ORDER BY updated_at,id")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -2949,12 +2959,14 @@ fn collect_workspaces(conn: &Connection) -> Result<Vec<Value>> {
             r.get::<_, String>(3)?,
             r.get::<_, Option<String>>(4)?,
             r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
         ))
     })?;
-    rows.map(|row| { let (id,name,revision,layout,project,worktree)=row?;
+    rows.map(|row| { let (id,name,revision,layout,project,worktree,panel_tabs)=row?;
         let mut value=json!({"id":id,"name":name,"revision":revision,"layout":serde_json::from_str::<Value>(&layout)?});
         if let Some(project)=project {value["projectId"]=json!(project);}
         if let Some(worktree)=worktree {value["worktreePath"]=json!(worktree);}
+        if let Some(tabs)=panel_tabs.and_then(|tabs| serde_json::from_str::<Value>(&tabs).ok()).filter(|tabs| tabs.as_array().is_some_and(|tabs| !tabs.is_empty())) {value["panelTabs"]=tabs;}
         Ok(value)
     }).collect()
 }
@@ -4660,7 +4672,7 @@ mod tests {
         let layout = json!({"kind":"pane","id":"pane","tabs":[],"activeTabId":null});
         db.transaction(|tx| {
             tx.execute(
-                "INSERT INTO workspaces VALUES ('workspace','Desk',NULL,NULL,1,?,'now')",
+                "INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES ('workspace','Desk',NULL,NULL,1,?,'now')",
                 [layout.to_string()],
             )?;
             Ok(())

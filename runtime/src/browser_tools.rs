@@ -536,30 +536,47 @@ fn scope(tx: &Transaction<'_>, project: Option<String>, worktree: Option<String>
     let root = comparable_root(root_for(tx, &project, worktree.as_deref())?)?;
     Ok(Scope { project, root })
 }
+/// The pages a workspace holds: web tabs in its layout, and the side-bar browser's pages saved with it.
+struct WorkspacePages {
+    layout: Value,
+    panel: Vec<String>,
+}
+impl WorkspacePages {
+    fn has(&self, source: &str) -> bool {
+        contains_web(&self.layout, source, 0) || self.panel.iter().any(|id| id == source)
+    }
+}
 fn workspace(
     tx: &Transaction<'_>,
     workspace_id: &str,
     revision: Option<i64>,
-) -> Result<(Scope, Value)> {
-    let (project, worktree, actual_revision, layout): (
+) -> Result<(Scope, WorkspacePages)> {
+    let (project, worktree, actual_revision, layout, panel): (
         Option<String>,
         Option<String>,
         i64,
         String,
+        Option<String>,
     ) = tx
         .query_row(
-            "SELECT project_id,worktree_path,revision,layout FROM workspaces WHERE id=?",
+            "SELECT project_id,worktree_path,revision,layout,panel_tabs FROM workspaces WHERE id=?",
             [workspace_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?
         .ok_or_else(|| anyhow!("browser_workspace_unavailable"))?;
     if revision.is_some_and(|revision| revision != actual_revision) {
         return Err(anyhow!("browser_workspace_conflict"));
     }
+    let panel = panel
+        .and_then(|tabs| serde_json::from_str::<Vec<Value>>(&tabs).ok())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|tab| tab["id"].as_str().map(str::to_owned))
+        .collect();
     Ok((
         scope(tx, project, worktree)?,
-        serde_json::from_str(&layout)?,
+        WorkspacePages { layout: serde_json::from_str(&layout)?, panel },
     ))
 }
 fn contains_web(layout: &Value, source: &str, depth: usize) -> bool {
@@ -1152,7 +1169,7 @@ impl BrowserTools {
                 let (current_scope, layout) = self
                     .db
                     .transaction(|tx| workspace(tx, &a.workspace_id, Some(p.workspace_revision)))?;
-                if current_scope != a.scope || !contains_web(&layout, &p.source_tab_id, 0) {
+                if current_scope != a.scope || !layout.has(&p.source_tab_id) {
                     return Err(anyhow!("browser_workspace_conflict"));
                 }
                 let mut state = self.state.lock().map_err(|_| anyhow!("browser_internal"))?;
@@ -1290,7 +1307,7 @@ impl BrowserTools {
                     || target
                         .tabs
                         .iter()
-                        .any(|r| !contains_web(&layout, &r.source_tab_id, 0))
+                        .any(|r| !layout.has(&r.source_tab_id))
                 {
                     return Err(anyhow!("browser_tab_not_found"));
                 }
@@ -4058,6 +4075,23 @@ mod tests {
         assert!(receiver.try_recv().is_err());
         assert!(f.db.events_after(0).unwrap().is_empty());
         f.assert_drained();
+    }
+    #[test]
+    fn a_side_bar_browser_page_saved_with_the_workspace_can_be_shared() {
+        let f = Fixture::new();
+        let (_presence, _receiver) = f.connect("one", 8);
+        let page = "workspace-browser:0f8e1c1e-6a52-4d36-9d0e-6f3f7b6d2a11";
+        let attachment = f.attach_read("one");
+        let register = |attachment: &Value| f.tools.desktop_dispatch("desktop","one","browser.registerTab",&json!({"attachmentId":attachment["attachmentId"],"attachmentGeneration":attachment["attachmentGeneration"],"sourceTabId":page,"workspaceRevision":1}));
+        assert_eq!(register(&attachment).unwrap_err().to_string(), "browser_workspace_conflict", "not saved yet");
+        f.db.transaction(|tx| {
+            tx.execute("UPDATE workspaces SET panel_tabs=? WHERE id='workspace'", [json!([{"id":page,"url":"http://localhost:5173/"}]).to_string()])?;
+            Ok(())
+        })
+        .unwrap();
+        let attachment = f.attach_read("one");
+        let registered = register(&attachment).unwrap();
+        assert_eq!(registered["sourceTabId"], page);
     }
     #[test]
     fn saved_membership_scope_and_principal_are_authoritative() {

@@ -57,14 +57,15 @@ const items = [
   { id: 'p1', role: 'assistant', createdAt: iso(79), parts: [plan] },
 ];
 
-function ChatFrame({ locale, docked, project, reviewOnly, nextTurn }) {
+function ChatFrame({ locale, docked, project, reviewOnly, nextTurn, bare }) {
   const zh = locale === 'zh-CN';
   const copy = (en, cn) => zh ? cn : en;
   const [host, setHost] = React.useState(null);
   const surface = { primaryHost: host, menuHost: null, focused: true };
   // Case 2: a session without a project has no branch row to load.
   const current = project ? parent : { ...parent, projectId: undefined };
-  const turns = reviewOnly ? items.slice(0, 4) : items;
+  // bare (11-24): only messages, no delegates, plan or turn changes: the card shrinks to the small pill.
+  const turns = bare ? items.filter(item => !item.turnReview && !item.parts.some(part => part.type === 'plan')) : reviewOnly ? items.slice(0, 4) : items;
   const transcript = nextTurn ? [...turns, { id: 'a4', role: 'assistant', turnId: 't4', createdAt: iso(1), parts: [text('Next change')], turnReview: { from: 'c', to: 'd', fileCount: 1 } }] : turns;
   return <div className="qa-app">
     <header className="qa-top">
@@ -74,9 +75,10 @@ function ChatFrame({ locale, docked, project, reviewOnly, nextTurn }) {
     <div className="qa-body"><section className="chat-view v3-session-chat qa-chat">
       <SessionSurfaceContext.Provider value={surface}>
         <div className="chat-log-shell qa-log-shell">
-          <ChatOverview session={current} delegates={reviewOnly ? [] : delegates} items={transcript} copy={copy} zh={zh} docked={docked}
+          <ChatOverview session={current} delegates={reviewOnly || bare ? [] : delegates} items={transcript} copy={copy} zh={zh} docked={docked}
             onOpenSession={() => {}}
-            navigation={<ChatMessageNavigation items={items} copy={copy} onNavigate={() => {}} />} />
+            navigation={variant => <ChatMessageNavigation variant={variant} items={items} copy={copy} onNavigate={() => {}} />}
+            onOpenTaskMap={() => { window.qaTaskMapOpened = (window.qaTaskMapOpened ?? 0) + 1; }} />
           <div className="chat-scroll qa-scroll" data-qa-scroll>
             <div className="qa-messages">{messages.map((message, index) => <p className={'qa-message' + (index % 3 === 0 ? ' is-user' : '')} key={index}>{message}</p>)}</div>
           </div>
@@ -140,12 +142,12 @@ window.threadterm = {
 };
 const root = createRoot(document.getElementById('root'));
 let renders = 0;
-window.qaRender = ({ locale = 'en', theme = 'light', docked = false, project = true, reviewOnly = false, nextTurn = false, keep = false } = {}) => {
+window.qaRender = ({ locale = 'en', theme = 'light', docked = false, project = true, reviewOnly = false, nextTurn = false, bare = false, keep = false } = {}) => {
   document.documentElement.lang = locale;
   document.documentElement.dataset.theme = theme;
   if (!keep) renders++;
   flushSync(() => root.render(<I18nProvider locale={locale}>
-    <ChatFrame key={renders} locale={locale} docked={docked} project={project} reviewOnly={reviewOnly} nextTurn={nextTurn} />
+    <ChatFrame key={renders} locale={locale} docked={docked} project={project} reviewOnly={reviewOnly} nextTurn={nextTurn} bare={bare} />
   </I18nProvider>));
 };
 window.qaRender();
@@ -191,7 +193,7 @@ try {
   await dock.waitFor();
   assert.equal(await page.locator('.chat-overview-button').count(), 0, 'docked mode shows the card, not the header button');
   const sections = dock.locator('.chat-overview-section');
-  assert.equal(await sections.count(), 3, 'delegates, changes and plan sections');
+  assert.equal(await sections.count(), 4, 'delegates, changes, plan and session sections');
   for (const section of await sections.all()) assert.ok((await section.innerText()).trim().length > 0, 'no empty section');
   const activeRows = dock.locator('.chat-overview-row');
   assert.equal(await activeRows.count(), 3, 'needs you, quiet and running above the fold');
@@ -231,7 +233,18 @@ try {
   assert.equal(await page.locator('.qa-scroll > .qa-messages > :first-child').evaluate(node => node.className.includes('qa-message')), true, 'the first transcript element is a message');
   assert.equal(await noOverlap(dock, page.locator('.qa-message')), true, 'the docked card never covers a message');
   const rowHeights = await activeRows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
-  assert.deepEqual(rowHeights.map(value => Math.round(value)), [28, 28, 28], 'delegate rows are one line');
+  assert.deepEqual(rowHeights.map(value => Math.round(value)), [32, 32, 32], 'delegate rows are one 32 px line (T3 metrics, 11-24)');
+  // 11-24: the message list and the task map moved from the header into the card's 会话 section.
+  assert.equal(await page.locator('.qa-actions').locator('button').count(), 0, 'a wide Chat puts nothing in the header');
+  assert.equal(await dock.locator('.chat-overview-link.is-messages').count(), 1, 'the message list is a card row');
+  await dock.locator('.chat-overview-link.is-task-map').click();
+  assert.equal(await page.evaluate(() => window.qaTaskMapOpened), 1, 'the task map row opens the task map');
+  await dock.locator('.chat-overview-link.is-messages').click();
+  const messageList = page.locator('.chat-message-popover');
+  await messageList.waitFor();
+  assert.ok((await rect(messageList)).right <= (await rect(dock.locator('.chat-overview-card'))).left + 1, 'the message list opens beside the card, not over it');
+  await page.keyboard.press('Escape');
+  await messageList.waitFor({ state: 'detached' });
   await shot('chat-overview-en-light-docked');
 
   const dockTopBeforeScroll = (await rect(dock)).top;
@@ -249,14 +262,21 @@ try {
   assert.match(await dock.innerText(), /\u5f53\u524d\u5206\u652f/);
   await shot('chat-overview-zh-dark-docked');
 
-  // Manual collapse stays a button; the button expands the card again.
+  // Owner 11-24: collapsing leaves a chip in the card's corner (no header control, no other panel); the chip expands it.
+  const cardBox = await rect(page.locator('.chat-overview-dock .chat-overview-card'));
   await page.locator('.chat-overview-collapse').evaluate(node => node.click());
   await page.waitForTimeout(120);
-  assert.equal(await page.locator('.chat-overview-button').count(), 1, 'collapsing leaves the header button');
-  assert.equal(await page.locator('.chat-overview-dock').count(), 0, 'collapsed card is not docked');
-  await page.locator('.chat-overview-button').evaluate(node => node.click());
+  const chip = page.locator('.chat-overview-dock .chat-overview-chip');
+  assert.equal(await chip.count(), 1, 'collapsing leaves a chip');
+  assert.equal(await page.locator('.chat-overview-button').count(), 0, 'and no header button');
+  assert.equal(await page.locator('.chat-overview-card').count(), 0, 'the card is gone');
+  const chipBox = await rect(chip);
+  assert.ok(Math.abs(chipBox.right - cardBox.right) <= 1 && Math.abs(chipBox.top - cardBox.top) <= 1, `the chip sits in the card's corner: ${JSON.stringify({ chipBox, cardBox })}`);
+  assert.match(await chip.getAttribute('aria-label'), /进行中|running/);
+  await shot('chat-overview-zh-dark-chip');
+  await chip.evaluate(node => node.click());
   await page.waitForTimeout(120);
-  assert.equal(await page.locator('.chat-overview-dock').count(), 1, 'clicking the collapsed button restores the docked card');
+  assert.equal(await page.locator('.chat-overview-dock .chat-overview-card').count(), 1, 'clicking the chip restores the docked card');
   report.checks.push('dock, no strip/plan chip, one-line rows, sections, no overlap while scrolling, collapse/expand');
 
   // Folding the finished delegates is remembered for this parent.
@@ -285,7 +305,7 @@ try {
   const buttonBox = await rect(button), popoverBox = await rect(popover), composerBox = await rect(page.locator('.qa-compose'));
   assert.ok(popoverBox.top >= buttonBox.bottom, 'the popover opens below the button');
   assert.ok(popoverBox.bottom <= composerBox.top + 1, `the popover never covers the composer: ${JSON.stringify({ popoverBox, composerBox })}`);
-  assert.equal(await popover.locator('.chat-overview-section').count(), 3);
+  assert.equal(await popover.locator('.chat-overview-section').count(), 4);
   await shot('chat-overview-en-light-popover');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(120);
@@ -355,7 +375,7 @@ try {
   await page.waitForTimeout(150);
   assert.equal(await changeRows.count(), 1, 'case 4: only the fixed turn row remains');
   assert.equal(await turnRow.count(), 1, 'case 4: the turn metadata requires no Git read');
-  assert.equal(await page.locator('.chat-overview-section').count(), 3, 'case 4: delegates and plan remain');
+  assert.equal(await page.locator('.chat-overview-section').count(), 4, 'case 4: delegates, the turn, plan and session remain');
   assert.equal(await caseDock.count(), 1, 'case 4: the card stays for its other sections');
   assert.deepEqual(report.consoleErrors.slice(consoleBefore), [], 'case 4: a rejected RPC logs nothing');
   await shot('chat-overview-changes-rpc-errors-light');
@@ -451,6 +471,22 @@ try {
 
   assert.deepEqual(report.consoleErrors, [], 'no renderer console errors');
   assert.deepEqual(report.errors, [], 'no renderer page errors');
+  // 11-24: a wide Chat with only messages gets a small pill (message list, task map), one click each, no card.
+  await setSize(1680, 900);
+  await page.evaluate(() => { const none = () => { throw new Error('no changes'); }; window.qaSetRpc({ 'review.list': none, 'review.changes': none, 'git.status': none, 'git.compare.files': none }); });
+  for (const theme of ['light', 'dark']) {
+    await render({ locale: theme === 'light' ? 'en' : 'zh-CN', theme, docked: true, bare: true });
+    const pill = page.locator('.chat-overview-dock .chat-overview-mini');
+    await pill.waitFor();
+    assert.equal(await page.locator('.chat-overview-card').count(), 0, 'no card without agents, changes or plan');
+    assert.equal(await pill.locator('.chat-message-navigation-trigger').count(), 1, 'the pill holds the message list');
+    await shot(`chat-overview-mini-${theme}`);
+  }
+  const before = await page.evaluate(() => window.qaTaskMapOpened ?? 0);
+  await page.locator('.chat-overview-mini .chat-overview-mini-button').last().click();
+  assert.equal(await page.evaluate(() => window.qaTaskMapOpened), before + 1, 'the pill opens the task map in one click');
+  report.checks.push('a messages-only Chat shows the small pill with the message list and the task map');
+
   report.passed = true;
 } catch (error) {
   report.error = error instanceof Error ? error.stack : String(error);

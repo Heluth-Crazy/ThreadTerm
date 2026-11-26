@@ -177,11 +177,12 @@ function PlanMark({ status, live }: { status: ChatPlanEntry['status']; live: boo
 }
 
 /**
- * The Chat overview (variant A): delegated agents, changes and the agent plan in
- * one card that docks in the empty gutter when it fits and collapses into a
- * header button otherwise. Nothing is rendered above the transcript.
+ * The Chat overview: delegated agents, changes, the agent plan, and the session's message list and task map in
+ * one card. Owner 11-24 (after T3 Code's thread details card): in a wide Chat the card docks in the empty gutter
+ * and collapses into a chip in the same corner; in a narrow Chat it opens from the header button. A Chat with
+ * nothing but messages gets a small pill with the message list and the task map. Nothing goes above the transcript.
  */
-export function ChatOverview({ session, delegates, items, copy, zh, docked, liveTurnId, onOpenSession, onOpenChanges, navigation }: {
+export function ChatOverview({ session, delegates, items, copy, zh, docked, liveTurnId, onOpenSession, onOpenChanges, navigation, onOpenTaskMap }: {
   session: Session;
   delegates: readonly Session[];
   items: readonly ChatItem[];
@@ -191,7 +192,9 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   liveTurnId?: string;
   onOpenSession?: (sessionId: string) => void;
   onOpenChanges?: () => void;
-  navigation?: ReactNode;
+  /** The message list: a card row, or a compact button in the pill. Absent below three messages. */
+  navigation?: (variant: 'row' | 'chip') => ReactNode;
+  onOpenTaskMap?: () => void;
 }) {
   const popoverId = useId(), finishedId = useId(), planId = useId();
   const now = Date.now();
@@ -230,8 +233,12 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   // A turn can undo earlier edits, so its row survives an empty cumulative comparison.
   const changesPresent = Boolean(turn || sessionChanges || (!changeRows.loaded && turnChanges));
   const hasSections = native.length > 0 || overviewHasSections({ delegates, plan, changes: changesPresent ? 1 : 0 });
+  const hasSessionSection = Boolean(navigation || onOpenTaskMap);
   const showDocked = docked && !collapsed && hasSections;
-  const showButton = !showDocked && hasSections;
+  // Owner 11-24: collapsing a docked card leaves a chip in its corner, never a header control.
+  const showChip = docked && collapsed && hasSections;
+  const showMini = docked && !hasSections && hasSessionSection;
+  const showButton = !docked && (hasSections || hasSessionSection);
   const branchHead = branchChanges
     ? overviewBranchHead({ ...(changeRows.branch?.name ? { branch: changeRows.branch.name } : {}), ...(changeRows.branch?.base ? { base: changeRows.branch.base } : {}), committedOnly: Boolean(changeRows.branch?.committedOnly) }, copy)
     : undefined;
@@ -271,7 +278,8 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) close();
+      // The message list opens in a portal; picking from it is not an outside click.
+      if (!root.current?.contains(event.target as Node) && !(event.target instanceof Element && event.target.closest('.chat-message-popover'))) close();
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -315,7 +323,7 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   const openChanges = onOpenChanges ?? openAgentChanges;
 
   const card = <div className={`chat-overview-card${showDocked ? ' is-docked' : ''}`} aria-label={copy('Chat overview', '聊天概览')}>
-    {showDocked && <button type="button" className="icon-btn chat-overview-collapse" aria-label={copy('Collapse overview', '收起概览')} title={copy('Collapse overview', '收起概览')} onClick={collapse}><Icon name="back" /></button>}
+    {showDocked && <button type="button" className="icon-btn chat-overview-collapse" aria-label={copy('Collapse overview', '收起概览')} title={copy('Collapse overview', '收起概览')} onClick={collapse}><Icon name="minimize" /></button>}
     {(delegates.length > 0 || native.length > 0) && <section className="chat-overview-section" aria-label={copy('Delegated agents', '委派的代理')}>
       <div className="chat-overview-section-head"><span>{copy('Delegated agents', '委派的代理')}</span><span className="chat-overview-count">{activeCount ? copy(`${activeCount} active`, `${activeCount} 个进行中`) : finished.label}</span></div>
       {groups.active.map(delegate => <OverviewDelegateRow key={delegate.id} delegate={delegate} copy={copy} zh={zh} now={now} onOpen={onOpenSession} />)}
@@ -362,26 +370,41 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
         </ol>
       </div>}
     </section>}
+    {hasSessionSection && <section className="chat-overview-section" aria-label={copy('Session', '会话')}>
+      <div className="chat-overview-section-head"><span>{copy('Session', '会话')}</span></div>
+      {navigation?.('row')}
+      {onOpenTaskMap && <button type="button" className="chat-overview-link is-task-map" onClick={() => { close(); onOpenTaskMap(); }}>
+        <Icon name="flow" className="chat-overview-change-icon" />
+        <span className="chat-overview-change-label">{copy('Task map', '任务图')}</span>
+        <Icon name="chevR" className="chat-overview-change-chevron" />
+      </button>}
+    </section>}
   </div>;
 
+  const buttonContent = <>
+    <span className="chat-overview-stack" aria-hidden="true">
+      {activeCount
+        ? [...groups.active.map(delegate => ({ key: delegate.id, provider: delegate.provider })),
+            ...nativeRunning.map(agent => ({ key: `native:${agent.key}`, provider: agent.provider }))]
+          .slice(0, 4).map(agent => <AgentTile key={agent.key} provider={agent.provider} size={16} />)
+        : <Icon name="agents" />}
+    </span>
+    <span className="chat-overview-button-label">{buttonLabel}</span>
+    {turnPreview && !docked && <span className="chat-overview-turn-preview">{turnPreview}</span>}
+    {groups.badge > 0 && <span className="chat-overview-badge" aria-hidden="true">{groups.badge > 99 ? '99+' : groups.badge}</span>}
+  </>;
+
   return <>
-    {(navigation || showButton) && <SurfaceActions slot="primary"><div className="chat-overview-header" ref={root}>
-      {navigation}
-      {showButton && <button ref={trigger} type="button" className={`chat-overview-button${open ? ' open' : ''}`} aria-expanded={open} aria-controls={popoverId} aria-label={accessibleLabel} title={accessibleLabel} onClick={expand}>
-        <span className="chat-overview-stack" aria-hidden="true">
-          {activeCount
-            ? [...groups.active.map(delegate => ({ key: delegate.id, provider: delegate.provider })),
-                ...nativeRunning.map(agent => ({ key: `native:${agent.key}`, provider: agent.provider }))]
-              .slice(0, 4).map(agent => <AgentTile key={agent.key} provider={agent.provider} size={16} />)
-            : <Icon name="agents" />}
-        </span>
-        <span className="chat-overview-button-label">{buttonLabel}</span>
-        {turnPreview && <span className="chat-overview-turn-preview">{turnPreview}</span>}
-        {groups.badge > 0 && <span className="chat-overview-badge" aria-hidden="true">{groups.badge > 99 ? '99+' : groups.badge}</span>}
-      </button>}
-      {open && !showDocked && <div id={popoverId} className="chat-overview-popover" role="dialog" aria-label={copy('Chat overview', '聊天概览')}>{card}</div>}
+    {showButton && <SurfaceActions slot="primary"><div className="chat-overview-header" ref={root}>
+      <button ref={trigger} type="button" className={`chat-overview-button${open ? ' open' : ''}`} aria-expanded={open} aria-controls={popoverId} aria-label={accessibleLabel} title={accessibleLabel} onClick={expand}>{buttonContent}</button>
+      {open && <div id={popoverId} className="chat-overview-popover" role="dialog" aria-label={copy('Chat overview', '聊天概览')}>{card}</div>}
     </div></SurfaceActions>}
     {showDocked && <div className="chat-overview-dock">{card}</div>}
+    {showChip && <div className="chat-overview-dock"><button type="button" className="chat-overview-chip" aria-label={accessibleLabel} title={copy('Expand overview', '展开概览')} onClick={expand}>{buttonContent}</button></div>}
+    {showMini && <div className="chat-overview-dock"><div className="chat-overview-mini" role="group" aria-label={copy('Chat overview', '聊天概览')}>
+      {navigation?.('chip')}
+      {onOpenTaskMap && <button type="button" className="chat-overview-mini-button" aria-label={copy('Task map', '任务图')} onClick={onOpenTaskMap}><Icon name="flow" />{copy('Task map', '任务图')}</button>}
+    </div></div>}
     {showReview && review && <SurfaceDialog title={review.title} size="wide" icon="diff"
       className="chat-overview-review sheet-fill sheet-edge-to-edge" onClose={() => setReview(undefined)}>
       <Suspense fallback={<p className="note" role="status">{copy('Loading changes…', '正在读取改动…')}</p>}>
@@ -398,7 +421,7 @@ function OverviewNativeSubagent({ agent, copy, zh }: { agent: NativeSubagentSumm
   const title = subagentTitle(agent, copy);
   const tone = agent.status === 'running' ? 'run' : agent.status === 'failed' ? 'fail' : 'done';
   return <div className={`chat-overview-row is-${tone}`} data-subagent-key={agent.key}>
-    <AgentTile provider={agent.provider} size={16} />
+    <span className={`chat-overview-tile is-${tone}`}><AgentTile provider={agent.provider} size={16} /></span>
     <span className="chat-overview-row-title" title={title}>{title}</span>
     <span className={`chat-overview-native-state is-${tone}`}>{delegationStateLabel(agent.status, zh)}</span>
   </div>;
@@ -429,7 +452,7 @@ function OverviewDelegateRow({ delegate, copy, zh, now, onOpen }: {
   };
   return <div className={`chat-overview-row is-${status.tone}`} data-session-id={delegate.id} data-state={state}>
     <button type="button" className="chat-overview-row-open" title={title} aria-label={copy(`Open ${delegate.title}, ${status.text}`, `打开 ${delegate.title}，${status.text}`)} onClick={() => onOpen?.(delegate.id)}>
-      <AgentTile provider={delegate.provider} size={16} />
+      <span className={`chat-overview-tile is-${status.tone}`}><AgentTile provider={delegate.provider} size={16} /></span>
       <span className="chat-overview-row-title">{delegate.title}</span>
       <span className={`chat-overview-state is-${status.tone}${issue ? ' is-error' : ''}`} role={issue ? 'alert' : undefined} title={issue ?? status.text}>
         {issue ? copy('Stop failed', '停止失败') : status.quietSince ? <QuietMinutes since={status.quietSince} copy={copy} /> : status.text}

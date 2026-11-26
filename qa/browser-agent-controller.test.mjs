@@ -65,6 +65,17 @@ test('sharing requires exact saved membership and re-share receives a fresh opaq
   } finally { f.dispose(); }
 });
 
+test('a side-bar browser page saved with the workspace shares like a page tab (11-24)', async () => {
+  const f = fixture();
+  try {
+    f.workspace = { ...f.workspace, layout: { ...f.workspace.layout, tabs: [] }, panelTabs: [{ id: 'other', url: f.document.url }] };
+    await assert.rejects(f.share()); assert.equal(f.calls.length, 0, 'a different saved page does not count');
+    f.workspace = { ...f.workspace, panelTabs: [{ id: 'source', url: f.document.url }] };
+    await f.share(); assert.equal(f.controller.state('source').level, 'read');
+    assert.equal(f.calls.find(call => call.method === 'browser.registerTab').params.sourceTabId, 'source');
+  } finally { f.dispose(); }
+});
+
 test('Off cancels a pending registration immediately and waits for late attachment cleanup', async () => {
   const f = fixture(); const finishAttach = f.defer('browser.attach');
   try {

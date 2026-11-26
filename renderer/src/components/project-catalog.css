@@ -25,6 +25,32 @@
 .project-catalog .catalog-menu { top:25px; right:2px; }
 .project-catalog .tree-new { display:grid; place-items:center; border:0; border-radius:var(--radius); background:var(--surface); color:var(--muted); }
 .project-catalog .tree-new:hover { background:var(--soft); color:var(--text); }
+/* 收尾 (11-24): the hover ✓ on a session row, beside its ⋯; on a 已收尾 row it restores, alone at the end. */
+.project-catalog .catalog-settle-btn { position:absolute; right:25px; top:50%; z-index:2; width:22px; height:22px; padding:0; display:grid; place-items:center; border:0; border-radius:var(--radius); background:var(--surface); color:var(--muted); transform:translateY(-50%); opacity:0; pointer-events:none; }
+.project-catalog .catalog-settle-btn.is-restore { right:2px; }
+.project-catalog .catalog-settle-btn .ico { width:14px; height:14px; }
+.project-catalog .catalog-settle-btn:hover { background:var(--soft); color:var(--text); }
+.project-catalog .sess-row-wrap:hover .catalog-settle-btn, .project-catalog .sess-row-wrap:focus-within .catalog-settle-btn, .project-catalog .catalog-settle-btn:focus-visible { opacity:1; pointer-events:auto; }
+.project-catalog .sess-row-wrap:has(> .catalog-settle-btn:not(.is-restore)):hover .sess-row, .project-catalog .sess-row-wrap:has(> .catalog-settle-btn:not(.is-restore)):focus-within .sess-row { padding-right:50px; }
+.catalog-archived-filter { width:100%; margin-bottom:8px; }
+.catalog-archived-list { max-height:min(50vh, 360px); overflow:auto; }
+.catalog-archived-row { display:flex; align-items:center; gap:8px; min-height:32px; padding:0 4px; border-radius:var(--radius); }
+.catalog-archived-row:hover { background:var(--soft); }
+.catalog-archived-row .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.catalog-archived-row .ico { width:14px; height:14px; color:var(--muted); }
+.project-catalog .catalog-settled { flex:none; margin-top:6px; padding-top:6px; border-top:1px solid var(--border); }
+.project-catalog .catalog-settled-head { display:flex; align-items:center; gap:6px; width:100%; height:28px; padding:0 8px; border:0; border-radius:var(--radius); background:none; color:var(--muted); font:inherit; font-size:12px; font-weight:600; text-align:left; cursor:pointer; }
+.project-catalog .catalog-settled-head:hover { background:var(--soft); color:var(--text); }
+.project-catalog .catalog-settled-head .ico { width:12px; height:12px; }
+.project-catalog .catalog-settled-count { color:var(--faint); font-weight:500; font-variant-numeric:tabular-nums; }
+.project-catalog .catalog-settled-list { max-height:min(50vh, 420px); overflow:auto; }
+.project-catalog .catalog-settled-row { color:var(--muted); }
+.project-catalog .catalog-settled-when { flex:none; margin-left:6px; color:var(--faint); font-size:11.5px; font-variant-numeric:tabular-nums; }
+.project-catalog .catalog-settled-row-wrap:hover .catalog-settled-when { visibility:hidden; }
+.project-catalog .catalog-settled-more .ico { width:12px; height:12px; }
+.project-catalog .catalog-settle-notice { position:sticky; bottom:6px; z-index:3; display:flex; align-items:center; gap:10px; margin:8px 4px 2px; padding:6px 6px 6px 12px; border-radius:999px; background:color-mix(in srgb, var(--text) 88%, transparent); color:var(--bg); font-size:12px; }
+.project-catalog .catalog-settle-notice .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.project-catalog .catalog-settle-notice button { flex:none; height:22px; padding:0 10px; border:0; border-radius:11px; background:color-mix(in srgb, var(--bg) 22%, transparent); color:var(--bg); font:inherit; cursor:pointer; }
 .project-catalog .tree-new { position:absolute; right:25px; top:50%; z-index:2; width:22px; height:22px; padding:0; transform:translateY(-50%); opacity:0; pointer-events:none; }
 .project-catalog .tree-new .ico { width:14px; height:14px; }
 .project-catalog .proj-row-wrap:hover .tree-new, .project-catalog .tree-row-wrap:hover .tree-new, .project-catalog .proj-row-wrap:focus-within .tree-new, .project-catalog .tree-row-wrap:focus-within .tree-new { opacity:1; pointer-events:auto; }

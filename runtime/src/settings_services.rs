@@ -40,6 +40,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     // R1: wake the parent agent automatically when a delegate has news.
     "chatTools.autoWake",
     "sessions.idleReleaseMinutes",
+    "sessions.autoSettleDays",
 ];
 const RUNTIME_SETTINGS: &[&str] = &[
     "theme",
@@ -72,6 +73,8 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "chatTools",
     // Minutes before a hidden, idle chat worker is released; 0 disables it.
     "sessions.idleReleaseMinutes",
+    // Days without activity before a session settles (收尾) into the sidebar's 已收尾 shelf; 0 disables it.
+    "sessions.autoSettleDays",
     // Machine-specific (not exported): the console host for Windows terminals (conpty.rs); read at runtime start.
     "conptyHost",
     // Machine-specific: a new Shell terminal resolves this once and stores the executable in its launch config.
@@ -1140,6 +1143,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         {
             Ok(())
         }
+        "sessions.autoSettleDays" if matches!(value.as_i64(), Some(0 | 3 | 7 | 14 | 30)) && value.is_i64() => Ok(()),
         "terminalIcons" if valid_terminal_icons(value) => Ok(()),
         "providerNetwork"
             if value
@@ -2266,6 +2270,17 @@ mod tests {
         assert!(!ok(json!([]), json!([{"id":"x","name":"X","src":huge}])), "an image is at most about 64 KB");
         assert!(!valid_runtime_patch(&json!({"terminalIcons":{"rules":[]}})).is_ok(), "both lists are required");
         assert!(ALLOWED_SETTINGS.contains(&"terminalIcons"), "icons travel with exported settings");
+    }
+
+    #[test]
+    fn auto_settle_days_takes_the_offered_choices_and_travels_with_exports() {
+        for days in [0, 3, 7, 14, 30] {
+            assert!(valid_runtime_patch(&json!({"sessions.autoSettleDays":days})).is_ok());
+        }
+        for invalid in [json!(1), json!(5), json!(-7), json!(7.0), json!("7"), json!(null), json!(true)] {
+            assert!(valid_runtime_patch(&json!({"sessions.autoSettleDays":invalid})).is_err(), "{invalid}");
+        }
+        assert!(ALLOWED_SETTINGS.contains(&"sessions.autoSettleDays"));
     }
 
     #[test]

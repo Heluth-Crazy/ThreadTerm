@@ -9,7 +9,7 @@ import { useTranslation } from "../i18n";
 import { NativeSubagentsContext } from '../nativeSubagents';
 import { subagentTitle } from '../subagentActivity';
 import { AgentTile, Icon, SessionIcon } from "./PrototypeIcon";
-import { CatalogActions, CatalogPopover, restoreCatalogTarget, type CatalogTarget } from "./CatalogActions";
+import { ARCHIVED_MENU_ROWS, ArchivedListDialog, CatalogActions, CatalogPopover, restoreCatalogTarget, type CatalogTarget } from "./CatalogActions";
 import "./project-catalog.css";
 import "./mac-sidebar.css";
 import { sessionState, sessionStateLabel } from "../sessionState";
@@ -22,6 +22,8 @@ import { DelegateGroupActions } from "./DelegateGroupActions";
 import { catalogGroups, groupCatalogLabel, groupCatalogState, groupCatalogStatusClass, groupMemberIds, groupMemberLabel } from "../groupCatalog";
 import { openGroup } from "../groupNavigation";
 import { WbIcon } from "../workbench/icons";
+import { releaseBlockedReason } from "../sessionRelease";
+import { AUTO_SETTLE_CHOICES, autoSettleCandidates, autoSettleDays, SETTLED_OPEN_KEY, SETTLED_PAGE, settleGroup, settledSessions, settleSessions, sessionWorking, unsettleSessions } from "../sessionSettle";
 import {
   activeDelegateParents,
   branchOrder,
@@ -50,7 +52,7 @@ import {
 import { updateCatalogFolds, useCatalogFolds } from "../catalogFolds";
 import "./group-catalog.css";
 
-type Props={selectedProjectId?:string;selectedWorktreePath?:string;selectedSessionId?:string;onAll:()=>void;onProject:(id:string)=>void;onWorktree?:(id:string,path?:string)=>void;sessions?:Session[];visibility?:CatalogVisibility[];onChanged?:()=>void;onSession?:(id:string)=>void;onNewSession?:(id?:string,path?:string)=>void;onScopeChange?:(id?:string)=>void;onAddProject?:()=>void;providers?:ProviderCapability[]};
+type Props={selectedProjectId?:string;selectedWorktreePath?:string;selectedSessionId?:string;onAll:()=>void;onProject:(id:string)=>void;onWorktree?:(id:string,path?:string)=>void;sessions?:Session[];visibility?:CatalogVisibility[];onChanged?:()=>void;onSession?:(id:string)=>void;onNewSession?:(id?:string,path?:string)=>void;onScopeChange?:(id?:string)=>void;onAddProject?:()=>void;providers?:ProviderCapability[];/** Days without activity before a session settles (收尾); absent means the default. */autoSettleDays?:number;onAutoSettleDays?:(days:number)=>Promise<void>};
 const stateClass=(session:Session)=>session.readOnly?"ended":session.status==="waiting"?"needs":session.status==="error"?"failed":session.status==="interrupted"?"stalled":session.status==="exited"?"ended":"running";
 const attentionStateClass=(session:Session)=>{
   if(isTerminalAttentionSession(session))return stateClass(session);
@@ -120,7 +122,7 @@ function descendantSessions<T extends {id:string;delegation?:{parentSessionId:st
   return found;
 }
 
-export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedSessionId,onAll,onProject,onWorktree,sessions:sessionSnapshot,visibility=[],onChanged,onSession,onNewSession,onScopeChange,onAddProject,providers}:Props){
+export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedSessionId,onAll,onProject,onWorktree,sessions:sessionSnapshot,visibility=[],onChanged,onSession,onNewSession,onScopeChange,onAddProject,providers,autoSettleDays:autoSettleSetting,onAutoSettleDays}:Props){
   const nativeSubagents = useContext(NativeSubagentsContext);
   const machine=useMachines(),machineTree=useMachineTree(),sharedTree=machine.enabled&&machine.machines.length>1;
   const folds=useCatalogFolds(),setFolds=updateCatalogFolds;
@@ -293,7 +295,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
         {needsAttention&&<i className="session-attention-bar" aria-hidden="true"/>}
         <button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} data-session-id={session.id} data-activity={activity} title={session.title+" · "+activityLabel} onClick={()=>onSession?.(session.id)}><span className={`bico session-activity-${activity}`} aria-label={activityLabel} title={activityLabel}><span className="session-agent-icon"><SessionIcon session={session}/>{activity==="running"&&<i className="session-attention-ring"/>}</span>{needsAttention&&<Icon name="bell" className="session-attention-icon" aria-hidden="true"/>}<i className={"bico-dot st-"+attentionStateClass(session)}/></span><span className="grow">{session.title}</span><DelegateChip session={session} nested={row.nested} zh={zh}/>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}</button>
         {hasChildren&&<button type="button" className={"kid-pill"+(options.open?" open":"")+kidState} aria-expanded={Boolean(options.open)} aria-label={kidLabel+" · "+session.title} title={(options.open?label("Hide delegated agents","收起子智能体"):label("Show delegated agents","展开子智能体"))+" · "+kidLabel} onClick={options.onToggleChildren}>{summary?.kind==="running"?<i className="fold-spin" aria-hidden="true"/>:<Icon name="nest"/>}<span className="kid-count">{count}</span></button>}
-        {actions({...treeTarget,kind:"session",id:session.id,name:session.title})}</div>
+        {!sessionWorking(session)&&<button type="button" className="icon-btn catalog-settle-btn" aria-label={label(`Settle ${session.title}`,`收尾 ${session.title}`)} title={label("Settle: stop it and move it to Settled","收尾：停止它，移到「已收尾」")} onClick={()=>void settle(session)}><Icon name="check"/></button>}{actions({...treeTarget,kind:"session",id:session.id,name:session.title})}</div>
       {options.open!==false&&renderRunningSubagents(row)}
     </Fragment>;
   };
@@ -443,6 +445,91 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
     </div>}</div>;
   };
 
+  // 收尾 (owner 11-24, after T3 Code's Settle): the hover ✓ settles a session with its delegates and stops them; the
+  // 已收尾 shelf at the bottom lists them ten at a time instead of the worktree menu's ever-growing list.
+  const settleDays=autoSettleDays(autoSettleSetting);
+  const [archivedProjectsOpen,setArchivedProjectsOpen]=useState(false);
+  const archivedProjects=items.filter(item=>visibilityOf("project",item.id)==="archived");
+  const [settledOpen,setSettledOpen]=useState(()=>{try{return localStorage.getItem(SETTLED_OPEN_KEY)==='1';}catch{return false;}});
+  const [settledShown,setSettledShown]=useState(SETTLED_PAGE);
+  const [settleNotice,setSettleNotice]=useState<{ids:string[];text:string}>();
+  const projectInScope=(id:string)=>visibilityOf("project",id)==="active"&&(!scopeProjectId||scopeProjectId===id);
+  const settled=settledSessions(catalogSessions,visibility,projectInScope);
+  useEffect(()=>{if(!settleNotice)return;const timer=setTimeout(()=>setSettleNotice(undefined),6000);return()=>clearTimeout(timer);},[settleNotice]);
+  const toggleSettled=()=>setSettledOpen(open=>{try{localStorage.setItem(SETTLED_OPEN_KEY,open?'0':'1');}catch{/* the fold still works */}setSettledShown(SETTLED_PAGE);return !open;});
+  const settle=async(session:Session)=>{
+    const ids=settleGroup(session.id,catalogSessions).map(row=>row.id);
+    setIssue(undefined);
+    try{await settleSessions(ids,zh);}catch(error){setIssue(error instanceof Error?error.message:String(error));return;}
+    if(selectedSessionId&&ids.includes(selectedSessionId))onAll();
+    changed();
+    setSettleNotice({ids,text:label(`Settled “${session.title}”`,`已收尾「${session.title}」`)});
+  };
+  const unsettle=async(ids:string[])=>{
+    setSettleNotice(undefined);
+    try{await unsettleSessions(ids);}catch(error){setIssue(error instanceof Error?error.message:String(error));return;}
+    changed();
+  };
+  // A settled session that works again (it was opened and sent a message, or an agent resumed it) comes back.
+  const waking=useRef(new Set<string>());
+  useEffect(()=>{
+    for(const session of catalogSessions){
+      if(visibilityOf("session",session.id)!=="archived"||!sessionWorking(session)||waking.current.has(session.id))continue;
+      waking.current.add(session.id);
+      void unsettleSessions([session.id]).then(changed,()=>undefined).finally(()=>waking.current.delete(session.id));
+    }
+  },[catalogSessions,visibility]);
+  // Sessions quiet for `settleDays` settle on their own, checked at most once an hour while the catalog is open.
+  const lastSweep=useRef(0),sweeping=useRef(false);
+  useEffect(()=>{
+    if(!loaded||!sessionSnapshot||!settleDays||sweeping.current||Date.now()-lastSweep.current<60*60*1000)return;
+    lastSweep.current=Date.now();
+    const candidates=autoSettleCandidates(catalogSessions,visibility,{now:Date.now(),days:settleDays,projectActive:id=>visibilityOf("project",id)==="active",canRelease:session=>!releaseBlockedReason(session,providers??[],zh)});
+    if(!candidates.length)return;
+    sweeping.current=true;
+    void (async()=>{
+      const done:string[]=[];
+      for(const session of candidates){
+        const ids=settleGroup(session.id,catalogSessions).map(row=>row.id);
+        try{await settleSessions(ids,zh);done.push(...ids);}catch{/* it stays in the tree; the next sweep tries again */}
+      }
+      sweeping.current=false;
+      if(!done.length)return;
+      changed();
+      setSettleNotice({ids:done,text:label(`Settled ${candidates.length} sessions quiet for ${settleDays} days`,`已自动收尾 ${candidates.length} 个 ${settleDays} 天没动静的会话`)});
+    })();
+  },[loaded,sessionSnapshot,catalogSessions,visibility,settleDays]);
+  const settledWhen=(session:Session)=>{
+    const at=Date.parse(session.updatedAt);if(!Number.isFinite(at))return "";
+    const minutes=Math.max(0,Math.floor((Date.now()-at)/60000)),hours=Math.floor(minutes/60),days=Math.floor(hours/24);
+    if(minutes<1)return label("Just now","刚刚");
+    return new Intl.RelativeTimeFormat(zh?"zh-CN":"en",{numeric:"auto"}).format(-(days||hours||minutes),days?"day":hours?"hour":"minute");
+  };
+  const renderSettled=()=><>
+    {settled.length>0&&<div className="catalog-settled" role="group" aria-label={label("Settled sessions","已收尾的会话")}>
+      <button type="button" className="catalog-settled-head" aria-expanded={settledOpen} title={settleDays?label(`Sessions quiet for ${settleDays} days settle on their own (change it in the ⋯ menu).`,`${settleDays} 天没动静的会话会自动收尾（在 ⋯ 菜单里修改）。`):undefined} onClick={toggleSettled}>
+        <Icon name={settledOpen?"chevD":"chevR"}/><span>{label("Settled","已收尾")}</span><span className="catalog-settled-count">{settled.length}</span>
+      </button>
+      {settledOpen&&<div className="catalog-settled-list">
+        {settled.slice(0,settledShown).map(session=>{
+          const item=items.find(row=>row.id===session.projectId);
+          const tree=item?(trees[item.id]??[]).find(row=>sameCanonicalScope(row.path,session.worktreePath??item.path)):undefined;
+          const where=item?(tree?`${item.name} · ${worktreeLabel(tree,item.path,label("Local directory","本地目录"))}`:item.name):"";
+          return <div className="sess-row-wrap catalog-settled-row-wrap" key={session.id} data-session-id={session.id}>
+            <button type="button" className={"sess-row catalog-settled-row"+(session.id===selectedSessionId?" active":"")} title={session.title+(where?" · "+where:"")} onClick={()=>onSession?.(session.id)}>
+              <span className="bico"><span className="session-agent-icon"><SessionIcon session={session}/></span></span>
+              <span className="grow">{session.title}</span>
+              <span className="catalog-settled-when">{settledWhen(session)}</span>
+            </button>
+            <button type="button" className="icon-btn catalog-settle-btn is-restore" aria-label={label(`Restore ${session.title}`,`恢复 ${session.title}`)} title={label("Back to the list","回到列表")} onClick={()=>void unsettle(settleGroup(session.id,catalogSessions).map(row=>row.id))}><Icon name="back"/></button>
+          </div>;
+        })}
+        {settled.length>settledShown&&<button type="button" className="catalog-fold-row catalog-settled-more" onClick={()=>setSettledShown(count=>count+SETTLED_PAGE)}><Icon name="chevD"/><span className="grow">{label(`Show ${Math.min(SETTLED_PAGE,settled.length-settledShown)} more`,`再显示 ${Math.min(SETTLED_PAGE,settled.length-settledShown)} 个`)}</span></button>}
+      </div>}
+    </div>}
+    {settleNotice&&<div className="catalog-settle-notice" role="status"><span className="grow">{settleNotice.text}</span><button type="button" onClick={()=>void unsettle(settleNotice.ids)}>{label("Undo","撤销")}</button></div>}
+  </>;
+
   const renderRecent=()=>{
     const now=Date.now();
     const candidates=orderRecentCandidates(catalogSessions.flatMap(session=>{
@@ -482,6 +569,7 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
       <button type="button" className="side-label side-scope" aria-haspopup="menu" aria-expanded={Boolean(menuAnchor)} aria-label={label("Project scope","项目范围")} title={scopeName} onClick={event=>setMenuAnchor(menuAnchor?undefined:event.currentTarget)}><Icon name="more"/></button>
     </div>
     {view==="recent"?renderRecent():<div className="side-tree">{showTree&&scoped.map(renderProject)}</div>}
+    {renderSettled()}
     {(loading&&!items.length||view==="tree"&&!showTree&&items.length>0)&&!issue&&<p className="side-empty" role="status">{label("Loading projects…","正在加载项目…")}</p>}
     {loaded&&!loading&&!items.length&&!issue&&<p className="side-empty">{label("No projects yet. Add a directory to get started.","还没有项目，请先添加目录。")}</p>}{issue&&<p className="side-empty" role="alert" title={issue}>{actionIssue??(items.length?label("Some project details did not load. Retrying…","部分项目信息没有加载出来，正在重试…"):label("Projects did not load yet. Retrying…","项目列表还没有加载出来，正在重试…"))} <button type="button" className="btn btn-sm" onClick={()=>{setIssue(undefined);void reload();}}>{label("Try again","重试")}</button></p>}
     {menuAnchor&&<CatalogPopover anchor={menuAnchor} onClose={closeMenu} label={label("Project scope","项目范围")}>
@@ -493,9 +581,14 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
       <button type="button" role="menuitem" className="menu-item" onClick={()=>applyFoldMenu('collapse')}><Icon name="chevD"/>{label("Collapse all","全部收起")}</button>
       <button type="button" role="menuitem" className="menu-item" onClick={()=>applyFoldMenu('current')}><Icon name="chevD"/>{label("Expand current only","只展开当前")}</button>
       <button type="button" role="menuitem" className="menu-item" onClick={()=>applyFoldMenu('expand')}><Icon name="chevD"/>{label("Expand all","全部展开")}</button>
+      {onAutoSettleDays&&<><div className="menu-sep"/><div className="menu-label">{label("Settle automatically","自动收尾")}</div>
+        {AUTO_SETTLE_CHOICES.map(days=><button type="button" role="menuitemradio" aria-checked={settleDays===days} className="menu-item" key={days} onClick={()=>{closeMenu();void onAutoSettleDays(days).catch(error=>setIssue(error instanceof Error?error.message:String(error)));}}><Icon name={settleDays===days?"check":"clock"}/>{days?label(`After ${days} quiet days`,`${days} 天没动静`):label("Never","从不")}</button>)}</>}
       <div className="menu-sep"/><div className="menu-label">{label("Archived projects","归档的项目")}</div>
-      {items.filter(item=>visibilityOf("project",item.id)==="archived").map(item=><button type="button" role="menuitem" className="menu-item" key={item.id} onClick={()=>void restoreCatalogTarget(projectTarget(item),visibility).then(()=>{changed();closeMenu();}).catch(error=>setIssue(String(error)))}><Icon name="archive"/><span className="grow">{item.name}</span><span className="dim">{label("Restore","恢复")}</span></button>)}
+      {items.filter(item=>visibilityOf("project",item.id)==="archived").slice(0,ARCHIVED_MENU_ROWS).map(item=><button type="button" role="menuitem" className="menu-item" key={item.id} onClick={()=>void restoreCatalogTarget(projectTarget(item),visibility).then(()=>{changed();closeMenu();}).catch(error=>setIssue(String(error)))}><Icon name="archive"/><span className="grow">{item.name}</span><span className="dim">{label("Restore","恢复")}</span></button>)}
       {!items.some(item=>visibilityOf("project",item.id)==="archived")&&<div className="menu-note">{label("No archived projects","暂无归档项目")}</div>}
+      {archivedProjects.length>ARCHIVED_MENU_ROWS&&<button type="button" role="menuitem" className="menu-item" onClick={()=>{closeMenu();setArchivedProjectsOpen(true);}}><Icon name="more"/>{label(`All ${archivedProjects.length}…`,`全部 ${archivedProjects.length} 个…`)}</button>}
     </CatalogPopover>}
+    {archivedProjectsOpen&&<ArchivedListDialog title={label("Archived projects","归档的项目")} icon="folder" zh={zh} rows={archivedProjects.map(item=>({id:item.id,name:item.name}))} onClose={()=>setArchivedProjectsOpen(false)}
+      onRestore={async id=>{const item=items.find(value=>value.id===id);if(!item)return;await restoreCatalogTarget(projectTarget(item),await request("catalog.visibility.list",{}));changed();}}/>}
   </section>;
 }

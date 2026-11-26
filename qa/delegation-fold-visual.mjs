@@ -172,8 +172,8 @@ try{
  const archived=gitScope.locator(`.sess-row-wrap[data-session-id="${git.finished[0]}"]`);
  await archived.hover();await archived.locator('.row-more').click();
  const menu=page.getByRole('menu',{name:git.finished[0],exact:true});await menu.waitFor();
- await menu.getByRole('menuitem',{name:'Archive',exact:true}).click();
- const dialog=page.getByRole('dialog',{name:'Archive in ThreadTerm',exact:true});await dialog.waitFor();await dialog.getByRole('button',{name:'Confirm archive',exact:true}).click();
+ // Owner 11-24: a session's menu settles it (收尾) in one click, no dialog; settling is the catalogue's archive.
+ await menu.getByRole('menuitem',{name:'Settle',exact:true}).click();
  await archived.waitFor({state:'detached'});
  assert.ok((await page.evaluate(()=>window.qaDelegationFold.calls())).some(call=>call.method==='catalog.visibility.update'&&call.params.id==='Git finished 1'&&call.params.visibility==='archived'),'existing archive menu remains usable for an expanded finished delegate');
  // Group actions on the fold row (2026-11-12): archive or delete every finished delegate of a parent at once.

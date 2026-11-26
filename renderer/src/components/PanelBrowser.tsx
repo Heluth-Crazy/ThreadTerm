@@ -6,12 +6,13 @@ import type { FileCommentsHost } from '../fileCommentsHost';
 import type { PanelBrowserTab, usePanelBrowser } from '../panelBrowser';
 import { previewReady, runState } from '../quickLaunch';
 import type { CommentScope } from '../reviewComments';
+import type { BrowserShareWorkspace } from '../browserTypes';
 import { WbIcon } from '../workbench/icons';
 import { WebPreview } from './WebPreview';
 import './panel-browser.css';
 
 type BrowserModel=ReturnType<typeof usePanelBrowser>;
-type Comments={activeSessionId?:string;commentScope?:CommentScope;commentsHost?:FileCommentsHost};
+type Comments={activeSessionId?:string;commentScope?:CommentScope;commentsHost?:FileCommentsHost;prepareBrowserShare?:(tabId:string)=>Promise<BrowserShareWorkspace>};
 
 export function panelTabLabel(tab:PanelBrowserTab,zh:boolean) {
  if(tab.url===BROWSER_NEW_TAB_URL)return zh?'新标签页':'New tab';
@@ -27,7 +28,7 @@ function PanelBrowserPage({browser,tab,active,zh,startPage,comments}:{browser:Br
  const request=browser.request?.tabId===tab.tabId?{key:browser.request.generation,url:browser.request.url}:undefined;
  return <div className="wb-side-browser-page" hidden={!active}>
   <WebPreview tabId={tab.tabId} url={url} visible={active} zh={zh} panelHost navigationRequest={request} addressFocus={url===BROWSER_NEW_TAB_URL?focus:undefined}
-   activeSessionId={comments.activeSessionId} commentScope={comments.commentScope} commentsHost={comments.commentsHost}
+   activeSessionId={comments.activeSessionId} commentScope={comments.commentScope} commentsHost={comments.commentsHost} prepareBrowserShare={comments.prepareBrowserShare}
    onNavigation={observation=>browser.observe(tab.tabId,observation.url,observation.title)}
    onPopup={popup=>browser.openTab(popup.url)} onNewTab={browser.newTab}
    startPage={startPage}/>
