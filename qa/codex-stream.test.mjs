@@ -191,3 +191,63 @@ test("two hidden replies each reveal their own newest text, and dispose drops pa
   queue.reveal();
   assert.equal(delivered.at(-1), "two:2a", "a disposed queue paints nothing");
 });
+
+test("when painting falls behind, a superseded snapshot that waited a whole interval is skipped", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const delivered = [];
+  const queue = createCodexStreamQueue((next) => delivered.push(next.parts[0]?.text ?? ""), 20);
+  queue.push(item("A"));
+  queue.push(item("AB"));
+  queue.push(item("ABC"));
+  // A slow paint keeps the main thread busy: the 20 ms timer runs 15 ms late.
+  t.mock.timers.setTime(35);
+  t.mock.timers.tick(0);
+  assert.deepEqual(delivered, ["A", "ABC"], "AB waited 35 ms and ABC supersedes it");
+  t.mock.timers.tick(20);
+  // An idle queue paints the next snapshot at once; the ones behind it wait.
+  queue.push(item("ABCD"));
+  queue.push(item("ABCDE"));
+  queue.push(item("ABCDEF", "complete"));
+  assert.deepEqual(delivered, ["A", "ABC", "ABCD"]);
+  t.mock.timers.setTime(Date.now() + 60);
+  t.mock.timers.tick(0);
+  assert.deepEqual(delivered, ["A", "ABC", "ABCD", "ABCDEF"], "the final state is never skipped");
+  t.mock.timers.tick(100);
+  assert.deepEqual(delivered, ["A", "ABC", "ABCD", "ABCDEF"]);
+  queue.dispose();
+});
+
+test("a stream that painting keeps up with shows every snapshot", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const delivered = [];
+  const queue = createCodexStreamQueue((next) => delivered.push(next.parts[0]?.text ?? ""), 20);
+  queue.push(item("A"));
+  queue.push(item("AB"));
+  queue.push(item("ABC"));
+  t.mock.timers.tick(20);
+  t.mock.timers.tick(20);
+  assert.deepEqual(delivered, ["A", "AB", "ABC"], "a short burst still animates frame by frame");
+  queue.dispose();
+});
+
+test("catching up never skips the first snapshot of an item, so items keep the order they appeared in", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const delivered = [];
+  const queue = createCodexStreamQueue((next) => delivered.push(`${next.id}:${next.parts[0]?.text ?? ""}`), 20);
+  const streamingItem = (id, text) => ({ ...item(text), id });
+  queue.push(streamingItem("x", "X"));
+  t.mock.timers.setTime(1);
+  queue.push(streamingItem("a", "A1"));
+  t.mock.timers.setTime(2);
+  queue.push(streamingItem("b", "B1"));
+  t.mock.timers.setTime(3);
+  queue.push(streamingItem("a", "A2"));
+  t.mock.timers.setTime(25);
+  t.mock.timers.tick(0);
+  // Chained timers fire one tick at a time under the mock clock.
+  for (let step = 0; step < 5; step++) t.mock.timers.tick(20);
+  const firsts = [...new Set(delivered.map((entry) => entry.split(":")[0]))];
+  assert.deepEqual(firsts, ["x", "a", "b"], "a appears before b, as it arrived");
+  assert.ok(delivered.includes("a:A2") && delivered.includes("b:B1"), "every item ends on its newest snapshot");
+  queue.dispose();
+});

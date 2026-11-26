@@ -18,3 +18,5 @@ markdown.use({ extensions: [
 ] });
 /** Marked tokenization keeps code spans/blocks opaque; KaTeX is absent here. */
 export const parseChatMarkdown = (source: string) => markdown.parse(source);
+/** The same configured lexer (extensions included), for splitting a streaming reply into blocks. */
+export const lexChatMarkdown = (source: string) => markdown.lexer(source);

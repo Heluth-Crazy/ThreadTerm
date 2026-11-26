@@ -10,6 +10,8 @@ const MAX_PENDING_SNAPSHOTS = 3;
 
 type Timer = ReturnType<typeof setTimeout>;
 type Deliver = (item: ChatItem) => void;
+/** A snapshot and when it was queued. */
+type Queued = { item: ChatItem; at: number };
 
 export function isStreamingChatItem(item: ChatItem): boolean {
   return item.role === "assistant"
@@ -42,7 +44,7 @@ export function createCodexStreamQueue(
   // Only cumulative snapshots of a streaming item are paced here. Approvals,
   // completions and tool cards are canonical state, so they are delivered
   // immediately and never wait behind the animation budget.
-  let pending: ChatItem[] = [];
+  let pending: Queued[] = [];
   let timer: Timer | undefined;
   let disposed = false;
   const activeItemIds = new Set<string>();
@@ -64,10 +66,19 @@ export function createCodexStreamQueue(
   // supersede one another once the animation queue reaches its bound.
   const relieve = () => {
     if (pending.length <= MAX_PENDING_SNAPSHOTS) return;
-    const latest = new Map<string, ChatItem>();
-    for (const item of pending) latest.set(item.id, item);
+    const latest = new Map<string, Queued>();
+    for (const entry of pending) latest.set(entry.item.id, entry);
     pending = [...latest.values()];
-    while (pending.length > MAX_PENDING_SNAPSHOTS) deliverQueued(pending.shift()!);
+    while (pending.length > MAX_PENDING_SNAPSHOTS) deliverQueued(pending.shift()!.item);
+  };
+  // Events arrive one by one as the runtime commits them. When painting falls behind them (a long transcript), a
+  // snapshot that has already waited a whole interval while a newer one of the same item is queued is skipped: the
+  // reply catches up instead of trailing by the backlog. Its newer snapshot carries everything it had. Only items the
+  // view already shows: an item's first snapshot fixes where it appears, so it is never skipped.
+  const catchUp = () => {
+    const now = Date.now();
+    while (pending.length > 1 && now - pending[0].at > intervalMs && shownItemIds.has(pending[0].item.id)
+      && pending.some((entry, index) => index > 0 && entry.item.id === pending[0].item.id)) pending.shift();
   };
 
   const schedule = () => {
@@ -77,9 +88,10 @@ export function createCodexStreamQueue(
   const flush = () => {
     timer = undefined;
     if (disposed) return;
+    catchUp();
     const next = pending.shift();
     if (!next) return;
-    deliverQueued(next);
+    deliverQueued(next.item);
     schedule();
   };
 
@@ -89,7 +101,7 @@ export function createCodexStreamQueue(
       if (parkable(item) && shownItemIds.has(item.id) && hidden()) {
         // Supersedes the parked and queued snapshots of this item; nothing is painted until the view is shown.
         parked.set(item.id, item);
-        pending = pending.filter((entry) => entry.id !== item.id);
+        pending = pending.filter((entry) => entry.item.id !== item.id);
         return;
       }
       // Any newer snapshot, canonical or streaming, supersedes a parked one.
@@ -101,7 +113,7 @@ export function createCodexStreamQueue(
         return;
       }
       activeItemIds.add(item.id);
-      pending.push(item);
+      pending.push({ item, at: Date.now() });
       relieve();
       if (timer === undefined) {
         // Paint the first frame immediately, then keep a short cooldown so a
