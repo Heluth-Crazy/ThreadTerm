@@ -1,3 +1,4 @@
+import { rankSlash, skillText, slashItems, slashSourceLabel, type SlashItem } from "../slashMenu";
 import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
@@ -22,7 +23,7 @@ import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
 import { canRecoverPermissions, connectionFeedbackPhase, connectionStatusText, emptyLink, overlayKind, providerLabel, reduceChatLink, type ChatConnectAttempt } from "../chatConnection";
-import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
+import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, itemShowsStreaming, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../chatPresentation";
 import { groupCodexTranscript, isGuardianReview, type CodexTurn } from "../codexTranscript";
 import { shouldShowWorkingIndicator } from "../toolActivity";
 import { lastFoldIndex, turnSegments } from '../turnSegments';
@@ -1764,15 +1765,22 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     return sources;
   }, [mentionData, mentionKey, sessions, session.id, session.projectId, session.provider, delegationEnabled, capabilities, ui.skills]);
   const mentionGroups = useMemo(() => mention ? buildMentionGroups(mentionSourceItems, mention.query) : [], [mention?.query, mentionSourceItems]);
-  const slash = composerEditableNow ? slashQuery(text) : undefined;
-  const slashCommands = useMemo(() => {
-    const commands: ChatSlashCommand[] = [...ui.commands];
-    if (!commands.some(command => command.name.replace(/^\//, "") === CODE_REVIEW_SLASH)) {
-      commands.unshift({ name: CODE_REVIEW_SLASH, description: copy("Review changes in a fresh agent…", "在全新代理中审查改动…") });
-    }
-    if (liveTurn && !commands.some(command => command.name === "stop")) commands.unshift({ name: "stop", description: copy("Stop this turn", "停止此轮") });
-    return slash === undefined ? [] : matchSlashCommands(slash, commands);
-  }, [zh, liveTurn, slash, ui.commands]);
+  // The "/" menu: ThreadTerm's commands, the agent's, then its skills (slashMenu.ts). Escape closes it for the text
+  // as it stands; typing on opens it again.
+  const [slashDismissed, setSlashDismissed] = useState<string>();
+  const slashQueryText = composerEditableNow ? slashQuery(text) : undefined;
+  const slash = slashQueryText !== undefined && slashDismissed !== text ? slashQueryText : undefined;
+  const allSlashItems = useMemo(() => {
+    const app: ChatSlashCommand[] = [];
+    if (liveTurn) app.push({ name: "stop", description: copy("Stop this turn", "停止此轮") });
+    app.push({ name: CODE_REVIEW_SLASH, description: copy("Review changes in a fresh agent…", "在全新代理中审查改动…") });
+    return slashItems(app, ui.commands, ui.skills ?? []);
+  }, [zh, liveTurn, ui.commands, ui.skills]);
+  const slashCommands = useMemo(() => slash === undefined ? [] : rankSlash(allSlashItems, slash), [slash, allSlashItems]);
+  // A new query starts at its best match.
+  useEffect(() => { setSlashIndex(0); }, [slash]);
+  const slashList = useRef<HTMLDivElement>(null);
+  useEffect(() => { slashList.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }); }, [slashIndex, slashCommands]);
   function openCodeReview(focus = "") {
     // Starting a review is a mutation under this chat's lease, like sending.
     if (leaseSessionId.current !== session.id || lease.current === undefined) {
@@ -1818,8 +1826,9 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     const el = logRef.current;
     if (el && viewport.followRef.current) el.scrollTop = el.scrollHeight;
   }, [items, text, firstResponseWait]);
-  function applySlash(command: ChatSlashCommand) {
+  function applySlash(command: SlashItem) {
     if (!composerEditable(composerStateRef.current)) return;
+    if (command.source === "skill") { changeText(skillText(command)); composeRef.current?.focus(); return; }
     if (command.name === "stop" && liveTurn) { void cancel(liveTurn); changeText(""); return; }
     if(command.name.replace(/^\//,'')==='fork'){
       if(forkActions.disabledReason)setError(forkActions.disabledReason);
@@ -1933,10 +1942,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     }
     // While a candidate window is open every key belongs to the IME, including the arrows and Escape.
     if (slash !== undefined && slashCommands.length && !composing) {
-      if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(value => Math.min(value + 1, slashCommands.length - 1)); return; }
-      if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(value => Math.max(0, value - 1)); return; }
-      if (slashPaletteEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: composing })) { event.preventDefault(); applySlash(slashCommands[slashIndex] ?? slashCommands[0]!); return; }
-      if (event.key === "Escape") { event.preventDefault(); changeText(""); return; }
+      if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(value => (value + 1) % slashCommands.length); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(value => (value - 1 + slashCommands.length) % slashCommands.length); return; }
+      if (slashPaletteEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: composing }) || (event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); applySlash(slashCommands[slashIndex] ?? slashCommands[0]!); return; }
+      // Escape closes the menu and keeps what was typed (it used to clear the composer).
+      if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(text); return; }
     }
     if (event.key === "Enter" && !event.shiftKey && !composing) {
       event.preventDefault();
@@ -2221,10 +2231,14 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     <ChatQueuePanel sessionId={session.id} queue={queue} leaseEpoch={leaseSessionId.current === session.id ? lease.current : undefined} writable={writable} idle={!liveTurn} canInsert={steerKind === 'split'} onInsertNow={item => insertIntoTurn({ text: item.text, images: item.images, id: item.id })} canNote={steerKind === 'split-note'} onSendNote={sendNoteFromQueue} ingressFailed={ingressFailed} onChange={changeQueue} onIssue={message => setError(message)} zh={zh} />
     <form className="chat-compose chat-compose-shell" data-v3-chat-form={session.id} onSubmit={submit} inert={overlay === "full" || undefined}
       {...(isRemoteFiles() ? { onDragOver: (event: React.DragEvent<HTMLFormElement>) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); } }, onDrop: (event: React.DragEvent<HTMLFormElement>) => { const paths = groupDropPaths(event.dataTransfer); if (paths.length) { event.preventDefault(); event.stopPropagation(); void attachPickedFiles(paths); } } } : {})}>
-      {slash !== undefined && <div className="chat-slash" role="listbox" aria-label={copy("Commands", "命令")}>
-        {slashCommands.length ? slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? "active" : ""} key={command.name} onMouseEnter={() => setSlashIndex(index)} onClick={() => applySlash(command)}>
-          <b>/{command.name.replace(/^\//, "")}</b><span>{command.description ?? ""}</span>
-        </button>) : <p className="chat-slash-empty">{copy("No matching command", "没有匹配的命令")}</p>}
+      {slash !== undefined && <div ref={slashList} className="chat-slash chat-slash-menu" role="listbox" aria-label={copy("Commands", "命令")}>
+        {slashCommands.length ? slashCommands.map((command, index) => <Fragment key={command.id}>
+          {!slash && (index === 0 || slashCommands[index - 1]!.source !== command.source) && <div className="chat-slash-head" role="presentation">{slashSourceLabel(command.source, zh)}</div>}
+          <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? "active" : ""} data-slash-source={command.source} onMouseMove={() => { if (index !== slashIndex) setSlashIndex(index); }} onMouseDown={event => event.preventDefault()} onClick={() => applySlash(command)}>
+            <b>{command.source === "skill" ? command.invocation?.split(/\s/)[0] : `/${command.name}`}</b><span title={command.description}>{command.description ?? ""}</span>
+            {slash && command.source === "skill" && <small className="chat-slash-tag">{copy("Skill", "技能")}</small>}
+          </button>
+        </Fragment>) : <p className="chat-slash-empty">{copy("No matching command or skill", "没有匹配的命令或技能")}</p>}
       </div>}
       {mention && <ChatMentions groups={mentionGroups} index={mentionIndex} zh={zh} onHover={setMentionIndex} onPick={applyMention} />}
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>

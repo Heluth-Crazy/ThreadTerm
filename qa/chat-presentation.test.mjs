@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../renderer/src/chatPresentation.ts";
+import { activeTurnId, activeTurnIdFromIndex, chatCanControl, chatPresentationIndex, formatChatDuration, itemShowsStreaming, partBody, partLabel, shouldRenderPart, slashQuery, turnOutcome } from "../renderer/src/chatPresentation.ts";
 import { isCompletedForkReply } from "../renderer/src/chatFork.ts";
 import { legacyActiveTurnId, legacyItemShowsStreaming, randomTranscript, seededRandom } from "./lib/chat-presentation-legacy.mjs";
 
@@ -50,7 +50,6 @@ test("only the latest unanswered assistant message shows a streaming caret", () 
   assert.equal(itemShowsStreaming(second, [first, user, second]), true);
   assert.equal(slashQuery("/st"), "st");
   assert.equal(slashQuery("/stop now"), undefined);
-  assert.deepEqual(matchSlashCommands("st", [{ name: "stop" }, { name: "status" }, { name: "help" }]).map((item) => item.name), ["stop", "status"]);
 });
 
 test("formats chat turn duration like the grok transcript header", () => {

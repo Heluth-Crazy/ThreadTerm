@@ -831,11 +831,15 @@ code.chat-status-value { font-family:var(--mono); font-size:11px; }
   .chat-compose-menu.chat-menu-more { width:min(340px, calc(100cqw - 120px)); max-height:min(70vh, 460px); }
 }
 @media (prefers-reduced-motion:reduce) { .chat-context-ring-fill { transition:none; } }
-.chat-slash, .v3-session-chat form > .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:4; display:block; max-height:220px; overflow:auto; padding:6px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }
-.chat-slash button { width:100%; display:flex; gap:8px; align-items:baseline; border:0; background:transparent; text-align:left; padding:8px 10px; border-radius:10px; color:inherit; }
+/* The composer's "/" and "@" menus (T3 Code's command menu as the reference, owner 2026-11-26): the menu glass, one 32px line per row, the name then its description cut to one line. */
+.chat-slash, .v3-session-chat form > .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:4; display:block; max-height:288px; overflow:auto; padding:4px; border:1px solid var(--menu-edge); border-radius:12px; background:var(--menu); backdrop-filter:blur(12px) saturate(1.14); box-shadow:var(--menu-shadow); scroll-padding:4px; }
+.chat-slash button { width:100%; height:32px; display:flex; gap:10px; align-items:center; border:0; background:transparent; text-align:left; padding:0 10px; border-radius:8px; color:inherit; }
 .chat-slash button.active, .chat-slash button:hover:not(:disabled) { background:var(--soft, var(--raised)); }
-.chat-slash b { font-size:12px; }
-.chat-slash span { color:var(--muted); font-size:11px; }
+.chat-slash b { flex:0 1 auto; max-width:45%; min-width:0; font-size:12.5px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chat-slash span { flex:1 1 auto; min-width:0; color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chat-slash-head { padding:6px 10px 2px; color:var(--muted); font-size:11px; font-weight:600; }
+.chat-slash-head:not(:first-child) { margin-top:4px; border-top:1px solid var(--border); padding-top:8px; }
+.chat-slash-tag { flex:none; padding:0 6px; border-radius:4px; background:var(--soft); color:var(--muted); font-size:10.5px; line-height:16px; }
 .chat-slash-empty { margin:8px 10px; color:var(--muted); font-size:12px; }
 /* Thinking uses the same chevron language as the turn/tool disclosures instead of the native marker. */
 .v3-thinking { margin:0 0 10px; padding:2px 0 2px 12px; border-left:2px solid var(--border); color:var(--muted); font-size:13px; line-height:1.55; }

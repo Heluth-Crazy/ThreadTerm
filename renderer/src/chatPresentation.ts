@@ -126,11 +126,6 @@ export function slashQuery(text: string): string | undefined {
   return text.slice(1).toLowerCase();
 }
 
-export function matchSlashCommands(query: string, commands: { name: string; description?: string }[]): { name: string; description?: string }[] {
-  const needle = query.replace(/^\//, "").toLowerCase();
-  return commands.filter((command) => command.name.replace(/^\//, "").toLowerCase().startsWith(needle));
-}
-
 export function activeTurnId(items: ChatItem[], sessionStatus?: string): string | undefined {
   return activeTurnIdFromIndex(chatPresentationIndex(items), sessionStatus);
 }
