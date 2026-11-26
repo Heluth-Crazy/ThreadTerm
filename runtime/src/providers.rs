@@ -1283,6 +1283,9 @@ struct CapabilityCache {
     on_updated: Option<Arc<dyn Fn(CapabilityUpdate) + Send + Sync>>,
     /// A failed cold probe. Kept until an explicit refresh or plugin rebuild.
     failed_at: Option<Instant>,
+    /// Each agent's last answer from a probe that did not run out of time. It outlives invalidation, so a refresh
+    /// that only timed out shows what was known instead of 「未安装」.
+    last_complete: HashMap<String, Value>,
     /// Test-only count of completions that arrived after a newer round claimed
     /// the cache. It lets the fencing tests wait for the stale worker instead
     /// of sleeping.
@@ -1301,12 +1304,85 @@ impl CapabilityCache {
     }
 }
 
-fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
-    let _decision = crate::environment::provider_decision();
-    adapters
-        .iter()
-        .filter_map(|adapter| serde_json::to_value(adapter.capability()).ok())
-        .collect()
+/// Agents probed at once. One after another, a round took the sum of every CLI's start-up (up to two five-second
+/// probes each); all at once, a dozen cold Node starts slow each other past the probe's limit.
+const PROBE_PARALLEL: usize = 3;
+/// Extra rounds when a cold round had agents that ran out of time and nothing to fall back on.
+const PROBE_RETRIES: u32 = 2;
+const PROBE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+/// A round slower than this logs how long each agent took.
+const PROBE_SLOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// One round: each agent's capability, in adapter order, and whether any of its commands ran out of time.
+/// PROBE_PARALLEL workers each take the next agent as soon as they finish one, so a slow agent does not hold up the
+/// rest (11-26: Grok's probe takes up to 6 s on its own).
+fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<(Value, bool)> {
+    let round = Instant::now();
+    let environment = crate::environment::provider_environment();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    type Probed = (Option<Value>, bool, std::time::Duration);
+    let slots: Vec<Mutex<Option<std::thread::Result<Probed>>>> = adapters.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..PROBE_PARALLEL.min(adapters.len()) {
+            let (environment, next, slots) = (Arc::clone(&environment), &next, &slots);
+            scope.spawn(move || {
+                let _decision = crate::environment::provider_decision_with(environment);
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let Some(adapter) = adapters.get(index) else { break };
+                    let probed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        common::take_probe_timeouts();
+                        let started = Instant::now();
+                        let value = serde_json::to_value(adapter.capability()).ok();
+                        (value, common::take_probe_timeouts() > 0, started.elapsed())
+                    }));
+                    if let Ok(mut slot) = slots[index].lock() { *slot = Some(probed); }
+                }
+            });
+        }
+    });
+    let mut out = Vec::with_capacity(adapters.len());
+    let mut timings: Vec<(String, std::time::Duration, bool)> = Vec::with_capacity(adapters.len());
+    for (adapter, slot) in adapters.iter().zip(slots) {
+        match slot.into_inner().ok().flatten() {
+            Some(Ok((value, timed_out, elapsed))) => {
+                timings.push((adapter.id().to_owned(), elapsed, timed_out));
+                if let Some(value) = value { out.push((value, timed_out)); }
+            }
+            // A panicking adapter fails the round, as it did when the round ran on one thread.
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            None => {}
+        }
+    }
+    // A slow round or one that ran out of time says which agents it waited for (runtime.log), so a report of slow
+    // or flickering agents can be traced. Quick rounds log nothing.
+    if round.elapsed() >= PROBE_SLOW || timings.iter().any(|(_, _, timed_out)| *timed_out) {
+        let agents = timings.iter()
+            .map(|(id, elapsed, timed_out)| format!("{id} {:.1}s{}", elapsed.as_secs_f32(), if *timed_out { " (ran out of time)" } else { "" }))
+            .collect::<Vec<_>>().join(", ");
+        eprintln!("provider detection took {:.1}s: {agents}", round.elapsed().as_secs_f32());
+    }
+    out
+}
+
+/// The values a round publishes. An agent whose probe ran out of time keeps its last complete answer when there is
+/// one; a complete answer, installed or not, becomes the new last one. Returns the values and whether some agent
+/// ran out of time with nothing to fall back on.
+fn settle_capabilities(fresh: Vec<(Value, bool)>, last_complete: &mut HashMap<String, Value>) -> (Vec<Value>, bool) {
+    let mut unsettled = false;
+    let values = fresh.into_iter().map(|(value, timed_out)| {
+        let id = value.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if !timed_out {
+            last_complete.insert(id, value.clone());
+            value
+        } else if let Some(previous) = last_complete.get(&id) {
+            previous.clone()
+        } else {
+            unsettled = true;
+            value
+        }
+    }).collect();
+    (values, unsettled)
 }
 
 impl Providers {
@@ -1481,28 +1557,43 @@ impl Providers {
             std::thread::Builder::new()
                 .name("provider-capabilities".into())
                 .spawn(move || {
-                    let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_capabilities(&adapters)));
-                    let outcome_ok = fresh.is_ok();
-                    let notification = if let Ok(mut cache) = shared.lock() {
-                        if cache.generation == generation {
-                            cache.refreshing = None;
-                            match fresh {
-                                Ok(values) => {
-                                    cache.values = Some((Instant::now(), values));
-                                    cache.failed_at = None;
+                    let mut generation = generation;
+                    let mut retries = 0;
+                    loop {
+                        let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_capabilities(&adapters)));
+                        let outcome_ok = fresh.is_ok();
+                        let mut retry = false;
+                        let notification = if let Ok(mut cache) = shared.lock() {
+                            if cache.generation == generation {
+                                cache.refreshing = None;
+                                match fresh {
+                                    Ok(fresh) => {
+                                        let (values, unsettled) = settle_capabilities(fresh, &mut cache.last_complete);
+                                        cache.values = Some((Instant::now(), values));
+                                        cache.failed_at = None;
+                                        retry = unsettled && retries < PROBE_RETRIES;
+                                    }
+                                    Err(_) => { cache.failed_at = Some(Instant::now()); }
                                 }
-                                Err(_) => { cache.failed_at = Some(Instant::now()); }
+                                cache.on_updated.clone().map(|notify| (notify, CapabilityUpdate { generation, outcome: if outcome_ok { "ok" } else { "failed" } }))
+                            } else {
+                                #[cfg(test)]
+                                { cache.obsolete_completions += 1; }
+                                None
                             }
-                            cache.on_updated.clone().map(|notify| (notify, CapabilityUpdate { generation, outcome: if outcome_ok { "ok" } else { "failed" } }))
-                        } else {
-                            #[cfg(test)]
-                            { cache.obsolete_completions += 1; }
-                            None
-                        }
-                    } else { None };
-                    wait.notify_all();
-                    // Notification can re-enter snapshot: release the cache first.
-                    if let Some((notify, update)) = notification { notify(update); }
+                        } else { None };
+                        wait.notify_all();
+                        // Notification can re-enter snapshot: release the cache first.
+                        if let Some((notify, update)) = notification { notify(update); }
+                        if !retry { break; }
+                        // A cold round where some agent only ran out of time: ask again shortly, unless a newer round
+                        // has started meanwhile.
+                        std::thread::sleep(PROBE_RETRY_DELAY);
+                        retries += 1;
+                        let Ok(mut cache) = shared.lock() else { break };
+                        if cache.generation != generation || cache.refreshing.is_some() { break; }
+                        generation = cache.start_probe_locked();
+                    }
                 })
         };
         if spawned.is_err() {
@@ -3886,6 +3977,96 @@ mod capability_cache_tests {
         fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
             Err(ProviderError::new("unsupported", "capability fixture"))
         }
+    }
+
+    /// A provider whose rounds follow a script: each entry is (installed, ran out of time).
+    struct ScriptedProbe {
+        id: &'static str,
+        probes: Arc<AtomicUsize>,
+        script: Vec<(bool, bool)>,
+        delay: Duration,
+    }
+
+    impl ScriptedProbe {
+        fn new(id: &'static str, probes: &Arc<AtomicUsize>, script: Vec<(bool, bool)>) -> Self {
+            Self { id, probes: Arc::clone(probes), script, delay: Duration::from_millis(20) }
+        }
+    }
+
+    impl ProviderAdapter for ScriptedProbe {
+        fn id(&self) -> &'static str { self.id }
+        fn capability(&self) -> ProviderCapability {
+            let probe = self.probes.fetch_add(1, SeqCst) + 1;
+            std::thread::sleep(self.delay);
+            let (installed, timed_out) = self.script.get(probe - 1).copied().unwrap_or((true, false));
+            if timed_out { common::note_probe_timeout_for_test(); }
+            ProviderCapability { installed, ..capability(self.id, format!("probe {probe}")) }
+        }
+        fn terminal_command(&self, _: Option<&str>, _: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "capability fixture"))
+        }
+        fn history_list(&self, _: Option<&str>, _: u32, _: Option<&str>) -> Result<Value, ProviderError> {
+            Ok(json!({}))
+        }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> {
+            Ok(json!([]))
+        }
+        fn open_chat(&self, _: &str, _: &str, _: Option<&str>) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Err(ProviderError::new("unsupported", "capability fixture"))
+        }
+    }
+
+    /// Owner 2026-11-26: agents flipped to 未安装 when a refresh's probe ran out of time. A refresh that only timed
+    /// out keeps the last complete answer; a complete answer replaces it, installed or not.
+    #[test]
+    fn a_refresh_that_ran_out_of_time_keeps_the_last_complete_answer() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(ScriptedProbe::new("codex", &probes, vec![(true, false), (false, true), (false, false)]))]);
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        providers.request_capability_refresh();
+        wait_for_probes(&probes, 2);
+        let values = providers.capabilities();
+        assert_eq!(name(&values), "probe 1", "the timed-out round shows the last complete answer");
+        assert_eq!(values[0]["installed"], true);
+        // Invalidation (a plugin rebuild, a settings change) does not forget it either.
+        providers.refresh_capabilities();
+        let values = providers.capabilities();
+        assert_eq!(name(&values), "probe 3", "a complete answer replaces it");
+        assert_eq!(values[0]["installed"], false, "a CLI that is really gone is not installed");
+    }
+
+    /// A cold round with nothing to fall back on asks again shortly, then settles on the complete answer.
+    #[test]
+    fn a_cold_round_that_ran_out_of_time_retries_and_settles() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(ScriptedProbe::new("codex", &probes, vec![(true, true), (true, false)]))]);
+        assert_eq!(name(&providers.capabilities()), "probe 1", "the first answer is shown at once");
+        wait_for_name(&providers, "probe 2");
+        assert_eq!(probes.load(SeqCst), 2);
+        std::thread::sleep(PROBE_RETRY_DELAY + Duration::from_millis(300));
+        assert_eq!(probes.load(SeqCst), 2, "a settled round does not retry");
+    }
+
+    /// Agents are probed a few at a time; the values keep the adapter order, not the order they finished in.
+    #[test]
+    fn parallel_probing_keeps_the_agent_order() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let probe = |id: &'static str, delay: u64| -> Arc<dyn ProviderAdapter> { Arc::new(ScriptedProbe { delay: Duration::from_millis(delay), ..ScriptedProbe::new(id, &probes, vec![]) }) };
+        let providers = Providers::for_test(vec![probe("gemini", 100), probe("codex", 250), probe("kimi", 100), probe("claude", 100)]);
+        let started = Instant::now();
+        let ids = providers.capabilities().iter().map(|value| value["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(ids, ["codex", "claude", "kimi", "gemini"]);
+        // One after another this is 550 ms; three at a time, 250 + 100.
+        assert!(started.elapsed() < Duration::from_millis(500), "agents in one batch run together: {:?}", started.elapsed());
+    }
+
+    fn wait_for_probes(probes: &Arc<AtomicUsize>, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while probes.load(SeqCst) < count {
+            assert!(Instant::now() < deadline, "capability probe did not run");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 
     /// A probe that blocks every round on its own gate until the test releases

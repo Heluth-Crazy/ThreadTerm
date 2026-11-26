@@ -231,16 +231,9 @@ impl AgentDescriptor {
             Ok(spec) => spec,
             Err(error) => return (false, None, Some(error.message)),
         };
-        match command_output(&spec, Duration::from_secs(5)) {
-            Ok(output) => (
-                true,
-                output
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .map(|line| line.trim().to_owned()),
-                None,
-            ),
-            Err(error) => (false, None, Some(error.message)),
+        // A plugin agent that started but ran out of time is installed, like a built-in one.
+        match crate::providers::common::version_outcome(command_output(&spec, Duration::from_secs(5))) {
+            (installed, version, error) => (installed, version, error.map(|error| error.message)),
         }
     }
 
