@@ -68,6 +68,8 @@ export const openDirectory = (projectId: string, worktreeId?: string) => facade(
 export const revealFileLocation = (target: import('@threadterm/protocol').FileLocationRequest) => facade().revealFileLocation?.(target) ?? Promise.reject(new Error('File location is unavailable'));
 export const revealFile = (sessionId: string, path: string) => facade().revealFile?.(sessionId, path) ?? Promise.reject(new Error('File reveal is unavailable'));
 export const openFileDefaultApp = (request: { projectId: string; worktreePath?: string; path: string } | { externalId: string }) => facade().openFileDefaultApp?.(request) ?? Promise.reject(new Error('Open with system app is unavailable'));
+export const openInEditors = (refresh = false) => facade().openInEditors?.(refresh) ?? Promise.resolve([]);
+export const openIn = (request: { editorId: string; projectId: string; worktreePath?: string; path?: string; line?: number }) => facade().openIn?.(request) ?? Promise.reject(new Error('Open in is unavailable'));
 export const openWindow = (options: { sessionId?: string; workspaceId?: string }) => facade().openWindow(options);
 export const windowAction = (action: "minimize" | "maximize" | "close") => facade().windowAction(action);
 export const outputSubscription = (sessionId: string, cursor: number, listener: (chunk: OutputChunk) => void) => facade().subscribeOutput(sessionId, cursor, listener);

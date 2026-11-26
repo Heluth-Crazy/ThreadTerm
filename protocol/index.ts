@@ -1301,6 +1301,10 @@ export interface ThreadTermBridge {
  revealFileLocation?(request:FileLocationRequest):Promise<FileLocationResult>;
  /** Open a document with the system default application (desktop, local machine only). */
  openFileDefaultApp?(request:{projectId:string;worktreePath?:string;path:string}|{externalId:string}):Promise<void>;
+ /** Editors and the terminal installed on this PC, for "Open in"; empty on another computer. */
+ openInEditors?(refresh?:boolean):Promise<{id:string;label:string;icon?:string}[]>;
+ /** Opens a project or branch root, or a file in it (at its line), in one of `openInEditors`. */
+ openIn?(request:{editorId:string;projectId:string;worktreePath?:string;path?:string;line?:number}):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;
  localResourceUsage?():Promise<{cpuPercent?:number;memoryBytes:number} | null>;
  testNotification():Promise<{sent:boolean;reason?:string}>;

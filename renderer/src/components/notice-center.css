@@ -11,3 +11,6 @@
 .tt-notice-close:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
 @keyframes tt-notice-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 @media (prefers-reduced-motion:reduce) { .tt-notice { animation:none; } }
+/* Errors can be copied, to paste into a report or back to an agent; the button shows on hover like elsewhere. */
+.tt-notice-copy { flex:none; margin:-1px -4px 0 0; opacity:0; }
+.tt-notice:hover .tt-notice-copy, .tt-notice-copy:focus-visible, .tt-notice-copy.is-done { opacity:1; }

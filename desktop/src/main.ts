@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { availableParallelism, release } from 'node:os';
 import { ResourceUsage } from './resourceUsage.js';
 import { canonicalRelocationPath } from './relocationPaths.js';
-import { appendFileSync, readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { realpath, stat } from 'node:fs/promises';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent, type Settings } from '@threadterm/protocol';
 import { RuntimeClient, RuntimeRequestError, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
@@ -33,6 +34,7 @@ import { createLocalFileBackend, registerLocalFileBackendIpc } from './local-fil
 import { registeredExternalFilePath, registeredExternalFileIdentityPath } from './local-files/references.js';
 import { resolveHtmlPreviewRoot } from './htmlPreviewRoot.js';
 import { createOpenFileDefaultAppHandler, qaOpenFileAppRecordPath } from './openFileApp.js';
+import { createOpenInHandler, detectEditors, type OpenInEditor } from './openInEditor.js';
 
 import { HtmlPreviewGrantManager, HTML_PREVIEW_PRIVILEGED_SCHEME, mergePreviewIsolationFeatures, installHtmlPreviewSession, attachHtmlPreviewWindow, loadDocumentViewerFiles } from './htmlPreview.js';
 import { registerHtmlPreviewIpc, type HtmlPreviewDocumentChunk } from './htmlPreviewIpc.js';
@@ -821,6 +823,40 @@ function registerIpc(): void {
 `); return ''; }
         return shell.openPath(path);
       },
+    }, assertTrustedRenderer, assertLocalMachine)(event, input);
+  });
+  // "Open in" (`openInEditor.ts`): the editors and terminal installed here, found once and again on request. The QA
+  // seam offers this Electron as "VS Code" and records each launch instead of starting a program.
+  const qaOpenInRecord = qaOpenFileAppRecordPath(process.env.THREADTERM_V3_OPEN_IN_QA, app.isPackaged);
+  let openInFound: OpenInEditor[] | undefined;
+  const openInEditors = (): OpenInEditor[] => openInFound ??= qaOpenInRecord
+    ? [{ id: 'vscode', label: 'VS Code', exe: process.execPath, style: 'goto' }]
+    : detectEditors({ localAppData: process.env.LOCALAPPDATA, programFiles: process.env.ProgramFiles, programFilesX86: process.env['ProgramFiles(x86)'] },
+      { exists: path => existsSync(path), list: path => { try { return readdirSync(path); } catch { return []; } } });
+  ipcMain.handle('threadterm:open-in-editors', async (event, refresh: unknown) => {
+    assertTrustedRenderer(event);
+    // Another computer's files are not on this PC's disk.
+    if (machineBindings.get(event.sender.id).machineId !== 'local') return [];
+    if (refresh === true) openInFound = undefined;
+    return Promise.all(openInEditors().map(async editor => ({ id: editor.id, label: editor.label,
+      icon: await app.getFileIcon(editor.exe, { size: 'normal' }).then(image => image.isEmpty() ? undefined : image.toDataURL(), () => undefined) })));
+  });
+  ipcMain.handle('threadterm:open-in', (event, input: unknown) => {
+    const runtime = () => runtimeFor(event);
+    return createOpenInHandler({
+      editors: openInEditors,
+      workspaceRoot: request => resolveHtmlPreviewRoot({
+        projects: async () => (await runtime().request('runtime.snapshot', {})).projects,
+        worktrees: projectId => runtime().request('worktree.list', { projectId }),
+      }, request),
+      canonical: path => realpath(path),
+      isDirectory: async path => (await stat(path)).isDirectory(),
+      launch: (exe, args, cwd) => new Promise<void>((done, fail) => {
+        if (qaOpenInRecord) { appendFileSync(qaOpenInRecord, `${JSON.stringify({ exe, args, cwd })}\n`); done(); return; }
+        const child = spawn(exe, args, { cwd, detached: true, stdio: 'ignore', windowsHide: false });
+        child.once('error', fail);
+        child.once('spawn', () => { child.unref(); done(); });
+      }),
     }, assertTrustedRenderer, assertLocalMachine)(event, input);
   });
   ipcMain.handle('threadterm:reveal-file-location', async (event, input: unknown) => {

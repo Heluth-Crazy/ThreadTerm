@@ -1,3 +1,5 @@
+import { EditorIcon } from './OpenInButton';
+import { openInEditor, openInLabel, useOpenInEditors, type OpenInEditor } from '../openIn';
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { CatalogVisibility, ProjectCatalogItem, ProviderCapability, Session, Worktree } from '@threadterm/protocol';
@@ -49,6 +51,9 @@ export async function restoreCatalogTarget(target:CatalogTarget,visibility:Catal
 
 export function CatalogActions({target,projects,trees,sessions,providers=[],visibility,onChanged,onHidden,onWorktree,onNewSession,onMenuOpenChange}:Props){
   const {locale}=useTranslation(),zh=locale==='zh-CN',text=(en:string,cn:string)=>zh?cn:en;
+  // "Open in": the editor used last and, when installed, the terminal (the full list is on the project page).
+  const openIn=useOpenInEditors();
+  const openInRows=[openIn.preferred,openIn.editors.find(editor=>editor.id==='terminal')].filter((editor,index,rows):editor is OpenInEditor=>Boolean(editor)&&rows.indexOf(editor)===index);
   const [anchor,setAnchor]=useState<HTMLElement>(),[dialog,setDialog]=useState<Dialog>(),[sessionsToEnd,setSessionsToEnd]=useState<Session[]>(),[deleteNotice,setDeleteNotice]=useState<DeleteNotice>();
   const [name,setName]=useState(target.name),[issue,setIssue]=useState<string>(),[busy,setBusy]=useState(false),locked=useRef(false);
   const [idleSummary,setIdleSummary]=useState<{count:number;bytes?:number}>();
@@ -156,6 +161,8 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
       {/* The sidebar row folds on click, so its page opens from here. */}
       {target.kind!=='session'&&onWorktree&&item(target.kind==='project'?text('Open project page','打开项目页'):text('Open branch page','打开分支页'),'home',()=>{close();onWorktree(target.projectId,target.kind==='project'?undefined:target.path);})}
       {item(text('Copy directory path','复制目录路径'),'copy',()=>void run(async()=>{await navigator.clipboard.writeText(displayPath(target.path));close();}))}
+      {target.kind==='worktree'&&item(text('Copy branch name','复制分支名'),'copy',()=>void run(async()=>{await navigator.clipboard.writeText(target.name);close();}))}
+      {target.kind!=='session'&&openInRows.map(editor=><button type="button" role="menuitem" className="menu-item" key={`open-in-${editor.id}`} disabled={busy} onClick={()=>{close();void openInEditor(editor,{projectId:target.projectId,worktreePath:target.path},zh);}}><EditorIcon editor={editor}/>{openInLabel(editor,zh)}</button>)}
       {item(text('Open directory','查看目录'),'folder',()=>void run(async()=>{await openDirectory(target.projectId,target.worktreeId);close();}))}
       {target.kind!=='session'&&item(text('Refresh directory status','刷新目录状态'),'refresh',()=>{onChanged();close();})}
       {target.kind==='project'&&project&&<>

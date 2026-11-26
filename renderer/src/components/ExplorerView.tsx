@@ -1,3 +1,5 @@
+import { openInMenuItems } from './OpenInButton';
+import { useOpenInEditors } from '../openIn';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import type { FileEntry } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
@@ -60,6 +62,7 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
  const sessionDocumentIssue = sessionDocuments?.error;
  const text = (en:string, cn:string) => zh ? cn : en;
  const params = scopeParams(scope);
+ const { editors: openInEditors } = useOpenInEditors();
  const decorations = useMemo(() => decorationIndex(git.status?.changes ?? []), [git.status]);
 
  const load = useCallback(async (dir:string) => {
@@ -254,11 +257,15 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
     {separator:true, label:''},
     ...(isFile && actions.openBeside ? [{id:'explorer-open-beside', label:text('Open beside session', '在会话旁打开'), icon:<Icon name="split"/>, onSelect:() => actions.openBeside?.(entry.path), testId:'explorer-open-beside'}] : []),
     ...(isFile && changed ? [{id:'explorer-open-changes', label:text('Open changes', '查看更改'), icon:<Icon name="split"/>, onSelect:() => actions.openDiff(entry.path, false), testId:'explorer-open-changes'}] : []),
-    ...explorerFileMenuItems({zh,canHistory:Boolean(isFile && actions.openHistory),canSend:Boolean(isFile && actions.sendToAgent),plansLabel:isFile && sessionDocuments ? text(pinned ? 'Remove from Plans & docs' : 'Add to Plans & docs', pinned ? '从计划与文档中移除' : '添加到计划与文档') : undefined}).map(item=>({...item,disabled:item.id==='explorer-plans-docs'&&(busy || sessionDocuments?.loading || Boolean(sessionDocumentIssue)),reason:item.id==='explorer-plans-docs'?sessionDocumentIssue:undefined,onSelect:item.id==='explorer-file-history'?()=>actions.openHistory?.(entry.path):item.id==='explorer-send-to-agent'?()=>actions.sendToAgent?.({path:entry.path}):item.id==='explorer-plans-docs'?()=>void toggleSessionDocument(entry.path):item.id==='explorer-copy-path'?()=>copy(absolutePath(scope.rootPath,entry.path)):undefined,testId:item.id})),
-    {...fileLocationMenuItem({...params,path:entry.path},zh,setIssue),id:'explorer-reveal-location',testId:'explorer-reveal-location'},
+    ...explorerFileMenuItems({zh,canHistory:Boolean(isFile && actions.openHistory),canSend:Boolean(isFile && actions.sendToAgent),plansLabel:isFile && sessionDocuments ? text(pinned ? 'Remove from Plans & docs' : 'Add to Plans & docs', pinned ? '从计划与文档中移除' : '添加到计划与文档') : undefined}).map(item=>({...item,disabled:item.id==='explorer-plans-docs'&&(busy || sessionDocuments?.loading || Boolean(sessionDocumentIssue)),reason:item.id==='explorer-plans-docs'?sessionDocumentIssue:undefined,onSelect:item.id==='explorer-file-history'?()=>actions.openHistory?.(entry.path):item.id==='explorer-send-to-agent'?()=>actions.sendToAgent?.({path:entry.path}):item.id==='explorer-plans-docs'?()=>void toggleSessionDocument(entry.path):item.id==='explorer-copy-path'?()=>copy(absolutePath(scope.rootPath,entry.path)):undefined,icon:item.id==='explorer-copy-path'?<Icon name="copy"/>:item.id==='explorer-file-history'?<Icon name="fileHistory"/>:item.id==='explorer-send-to-agent'?<Icon name="send"/>:item.id==='explorer-plans-docs'?<Icon name="bookmark"/>:undefined,testId:item.id})),
+    // Copy (the shared "Copy path" above is the full path), then open elsewhere.
     {id:'explorer-copy-relative-path', label:text('Copy relative path', '复制相对路径'), icon:<Icon name="copy"/>, onSelect:() => copy(entry.path), testId:'explorer-copy-relative-path'},
+    ...(entry.name ? [{id:'explorer-copy-name', label:text('Copy name', '复制文件名'), icon:<Icon name="copy"/>, onSelect:() => copy(entry.name), testId:'explorer-copy-name'}] : []),
     {separator:true, label:''},
-    {id:'explorer-rename', label:text('Rename…', '重命名…'), icon:<Icon name="file"/>, shortcut:'F2', onSelect:() => beginRename(entry), testId:'explorer-rename'},
+    {...fileLocationMenuItem({...params,path:entry.path},zh,setIssue),id:'explorer-reveal-location',testId:'explorer-reveal-location'},
+    ...openInMenuItems(openInEditors, {...params, path:entry.path || undefined}, zh),
+    {separator:true, label:''},
+    {id:'explorer-rename', label:text('Rename…', '重命名…'), icon:<Icon name="rename"/>, shortcut:'F2', onSelect:() => beginRename(entry), testId:'explorer-rename'},
     {id:'explorer-delete', label:text('Delete…', '删除…'), icon:<Icon name="trash"/>, shortcut:'Del', danger:true, onSelect:() => beginDelete(entry), testId:'explorer-delete'},
    ]),
   ]});

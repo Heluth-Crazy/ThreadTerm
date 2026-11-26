@@ -186,3 +186,8 @@ button.call-row-head:hover .call-row-chevron, button.call-row-head:focus-visible
 .chat-fold-step.is-thinking .chat-fold-step-chevron { opacity:0; }
 .chat-fold-step.is-thinking > summary:hover .chat-fold-step-chevron, .chat-fold-step.is-thinking > summary:focus-visible .chat-fold-step-chevron, .chat-fold-step.is-thinking[open] .chat-fold-step-chevron { opacity:1; }
 .chat-fold .chat-fold-counts.is-lead { color:var(--muted); }
+/* Copy for a tool call's command and output (CopyButton): on hover of its line or block. */
+.call-row-command { align-items:flex-start; }
+.call-row-command > .copy-btn { flex:none; margin:-2px 0 -2px auto; }
+.tool-output-wrap { position:relative; }
+.tool-output-wrap > .tool-output-copy { position:absolute; top:4px; right:4px; background:var(--surface); }
