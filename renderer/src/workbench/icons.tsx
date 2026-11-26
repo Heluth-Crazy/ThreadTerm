@@ -1,67 +1,25 @@
 import type { SVGProps } from 'react';
-import { Icon } from '../components/PrototypeIcon';
+import { Icon, iconMarkup, type IconName } from '../components/PrototypeIcon';
 
-// Workbench-only glyphs drawn on the same 24px grid, stroke and caps as the approved prototype
-// icons (`.ico`), which stay immutable in PrototypeIcon. Static markup only; never user text.
-const glyphs: Record<string, string> = {
- person: '<circle cx="12" cy="8" r="3"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>',
- 'arrow-left': '<path d="M20 12H4m7-7-7 7 7 7"/>',
- 'arrow-right': '<path d="M4 12h16m-7-7 7 7-7 7"/>',
- devtools: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>',
- tune: '<path d="M3 7h3m6 0h9M3 17h9m6 0h3"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
- 'zoom-in': '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M7.5 10.5h6m-3-3v6"/>',
- 'zoom-out': '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M7.5 10.5h6"/>',
- screenshot: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><rect x="7" y="7" width="10" height="10" rx="1"/>',
- comment: '<path d="M21 14a3 3 0 0 1-3 3H9l-6 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3z"/><path d="M7 8h10M7 12h7"/>',
- // People for agent access; the prototype `agents` glyph is not part of every build of PrototypeIcon.
- 'agent-access': '<circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 16a5 5 0 0 1 7 4"/>',
- users: '<circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 16a5 5 0 0 1 7 4"/>',
- // The + sits outside the outline at the lower right: a + enclosed in a 16px outline antialiased into a grey blob.
- 'file-plus': '<path d="M12 21H6V3h8l4 4v4"/><path d="M14 3v4h4"/><path d="M18 14v7M14.5 17.5h7"/>',
- 'folder-plus': '<path d="M11 20H3V4h7l2 2h9v5"/><path d="M18 14v7M14.5 17.5h7"/>',
- refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3l2.2 2.2"/><path d="M19.5 4v4.9h-4.9"/>',
- copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
- // Chevrons folding onto a line; a boxed minus read as "minimize" and bare chevrons as an ×.
- 'collapse-all': '<path d="m8 21 4-4 4 4M8 3l4 4 4-4M5 12h14"/>',
- undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
- minus: '<path d="M5 12h14"/>',
- fetch: '<path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M12 12v9M8 17l4 4 4-4"/>',
- pull: '<path d="M12 3v13M6 10l6 6 6-6M5 21h14"/>',
- push: '<path d="M12 21V8M6 14l6-6 6 6M5 3h14"/>',
- diff: '<path d="M12 3v10M7 8h10M7 20h10"/>',
- 'chev-up': '<path d="m6 15 6-6 6 6"/>',
- checkpoint: '<circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/>',
- // Run view: the approved play triangle and a stop square, drawn on the same grid as the prototype set.
- play: '<path d="m8 5 11 7-11 7z" fill="none"/>',
- stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
- // Toolbar view switcher: copied verbatim from prototypes/mac-style (doc, search, branch, globe, info), drawn at its
- // 1.6 stroke by .wb-toolbar-views.
- 'view-files': '<path d="M7 3.5h6.5L18.5 8.5v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2z"/><path d="M13.5 3.5v5h5"/>',
- 'view-search': '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>',
- 'view-scm': '<circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 3.5-2.5 5-6 5.5L8.5 16"/>',
- 'view-browser': '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.3 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.3-3.5-8.5s1.1-6.1 3.5-8.5z"/>',
- 'view-details': '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.9v.1"/>',
- 'view-changes': '<path d="M12 4v11M6.5 9.5h11M6.5 20h11"/>',
- // Cursor-referenced surfaces (cursor-grammar.css): Design Mode tools and note actions, from prototypes/mac-style.
- annotate: '<path d="M5 19.5h3.6L19 9.1a2.5 2.5 0 0 0-3.6-3.6L5 15.9z"/><path d="m13.8 7.1 3.6 3.6"/>',
- 'pick-element': '<path d="M6.5 4.5 18 10.6l-5.1 1.5-2.1 5.4z"/>',
- 'pick-area': '<path d="M4.5 8V5.5a1 1 0 0 1 1-1H8M16 4.5h2.5a1 1 0 0 1 1 1V8M19.5 16v2.5a1 1 0 0 1-1 1H16M8 19.5H5.5a1 1 0 0 1-1-1V16"/>',
+// Design Mode's markup tools, drawn on the same 24px grid, stroke and caps as the line icons (`.ico`). Every other
+// workbench glyph is a line icon (PrototypeIcon, from Lucide since 2026-11-26). Static markup only; never user text.
+const glyphs = {
  'mark-draw': '<path d="M4.5 16.5c2.4-5.6 4.8-7.6 6.9-4.6s4.1 2 7.6-4.4"/>',
  'mark-ellipse': '<ellipse cx="12" cy="12" rx="8" ry="5.5"/>',
  'mark-rect': '<rect x="4.5" y="6.5" width="15" height="11" rx="1.5"/>',
  'mark-arrow': '<path d="M5.5 18.5 18 6M9.5 6H18v8.5"/>',
- 'css-props': '<path d="M5 7h8M17 7h2M5 17h2M11 17h8"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
- 'to-chat': '<path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V16A2.5 2.5 0 0 1 4 13.5z"/>',
- 'element-code': '<path d="m9 8-4 4 4 4M15 8l4 4-4 4"/>',
-};
-const glyphHtml=Object.fromEntries(Object.entries(glyphs).map(([name,__html])=>[name,Object.freeze({__html})]));
+} as const;
+type Glyph = keyof typeof glyphs;
+/** A name WbIcon draws: a line icon, or one of Design Mode's markup tools. */
+export type WbIconName = IconName | Glyph;
+const glyphHtml: Record<string, { readonly __html: string }> = Object.fromEntries(Object.entries(glyphs).map(([name, __html]) => [name, Object.freeze({ __html })]));
+const isGlyph = (name: string): name is Glyph => Object.hasOwn(glyphs, name);
 
 /** SVG markup of a workbench glyph for DOM built outside React (e.g. CodeMirror widgets). */
-export const wbIconMarkup = (name:string) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${glyphs[name] ?? ''}</svg>`;
+export const wbIconMarkup = (name: WbIconName) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${isGlyph(name) ? glyphs[name] : iconMarkup(name)}</svg>`;
 
-/** Workbench icon: falls back to the prototype set for names it does not define. */
-export function WbIcon({name, className, ...props}:{name:string;className?:string}&SVGProps<SVGSVGElement>) {
- const body = glyphs[name];
- if(!body) return <Icon name={name} className={className} {...props}/>;
- return <svg className={['ico', className].filter(Boolean).join(' ')} viewBox="0 0 24 24" aria-hidden="true" {...props} dangerouslySetInnerHTML={glyphHtml[name]}/>;
+/** Workbench icon: a line icon, or one of Design Mode's markup tools. */
+export function WbIcon({ name, className, ...props }: { name: WbIconName; className?: string } & SVGProps<SVGSVGElement>) {
+ if (!isGlyph(name)) return <Icon name={name} className={className} {...props} />;
+ return <svg className={['ico', className].filter(Boolean).join(' ')} viewBox="0 0 24 24" aria-hidden="true" {...props} dangerouslySetInnerHTML={glyphHtml[name]} />;
 }

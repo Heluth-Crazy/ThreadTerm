@@ -31,7 +31,7 @@ test('real icon regeneration preserves the current component and stable SVG prop
     for (const directory of ['qa', 'reference/prototype', 'renderer/src/components']) {
       await mkdir(join(fixture, directory), { recursive: true });
     }
-    for (const path of ['qa/generate-prototype-icons.mjs', 'reference/prototype/app.js']) {
+    for (const path of ['qa/generate-prototype-icons.mjs', 'qa/line-icons.json', 'reference/prototype/app.js']) {
       await copyFile(resolve(path), join(fixture, path));
     }
     const result = spawnSync(process.execPath, [join(fixture, 'qa/generate-prototype-icons.mjs')], {

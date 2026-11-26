@@ -1,3 +1,4 @@
+import type { IconName } from './components/PrototypeIcon';
 import type { ChatPart } from '@threadterm/protocol';
 import { describeTool, toolOutputPreview } from './toolActivity';
 import { editFileStats } from './toolCards';
@@ -9,7 +10,7 @@ type Copy = (en: string, zh: string) => string;
 export interface ToolRowLine {
   /** Stable within the call. */
   key: string;
-  icon: string;
+  icon: IconName;
   label: string;
   /** The label is a shell command, shown in the monospace face. */
   mono?: boolean;
@@ -134,7 +135,7 @@ function editVerb(file: ToolEditFile, copy: Copy): string {
   }
 }
 
-const editIcon = (file: ToolEditFile): string => file.change === 'add' ? 'plus' : file.change === 'delete' ? 'trash' : file.change === 'move' ? 'flow' : 'diff';
+const editIcon = (file: ToolEditFile): IconName => file.change === 'add' ? 'file-plus' : file.change === 'delete' ? 'trash' : file.change === 'move' ? 'arrow-right' : 'diff';
 
 function editRow(view: Extract<ToolView, { kind: 'edit' }>, copy: Copy, sessionCwd?: string): Omit<ToolRow, 'status'> {
   const shown = view.files.slice(0, ROW_FILE_LIMIT);

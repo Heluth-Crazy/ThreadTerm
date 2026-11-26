@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { GitStatus, Session } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { Icon } from './PrototypeIcon';
-import { WbIcon } from '../workbench/icons';
+import { WbIcon, type WbIconName } from '../workbench/icons';
 import { ExplorerView } from './ExplorerView';
 import { SearchView } from './SearchView';
 import { SourceControlView } from './SourceControlView';
@@ -164,12 +164,12 @@ export function WorkbenchSideBar({scope, actions, filesActions, sessions, allSes
   target.addEventListener('pointermove', move); target.addEventListener('pointerup', end); target.addEventListener('pointercancel', end);
  };
  const changeCount = git.status?.changes.length ?? 0;
- const views:{id:WorkbenchView;icon:string;label:string;shortcut:string;badge?:number}[] = [
+ const views:{id:WorkbenchView;icon:WbIconName;label:string;shortcut:string;badge?:number}[] = [
   {id:'files', icon:'view-files', label:text('Files', '文件'), shortcut:'Ctrl+Shift+E'},
   {id:'search', icon:'view-search', label:text('Search', '搜索'), shortcut:'Ctrl+Shift+F'},
   {id:'scm', icon:'view-scm', label:text('Source Control', '源代码管理'), shortcut:'Ctrl+Shift+G', badge:changeCount || undefined},
   {id:'changes', icon:'view-changes', label:text('Agent changes', 'Agent 改动'), shortcut:''},
-  ...(browser?[{id:'browser' as const,icon:'view-browser',label:text('Browser','浏览器'),shortcut:''}]:[]),
+  ...(browser?[{id:'browser' as const,icon:'view-browser' as const,label:text('Browser','浏览器'),shortcut:''}]:[]),
   {id:'details', icon:'view-details', label:text('Session details', '会话详情面板'), shortcut:''},
  ];
  const current = stored.view==='browser' ? {label:text('Browser','浏览器')} : stored.view==='run' ? {label:text('Run', '运行')} : stored.view==='details' ? {label:text('Session details', '会话详情')} : views.find(view => view.id === stored.view)!;

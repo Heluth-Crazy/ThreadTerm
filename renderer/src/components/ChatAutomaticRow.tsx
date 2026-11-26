@@ -13,7 +13,7 @@ export function ChatAutomaticRow({ text, copy }: { text: string; copy: Copy }) {
   const { first, more, updates } = automaticSummary(text, copy);
   return <div className="chat-auto" data-testid="chat-automatic-row">
     <button type="button" className="chat-auto-row" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-      <span className="chat-auto-tag"><Icon name="bolt" />{copy('Automatic update', '自动唤醒')}</span>
+      <span className="chat-auto-tag"><Icon name="alarm" />{copy('Automatic update', '自动唤醒')}</span>
       <span className="chat-auto-text">{first}</span>
       {more > 0 && <span className="chat-auto-more">{copy(`${more} more`, `等 ${more} 条`)}</span>}
       <Icon name="chevD" className="chat-auto-chev" />

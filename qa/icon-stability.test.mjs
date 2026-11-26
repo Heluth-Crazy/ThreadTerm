@@ -16,7 +16,7 @@ test('sample icon markup is byte-identical to the pre-round-6 output',()=>{
 });
 
 test('resolved icon names share frozen innerHTML props, including aliases and fallbacks',()=>{
- for(const [component,names] of [[icons.Icon,['settings','gear']],[icons.Icon,['missing-a','missing-b','file']],[icons.WbIcon,['refresh','refresh']]]){
+ for(const [component,names] of [[icons.Icon,['settings','gear']],[icons.Icon,['missing-a','missing-b','file']],[icons.WbIcon,['mark-rect','mark-rect']]]){
   const values=names.map(name=>component({name}).props.dangerouslySetInnerHTML);
   assert.ok(Object.isFrozen(values[0]));for(const value of values)assert.equal(value,values[0]);
  }
@@ -44,8 +44,8 @@ for(const [name,props] of iconSamples)test(`${name} ${props.name??props.provider
 
 test('identity regression detects the preceding fresh-innerHTML implementation',async()=>{
  const before=loadIcons(source=>source
-  .replace('dangerouslySetInnerHTML={iconHtml[aliases[name]??name]??iconHtml.file}','dangerouslySetInnerHTML={{__html:icons[aliases[name]??name]??icons.file}}')
+  .replace('dangerouslySetInnerHTML={iconHtml[resolve(name)]??iconHtml.file}','dangerouslySetInnerHTML={{__html:icons[resolve(name)]??icons.file}}')
   .replace('dangerouslySetInnerHTML={brandHtml[name]}','dangerouslySetInnerHTML={{__html:body}}')
-  .replace('dangerouslySetInnerHTML={glyphHtml[name]}','dangerouslySetInnerHTML={{__html:body}}'));
- for(const [name,props] of [['Icon',{name:'back'}],['WbIcon',{name:'refresh'}],['AgentIcon',{provider:'Codex'}]])await assert.rejects(()=>rerenderSample(before,name,props),/pressed SVG child survives React reconciliation/);
+  .replace('dangerouslySetInnerHTML={glyphHtml[name]}','dangerouslySetInnerHTML={{__html:glyphs[name]}}'));
+ for(const [name,props] of [['Icon',{name:'back'}],['WbIcon',{name:'refresh'}],['WbIcon',{name:'mark-rect'}],['AgentIcon',{provider:'Codex'}]])await assert.rejects(()=>rerenderSample(before,name,props),/pressed SVG child survives React reconciliation/);
 });

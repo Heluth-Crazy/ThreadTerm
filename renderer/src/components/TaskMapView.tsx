@@ -10,7 +10,7 @@ import { TASK_GRAPH_METRICS, taskGraphAncestors, layoutTaskGraph, taskGraphWindo
 import { watchChatView, revealInChat } from '../chatFlowSync';
 import type { ChatViewState, TaskFlowChatTarget, TaskGraphExpansion, TaskGraphBox, TaskGraphBand, TaskGraphLayout, TaskMapNode, TaskMapStatus } from '../taskMapTypes';
 import { createRebuildScheduler, taskMapStatusLabel } from '../taskMapView';
-import { AgentTile, Icon } from './PrototypeIcon';
+import { AgentTile, Icon, type IconName } from './PrototypeIcon';
 import { Select } from './ui/Select';
 import { createTaskMapInspectorCache, TaskMapDetails } from './TaskMapInspector';
 import './task-map.css';
@@ -537,7 +537,7 @@ interface BoxView {
   label: string;
   detail?: string;
   duration?: string;
-  icon: string;
+  icon: IconName;
   provider?: string;
   ariaLabel: string;
   output: boolean;
@@ -605,12 +605,12 @@ const GraphOverview = memo(function GraphOverview({ layout, height, scrollTop, v
 
 function kindLabel(node: TaskMapNode, zh: boolean): string {
   const copy = (en: string, cn: string) => zh ? cn : en;
-  return ({ prompt: copy('Prompt', '提示'), plan: copy('Plan', '计划'), tools: copy('Tools', '工具'), delegate: copy('Delegate', '委派'), subagent: copy('Subagent', '子代理'), approval: copy('Approval', '审批'), question: copy('Question', '问题'), error: copy('Error', '错误'), reply: copy('Reply', '回复'), files: copy('Files changed', '文件更改'), document: copy('Document', '文档') })[node.kind];
+  return ({ prompt: copy('Prompt', '提示'), plan: copy('Plan', '计划'), tools: copy('Tools', '工具'), delegate: copy('Delegate', '委派'), subagent: copy('Subagent', '子代理'), approval: copy('Approval', '审批'), question: copy('Question', '问题'), error: copy('Error', '错误'), reply: copy('Reply', '回复'), files: copy('Files changed', '文件更改'), document: copy('Document', '文档') } as const)[node.kind];
 }
 
-function nodeIcon(node: TaskMapNode): string {
-  if (node.kind === 'tools') return ({ explore: 'search', command: 'terminal', edit: 'file', browser: 'globe', mcp: 'plug', delegation: 'agents', tool: 'wrench' })[node.step ?? 'tool'];
-  return ({ prompt: 'agents', plan: 'check', delegate: 'agents', subagent: 'spark', approval: 'shield', question: 'info', error: 'close', reply: 'check', files: 'file', document: 'file' })[node.kind];
+function nodeIcon(node: TaskMapNode): IconName {
+  if (node.kind === 'tools') return ({ explore: 'search', command: 'terminal', edit: 'file', browser: 'globe', mcp: 'plug', delegation: 'agents', tool: 'wrench' } as const)[node.step ?? 'tool'];
+  return ({ prompt: 'agents', plan: 'check', delegate: 'agents', subagent: 'spark', approval: 'shield', question: 'info', error: 'close', reply: 'check', files: 'file', document: 'file' } as const)[node.kind];
 }
 
 export default TaskMapView;

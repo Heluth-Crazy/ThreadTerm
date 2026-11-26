@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProviderId, Session, Snapshot, Worktree } from "@threadterm/protocol";
 import { request } from "../bridge";
 import { sessionTime } from "../sessionTime";
-import { AgentTile, Icon, SessionIcon } from "./PrototypeIcon";
+import { AgentTile, Icon, SessionIcon, type IconName } from "./PrototypeIcon";
 import { isActionableInboxItem } from "../inboxVisibility";
 import { displayPath } from "../projectScope";
 import { workbenchAgents, type WorkbenchAgent } from "./workbenchAgents";
@@ -70,7 +70,7 @@ export function WorkbenchPage({ data, recentIds = [], onSession, onCreate, onAdd
     </div>
   </section>;
 }
-function Picker({ icon, value, onChange, label, options, disabled = false }: { icon: string; value: string; onChange: (value: string) => void; label: string; options: [string, string][]; disabled?: boolean }) { return <label className={`composer-chip${disabled ? " disabled" : ""}`}><Icon name={icon} /><Select className="composer-select" value={value} onChange={event => onChange(event.target.value)} disabled={disabled} aria-label={label}>{!value && <option value="">{label}</option>}{options.map(([id, text]) => <option key={id} value={id}>{text}</option>)}</Select></label>; }
+function Picker({ icon, value, onChange, label, options, disabled = false }: { icon: IconName; value: string; onChange: (value: string) => void; label: string; options: [string, string][]; disabled?: boolean }) { return <label className={`composer-chip${disabled ? " disabled" : ""}`}><Icon name={icon} /><Select className="composer-select" value={value} onChange={event => onChange(event.target.value)} disabled={disabled} aria-label={label}>{!value && <option value="">{label}</option>}{options.map(([id, text]) => <option key={id} value={id}>{text}</option>)}</Select></label>; }
 export function AgentPicker({ value, onChange, agents, label, data, projectId, zh, onCreated, onOpenSettings }: { value?: ProviderId; onChange: (value: ProviderId) => void; agents: WorkbenchAgent[]; label: string; data: Snapshot; projectId?: string; zh: boolean; onCreated: (session: Session) => void; onOpenSettings?: () => void }) {
   const [open, setOpen] = useState(false);
   const selected = agents.find(agent => agent.id === value);

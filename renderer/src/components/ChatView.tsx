@@ -177,7 +177,7 @@ function CodexToolPart({ part, copy, openFile }: { part: ChatPart; copy: (en: st
   const isFile = name.includes("file") || name.includes("patch") || name.includes("dir") || name.includes("read") || name.includes("write") || name.includes("edit");
   const isCommand = name.includes("command") || name.includes("shell") || name.includes("exec") || name.includes("bash");
   const isSearch = name.includes("search") || name.includes("web") || name.includes("grep") || name.includes("glob") || name.includes("fetch");
-  const icon = delegation ? "export" : isFile ? "file" : isCommand ? "terminal" : isSearch ? "search" : "spark";
+  const icon = delegation ? "bot" : isFile ? "file" : isCommand ? "terminal" : isSearch ? "search" : "spark";
   const label = delegation ? delegationToolLabel(delegation, copy) : (isFile
       ? copy("Accessed files", "已处理文件")
       : isCommand
@@ -2173,7 +2173,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       <div className="menu-label chat-link-menu-url" title={linkMenu.url}>{linkMenu.url}</div>
       {surface?.openWeb && <button type="button" role="menuitem" className="menu-item" onClick={() => { surface.openWeb?.(linkMenu.url); setLinkMenu(undefined); }}><Icon name="split" />{copy("Open in preview", "在预览中打开")}</button>}
       <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void openExternal(url).catch(error => setLinkIssue(String(error))); }}><Icon name="popout" />{copy("Open in browser", "在浏览器中打开")}</button>
-      <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void navigator.clipboard.writeText(url).catch(error => setLinkIssue(String(error))); }}><Icon name="export" />{copy("Copy link", "复制链接")}</button>
+      <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void navigator.clipboard.writeText(url).catch(error => setLinkIssue(String(error))); }}><Icon name="link" />{copy("Copy link", "复制链接")}</button>
     </CatalogPopover>}
     <SelectionBubble rootRef={logRef} visible={surface?.focused !== false && overlay !== 'full'} copy={copy} quoteEnabled={writable} askEnabled={!!onOpenSession} onQuote={text => insertChatText(session.id, quoteSelection(text))} onAsk={(text, current) => askSelectionChat(session, text, current, id => onOpenSession?.(id))} />
     <div className="chat-log-shell" ref={chatShellRef} onKeyDown={viewport.onKeyDown}>
