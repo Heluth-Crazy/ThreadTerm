@@ -1,14 +1,25 @@
+/* The viewer is a sandboxed document of its own, so this file is its palette: colours are declared here once
+ * and every rule below draws with var(--…) (qa/visual-consistency.test.mjs TOKEN_FILES). */
 :root {
   color-scheme: light;
   --body-background: #e8e8e8;
   --body-color: #1f2328;
   --muted: #555;
+  --comment-tint: rgb(255 213 79 / 0.32);
+  --comment-tint-active: rgb(255 193 7 / 0.6);
+  --comment-ref-active: rgb(255 193 7 / 0.35);
+  --comment-focus: #3b82f6;
+  --comment-background: #ffffff;
+  --comment-border: rgb(0 0 0 / 0.12);
+  --comment-shadow: rgb(0 0 0 / 0.18);
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --body-background: #141414;
   --body-color: #e6e6e6;
   --muted: #a0a0a0;
+  --comment-background: #252526;
+  --comment-border: rgb(255 255 255 / 0.14);
 }
 html, body { margin: 0; padding: 0; background: var(--body-background); color: var(--body-color); }
 body { font-family: system-ui, sans-serif; font-size: 13px; }
@@ -22,3 +33,27 @@ body { font-family: system-ui, sans-serif; font-size: 13px; }
 /* Dark theme darkens the desk around the pages only. A page keeps the document's own paper and
  * colours: a run with explicit dark text (headings, theme colours) would vanish on a dark page. */
 :root[data-theme="dark"] .docx-wrapper { background: var(--body-background); }
+/* Comments (批注), see setupComments() in main.ts. The commented text is tinted like Word's comment
+ * highlight; the comment on show is tinted more strongly. The 💬 docx-preview places after it opens one card
+ * that floats over the pages, so the page-bound popover it ships is never shown. Pages keep their paper in the
+ * dark theme, so the tints are the same in both themes; the card follows the theme. */
+::highlight(docx-comments) { background-color: var(--comment-tint); }
+::highlight(tt-comment-active) { background-color: var(--comment-tint-active); }
+.docx-comment-popover { display: none !important; }
+.docx-comment-ref {
+  cursor: pointer; user-select: none; font-size: 0.8em; padding: 0 1px; border-radius: 3px; opacity: 0.75;
+}
+.docx-comment-ref:hover, .docx-comment-ref.is-active { opacity: 1; background: var(--comment-ref-active); }
+.docx-comment-ref:focus-visible { outline: 2px solid var(--comment-focus); outline-offset: 1px; }
+.tt-comment-card {
+  position: fixed; z-index: 1000; box-sizing: border-box; width: min(320px, calc(100vw - 16px)); max-height: 50vh;
+  overflow: auto; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--comment-border);
+  background: var(--comment-background); color: var(--body-color); box-shadow: 0 6px 24px var(--comment-shadow);
+  font: 13px/1.5 system-ui, sans-serif;
+}
+.tt-comment-card[hidden] { display: none; }
+.tt-comment-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.tt-comment-author { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-comment-date { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.tt-comment-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tt-comment-text + .tt-comment-text { margin-top: 4px; }
