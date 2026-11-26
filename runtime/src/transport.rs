@@ -16,6 +16,10 @@ use std::sync::{Arc, Mutex};
 use crate::send_trace::{self, Context as SendTraceContext, Event as SendTraceEvent, Timer as SendTraceTimer};
 
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
+/// The most terminal bytes one output frame carries. A ConPTY flood is stored in reads of tens of bytes; one frame per
+/// stored read cost one pipe write here and one IPC round trip in the desktop each, so 20 MB took about five minutes
+/// after the program had finished (2026-11-26). Consecutive stored reads now go out as one frame.
+const OUTPUT_FRAME_BYTES: usize = 256 * 1024;
 /// One control frame never carries more than this. A larger answer is refused
 /// for that request alone (`response_too_large`), so a legal long transcript can
 /// never tear down the connection and the other views on it.
@@ -960,23 +964,30 @@ pub(crate) async fn serve_output<T: tokio::io::AsyncRead + tokio::io::AsyncWrite
                 if chunks.is_empty() {
                     break;
                 }
+                // The frames this loop used to send one per stored chunk, each labelled with the running cursor, are
+                // contiguous by construction: one frame at the first cursor carries the same bytes in the same order.
+                let frame_cursor = *cursor;
+                let mut frame: Vec<u8> = Vec::new();
                 for (start, data) in chunks {
                     let offset = (*cursor - start).max(0) as usize;
                     let bytes = &data[offset..];
                     let take = bytes.len().min(*credit as usize);
+                    frame.extend_from_slice(&bytes[..take]);
+                    *cursor += take as i64;
+                    *credit -= take as i64;
+                    if take < bytes.len() || frame.len() >= OUTPUT_FRAME_BYTES {
+                        break;
+                    }
+                }
+                if !frame.is_empty() {
                     guard_stream(&service, &principal, "terminal.output")?;
                     write_output(
                         &mut pipe,
                         1,
-                        &json!({"sessionId":id,"cursor":*cursor}),
-                        &bytes[..take],
+                        &json!({"sessionId":id,"cursor":frame_cursor}),
+                        &frame,
                     )
                     .await?;
-                    *cursor += take as i64;
-                    *credit -= take as i64;
-                    if take < bytes.len() {
-                        break;
-                    }
                 }
             }
         }
@@ -1611,5 +1622,95 @@ mod decoder_tests {
         advance_cursor_past_history_gap(&mut cursor, 96);
         assert_eq!(cursor, 96);
         assert_eq!(credit, 64 * 1024, "gap frames do not consume output credit");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod output_batch_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn service(root: &std::path::Path) -> (Arc<RuntimeService>, Arc<crate::db::Database>, String) {
+        let config = crate::config::RuntimeConfig {
+            data_dir: root.into(), database_path: root.join("runtime.sqlite"),
+            credential_path: root.join("credential"), pipe_base: "output-batch-test".into(),
+        };
+        let db = Arc::new(crate::db::Database::open(&config.database_path).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::project_catalog::initialize(&db).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        crate::retry_scheduler::initialize(&db).unwrap();
+        let service = Arc::new(RuntimeService::with_test_providers(config, Arc::clone(&db), vec![]));
+        let id = db
+            .create_session(crate::db::CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "output-batch" })
+            .unwrap()
+            .id;
+        db.set_session_status(&id, "running", None).unwrap();
+        (service, db, id)
+    }
+
+    /// Stored output in many small reads, the way a ConPTY flood arrives.
+    fn store_lines(db: &crate::db::Database, id: &str, count: usize) -> Vec<u8> {
+        let mut stored = Vec::new();
+        for index in 0..count {
+            let piece = format!("line {index}\n");
+            db.append_output(id, stored.len() as i64, piece.as_bytes()).unwrap();
+            stored.extend_from_slice(piece.as_bytes());
+        }
+        stored
+    }
+
+    /// Reads output frames until `bytes` arrived; returns each frame's cursor and size, and the bytes.
+    async fn read_output(client: &mut tokio::io::DuplexStream, bytes: usize) -> (Vec<(i64, usize)>, Vec<u8>) {
+        let mut decoder = FrameDecoder::default();
+        let (mut frames, mut received) = (Vec::new(), Vec::new());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while received.len() < bytes {
+                let frame = decoder.read(client).await.unwrap();
+                if frame[0] != 1 { continue; }
+                let (header, body) = split_binary(&frame[1..]).unwrap();
+                frames.push((header["cursor"].as_i64().unwrap(), body.len()));
+                received.extend_from_slice(body);
+            }
+        })
+        .await
+        .unwrap();
+        (frames, received)
+    }
+
+    #[tokio::test]
+    async fn consecutive_stored_reads_go_out_as_one_frame_byte_for_byte() {
+        let root = tempfile::tempdir().unwrap();
+        let (service, db, id) = service(root.path());
+        let stored = store_lines(&db, &id, 500);
+        let (server, mut client) = tokio::io::duplex(4 * 1024 * 1024);
+        let task = tokio::spawn(serve_output(server, Arc::clone(&service), "local".into()));
+        write_output(&mut client, 3, &json!({"sessionId":id,"cursor":0}), &[]).await.unwrap();
+        write_output(&mut client, 2, &json!({"sessionId":id,"credit":65536}), &[]).await.unwrap();
+        let (frames, received) = read_output(&mut client, stored.len()).await;
+        assert_eq!(received, stored);
+        assert_eq!(frames, vec![(0, stored.len())], "500 stored reads go out as one frame");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn credit_still_bounds_a_frame_and_more_credit_continues_where_it_stopped() {
+        let root = tempfile::tempdir().unwrap();
+        let (service, db, id) = service(root.path());
+        let stored = store_lines(&db, &id, 50);
+        let (server, mut client) = tokio::io::duplex(4 * 1024 * 1024);
+        let task = tokio::spawn(serve_output(server, Arc::clone(&service), "local".into()));
+        write_output(&mut client, 3, &json!({"sessionId":id,"cursor":0}), &[]).await.unwrap();
+        write_output(&mut client, 2, &json!({"sessionId":id,"credit":100}), &[]).await.unwrap();
+        let (first, head) = read_output(&mut client, 100).await;
+        // Whole stored reads up to the credit, then the part of the next one that still fits: exactly the credit.
+        assert_eq!(first.iter().map(|(_, size)| size).sum::<usize>(), 100, "exactly the credit: {first:?}");
+        assert!(first.windows(2).all(|pair| pair[0].0 + pair[0].1 as i64 == pair[1].0), "frames continue each other: {first:?}");
+        write_output(&mut client, 2, &json!({"sessionId":id,"credit":65536}), &[]).await.unwrap();
+        let (rest, tail) = read_output(&mut client, stored.len() - 100).await;
+        assert_eq!(rest, vec![(100, stored.len() - 100)], "one frame, starting where the credit stopped");
+        assert_eq!([head, tail].concat(), stored);
+        task.abort();
     }
 }
