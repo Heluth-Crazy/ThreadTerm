@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { clampContextMenu, menuText, nextMenuIndex } from '../contextMenuActions';
 import './context-menu.css';
-import { useBrowserOcclusion } from '../browserOcclusion';
+import { usePassiveBrowserOcclusion } from '../browserOcclusion';
 
 export type ContextMenuItem = {
   id?: string;
@@ -64,11 +64,13 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuRequest & { onC
   const panel = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 8, top: 8 });
   const text = (en: string, zh: string) => menuText(document.documentElement.lang, en, zh);
-  useBrowserOcclusion();
   useLayoutEffect(() => {
     const element = panel.current!;
     const rect = element.getBoundingClientRect();
-    setPosition(clampContextMenu(x, y, rect.width, rect.height, window.innerWidth, window.innerHeight));
+    const next = clampContextMenu(x, y, rect.width, rect.height, window.innerWidth, window.innerHeight);
+    // Placed now, not after React's re-render: the browser-page check below measures where the menu really is.
+    element.style.left = `${next.left}px`; element.style.top = `${next.top}px`;
+    setPosition(next);
     element.querySelector<HTMLButtonElement>('[role="menuitem"]:not([aria-disabled="true"])')?.focus({ preventScroll: true });
     if (!element.contains(document.activeElement)) element.focus({ preventScroll: true });
     const outside = (event: PointerEvent) => { if (!element.contains(event.target as Node)) onClose(); };
@@ -85,6 +87,8 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuRequest & { onC
       window.removeEventListener('resize', dismiss);
     };
   }, [x, y, onClose]);
+  // A native browser page is swapped for its snapshot only when the menu overlaps it.
+  usePassiveBrowserOcclusion(panel);
   const choose = (item: ContextMenuItem) => {
     if (item.disabled || !item.onSelect) return;
     // Focus restoration happens before actions open dialogs or navigate to a new target.

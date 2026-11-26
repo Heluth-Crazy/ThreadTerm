@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 function fixture(savedFiles=new Map()) {
  const handlers=new Map(), views=[], windows=new Map(), timers=new Set(), sent=[], opened=[];
- let ready=false, id=0, findId=0, now=100_000, loadPage=async(wc,url)=>{wc.url=url;}, capture=async()=>({isEmpty:()=>false,toDataURL:()=> 'data:image/png;base64,c25hcHNob3Q='});
+ let ready=false, id=0, findId=0, now=100_000, loadPage=async(wc,url)=>{wc.url=url;}, capture=async()=>({isEmpty:()=>false,toJPEG:()=>Buffer.from('snapshot')});
  const app=Object.assign(new EventEmitter(),{isPackaged:false,isReady:()=>ready,getPath:()=>resolve('qa/results/browser-unit-unused')});
  const profile=Object.assign(new EventEmitter(),{
   setPermissionRequestHandler(fn){this.permissionRequest=fn;},setPermissionCheckHandler(fn){this.permissionCheck=fn;},
@@ -171,7 +171,7 @@ test('late snapshot cannot hide a page after its overlay closed',async()=>{
  f.setCapture(()=>new Promise(resolve=>{finish=resolve;}));
  const pending=f.invoke({type:'occlusion',active:true});await new Promise(resolve=>setImmediate(resolve));
  assert.equal(f.first.win.contentView.children.length,1,'live page stays attached while its snapshot is pending');
- await f.invoke({type:'occlusion',active:false});finish({isEmpty:()=>false,toDataURL:()=> 'data:image/png;base64,c25hcHNob3Q='});await pending;
+ await f.invoke({type:'occlusion',active:false});finish({isEmpty:()=>false,toJPEG:()=>Buffer.from('snapshot')});await pending;
  assert.equal(f.first.win.contentView.children.length,1);
 });
 
@@ -307,7 +307,7 @@ test('each page captures while attached and detaches only after its replacement 
  f.setCapture((_rect,options)=>{assert.equal(options.stayHidden,true);assert.equal(options.stayAwake,true);assert.equal(f.first.win.contentView.children.length,2,'capture precedes every detach');return new Promise(resolve=>finishes.push(resolve));});
  const pending=f.invoke({type:'occlusion',active:true});await new Promise(resolve=>setImmediate(resolve));
  assert.equal(f.first.win.contentView.children.length,2);assert.equal(finishes.length,2);
- for(const finish of finishes)finish({isEmpty:()=>false,toDataURL:()=> 'data:image/png;base64,c25hcHNob3Q='});await pending;
+ for(const finish of finishes)finish({isEmpty:()=>false,toJPEG:()=>Buffer.from('snapshot')});await pending;
  for(const tabId of ['page-one','page-two']){
   const snapshot=await f.invoke({type:'state',tabId});assert.ok(snapshot.snapshot);assert.ok(snapshot.snapshotGeneration);
   assert.ok(f.sent.some(event=>event.value.state?.tabId===tabId&&event.value.state?.snapshotGeneration===snapshot.snapshotGeneration),'snapshot was published before readiness');
@@ -325,7 +325,7 @@ test('overlap rechecks cannot restart an in-flight capture or detach before imag
  await f.invoke({type:'occlusion',active:true});await f.show();
  await f.invoke({type:'bounds',tabId:'page-one',bounds:{x:25,y:85,width:400,height:600}});
  assert.equal(captures,1);assert.equal(f.first.win.contentView.children.length,1);
- finish({isEmpty:()=>false,toDataURL:()=> 'data:image/png;base64,c25hcHNob3Q='});await pending;
+ finish({isEmpty:()=>false,toJPEG:()=>Buffer.from('snapshot')});await pending;
  const snapshot=await f.invoke({type:'state',tabId:'page-one'});
  await f.invoke({type:'occlusion',active:true});assert.equal(captures,1,'recheck also retains a ready snapshot');
  await f.invoke({type:'snapshotReady',tabId:'page-one',generation:snapshot.snapshotGeneration});assert.equal(f.first.win.contentView.children.length,0);
@@ -349,10 +349,10 @@ test('a dismissed passive capture cannot overwrite a newer overlapping capture',
  const old=f.invoke({type:'occlusion',active:true});await new Promise(resolve=>setImmediate(resolve));
  await f.invoke({type:'occlusion',active:false});
  const current=f.invoke({type:'occlusion',active:true});await new Promise(resolve=>setImmediate(resolve));
- finishes[1]({isEmpty:()=>false,toDataURL:()=> 'data:image/png;base64,bmV3'});await current;
- const snapshot=await f.invoke({type:'state',tabId:'page-one'});assert.equal(snapshot.snapshot,'data:image/png;base64,bmV3');
+ finishes[1]({isEmpty:()=>false,toJPEG:()=>Buffer.from('new')});await current;
+ const snapshot=await f.invoke({type:'state',tabId:'page-one'});assert.equal(snapshot.snapshot,'data:image/jpeg;base64,bmV3');
  await f.invoke({type:'snapshotReady',tabId:'page-one',generation:snapshot.snapshotGeneration});assert.equal(f.first.win.contentView.children.length,0);
- finishes[0]({isEmpty:()=>false,toDataURL:()=> 'data:image/png;base64,b2xk'});await old;
+ finishes[0]({isEmpty:()=>false,toJPEG:()=>Buffer.from('old')});await old;
  const after=await f.invoke({type:'state',tabId:'page-one'});assert.equal(after.snapshot,snapshot.snapshot);assert.equal(after.snapshotGeneration,snapshot.snapshotGeneration);
  await f.invoke({type:'occlusion',active:false});assert.equal(f.first.win.contentView.children.length,1);
 });

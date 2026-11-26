@@ -96,16 +96,19 @@ function Stage({ visible, zh }: { visible: boolean; zh: boolean }) {
       window.clearTimeout(leave.timer);
       if (!over && state.current.expanded) leave.timer = window.setTimeout(() => { if (state.current.expanded && !state.current.over) island.collapse(); }, 1400);
     };
-    const move = (event: MouseEvent) => {
+    const at = (x: number, y: number) => {
       if (drag.current) return;
-      const target = state.current.on ? document.elementFromPoint(event.clientX, event.clientY) : null;
+      const target = state.current.on ? document.elementFromPoint(x, y) : null;
       report(!!target && target !== document.documentElement && target !== document.body && target.id !== 'island-root');
     };
+    const move = (event: MouseEvent) => at(event.clientX, event.clientY);
     // Leaving the window is decided by main, not by a `mouseout`: Windows hands the page a stale "mouse left" the moment
     // the window starts catching clicks, which would let the click through again (desktop/src/taskIsland.ts `interactive`).
+    // While clicks pass through, the page hears no mouse at all: main reports where the pointer is over the window.
     window.addEventListener('mousemove', move);
     const unsubscribe = bridge?.onPointerLeft(() => { if (!drag.current) report(false); });
-    return () => { window.removeEventListener('mousemove', move); unsubscribe?.(); };
+    const unsubscribePointer = bridge?.onPointer(point => at(point.x, point.y));
+    return () => { window.removeEventListener('mousemove', move); unsubscribe?.(); unsubscribePointer?.(); };
   }, [island]);
 
   useEffect(() => {

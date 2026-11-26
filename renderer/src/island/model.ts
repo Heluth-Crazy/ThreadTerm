@@ -31,6 +31,11 @@ export interface IslandBridge {
   setInteractive(on: boolean): void;
   /** Main saw the pointer leave the window while the island caught clicks; clicks pass through again. */
   onPointerLeft(listener: () => void): () => void;
+  /**
+   * Where the pointer is over the window (CSS px) while clicks pass through. The page gets no mouse events then: main
+   * watches the pointer instead of a system-wide mouse hook.
+   */
+  onPointer(listener: (point: { x: number; y: number }) => void): () => void;
   open(key: string): void;
   openApp(): void;
   /** `dx`: CSS px since the drag started. */

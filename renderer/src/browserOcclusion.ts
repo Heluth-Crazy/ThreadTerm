@@ -69,15 +69,22 @@ export function usePassiveBrowserOcclusion(ref: RefObject<HTMLElement | null>, a
 export function updateBrowserOverlayBounds(): void { if (visibleSurfaces) updateFallback(); }
 
 const passiveOverlay = '.toast, .attention-toast, .wb-web-preview-note';
-const portalOverlay = '[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"], .overlay, .popover, .scrim, .settings-drawer, .selection-bubble, .chat-connection-popover, [data-tooltip]:hover';
+/**
+ * Dialogs, scrims and drawers cover or dim the whole app, so the page is captured wherever they are. Menus, lists,
+ * tooltips and popovers float: like notices, they need the page's snapshot only where they overlap it. Capturing for
+ * every menu anywhere in the app encoded the page on each open and froze a live page under a menu nowhere near it
+ * (audit 2026-11-25).
+ */
+const coverOverlay = '[role="dialog"], .overlay, .scrim, .settings-drawer';
+const floatingOverlay = '[role="menu"], [role="listbox"], [role="tooltip"], .popover, .selection-bubble, .chat-connection-popover, [data-tooltip]:hover';
 let observer: MutationObserver | undefined;
 let releaseFallback: (() => void) | undefined;
 let scanFrame = 0;
 let interaction: ((event?: Event) => void) | undefined;
 
 function updateFallback() {
-  const passive = new Set([...passiveOverlays, ...document.querySelectorAll<HTMLElement>(passiveOverlay)]);
-  // Observe only notices, and only for the lifetime of a visible browser surface.
+  const passive = new Set([...passiveOverlays, ...document.querySelectorAll<HTMLElement>(passiveOverlay), ...document.querySelectorAll<HTMLElement>(floatingOverlay)]);
+  // Observe only notices and floating overlays, and only for the lifetime of a visible browser surface.
   // Attribute changes cover repositioning without a size change.
   if (passive.size) {
     passiveResize ??= new ResizeObserver(scheduleFallbackUpdate);
@@ -95,7 +102,7 @@ function updateFallback() {
   observedPassive.clear(); passive.forEach(element => observedPassive.add(element));
   const visible = (element: HTMLElement) => !element.hidden && element.getAttribute('aria-hidden') !== 'true' && element.getClientRects().length > 0;
   const pages = [...pageSurfaces].filter(visible).map(element => element.getBoundingClientRect());
-  const active = Array.from(document.querySelectorAll<HTMLElement>(portalOverlay)).some(element =>
+  const active = Array.from(document.querySelectorAll<HTMLElement>(coverOverlay)).some(element =>
     !element.closest(passiveOverlay) && visible(element),
   ) || [...passive].some(element => visible(element) && browserOverlayIntersectsPage(element.getBoundingClientRect(), pages));
   if (active && !releaseFallback) releaseFallback = acquireBrowserOcclusion();

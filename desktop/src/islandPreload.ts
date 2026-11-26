@@ -15,6 +15,14 @@ contextBridge.exposeInMainWorld('threadtermIsland', {
     ipcRenderer.on('task-island:pointer-left', handler);
     return () => { ipcRenderer.off('task-island:pointer-left', handler); };
   },
+  onPointer(listener: (point: { x: number; y: number }) => void) {
+    const handler = (_event: IpcRendererEvent, value: unknown) => {
+      const point = value && typeof value === 'object' ? value as { x?: unknown; y?: unknown } : {};
+      if (typeof point.x === 'number' && Number.isFinite(point.x) && typeof point.y === 'number' && Number.isFinite(point.y)) listener({ x: point.x, y: point.y });
+    };
+    ipcRenderer.on('task-island:pointer', handler);
+    return () => { ipcRenderer.off('task-island:pointer', handler); };
+  },
   open(key: string) { if (typeof key === 'string') ipcRenderer.send('task-island:open', key); },
   openApp() { ipcRenderer.send('task-island:open-app'); },
   drag(phase: 'start' | 'move' | 'end', dx: number) { ipcRenderer.send('task-island:drag', { phase, dx: Number.isFinite(dx) ? dx : 0 }); },
