@@ -1,4 +1,10 @@
-//! The runtime's one SQLite connection mutex, with an optional wait/hold trace for QA.
+//! The runtime's one SQLite connection mutex: an outbox change signal, and an optional wait/hold trace for QA.
+//!
+//! Outbox signal: an SQLite update hook marks any row change in `outbox`. The guard that made it takes the mark while it
+//! still holds the connection, releases the connection (the transaction has committed or rolled back by then), and
+//! only then bumps a `watch` generation. Control connections wait on that generation instead of polling every 100 ms,
+//! so a committed event goes out at once. A rollback gives an extra wake that finds nothing; a wake is only a hint, the
+//! reader drains by sequence. Another process writing the outbox is not seen here; readers keep a timer for that.
 //!
 //! `ConnectionMutex::lock` behaves like `Mutex::lock`. In builds with debug assertions and with
 //! `THREADTERM_V3_DB_LOCK_TRACE=<file>` set, it also records per caller (`#[track_caller]`) how long the caller waited
@@ -7,22 +13,44 @@
 //! waits on the database apart from other delays.
 use rusqlite::Connection;
 use std::ops::{Deref, DerefMut};
-use std::sync::{LockResult, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LockResult, Mutex, MutexGuard, PoisonError};
 
 pub(crate) struct ConnectionMutex {
     inner: Mutex<Connection>,
+    outbox: Arc<OutboxSignal>,
+}
+
+struct OutboxSignal {
+    /// Set by the update hook, which runs only while some guard holds the connection.
+    changed: AtomicBool,
+    generation: tokio::sync::watch::Sender<u64>,
 }
 
 pub(crate) struct ConnectionGuard<'a> {
     /// Always `Some` until `Drop` takes it, so that the trace records a hold after the connection is unlocked.
     guard: Option<MutexGuard<'a, Connection>>,
+    outbox: &'a OutboxSignal,
     #[cfg(debug_assertions)]
     held: Option<(std::time::Instant, &'static std::panic::Location<'static>)>,
 }
 
 impl ConnectionMutex {
     pub(crate) fn new(connection: Connection) -> Self {
-        Self { inner: Mutex::new(connection) }
+        let outbox = Arc::new(OutboxSignal { changed: AtomicBool::new(false), generation: tokio::sync::watch::channel(0).0 });
+        let mark = Arc::clone(&outbox);
+        connection.update_hook(Some(move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
+            if table == "outbox" {
+                mark.changed.store(true, Ordering::Relaxed);
+            }
+        }));
+        Self { inner: Mutex::new(connection), outbox }
+    }
+
+    /// Changes after every release of the connection that committed (or rolled back) an outbox change. Subscribe
+    /// before reading a starting cursor, so that no commit after that read goes unnoticed.
+    pub(crate) fn outbox_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.outbox.generation.subscribe()
     }
 
     #[track_caller]
@@ -36,7 +64,7 @@ impl ConnectionMutex {
                 let acquired = std::time::Instant::now();
                 // A short map update under the trace's own lock; the file is written elsewhere, outside every lock.
                 trace::waited(site, acquired - asked);
-                let wrap = |guard| ConnectionGuard { guard: Some(guard), held: Some((acquired, site)) };
+                let wrap = |guard| ConnectionGuard { guard: Some(guard), outbox: &self.outbox, held: Some((acquired, site)) };
                 return match result {
                     Ok(guard) => Ok(wrap(guard)),
                     Err(poisoned) => Err(PoisonError::new(wrap(poisoned.into_inner()))),
@@ -45,6 +73,7 @@ impl ConnectionMutex {
         }
         let wrap = |guard| ConnectionGuard {
             guard: Some(guard),
+            outbox: &self.outbox,
             #[cfg(debug_assertions)]
             held: None,
         };
@@ -70,9 +99,14 @@ impl DerefMut for ConnectionGuard<'_> {
 
 impl Drop for ConnectionGuard<'_> {
     fn drop(&mut self) {
+        // Taken while the connection is still held: this holder's changes only, never another writer's open transaction.
+        let outbox_changed = self.outbox.changed.swap(false, Ordering::Relaxed);
         #[cfg(debug_assertions)]
         let held = self.held.take().map(|(acquired, site)| (site, acquired.elapsed()));
         drop(self.guard.take());
+        if outbox_changed {
+            self.outbox.generation.send_modify(|generation| *generation = generation.wrapping_add(1));
+        }
         #[cfg(debug_assertions)]
         if let Some((site, hold)) = held {
             trace::held(site, hold);
@@ -200,5 +234,79 @@ mod tests {
         let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let sum: i64 = guard.query_row("SELECT SUM(x) FROM t", [], |row| row.get(0)).unwrap();
         assert_eq!(sum, 15);
+    }
+
+    fn outbox_mutex() -> ConnectionMutex {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE outbox(seq INTEGER PRIMARY KEY, event TEXT); CREATE TABLE other(x INTEGER);").unwrap();
+        ConnectionMutex::new(connection)
+    }
+
+    #[test]
+    fn an_outbox_change_bumps_the_generation_once_the_connection_is_released() {
+        let mutex = outbox_mutex();
+        let mut changes = mutex.outbox_changes();
+        {
+            let guard = mutex.lock().unwrap();
+            guard.execute("INSERT INTO other VALUES (1)", []).unwrap();
+        }
+        assert!(!changes.has_changed().unwrap(), "other tables do not wake readers");
+        {
+            let mut guard = mutex.lock().unwrap();
+            let tx = guard.transaction().unwrap();
+            tx.execute("INSERT INTO outbox(event) VALUES ('a')", []).unwrap();
+            tx.execute("INSERT INTO outbox(event) VALUES ('b')", []).unwrap();
+            tx.commit().unwrap();
+            assert!(!changes.has_changed().unwrap(), "no wake while the writer still holds the connection");
+        }
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        {
+            let guard = mutex.lock().unwrap();
+            guard.execute("DELETE FROM outbox WHERE event='a'", []).unwrap();
+        }
+        assert!(changes.has_changed().unwrap(), "pruning wakes readers too");
+        changes.borrow_and_update();
+        {
+            let mut guard = mutex.lock().unwrap();
+            let tx = guard.transaction().unwrap();
+            tx.execute("INSERT INTO outbox(event) VALUES ('c')", []).unwrap();
+            drop(tx);
+        }
+        assert!(changes.has_changed().unwrap(), "a rollback gives a harmless extra wake");
+        changes.borrow_and_update();
+        {
+            let _guard = mutex.lock().unwrap();
+        }
+        assert!(!changes.has_changed().unwrap(), "the mark was consumed by the holder that made it");
+    }
+
+    /// Another holder never announces a writer's open transaction: the mark is taken while the connection is held, and
+    /// the writer announces its own change after its commit.
+    #[test]
+    fn a_holder_never_announces_another_writers_open_transaction() {
+        let mutex = Arc::new(outbox_mutex());
+        let mut changes = mutex.outbox_changes();
+        let inserted = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let writer = {
+            let (mutex, inserted, release) = (Arc::clone(&mutex), Arc::clone(&inserted), Arc::clone(&release));
+            std::thread::spawn(move || {
+                let mut guard = mutex.lock().unwrap();
+                let tx = guard.transaction().unwrap();
+                tx.execute("INSERT INTO outbox(event) VALUES ('b')", []).unwrap();
+                inserted.wait();
+                release.wait();
+                tx.commit().unwrap();
+            })
+        };
+        inserted.wait();
+        assert!(!changes.has_changed().unwrap(), "an uncommitted insert is not announced");
+        release.wait();
+        writer.join().unwrap();
+        assert!(changes.has_changed().unwrap());
+        let guard = mutex.lock().unwrap();
+        let rows: i64 = guard.query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0)).unwrap();
+        assert_eq!(rows, 1);
     }
 }

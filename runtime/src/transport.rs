@@ -714,6 +714,11 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
     let _navigation_presence = service.editor_navigation.connect(&principal);
     let mut turn_speeds = service.subscribe_turn_speed();
     let mut turn_speeds_open = true;
+    // Subscribed before the starting cursor is read: every commit after that read wakes this loop. The 100 ms timer
+    // stays for writers outside this process. A full page re-polls at once instead of waiting for another wake.
+    let mut outbox_changes = service.db.outbox_changes();
+    let mut outbox_open = true;
+    let mut more_events = false;
     let mut sent_seq: i64 = service.db.transaction(|tx| Ok(tx.query_row("SELECT COALESCE(MAX(seq),0) FROM outbox", [], |row| row.get(0))?))?;
     let mut event_filter = EventFilter::All;
     let (mut reader, mut writer) = tokio::io::split(pipe);
@@ -824,12 +829,19 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                 if received.is_ok() { guard_stream(&service, &principal, "runtime.event")?; }
                 turn_speeds_open = forward_turn_speed(&mut writer, &epoch, received).await?;
             }
+            changed = outbox_changes.changed(), if outbox_open && event_filter != EventFilter::None => {
+                outbox_open = changed.is_ok();
+            }
+            () = std::future::ready(()), if more_events && sequenced_in_flight == 0 && event_filter != EventFilter::None => {}
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
         if sequenced_in_flight == 0 && event_filter != EventFilter::None {
             let epoch = service.db.epoch()?;
             let previous_seq = sent_seq;
-            for (seq, event, mut data) in service.db.events_after(sent_seq)? {
+            let events = service.db.events_after(sent_seq)?;
+            // Counted before Tree filtering: the cursor advances over filtered rows too.
+            more_events = events.len() == crate::db::EVENTS_PAGE;
+            for (seq, event, mut data) in events {
                 sent_seq = seq;
                 if event_filter == EventFilter::Tree && !tree_event(&event, &data) { continue; }
                 if event_filter == EventFilter::Tree && event != "runtime.degraded" {
@@ -1351,6 +1363,76 @@ mod decoder_tests {
             }
         }).await.unwrap();
         a.abort(); b.abort(); c.abort(); service.shutdown();
+    }
+
+    /// The clock is paused: it only moves when every task is idle, so an event that arrives with no time passed was
+    /// sent because its commit woke the connection, not by the 100 ms fallback timer.
+    #[tokio::test(start_paused = true)]
+    async fn committed_outbox_rows_wake_every_client_without_the_timer() {
+        let root = tempfile::tempdir().unwrap();
+        let config = crate::config::RuntimeConfig {
+            data_dir:root.path().into(), database_path:root.path().join("runtime.sqlite"),
+            credential_path:root.path().join("credential"), pipe_base:"outbox-wake-test".into(),
+        };
+        let db = Arc::new(crate::db::Database::open(&config.database_path).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::project_catalog::initialize(&db).unwrap();
+        crate::settings_services::initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        crate::retry_scheduler::initialize(&db).unwrap();
+        let service = Arc::new(RuntimeService::with_test_providers(config, Arc::clone(&db), vec![]));
+        let mut clients = Vec::new();
+        let mut tasks = Vec::new();
+        for (name, preset) in [("first", None), ("second", None), ("tree", Some("tree")), ("none", Some("none"))] {
+            let (server, mut client) = tokio::io::duplex(4 * 1024 * 1024);
+            tasks.push(tokio::spawn(serve_control(server, Arc::clone(&service), name.into())));
+            if let Some(preset) = preset {
+                write_json(&mut client, &json!({"v":1,"id":"filter","method":"runtime.events.filter","params":{"preset":preset}})).await.unwrap();
+                assert_eq!(read_json(&mut client).await.unwrap()["result"]["preset"], preset);
+            } else {
+                write_json(&mut client, &json!({"v":1,"id":"health","method":"runtime.health","params":{}})).await.unwrap();
+                assert_eq!(read_json(&mut client).await.unwrap()["id"], "health");
+            }
+            clients.push(client);
+        }
+        let [mut first, mut second, mut tree, mut none]: [tokio::io::DuplexStream; 4] = clients.try_into().unwrap();
+        let session = db.create_session(crate::db::CreateSession {project_id:None,title:Some("Wake"),provider:"codex",mode:"chat",native_id:None,operation_id:"wake-session"}).unwrap();
+        // Let every loop settle on its timer before the commit.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let started = tokio::time::Instant::now();
+        db.set_session_status(&session.id, "running", None).unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "chat.delta", &json!({"item":{"id":"answer"},"part":{"type":"text","text":"hello"}})).unwrap();
+        for client in [&mut first, &mut second] {
+            loop {
+                let frame = read_json(client).await.unwrap();
+                if frame["event"] == "chat.item" { break; }
+            }
+        }
+        loop {
+            let frame = read_json(&mut tree).await.unwrap();
+            assert_ne!(frame["event"], "chat.item");
+            if frame["event"] == "session.status" { break; }
+        }
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO, "delivered by the commit wake, not by a timer");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(250), read_json(&mut none)).await.is_err(), "a request-only client stays silent");
+        // More than one page in one commit: every row arrives without waiting for a timer between pages.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let started = tokio::time::Instant::now();
+        let rows = crate::db::EVENTS_PAGE * 2 + 44;
+        db.transaction(|tx| {
+            for index in 0..rows {
+                tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('inbox.resolved',?,?)", rusqlite::params![json!({"id":format!("bulk-{index}"),"sessionId":session.id}).to_string(), chrono::Utc::now().to_rfc3339()])?;
+            }
+            Ok(())
+        }).unwrap();
+        let mut seen = 0;
+        while seen < rows {
+            let frame = read_json(&mut first).await.unwrap();
+            if frame["event"] == "inbox.resolved" && frame["data"]["id"].as_str().is_some_and(|id| id.starts_with("bulk-")) { seen += 1; }
+        }
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO, "a full page is followed by the next one at once");
+        for task in tasks { task.abort(); }
+        service.shutdown();
     }
 
     #[tokio::test]
