@@ -24,7 +24,7 @@ pub const TERMINAL_OUTPUT_LOST: &str = "terminal_output_lost";
 pub(crate) const CHAT_TIMELINE_STRIDE: i64 = 1_i64 << 32;
 
 pub struct Database {
-    connection: Mutex<Connection>,
+    connection: crate::db_lock::ConnectionMutex,
     #[cfg(test)]
     pub(crate) refuse_terminal_marker: std::sync::atomic::AtomicBool,
     path: PathBuf,
@@ -302,7 +302,7 @@ impl Database {
         schema::migrate_main(&mut connection, upgrade_backup)?;
         release_free_pages_if_bloated(&connection);
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: crate::db_lock::ConnectionMutex::new(connection),
             #[cfg(test)]
             refuse_terminal_marker: std::sync::atomic::AtomicBool::new(false),
             path: path.to_owned(),
@@ -328,6 +328,8 @@ impl Database {
     }
     /// Extension services use this instead of opening a second SQLite writer.
     /// The closure owns one atomic state/outbox mutation on the runtime thread.
+    /// `#[track_caller]`: the QA lock trace (`db_lock.rs`) names the caller, not this function.
+    #[track_caller]
     pub fn transaction<T, F>(&self, action: F) -> Result<T>
     where
         F: FnOnce(&Transaction<'_>) -> Result<T>,

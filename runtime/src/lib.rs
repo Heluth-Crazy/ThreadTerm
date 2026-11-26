@@ -34,6 +34,7 @@ pub(crate) mod chat_repair;
 pub mod conpty;
 pub(crate) mod data_backup;
 pub mod db;
+mod db_lock;
 pub mod delegation;
 mod delegation_authority;
 pub(crate) mod delegation_wake;
