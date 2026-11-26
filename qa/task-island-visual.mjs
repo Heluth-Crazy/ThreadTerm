@@ -110,7 +110,7 @@ try {
     globalThis.__qaIsland = { ignore: [], navigations: [], focused: BrowserWindow.getFocusedWindow };
     const original = BrowserWindow.prototype.setIgnoreMouseEvents;
     BrowserWindow.prototype.setIgnoreMouseEvents = function setIgnoreMouseEvents(ignore, options) {
-      try { globalThis.__qaIsland.ignore.push({ ignore, island: this.webContents?.getURL?.().includes('island.html') === true }); } catch { /* a destroyed window */ }
+      try { globalThis.__qaIsland.ignore.push({ ignore, forward: options?.forward === true, island: this.webContents?.getURL?.().includes('island.html') === true }); } catch { /* a destroyed window */ }
       return original.call(this, ignore, options);
     };
     const window = BrowserWindow.getAllWindows().find(row => !row.webContents.getURL().includes('island.html'));
@@ -180,6 +180,22 @@ try {
   await until(async () => (await islandCalls()).at(-1)?.ignore === true, 'the transparent rest passes clicks through');
   report.measurements.ignoreMouseEvents = await islandCalls();
   check('the window ignores the mouse outside the pill and catches it over the pill');
+
+  // 2b. No system-wide mouse hook (audit 2026-11-25): click-through never forwards; while clicks pass through, main
+  //     watches the pointer and the page decides. The OS cursor is simulated in main so the real one never moves.
+  const placeCursor = offset => app.evaluate(({ screen, BrowserWindow }, at) => {
+    const island = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().includes('island.html'));
+    const bounds = island.getBounds();
+    globalThis.__qaIsland.realCursor ??= screen.getCursorScreenPoint;
+    screen.getCursorScreenPoint = () => ({ x: bounds.x + at.x, y: bounds.y + at.y });
+  }, offset);
+  await placeCursor({ x: 220, y: 20 });
+  await until(async () => (await islandCalls()).at(-1)?.ignore === false, "main's pointer watch lets the pill catch clicks");
+  await placeCursor({ x: -60, y: 500 });
+  await until(async () => (await islandCalls()).at(-1)?.ignore === true, 'leaving the window passes clicks through again');
+  await app.evaluate(({ screen }) => { screen.getCursorScreenPoint = globalThis.__qaIsland.realCursor; });
+  assert.deepEqual((await islandCalls()).filter(call => call.forward), [], 'the island never installs the forwarding mouse hook');
+  check('the pointer over the pill, seen by main, catches clicks; no call forwards mouse events (no system-wide hook)');
 
   // 3. ThreadTerm in front again: the island goes away. (The window has to be on screen for `appFocused` to count it,
   //    which is what showing it models here.)

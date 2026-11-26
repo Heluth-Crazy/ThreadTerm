@@ -263,6 +263,10 @@ function detach(tab:Tab):void { detachDevtools(tab);if (tab.view && !tab.window.
 function destroyView(tab:Tab):void { tab.faviconAbort?.abort();tab.faviconAbort=undefined;agentControllers.get(tab.owner)?.invalidate(tab.id,'Sharing stopped — the browser view was unloaded.');const contents=tab.view?.webContents,url=contents&&!contents.isDestroyed()?contents.getURL():undefined;if(url){tab.url=url;tab.origin=pageOrigin(url);} tab.findRequestId=undefined; tab.find=undefined; tab.occlusionGeneration++; detach(tab);destroyDevtools(tab);tab.contextPoint=undefined; nativePageClosed(tab.owner,tab.frameName); const view=tab.view; tab.view=undefined; tab.snapshot=undefined; tab.loading=false;tab.consoleStatus='pending';tab.consoleUrl=undefined; if (view && !view.webContents.isDestroyed()) view.webContents.close(); emit(tab); }
 function scheduleHidden():void { if (hiddenTimer) { clearInterval(hiddenTimer); hiddenTimer=undefined; } if ([...tabs.values()].some(tab=>!!tab.view&&!tab.visible) && preferences.unloadAfterMinutes>0) { hiddenTimer=setInterval(()=>{ for(const id of expiredHidden([...tabs.values()].filter(tab=>!!tab.view),Date.now(),preferences.unloadAfterMinutes)) destroyView(tabs.get(id)!); scheduleHidden(); },60_000); hiddenTimer.unref(); } }
 function trimLive():void { const live=[...tabs.values()].filter(tab=>!!tab.view); for(const id of lruVictims(live,6)) destroyView(tabs.get(id)!); scheduleHidden(); }
+/** The still image that stands in for the page while an app overlay covers it. JPEG, not PNG: encoding a 1440x1728
+ * page as PNG held the main thread 260-270 ms on every menu, and the task island's mouse forwarding made the whole
+ * screen's cursor wait for it (audit 2026-11-25). JPEG at 90 takes about 15 ms and reads the same under a menu. */
+function overlaySnapshot(image:{toJPEG(quality:number):Buffer}):string { return `data:image/jpeg;base64,${image.toJPEG(90).toString('base64')}`; }
 async function occlude(tab:Tab):Promise<void> {
   const wc=tab.view?.webContents; if (!wc || !tab.visible) return;
   if(tab.window.isFocused())tab.owner.focus();
@@ -270,12 +274,12 @@ async function occlude(tab:Tab):Promise<void> {
   const token=++tab.occlusionGeneration,current=()=>tab.occlusionGeneration===token&&tab.leases&&tab.visible&&tab.view?.webContents===wc&&!wc.isDestroyed();
   // Keep the live page attached until the renderer has loaded its replacement image.
   // A transient capture may wake a background page, but never focuses its OS window.
-  const captureDevtools=async()=>{if(!contents||!attached)return undefined;try{const image=await contents.capturePage(undefined,{stayHidden:true,stayAwake:true});if(image.isEmpty())throw new Error('Empty DevTools snapshot');return image.toDataURL();}catch{if(current()&&tab.devtools===devtools)detachDevtools(tab);return undefined;}};
+  const captureDevtools=async()=>{if(!contents||!attached)return undefined;try{const image=await contents.capturePage(undefined,{stayHidden:true,stayAwake:true});if(image.isEmpty())throw new Error('Empty DevTools snapshot');return overlaySnapshot(image);}catch{if(current()&&tab.devtools===devtools)detachDevtools(tab);return undefined;}};
   const [page,tools]=await Promise.allSettled([wc.capturePage(undefined,{stayHidden:true,stayAwake:true}),captureDevtools()]);
   if(!current())return;
   tab.devtoolsSnapshot=tab.devtoolsWanted&&tab.devtools===devtools&&tools.status==='fulfilled'?tools.value:undefined;
   // A failed page capture keeps the live page attached (existing behaviour); DevTools never stay over an overlay.
-  if(page.status==='fulfilled'&&!page.value.isEmpty()){tab.snapshot=page.value.toDataURL();emit(tab);}else{tab.devtoolsSnapshot=undefined;detachDevtools(tab);setIssue(tab,'Could not capture the page for an app overlay.');}
+  if(page.status==='fulfilled'&&!page.value.isEmpty()){tab.snapshot=overlaySnapshot(page.value);emit(tab);}else{tab.devtoolsSnapshot=undefined;detachDevtools(tab);setIssue(tab,'Could not capture the page for an app overlay.');}
 }
 function show(tab:Tab,bounds:BrowserBounds,devtoolsBounds?:BrowserBounds,radius?:number):void { const capture=!tab.visible||!tab.view; tab.radius=radius??tab.radius;tab.bounds=bounds;setDevtoolsBounds(tab,devtoolsBounds); tab.visible=true; tab.hiddenAt=undefined; tab.shownAt=Date.now(); tab.leases=ownerOccluded.get(tab.owner)?1:0; if (!tab.view){makeView(tab);if(tab.devtoolsWanted)openDevtools(tab);} applyViewRadius(tab);if (!tab.leases) { tab.snapshot=undefined;tab.devtoolsSnapshot=undefined; attach(tab); } else if(capture)void occlude(tab); trimLive(); emit(tab); }
 function hide(tab:Tab):void { tab.occlusionGeneration++; tab.snapshot=undefined;tab.devtoolsSnapshot=undefined; tab.visible=false;tab.hiddenAt=Date.now();detach(tab);scheduleHidden();emit(tab); }

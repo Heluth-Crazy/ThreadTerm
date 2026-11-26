@@ -3,10 +3,51 @@ import type { BrowserHandoffBridge, BrowserHandoffCommand, BrowserHandoffEvent, 
 import type { BackgroundBridge } from '../../desktop/src/backgroundImagesCore';
 import type { PagePick, PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
 export type { ChatItem, NativeHistoryItem, ProviderId, Snapshot } from "@threadterm/protocol";
+import { isRepeatableRead, normalizeRequestError, transportKind } from "./requestErrors";
+import { reportTransportFailure, reportTransportRecovered } from "./notices";
 
 function facade() { return window.threadterm; }
-export const snapshot = () => facade().request("runtime.snapshot", {});
-export const request = <M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> => facade().request(method, params);
+
+/**
+ * How long a read keeps trying before its view hears of a failure: a runtime that answers too slowly gets 3 min; a
+ * dropped connection about 15 s (the desktop reconnects meanwhile, and the header chip already says so). A runtime
+ * that cannot start at all must still reach the app's "unavailable" screen quickly.
+ */
+const READ_PATIENCE_MS = { timeout: 180_000, unavailable: 15_000 } as const;
+/** Pauses between reads sent again while the connection is down. */
+const RECONNECT_BACKOFF_MS = [800, 2_000, 4_000, 8_000];
+/** The app's own connection handling reads these: they report failures at once (App.tsx refresh, status checks). */
+const OWN_RETRY = new Set<string>(['runtime.snapshot', 'runtime.health']);
+const readerZh = () => (globalThis.document?.documentElement?.lang ?? '').toLowerCase().startsWith('zh');
+
+/**
+ * Every runtime request (owner 11-25: timeouts showed as red bars inside views and stayed). Failures arrive without
+ * Electron's IPC wrapper, transport failures in the reader's language (requestErrors.ts). A read never fails only
+ * because the runtime is slow or reconnecting: it is sent again (a timed-out one at once, it already waited; a
+ * dropped connection after a pause) for up to READ_PATIENCE_MS, while one app-wide notice says the runtime is slow;
+ * the first answer clears the notice and the view simply gets its data (notices.ts). Actions are never repeated:
+ * they fail at once with a message that says the action may still be running.
+ */
+async function send<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
+  const read = isRepeatableRead(method) && !OWN_RETRY.has(method);
+  const started = Date.now();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await facade().request(method, params);
+      reportTransportRecovered();
+      return result;
+    } catch (caught) {
+      const error = normalizeRequestError(caught, method);
+      const kind = transportKind(error);
+      if (!kind || !read) throw error;
+      reportTransportFailure(kind, readerZh());
+      if (Date.now() - started >= READ_PATIENCE_MS[kind]) throw error;
+      if (kind === 'unavailable') await new Promise(resolve => setTimeout(resolve, RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)]));
+    }
+  }
+}
+export const snapshot = () => send("runtime.snapshot", {});
+export const request = <M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> => send(method, params);
 export const subscribeEvents = (listener: (event: RuntimeEvent) => void) => facade().onEvent(listener);
 export const onDesktopNavigate = (listener: (target: { sessionId?: string; workspaceId?: string; action?:"command-palette"|"computers"|"new-session"|"add-project"; projectId?: string; path?: string }) => void) => facade().onDesktopNavigate(listener);
 export const windowState = () => facade().windowState?.() ?? Promise.resolve({ maximized: false });

@@ -910,7 +910,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           if (differs) setRecovery(pair);
         }
       } catch { /* Runtime draft is still available. */ }
-    }).catch(caught=>{if(!disposed){setError(`Draft could not be loaded: ${String(caught)}`);setDraftFailed(true);setDraftLoaded(true);}});
+    }).catch(caught=>{if(!disposed){setError(`${copy('Draft could not be loaded.','无法加载草稿。')} ${caught instanceof Error?caught.message:String(caught)}`);setDraftFailed(true);setDraftLoaded(true);}});
     loadEarlierRef.current = () => {
       const page = earlierPageRef.current;
       if (!page.hasEarlier || !page.before || loadingEarlierRef.current) return;

@@ -1,5 +1,5 @@
 import { Select } from "./ui/Select";
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitCompareRef, GitStatus, PaneLayout, PreviewAssociation, PreviewPresentation, Session, Snapshot, Worktree, WorkspacePanelTab } from '@threadterm/protocol';
 import { browserCommand, onBrowserEvent, openExternal, openExternalFiles, operationId, request, subscribeEvents } from '../bridge';
 import { externalFileError, externalFileErrorCode, externalSelectionQuote, isAbsoluteFilePath, openExternalPaths, type ExternalFileSource } from '../externalFiles';
@@ -49,6 +49,9 @@ import { ContextHost } from './ContextHost';
 import { ContextSendDialogHost } from './ContextSendAction';
 import { retitleGroupTabs } from '../groupNavigation';
 import { CatalogPopover } from './CatalogActions';
+import { dismissNotice, notify, useRuntimeRecovery } from '../notices';
+import { inlineErrorText } from '../requestErrors';
+import { userErrorText } from '../runtimeError';
 
 const working=(s:Session)=>!s.readOnly&&['starting','running','idle','waiting'].includes(s.status);
 const tabFor=(s:Session)=>({id:`session-${s.id}`,kind:'session' as const,sessionId:s.id});
@@ -142,7 +145,12 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const [headerMore,setHeaderMore]=useState<HTMLElement>();
  const [navigationOpen,setNavigationOpen]=useState(false);
  const navigationToggle=useRef<HTMLButtonElement>(null);
- const [issue,setIssue]=useState<string>(),[fullscreen,setFullscreen]=useState(false);
+ const [fullscreen,setFullscreen]=useState(false);
+ // This workspace's problems float in the app's notice corner (owner 11-25), never as a bar above the panes; a
+ // failed background read is the app-wide transport notice's business and reloads when the runtime answers again.
+ const issueKey=`workspace-issue:${session.id}`;
+ const setIssue=useCallback((text?:string)=>{if(text)notify({key:issueKey,tone:'error',text});else dismissNotice(issueKey);},[issueKey]);
+ const recovery=useRuntimeRecovery();
  const [commentNotice,setCommentNotice]=useState<string>();
  useEffect(()=>{if(!commentNotice)return;const timer=setTimeout(()=>setCommentNotice(undefined),6000);return()=>clearTimeout(timer);},[commentNotice]);
  const closeNavigation=(restoreFocus=true)=>{setNavigationOpen(false);if(restoreFocus)requestAnimationFrame(()=>navigationToggle.current?.focus());};
@@ -158,7 +166,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const hostedChatIds=data.sessions.filter(candidate=>candidate.mode==='chat'&&sessionIdsIn(layout).includes(candidate.id)).map(candidate=>candidate.id);
  const state=session.readOnly?'ended':session.status==='waiting'?'needs':session.status==='error'?'failed':session.status==='interrupted'?'stalled':working(session)?'running':'ended';
  const stateLabel=session.released?(zh?'已停止':'Stopped'):zh?({needs:'待处理',failed:'失败',stalled:'已中断',running:'运行中',ended:session.readOnly?'只读历史':'已结束'}[state]):({needs:'Attention',failed:'Failed',stalled:'Interrupted',running:'Running',ended:session.readOnly?'Read-only history':'Ended'}[state]);
- const fail=(error:unknown)=>setIssue(error instanceof Error?error.message:String(error));
+ const fail=(error:unknown)=>{const text=inlineErrorText(error,caught=>userErrorText(caught,zh?'操作没有完成。':'That didn’t work.',zh));if(text)setIssue(text);};
  /** Saves the layout; `panelTabs` also replaces the side-bar browser pages saved with it (absent keeps them). */
  const save=(next:PaneLayout,panelTabs?:WorkspacePanelTab[])=>{
   latestLayout.current=next;
@@ -219,7 +227,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   void request('worktree.list',{projectId:session.projectId}).then(value=>{if(live)setTrees(value);}).catch(fail);
   void request('git.status',scope).then(value=>{if(live)setGit(value);}).catch(()=>{});
   return()=>{live=false;};
- },[session.projectId,path]);
+ },[session.projectId,path,recovery]);
  useEffect(()=>{if(!backgroundPresentation)return;save(addSessionTab(latestLayout.current,backgroundPresentation));onBackgroundPresented();},[backgroundPresentation]);
  /** A desktop attachment is an explicit, per-view lease.  It is never retried by a timer or used to replay a
   * previous request; reconnect/navigation receives a fresh attachment for subsequent preview.present events. */
@@ -714,7 +722,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    {session.run&&<div className="session-header-run-meta"><QuickLaunchRunChip session={session} onOpenPreview={url=>{setHeaderMore(undefined);paneWorkbench.openWeb?.(url);}}/></div>}
   </CatalogPopover>}
   <div className="ws-body"><div className="ws-center">
-   {issue&&<p className="surface-error" role="alert">{issue}</p>}
    {commentNotice&&<div className="ws-notice-anchor"><p role="status">{commentNotice}</p></div>}
    {fileIssue&&<div className="workspace-file-error" role="alert"><span>{fileIssue.message} <code title={displayPath(fileIssue.path)}>{displayPath(fileIssue.path)}</code></span><button type="button" className="btn" onClick={()=>void navigator.clipboard.writeText(fileIssue.path).catch(fail)}>{zh?'复制路径':'Copy path'}</button><button type="button" className="icon-btn" aria-label={zh?'关闭提示':'Dismiss notice'} onClick={()=>setFileIssue(undefined)}><Icon name="close"/></button></div>}
    <div className="ws-content"><div className="ws-pane" ref={paneArea}>

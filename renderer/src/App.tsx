@@ -59,6 +59,8 @@ import { confirmCloseEditors } from "./dirtyEditors";
 import { argumentLines, commandLines, commandPreset, commandPresets, type CommandPresetId } from "./commandPresets";
 import { attentionFromEvent, shouldPresentAttention, type Attention } from "./attentionState";
 import { AttentionToast } from "./components/AttentionToast";
+import { NoticeCenter } from "./components/NoticeCenter";
+import { reportTransportRecovered } from "./notices";
 import { manualSessionOrder, neighborProjectSession, reorderProjectSessions } from "./sessionOrdering";
 import {
   lastActiveSessionId,
@@ -200,7 +202,7 @@ function MachineApp() {
         const state = (event.data as { state?: string } | undefined)?.state;
         if (state === "disconnected") setRuntimeState("reconnecting");
         if (state === "incompatible" || state === 'pin-mismatch') setRuntimeState("unavailable");
-        if (state === "reconnected") void updates.request();
+        if (state === "reconnected") { reportTransportRecovered(); void updates.request(); }
         return;
       }
       if (event.event === "state.changed"
@@ -631,6 +633,7 @@ function MachineApp() {
             onClose={() => setCompanionOpen(false)}
           />
         )}
+        <NoticeCenter zh={locale === "zh-CN"} />
         {attention && <AttentionToast attention={attention} capabilities={data?.providers} session={data?.sessions.find(candidate => candidate.id === attention.sessionId)} locale={locale} onClose={() => setAttention(undefined)} onOpen={() => { setAttention(undefined); void navigate({ kind: "session", id: attention.sessionId }); }} />}
         {!floatingWindow && route.kind === "all" && sessionHistoryOpen && data && (
           <SessionHistoryRail

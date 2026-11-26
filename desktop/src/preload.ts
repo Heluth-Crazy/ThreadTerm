@@ -224,7 +224,7 @@ function isBrowserEvent(value: unknown): value is BrowserEvent {
     && typeof state.zoom === 'number' && Number.isFinite(state.zoom) && Number.isSafeInteger(state.documentGeneration)
     && ['pending', 'load_observed', 'failed'].includes(String(state.navigation))
     && (state.sharing === undefined || isBrowserSharingState(state.sharing))
-    && (state.snapshot === undefined || typeof state.snapshot === 'string' && state.snapshot.startsWith('data:image/png;base64,'));
+    && (state.snapshot === undefined || typeof state.snapshot === 'string' && /^data:image\/(?:png|jpeg);base64,/.test(state.snapshot));
 }
 function isBrowserHandoffEvent(value: unknown): value is BrowserHandoffEvent {
   if (!isRecord(value)) return false;

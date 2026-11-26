@@ -52,7 +52,7 @@ test('passive notices occlude only positive-area intersections with a visible pa
 
 function watcherFixture(command = () => Promise.resolve()) {
   const commands = [], mutations = [], resizes = [], effects = [], frames = new Map(), listeners = new Map();
-  const passive = [], coarse = [];
+  const passive = [], coarse = [], floating = [];
   let frameId = 0;
   class Element {
     constructor(rect, isPassive = false) { this.rect = rect; this.passive = isPassive; this.hidden = false; }
@@ -74,7 +74,7 @@ function watcherFixture(command = () => Promise.resolve()) {
   }
   const document = {
     body: {},
-    querySelectorAll(selector) { return selector.startsWith('.toast') ? passive : coarse; },
+    querySelectorAll(selector) { return selector.startsWith('.toast') ? passive : selector.startsWith('[role="menu"]') ? floating : coarse; },
     addEventListener(type, callback) { listeners.set(type, callback); },
     removeEventListener(type) { listeners.delete(type); },
   };
@@ -86,7 +86,7 @@ function watcherFixture(command = () => Promise.resolve()) {
       cancelAnimationFrame(id) { frames.delete(id); },
     },
   });
-  return { api, Element, commands, passive, coarse, mutations, resizes, effects, listeners,
+  return { api, Element, commands, passive, coarse, floating, mutations, resizes, effects, listeners,
     flush() { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback()); },
   };
 }
@@ -137,7 +137,7 @@ test('coarse user overlays retain their lease when passive overlap ends', () => 
   release(); assert.deepEqual(f.commands, [true, false]);
   f.coarse.push(new f.Element({ x: 0, y: 0, width: 10, height: 10 }));
   f.mutations[0].callback([{ type: 'childList' }]);
-  assert.deepEqual(f.commands, [true, false, true], 'user menu occludes even away from page');
+  assert.deepEqual(f.commands, [true, false, true], 'a dialog or scrim occludes even away from page');
   stop(); assert.deepEqual(f.commands, [true, false, true, false]);
 });
 
@@ -187,5 +187,33 @@ test('passive overlap rechecks retain one lease while capture is pending and dis
   assert.deepEqual(f.commands, [true, false], 'dismissal restores without waiting for the capture');
   finish(); await Promise.resolve();
   assert.deepEqual(f.commands, [true, false], 'late completion cannot re-acquire the dismissed overlay');
+  stop();
+});
+
+test('menus, lists and popovers occlude only where they overlap a visible page, and follow their moves', () => {
+  const f = watcherFixture();
+  const page = new f.Element({ x: 600, y: 100, width: 400, height: 300 });
+  const stop = f.api.watchBrowserOverlays(page);
+  const menu = new f.Element({ x: 40, y: 120, width: 180, height: 200 });
+  f.floating.push(menu); f.mutations[0].callback([{ type: 'childList' }]);
+  assert.deepEqual(f.commands, [], 'a sidebar menu away from the page keeps the page live');
+  menu.rect = { x: 520, y: 120, width: 180, height: 200 }; f.resizes[0].callback(); f.flush();
+  assert.deepEqual(f.commands, [true], 'moved over the page, it takes the snapshot');
+  menu.hidden = true; f.mutations[1].callback(); f.flush();
+  assert.deepEqual(f.commands, [true, false], 'closing it restores the live page');
+  stop();
+});
+
+test('a context menu registered by its hook occludes only when placed over the page', () => {
+  const f = watcherFixture();
+  const page = new f.Element({ x: 600, y: 100, width: 400, height: 300 });
+  const stop = f.api.watchBrowserOverlays(page);
+  f.api.usePassiveBrowserOcclusion({ current: new f.Element({ x: 10, y: 10, width: 160, height: 120 }) });
+  assert.deepEqual(f.commands, []);
+  f.effects.at(-1)(); f.flush();
+  f.api.usePassiveBrowserOcclusion({ current: new f.Element({ x: 700, y: 150, width: 160, height: 120 }) });
+  assert.deepEqual(f.commands, [true]);
+  f.effects.at(-1)(); f.flush();
+  assert.deepEqual(f.commands, [true, false]);
   stop();
 });

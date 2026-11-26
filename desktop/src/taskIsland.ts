@@ -14,8 +14,8 @@ export const ISLAND_WIDTH = 440;
 export const ISLAND_HEIGHT = 380;
 const SNAP = 28;
 const POLL_MS = 2500;
-/** While the island catches clicks, how often main checks that the pointer is still over its window. */
-const POINTER_WATCH_MS = 100;
+/** While the island is up, how often main looks at the pointer (see `watchPointer`). */
+const POINTER_POLL_MS = 50;
 
 export interface TaskIslandHost {
   tree: MachineTreeStore;
@@ -46,6 +46,10 @@ export class TaskIsland {
   private expiryTimer?: ReturnType<typeof setTimeout>;
   private hideTimer?: ReturnType<typeof setTimeout>;
   private pointerTimer?: ReturnType<typeof setInterval>;
+  /** The window catches clicks: the pointer is over the island itself. */
+  private catching = false;
+  /** The last pointer position sent to the page, so a still pointer is not sent again. */
+  private lastPointer = '';
   private badge: TaskbarBadge;
   private model?: IslandModel;
   private readonly cleanup: (() => void)[] = [];
@@ -135,25 +139,44 @@ export class TaskIsland {
 
   /**
    * The page reports the pointer over the island (catch clicks) or over the transparent rest (let them through). While
-   * clicks are caught, main decides when the pointer has left the window: the moment Windows stops forwarding, it
-   * delivers a stale "mouse left" to the page, so the page cannot tell that from a real exit and would let the click
-   * through again (owner report 2026-11-16: the island could not be clicked).
+   * clicks are caught, main decides when the pointer has left the window: the moment the window starts catching,
+   * Windows delivers a stale "mouse left" to the page, so the page cannot tell that from a real exit and would let the
+   * click through again (owner report 2026-11-16: the island could not be clicked).
    */
   private interactive(on: boolean): void {
     const window = this.window;
     if (!window || window.isDestroyed()) return;
-    window.setIgnoreMouseEvents(!on, { forward: true });
-    if (!on) { this.stopPointerWatch(); return; }
+    this.catching = on; this.lastPointer = '';
+    window.setIgnoreMouseEvents(!on);
+  }
+
+  /**
+   * While the island is on screen, main watches the pointer: over the window it tells the page where the pointer is,
+   * and the page says whether that is the island. Electron's click-through forwarding (`forward: true`) did this with a
+   * system-wide low-level mouse hook on this process's main thread: every mouse move on the whole screen waited for
+   * main, so the cursor froze whenever main was busy, and the hook stayed after the island hid (audit 2026-11-25).
+   */
+  private watchPointer(): void {
     if (this.pointerTimer) return;
     this.pointerTimer = setInterval(() => {
       const current = this.window;
-      const point = screen.getCursorScreenPoint(), bounds = current && !current.isDestroyed() && current.isVisible() ? current.getBounds() : undefined;
-      if (bounds && point.x >= bounds.x && point.x < bounds.x + bounds.width && point.y >= bounds.y && point.y < bounds.y + bounds.height) return;
-      this.stopPointerWatch();
-      if (current && !current.isDestroyed()) { current.setIgnoreMouseEvents(true, { forward: true }); current.webContents.send('task-island:pointer-left'); }
-    }, POINTER_WATCH_MS);
+      if (!current || current.isDestroyed() || !current.isVisible()) return;
+      const point = screen.getCursorScreenPoint(), bounds = current.getBounds();
+      const inside = point.x >= bounds.x && point.x < bounds.x + bounds.width && point.y >= bounds.y && point.y < bounds.y + bounds.height;
+      if (!inside) {
+        this.lastPointer = '';
+        if (this.catching) { this.catching = false; current.setIgnoreMouseEvents(true); current.webContents.send('task-island:pointer-left'); }
+        return;
+      }
+      // Catching clicks, the page has the real mouse events.
+      if (this.catching) return;
+      const key = `${point.x},${point.y}`;
+      if (key === this.lastPointer) return;
+      this.lastPointer = key;
+      current.webContents.send('task-island:pointer', { x: point.x - bounds.x, y: point.y - bounds.y });
+    }, POINTER_POLL_MS);
   }
-  private stopPointerWatch(): void { clearInterval(this.pointerTimer); this.pointerTimer = undefined; }
+  private stopPointerWatch(): void { clearInterval(this.pointerTimer); this.pointerTimer = undefined; this.catching = false; this.lastPointer = ''; }
 
   private async read(key: string, sessionId: string, maxBytes: number) {
     const machineId = key.slice(0, key.indexOf('\u0000'));
@@ -180,12 +203,13 @@ export class TaskIsland {
       clearTimeout(this.hideTimer); this.hideTimer = undefined;
       const window = this.window && !this.window.isDestroyed() ? this.window : this.create();
       if (!this.shown) { this.place(window); window.showInactive(); window.moveTop(); this.shown = true; }
+      this.watchPointer();
     } else if (this.shown && !this.hideTimer) {
       // The page fades the island out (and an emptied island plays its dismiss motion) before the window goes.
       this.hideTimer = setTimeout(() => {
         this.hideTimer = undefined;
         if (this.model?.visible) return;
-        this.stopPointerWatch(); this.window?.hide(); this.window?.setIgnoreMouseEvents(true, { forward: true }); this.shown = false;
+        this.stopPointerWatch(); this.window?.hide(); this.window?.setIgnoreMouseEvents(true); this.shown = false;
       }, items.length ? 450 : 1200);
     }
     this.send();
@@ -203,7 +227,8 @@ export class TaskIsland {
       webPreferences: { preload: this.host.preload, contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false, spellcheck: false },
     });
     window.setAlwaysOnTop(true, 'screen-saver');
-    window.setIgnoreMouseEvents(true, { forward: true });
+    // Click-through without `forward`: no system-wide mouse hook (see `watchPointer`).
+    window.setIgnoreMouseEvents(true);
     window.webContents.on('will-navigate', event => event.preventDefault());
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.once('closed', () => { if (this.window === window) { this.window = undefined; this.ready = false; this.shown = false; } });

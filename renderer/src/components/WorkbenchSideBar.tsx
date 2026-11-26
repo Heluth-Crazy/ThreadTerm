@@ -10,6 +10,8 @@ import { SourceControlView } from './SourceControlView';
 import { AgentChangesView } from './AgentChangesView';
 import { RunViewPanel } from './RunViewPanel';
 import { workbenchError } from '../workbench/errors';
+import { useRuntimeRecovery } from '../notices';
+import { isTransportFailure } from '../requestErrors';
 import { FILES_CHANGED_EVENT, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { createRefreshQueue, type RefreshQueue } from '../workbench/refreshQueue';
 import { eventTouchesWorktree } from '../workbench/refreshTriggers';
@@ -59,11 +61,15 @@ export function useGitStatus(scope:Pick<WorkbenchScope,'projectId'|'worktreePath
   setLoading(true);
   return sharedGitStatusRequest(scopeKey, () => request('git.status', scopeParams(scope)))
    .then(value => { if(key.current === requested) { setStatus(value); setError(undefined); } })
-   .catch(failure => { if(key.current === requested) { setStatus(undefined); setError(workbenchError(failure, zh)); } })
+   // A runtime that did not answer keeps the last status on screen; the app-wide notice says so and the status
+   // reloads when the runtime answers again (11-25).
+   .catch(failure => { if(key.current === requested && !isTransportFailure(failure)) { setStatus(undefined); setError(workbenchError(failure, zh)); } })
    .finally(() => { if(key.current === requested) setLoading(false); });
  }, [scopeKey, zh]);
  const loadRef = useRef(load); loadRef.current = load;
  const refresh = useCallback(() => queue.current ? queue.current.request() : loadRef.current(), []);
+ const recovery = useRuntimeRecovery();
+ useEffect(() => { if (recovery) void refresh(); }, [recovery, refresh]);
  // A closed side bar reads once per scope for its SCM badge. Hidden file tabs opt out:
  // PaneWorkspace keeps them mounted only to preserve editor state, not to do background Git work.
  useEffect(() => { setStatus(undefined); setError(undefined); if(!active&&loadWhenInactive) void load(); }, [scopeKey, loadWhenInactive]);

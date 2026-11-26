@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 function fixture(savedFiles=new Map()) {
  const handlers=new Map(), views=[], windows=new Map(), timers=new Set(), sent=[], opened=[];
- let ready=false, id=0, findId=0, now=100_000, diskStep=async()=>{}, loadPage=async(wc,url)=>{wc.url=url;}, capture=async()=>({isEmpty:()=>false,toDataURL:()=> 'data:image/png;base64,c25hcHNob3Q='});
+ let ready=false, id=0, findId=0, now=100_000, diskStep=async()=>{}, loadPage=async(wc,url)=>{wc.url=url;}, capture=async()=>({isEmpty:()=>false,toJPEG:()=>Buffer.from('snapshot')});
  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aLf8AAAAASUVORK5CYII=','base64');
  const bitmap=()=>({isEmpty:()=>false,getSize:()=>({width:1,height:1}),toPNG:()=>png,toJPEG:()=>png,resize(){return this;}});
  const app=Object.assign(new EventEmitter(),{isPackaged:false,isReady:()=>ready,getPath:()=>resolve('qa/results/browser-unit-unused')});
