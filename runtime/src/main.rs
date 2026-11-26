@@ -16,6 +16,12 @@ async fn main() {
 async fn run() -> Result<()> {
     // The sheet helper is this binary in another process (design.md §3.3): before
     // config, log and singleton setup, so it opens no database and no pipe.
+    // `--agent-install antigravity`: installs Google's Antigravity CLI for this user, run in a terminal tab
+    // (task 11-24). Like the sheet helper it opens no database and no pipe.
+    if let Some(position) = std::env::args().position(|argument| argument == "--agent-install") {
+        let rest: Vec<String> = std::env::args().skip(position + 1).collect();
+        std::process::exit(threadterm_v3_runtime::providers::antigravity_install::run(&rest));
+    }
     if std::env::args().any(|argument| argument == "--sheet-worker") {
         std::process::exit(threadterm_v3_runtime::sheet_worker::run());
     }

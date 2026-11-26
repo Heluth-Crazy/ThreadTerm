@@ -5146,6 +5146,36 @@
           "$ref": "#/definitions/ProviderCommand",
           "description": "How to get Node.js on that computer, shown before it runs (winget when it resolves, else the row links to nodejs.org)."
         },
+        "authMethods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "apiKey": {
+                "type": "boolean"
+              },
+              "browser": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "apiKey",
+              "browser"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Agents with a choice of sign-in (Antigravity): the methods in the agent's order, the chosen one, and whether an API key is stored on that computer. `apiKey`: the method takes a key; `browser`: the agent opens Google's sign-in page itself."
+        },
+        "authMethod": {
+          "type": "string"
+        },
+        "apiKeySet": {
+          "type": "boolean"
+        },
         "homepage": {
           "type": "string"
         }
@@ -5645,6 +5675,18 @@
       },
       "required": [
         "refreshId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"provider.secret.set\">": {
+      "type": "object",
+      "properties": {
+        "apiKeySet": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "apiKeySet"
       ],
       "additionalProperties": false
     },
@@ -14342,6 +14384,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22provider.refresh%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "provider.secret.set"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22provider.secret.set%22%3E"
         }
       },
       "required": [

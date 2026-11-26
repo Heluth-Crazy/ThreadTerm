@@ -202,6 +202,11 @@ export interface ProviderCapability { id:ProviderId; name:string; installed:bool
  installBlocked?:'node_missing';
  /** How to get Node.js on that computer, shown before it runs (winget when it resolves, else the row links to nodejs.org). */
  nodeInstall?:ProviderCommand;
+ /** Agents with a choice of sign-in (Antigravity): the methods in the agent's order, the chosen one, and whether an API key
+  * is stored on that computer. `apiKey`: the method takes a key; `browser`: the agent opens Google's sign-in page itself. */
+ authMethods?:{id:string;apiKey:boolean;browser:boolean}[];
+ authMethod?:string;
+ apiKeySet?:boolean;
  homepage?:string }
 /** One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat,
  * sign-in, install and update), shown to the user before the plugin is enabled. */
@@ -1011,6 +1016,8 @@ export interface RequestMap {
  'provider.list': [{},ProviderCapability[]];
  /** Forces one fresh provider capability round and returns its id before the probe completes. Additive. */
  'provider.refresh': [{},{refreshId:number}];
+ /** Stores (a string) or removes (null) an agent's API key on that computer. Write-only: the key is never returned. */
+ 'provider.secret.set': [{provider:ProviderId;value:string|null},{apiKeySet:boolean}];
  'plugin.list': [{},PluginList];
  'plugin.setEnabled': [{pluginId:string;enabled:boolean;operationId:string},PluginList];
  'plugin.selectBrowserBinding': [{pluginId:string;bindingId:string;operationId:string},PluginList];
@@ -1321,6 +1328,7 @@ export const METHODS = ['git.history.plan','git.cherryPick','git.revert','git.re
  'session.releaseIdle','session.processes',
  'runtime.resourceSample',
  'system.notificationState',
+ 'provider.secret.set',
 );
 // The RPC has a RequestMap entry above and must also pass the runtime registry.
 const stringFields: Partial<Record<Method,readonly string[]>> = {

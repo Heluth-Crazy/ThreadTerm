@@ -169,6 +169,11 @@ impl CommandSpec {
         })
     }
 
+    /// The provider environment this spec launches with (Antigravity filters credentials out of it).
+    pub(crate) fn environment_vars(&self) -> &crate::environment::Vars {
+        &self.environment.vars
+    }
+
     #[cfg(any(test, not(windows)))]
     pub fn command(&self) -> Result<Command, ProviderError> {
         #[cfg(windows)]
@@ -296,7 +301,7 @@ pub fn find_executable(command: &str) -> Option<PathBuf> {
     let environment = crate::environment::provider_environment();
     #[cfg(debug_assertions)]
     if super::builtin_cli_name(command).is_some()
-        || matches!(command, "gemini" | "npm" | "winget")
+        || matches!(command, "gemini" | "agy" | "npm" | "winget")
     {
         if let Some(directory) = env::var_os("THREADTERM_QA_PROVIDER_BIN") {
             // Explicit debug-only dependency injection keeps QA away from installed CLIs, and from
@@ -986,6 +991,11 @@ impl JsonLineProcess {
     }
 
     pub fn request(&self, method: &str, params: Value) -> Result<Value, ProviderError> {
+        self.request_with_timeout(method, params, REQUEST_TIMEOUT)
+    }
+
+    /// A request that may wait on the user, such as a sign-in in the browser.
+    pub fn request_with_timeout(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, ProviderError> {
         let (id, frame) = self.request_frame(method, params);
         let (sender, receiver) = mpsc::sync_channel(1);
         self.pending
@@ -998,7 +1008,7 @@ impl JsonLineProcess {
             }
             return Err(error);
         }
-        match receiver.recv_timeout(REQUEST_TIMEOUT) {
+        match receiver.recv_timeout(timeout) {
             Ok(result) => result,
             Err(_) => {
                 if let Ok(mut pending) = self.pending.lock() {

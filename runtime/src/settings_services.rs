@@ -58,6 +58,8 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "floatMode",
     "supervision",
     "providerNetwork",
+    // Antigravity's sign-in method and Cloud project; its API key lives in the runtime's secret store.
+    "providerAuth",
     // Local execution opt-in; portable settings must never enable it.
     "browserEvalEnabled",
     "quickMessages",
@@ -1145,6 +1147,14 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
                 .is_some_and(|providers| providers.keys().all(|key| key == "grok")) =>
         {
             crate::providers::network::validate_settings(&json!({"providerNetwork":value}))
+                .map_err(Into::into)
+        }
+        "providerAuth"
+            if value
+                .as_object()
+                .is_some_and(|providers| providers.keys().all(|key| key == "antigravity")) =>
+        {
+            crate::providers::antigravity::validate_settings(&json!({"providerAuth":value}))
                 .map_err(Into::into)
         }
         "chatTools"

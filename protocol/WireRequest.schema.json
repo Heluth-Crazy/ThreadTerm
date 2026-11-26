@@ -2490,6 +2490,25 @@
       "type": "object",
       "additionalProperties": false
     },
+    "RequestParams<\"provider.secret.set\">": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "value"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"plugin.list\">": {
       "type": "object",
       "additionalProperties": false
@@ -9752,6 +9771,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22provider.refresh%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "provider.secret.set"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22provider.secret.set%22%3E"
         }
       },
       "required": [

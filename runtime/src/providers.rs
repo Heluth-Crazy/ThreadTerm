@@ -5,6 +5,8 @@
 //! machine-readable protocols and never parse terminal output.
 
 mod acp;
+pub(crate) mod antigravity;
+pub mod antigravity_install;
 mod approval;
 pub(crate) mod browser_activity;
 mod claude;
@@ -19,6 +21,7 @@ pub(crate) mod network;
 mod opencode;
 mod pi;
 pub(crate) mod probes;
+mod secret_store;
 #[cfg(test)]
 mod retirement_tests;
 
@@ -164,26 +167,30 @@ pub(crate) fn acp_threadterm_permission_option(params: &Value, namespace: ToolNa
 pub(crate) struct BuiltinDescriptor {
     pub id: &'static str,
     pub name: &'static str,
+    /// The CLI's command name; the provider id for every agent except Antigravity (`agy`).
+    cli: &'static str,
     sign_in_args: &'static [&'static str],
 }
 
 pub(crate) const BUILTIN_AGENTS: &[BuiltinDescriptor] = &[
-    BuiltinDescriptor { id: "codex", name: "Codex", sign_in_args: &["login"] },
-    BuiltinDescriptor { id: "claude", name: "Claude Code", sign_in_args: &["auth", "login"] },
-    BuiltinDescriptor { id: "kimi", name: "Kimi", sign_in_args: &["login"] },
-    BuiltinDescriptor { id: "opencode", name: "OpenCode", sign_in_args: &["providers", "login"] },
-    BuiltinDescriptor { id: "grok", name: "Grok", sign_in_args: &[] },
-    BuiltinDescriptor { id: "pi", name: "Pi", sign_in_args: &[] },
+    BuiltinDescriptor { id: "codex", name: "Codex", cli: "codex", sign_in_args: &["login"] },
+    BuiltinDescriptor { id: "claude", name: "Claude Code", cli: "claude", sign_in_args: &["auth", "login"] },
+    BuiltinDescriptor { id: "kimi", name: "Kimi", cli: "kimi", sign_in_args: &["login"] },
+    BuiltinDescriptor { id: "opencode", name: "OpenCode", cli: "opencode", sign_in_args: &["providers", "login"] },
+    BuiltinDescriptor { id: "grok", name: "Grok", cli: "grok", sign_in_args: &[] },
+    BuiltinDescriptor { id: "pi", name: "Pi", cli: "pi", sign_in_args: &[] },
+    // Google's official `agy acp`; its sign-in commands come from the adapter (providers/antigravity.rs).
+    BuiltinDescriptor { id: "antigravity", name: "Antigravity", cli: "agy", sign_in_args: &[] },
 ];
 
 pub(crate) fn builtin_name(id: &str) -> &str {
     BUILTIN_AGENTS.iter().find(|agent| agent.id == id).map(|agent| agent.name).unwrap_or(id)
 }
 
-/// Built-in adapters currently use their stable provider id as their CLI
-/// command. Prerequisite checks use this instead of duplicating provider names.
+/// A built-in agent's CLI command: its stable provider id, except Antigravity's `agy`. Prerequisite checks use
+/// this instead of duplicating provider names.
 pub(crate) fn builtin_cli_name(id: &str) -> Option<&'static str> {
-    BUILTIN_AGENTS.iter().find(|agent| agent.id == id).map(|agent| agent.id)
+    BUILTIN_AGENTS.iter().find(|agent| agent.id == id).map(|agent| agent.cli)
 }
 
 pub(crate) fn builtin_sign_in(id: &str) -> Option<ProviderCommand> {
@@ -248,6 +255,14 @@ pub struct ProviderSetup {
     /// How to get Node.js on this computer (winget, when it resolves).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_install: Option<ProviderCommand>,
+    /// Agents with a choice of sign-in (Antigravity): the methods, the chosen one, and whether an API key is stored.
+    /// The key itself never leaves the runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_methods: Option<Vec<antigravity::AuthMethodInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_set: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1227,6 +1242,8 @@ pub struct Providers {
     events: ProviderEventSender,
     projection_events: Mutex<Option<ProjectionReceiver>>,
     network: network::NetworkSettings,
+    /// Antigravity's sign-in method and API key (None in tests built from bare adapters).
+    antigravity: Option<Arc<antigravity::Antigravity>>,
     tool_servers: RwLock<Option<ToolServerResolver>>,
     project_trust: RwLock<Option<ProjectTrustResolver>>,
     retirement_projector: RwLock<Option<RetirementProjector>>,
@@ -1544,15 +1561,19 @@ impl Providers {
     fn native(spool_dir: &std::path::Path) -> Self {
         let (events, projection_events) = provider_events::channel(spool_dir);
         let network = network::NetworkSettings::default();
+        let antigravity = Arc::new(antigravity::Antigravity::new(spool_dir));
         let adapters: Vec<Arc<dyn ProviderAdapter>> = vec![
             Arc::new(codex::CodexAdapter::new(events.clone())),
             Arc::new(claude::ClaudeAdapter::new(events.clone())),
             Arc::new(acp::AcpAdapter::kimi(events.clone())),
+            Arc::new(acp::AcpAdapter::antigravity(events.clone(), Arc::clone(&antigravity))),
             Arc::new(opencode::OpenCodeAdapter::new(events.clone())),
             Arc::new(grok::GrokAdapter::new(events.clone(), network.clone())),
             Arc::new(pi::PiAdapter::new(events.clone())),
         ];
-        Self::from_adapters(events, projection_events, adapters, network)
+        let mut providers = Self::from_adapters(events, projection_events, adapters, network);
+        providers.antigravity = Some(antigravity);
+        providers
     }
 
     pub fn with_plugins(data_dir: &std::path::Path, settings: &Value) -> Self {
@@ -1621,6 +1642,7 @@ impl Providers {
             events,
             projection_events: Mutex::new(Some(projection_events)),
             network,
+            antigravity: None,
             tool_servers: RwLock::new(None),
             project_trust: RwLock::new(None),
             retirement_projector: RwLock::new(None),
@@ -1701,6 +1723,27 @@ impl Providers {
 
     pub fn configure_network(&self, settings: &Value) -> Result<(), ProviderError> {
         self.network.update(settings)
+    }
+
+    /// Applies `providerAuth` (Antigravity's sign-in method and Cloud project). A changed method refreshes the
+    /// agent rows; any other settings change leaves the capability cache alone.
+    pub fn configure_agent_auth(&self, settings: &Value) -> Result<(), ProviderError> {
+        let Some(antigravity) = &self.antigravity else { return Ok(()) };
+        if antigravity.update(settings)? {
+            self.refresh_capabilities();
+        }
+        Ok(())
+    }
+
+    /// `provider.secret.set`: stores or removes an agent's API key. Write-only: the answer says only whether one
+    /// is stored.
+    pub fn set_agent_secret(&self, provider: &str, value: Option<&str>) -> Result<Value, ProviderError> {
+        let antigravity = self.antigravity.as_ref().filter(|_| provider == antigravity::ID).ok_or_else(|| {
+            ProviderError::new("provider_unsupported", format!("{provider} has no stored API key"))
+        })?;
+        antigravity.set_api_key(value)?;
+        self.refresh_capabilities();
+        Ok(json!({"apiKeySet": antigravity.api_key_set()}))
     }
 
     /// Invalidates executable/auth probes after a plugin install, removal or
@@ -3243,7 +3286,8 @@ mod registry_cleanup_tests {
     #[test]
     fn every_production_adapter_fences_late_events_after_reconnect_and_stop() {
         let providers = Providers::new();
-        assert_eq!(providers.adapters.read().unwrap().len(), 7);
+        // Six built-ins before Antigravity (11-24), Antigravity, and the bundled plugin agents.
+        assert_eq!(providers.adapters.read().unwrap().len(), 8);
         let mut receiver = providers.events.subscribe();
         for (provider, adapter) in providers.adapters.read().unwrap().iter() {
             assert!(
