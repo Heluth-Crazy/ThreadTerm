@@ -1,5 +1,5 @@
 import { rankSlash, skillText, slashItems, slashSourceLabel, type SlashItem } from "../slashMenu";
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatProviderNotice } from './ChatProviderNotice';
@@ -613,6 +613,39 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [caret, setCaret] = useState(0);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  // A chat out of sight (a background tab, a minimized window) does not re-render its streaming reply: the stream
+  // queue keeps the newest text and paints it when the chat is shown again. With three hidden chats streaming, the
+  // renderer had spent a whole core on them (11-26 I/O measurement). Visibility, not focus: an unfocused split is seen.
+  const chatHiddenRef = useRef(false);
+  const chatIntersectingRef = useRef(true);
+  const chatObserverRef = useRef<IntersectionObserver | undefined>(undefined);
+  const revealStreamRef = useRef<() => void>(() => undefined);
+  const updateChatHidden = useCallback(() => {
+    const hidden = !chatIntersectingRef.current || document.visibilityState === 'hidden';
+    const revealed = chatHiddenRef.current && !hidden;
+    chatHiddenRef.current = hidden;
+    if (revealed) revealStreamRef.current();
+  }, []);
+  const chatRootRef = useCallback((node: HTMLElement | null) => {
+    chatObserverRef.current?.disconnect();
+    chatObserverRef.current = undefined;
+    chatIntersectingRef.current = true;
+    if (node && typeof IntersectionObserver === 'function') {
+      const observer = new IntersectionObserver(entries => {
+        const latest = entries[entries.length - 1];
+        if (!latest) return;
+        chatIntersectingRef.current = latest.isIntersecting;
+        updateChatHidden();
+      });
+      observer.observe(node);
+      chatObserverRef.current = observer;
+    }
+    updateChatHidden();
+  }, [updateChatHidden]);
+  useEffect(() => {
+    document.addEventListener('visibilitychange', updateChatHidden);
+    return () => document.removeEventListener('visibilitychange', updateChatHidden);
+  }, [updateChatHidden]);
   const logContentRef = useRef<HTMLDivElement>(null);
   const viewport = useChatViewport(session.id, viewportSessionId === session.id, logRef, logContentRef);
   const flowSync = useChatFlowSync(session.id, logRef, logContentRef, items, viewport);
@@ -732,8 +765,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     // cumulative streaming snapshots; canonical cards still paint now.
     const newCodexStream = () => createCodexStreamQueue(item => {
       if (!disposed) setItems(current => upsertChatItem(current, item));
-    });
+    }, undefined, () => chatHiddenRef.current);
     let codexStream = newCodexStream();
+    // Reads the binding, so a resync's replacement stream is the one revealed.
+    revealStreamRef.current = () => codexStream.reveal();
     let repairRevision = -1;
     let integrityError: string | undefined;
     let ingressWasFailed = false;
@@ -935,6 +970,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     };
     discoverHistoryRef.current = () => {
       const generation = ++historyGeneration.current;
+      // Like the other resyncs: the snapshot supersedes queued and parked (hidden) text, which must not repaint over it.
+      codexStream.dispose(); codexStream = newCodexStream();
       resync = beginResync(session.id, generation, resync);
       setRepairDiscovery({ sessionId: session.id, generation, phase: 'pending' });
       void request('chat.snapshot', {sessionId: session.id}).then(transcript => {
@@ -2161,7 +2198,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {renderTurn(group, groupIndex)}
     </section>);
   });
-  return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
+  return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section ref={chatRootRef} className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
     <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>
     <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}

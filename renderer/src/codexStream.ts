@@ -3,7 +3,10 @@ import type { ChatItem } from "@threadterm/protocol";
 /** Provider readers can deliver several cumulative snapshots together. Pace
  * their rendering while keeping the item's final update behind its text. */
 export const CODEX_STREAM_INTERVAL_MS = 32;
-const MAX_PENDING_SNAPSHOTS = 32;
+/** Every snapshot is the whole item, so a newer one supersedes the older ones. Up to this many wait for the animation;
+ * beyond it the oldest are dropped. At 32 a reply streaming 50 deltas/s was shown 0.35–0.67 s after the runtime had it
+ * (11-26 I/O measurement); at 3 it trails by about three intervals. */
+const MAX_PENDING_SNAPSHOTS = 3;
 
 type Timer = ReturnType<typeof setTimeout>;
 type Deliver = (item: ChatItem) => void;
@@ -13,14 +16,28 @@ export function isStreamingChatItem(item: ChatItem): boolean {
     && item.parts.some((part) => part.status === "streaming" || part.status === "running");
 }
 
+/** Only an assistant reply made of text and thinking that is still streaming may wait while hidden. Tool cards,
+ * approvals, plans and errors always paint at once. */
+function parkable(item: ChatItem): boolean {
+  return item.role === "assistant" && item.parts.length > 0
+    && item.parts.every((part) => part.type === "text" || part.type === "thinking")
+    && item.parts.some((part) => part.status === "streaming");
+}
+
 export interface CodexStreamQueue {
   push(item: ChatItem): void;
+  /** The view is visible again: paint the newest snapshot of every item that streamed while it was hidden. */
+  reveal(): void;
   dispose(): void;
 }
 
+/** `hidden` says whether the view is out of sight (a background tab, a minimized window). A hidden view still paints
+ * every new item and every canonical change at once; only the streaming text of a reply it already shows waits for
+ * `reveal` (see `parkable`), so a hidden chat does not re-render that reply 30 times a second. */
 export function createCodexStreamQueue(
   deliver: Deliver,
   intervalMs = CODEX_STREAM_INTERVAL_MS,
+  hidden: () => boolean = () => false,
 ): CodexStreamQueue {
   // Only cumulative snapshots of a streaming item are paced here. Approvals,
   // completions and tool cards are canonical state, so they are delivered
@@ -29,9 +46,17 @@ export function createCodexStreamQueue(
   let timer: Timer | undefined;
   let disposed = false;
   const activeItemIds = new Set<string>();
+  // Ids the view has painted at least once: only those may be parked, so an item's first appearance keeps its order.
+  const shownItemIds = new Set<string>();
+  const parked = new Map<string, ChatItem>();
+
+  const paint = (item: ChatItem) => {
+    shownItemIds.add(item.id);
+    deliver(item);
+  };
 
   const deliverQueued = (item: ChatItem) => {
-    deliver(item);
+    paint(item);
     if (!isStreamingChatItem(item)) activeItemIds.delete(item.id);
   };
 
@@ -61,10 +86,18 @@ export function createCodexStreamQueue(
   return {
     push(item) {
       if (disposed) return;
+      if (parkable(item) && shownItemIds.has(item.id) && hidden()) {
+        // Supersedes the parked and queued snapshots of this item; nothing is painted until the view is shown.
+        parked.set(item.id, item);
+        pending = pending.filter((entry) => entry.id !== item.id);
+        return;
+      }
+      // Any newer snapshot, canonical or streaming, supersedes a parked one.
+      parked.delete(item.id);
       // A snapshot for an item that is not animating is a canonical state
       // change: paint it now, even while another item streams.
       if (!isStreamingChatItem(item) && !activeItemIds.has(item.id)) {
-        deliver(item);
+        paint(item);
         return;
       }
       activeItemIds.add(item.id);
@@ -77,12 +110,20 @@ export function createCodexStreamQueue(
         if (timer === undefined && !disposed) timer = setTimeout(flush, intervalMs);
       }
     },
+    reveal() {
+      if (disposed || !parked.size) return;
+      const caughtUp = [...parked.values()];
+      parked.clear();
+      for (const item of caughtUp) deliverQueued(item);
+    },
     dispose() {
       disposed = true;
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
       pending = [];
       activeItemIds.clear();
+      shownItemIds.clear();
+      parked.clear();
     },
   };
 }
