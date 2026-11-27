@@ -1,4 +1,4 @@
-import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, createContext, memo, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import type { FileReference, ResolvedFileReference } from '@threadterm/protocol';
 import { request, subscribeEvents } from '../bridge';
 import { extractFileReferences, parseFileReference, parseMarkdownFileReference } from '../fileReferences';
@@ -157,30 +157,46 @@ export async function resolveAutoFileReferences({
  return current()?candidates.filter(candidate=>accepted.has(referenceKey(candidate))):[];
 }
 
+type VerifiedKeys = { scope:string; keys:ReadonlySet<string> };
+const NO_REFERENCES:readonly AutoReference[]=[];
+/** The candidates that name existing files. State keeps only the verified keys (tagged with session, root, whether links
+ * are interactive and the reconnect revision); the list is derived from the current candidates, so offsets always fit
+ * the current text. New text keeps the links already known while its own resolution runs, instead of dropping every
+ * link and painting twice per streamed snapshot. A finished resolution covers exactly the current eligible keys (the
+ * first `AUTO_REFERENCE_LIMIT` candidates, as `resolveAutoFileReferences` takes them) and replaces the set. */
 function useAutoReferences(content:string, candidates:readonly AutoReference[], interactive:boolean, sourceSessionId?:string, canonicalRoot?:string) {
- const [verified,setVerified]=useState<AutoReference[]>([]);
  const [revalidation,setRevalidation]=useState(0);
+ const scope=`${interactive?1:0}\u0000${sourceSessionId??''}\u0000${canonicalRoot??''}\u0000${revalidation}`;
+ const [verified,setVerified]=useState<VerifiedKeys>(()=>({scope,keys:new Set()}));
  const generation=useRef(0);
  useEffect(()=>{
   if(!sourceSessionId)return;
   return subscribeEvents(event=>{
    if(event.event==='runtime.transport'&&(event.data as {state?:string}|undefined)?.state==='reconnected'){
-    generation.current++;invalidateAutoFileReferenceCache();setVerified([]);setRevalidation(value=>value+1);
+    generation.current++;invalidateAutoFileReferenceCache();setRevalidation(value=>value+1);
    }
   });
  },[sourceSessionId]);
  useEffect(()=>{
   const id=++generation.current;
-  setVerified([]);
   if(!interactive||!sourceSessionId||!candidates.length)return;
   void resolveAutoFileReferences({
    sessionId:sourceSessionId, canonicalRoot, candidates,
    resolve:(sessionId,reference)=>request('filesystem.resolve',{sessionId,...reference}),
    current:()=>generation.current===id,
-  }).then(value=>{if(generation.current===id)setVerified(value);});
+  }).then(value=>{
+   if(generation.current!==id)return;
+   const keys=new Set(value.map(referenceKey));
+   setVerified(current=>current.scope===scope&&current.keys.size===keys.size&&[...keys].every(key=>current.keys.has(key))?current:{scope,keys});
+  });
   return()=>{generation.current++;};
- },[canonicalRoot,candidates,content,interactive,revalidation,sourceSessionId]);
- return verified;
+ },[canonicalRoot,candidates,content,interactive,scope,sourceSessionId]);
+ return useMemo(()=>{
+  if(verified.scope!==scope||!verified.keys.size||!interactive||!sourceSessionId)return NO_REFERENCES;
+  const eligible=new Set(candidates.slice(0,AUTO_REFERENCE_LIMIT).map(referenceKey));
+  const list=candidates.filter(candidate=>{const key=referenceKey(candidate);return eligible.has(key)&&verified.keys.has(key);});
+  return list.length?list:NO_REFERENCES;
+ },[candidates,interactive,scope,sourceSessionId,verified]);
 }
 
 const sameReference = (a: FileReference, b: FileReference) =>
@@ -254,31 +270,27 @@ export function FileReferenceChips({ references, visibleText, visibleReferences,
 // The HTML has already passed DOMPurify. Only create textContent and inert
 // buttons here; never carry raw model HTML into an attribute or URL.
 // Remote-image placeholders carry author-chosen alt and host text, not prose to linkify.
-function markdownAutoReferences(sanitized:string):AutoReference[] {
- const root=document.createElement('div'); root.innerHTML=sanitized;
- const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
- const candidates:AutoReference[]=[];
- while(walker.nextNode()){
-  const node=walker.currentNode as Text;
-  if(node.parentElement?.closest('button, a, .md-remote-image'))continue;
-  candidates.push(...extractFileReferences(node.textContent??''));
- }
- return candidates;
-}
-
-function markdownAnchorReferences(sanitized:string):FileReference[] {
- const root=document.createElement('div'); root.innerHTML=sanitized;
- const references:FileReference[]=[];
- for(const anchor of Array.from(root.querySelectorAll('a'))){
-  let reference=parseMarkdownFileReference(anchor.getAttribute('href')??'');
-  const encoded=anchor.getAttribute('data-threadterm-file-reference');
-  if(encoded)try{
-   const value=JSON.parse(encoded) as FileReference;
-   if(value&&typeof value.path==='string'&&parseFileReference(value.path))reference=value;
-  }catch{/* Ignore malformed inert metadata. */}
-  if(reference)references.push(reference);
- }
- return references;
+/** The auto-reference candidates (prose that looks like a file) and Markdown links to files in sanitized HTML. */
+export function analyzeMarkdownHtml(sanitized: string): { candidates: AutoReference[]; anchors: FileReference[] } {
+  const root = document.createElement('div'); root.innerHTML = sanitized;
+  const candidates: AutoReference[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (node.parentElement?.closest('button, a, .md-remote-image')) continue;
+    candidates.push(...extractFileReferences(node.textContent ?? ''));
+  }
+  const anchors: FileReference[] = [];
+  for (const anchor of Array.from(root.querySelectorAll('a'))) {
+    let reference = parseMarkdownFileReference(anchor.getAttribute('href') ?? '');
+    const encoded = anchor.getAttribute('data-threadterm-file-reference');
+    if (encoded) try {
+      const value = JSON.parse(encoded) as FileReference;
+      if (value && typeof value.path === 'string' && parseFileReference(value.path)) reference = value;
+    } catch { /* Ignore malformed inert metadata. */ }
+    if (reference) anchors.push(reference);
+  }
+  return { candidates, anchors };
 }
 
 function decorateMarkdown(sanitized: string, interactive: boolean, accepted:ReadonlySet<string>, reveal?: { zh: boolean }): string {
@@ -334,28 +346,14 @@ function decorateMarkdown(sanitized: string, interactive: boolean, accepted:Read
   return root.innerHTML;
 }
 
-export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, sourceSessionId, canonicalRoot, renderHtml }: { sanitizedHtml: string; references?: FileReference[]; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string; renderHtml?: (html: string) => ReactNode }) {
-  const scope=useFileReferenceScope(sourceSessionId,canonicalRoot);
-  const zh = useLocale() === 'zh-CN';
-  const interactive = Boolean(openFile);
-  const candidates=useMemo(()=>markdownAutoReferences(sanitizedHtml),[sanitizedHtml]);
-  const anchors=useMemo(()=>markdownAnchorReferences(sanitizedHtml),[sanitizedHtml]);
-  const verified=useAutoReferences(sanitizedHtml,candidates,interactive,scope.sourceSessionId,scope.canonicalRoot);
-  const accepted=useMemo(()=>new Set(verified.map(referenceKey)),[verified]);
-  const visibleReferences=useMemo(()=>[...anchors,...verified],[anchors,verified]);
-  const rendered = useMemo(() => {
-    const html = decorateMarkdown(sanitizedHtml, interactive, accepted, scope.sourceSessionId ? { zh } : undefined);
-    const container = document.createElement('div');
-    container.innerHTML = html;
-    return { innerHtml: { __html: html }, visibleText: container.textContent ?? '' };
-  }, [accepted, interactive, sanitizedHtml, scope.sourceSessionId, zh]);
-  const rich = useMemo(() => renderHtml?.(rendered.innerHtml.__html), [renderHtml, rendered]);
+/** Clicks on the inert buttons decorateMarkdown leaves in rendered Markdown. */
+function markdownReferenceHandlers(openFile: OpenFile | undefined, sourceSessionId: string | undefined, zh: boolean) {
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
     const reveal = event.target instanceof Element ? event.target.closest<HTMLElement>('button[data-file-reveal]') : null;
     if (reveal && event.currentTarget.contains(reveal)) {
       try {
         const reference = JSON.parse(reveal.dataset.fileReveal ?? '') as FileReference;
-        const location = isPackageFile(reference.path) ? referenceLocationTarget(scope.sourceSessionId, reference) : undefined;
+        const location = isPackageFile(reference.path) ? referenceLocationTarget(sourceSessionId, reference) : undefined;
         if (location) void revealFileLocation(location, zh);
       } catch { /* Ignore malformed display metadata. */ }
       return;
@@ -372,11 +370,69 @@ export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, source
     if (!target || !event.currentTarget.contains(target) || !openFile) return;
     try {
       const reference = JSON.parse((target as HTMLElement).dataset.fileReference ?? '') as FileReference;
-      if (typeof reference.path === 'string' && parseFileReference(reference.path)) referenceContextMenu(event, reference, scope.sourceSessionId, openFile, zh);
+      if (typeof reference.path === 'string' && parseFileReference(reference.path)) referenceContextMenu(event, reference, sourceSessionId, openFile, zh);
     } catch { /* Ignore malformed display metadata. */ }
   };
+  return { onClick, onContextMenu };
+}
+
+export function FileLinkedMarkdown({ sanitizedHtml, references, openFile, sourceSessionId, canonicalRoot, renderHtml }: { sanitizedHtml: string; references?: FileReference[]; openFile?: OpenFile; sourceSessionId?:string; canonicalRoot?:string; renderHtml?: (html: string) => ReactNode }) {
+  const scope=useFileReferenceScope(sourceSessionId,canonicalRoot);
+  const zh = useLocale() === 'zh-CN';
+  const interactive = Boolean(openFile);
+  const { candidates, anchors } = useMemo(() => analyzeMarkdownHtml(sanitizedHtml), [sanitizedHtml]);
+  const verified=useAutoReferences(sanitizedHtml,candidates,interactive,scope.sourceSessionId,scope.canonicalRoot);
+  const accepted=useMemo(()=>new Set(verified.map(referenceKey)),[verified]);
+  const visibleReferences=useMemo(()=>[...anchors,...verified],[anchors,verified]);
+  const rendered = useMemo(() => ({ innerHtml: { __html: decorateMarkdown(sanitizedHtml, interactive, accepted, scope.sourceSessionId ? { zh } : undefined) } }),
+    [accepted, interactive, sanitizedHtml, scope.sourceSessionId, zh]);
+  const rich = useMemo(() => renderHtml?.(rendered.innerHtml.__html), [renderHtml, rendered]);
+  const { onClick, onContextMenu } = markdownReferenceHandlers(openFile, scope.sourceSessionId, zh);
   return <>
     {renderHtml ? <div className="v3-message-text codex-markdown" onClick={onClick} onContextMenu={onContextMenu}>{rich}</div> : <div className="v3-message-text codex-markdown" dangerouslySetInnerHTML={rendered.innerHtml} onClick={onClick} onContextMenu={onContextMenu} />}
+    <FileReferenceChips references={references} visibleReferences={visibleReferences} openFile={openFile} sourceSessionId={scope.sourceSessionId} />
+  </>;
+}
+
+/** One rendered block of a streaming reply: its sanitized HTML and the file references in it, found with one parse. */
+export type MarkdownBlock = { id: number; html: string; candidates: readonly AutoReference[]; anchors: readonly FileReference[] };
+
+type BlockProps = { html: string; interactive: boolean; accepted: ReadonlySet<string>; acceptedKey: string; revealZh?: boolean; renderHtml?: (html: string) => ReactNode; renderKey: string };
+/** Re-rendered only when its own HTML, its own verified links or the rendering mode change: an unchanged block keeps
+ * its DOM (and the selection in it) while the reply streams on. `display: contents`, so the blocks lay out as if the
+ * reply were one container (styles.css restates the position rules for it). */
+const MarkdownHtmlBlock = memo(function MarkdownHtmlBlock({ html, interactive, accepted, revealZh, renderHtml }: BlockProps) {
+  const decorated = decorateMarkdown(html, interactive, accepted, revealZh === undefined ? undefined : { zh: revealZh });
+  return renderHtml ? <div className="md-stream-block">{renderHtml(decorated)}</div> : <div className="md-stream-block" dangerouslySetInnerHTML={{ __html: decorated }} />;
+}, (a, b) => a.html === b.html && a.interactive === b.interactive && a.acceptedKey === b.acceptedKey && a.revealZh === b.revealZh
+  && Boolean(a.renderHtml) === Boolean(b.renderHtml) && a.renderKey === b.renderKey);
+
+/** `FileLinkedMarkdown` for a reply rendered block by block (ChatView `CodexMarkdownPart`): the same links, buttons and
+ * chips, with one part-wide reference budget, but only changed blocks are decorated and put into the DOM again.
+ * `renderHtml` (the rich path for Markdown extras) must stay valid for the same `renderKey`. */
+export function FileLinkedMarkdownBlocks({ blocks, references, openFile, sourceSessionId, canonicalRoot, renderHtml, renderKey }: { blocks: readonly MarkdownBlock[]; references?: FileReference[]; openFile?: OpenFile; sourceSessionId?: string; canonicalRoot?: string; renderHtml?: (html: string) => ReactNode; renderKey: string }) {
+  const scope = useFileReferenceScope(sourceSessionId, canonicalRoot);
+  const zh = useLocale() === 'zh-CN';
+  const interactive = Boolean(openFile);
+  // Stable while the set of references is unchanged, so a snapshot that only adds prose resolves nothing again.
+  const candidateList = blocks.flatMap(block => block.candidates);
+  const candidateKey = candidateList.map(referenceKey).join('\n');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const candidates = useMemo(() => candidateList, [candidateKey]);
+  const anchorList = blocks.flatMap(block => block.anchors);
+  const anchorKey = anchorList.map(referenceKey).join('\n');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const anchors = useMemo(() => anchorList, [anchorKey]);
+  const verified = useAutoReferences(candidateKey, candidates, interactive, scope.sourceSessionId, scope.canonicalRoot);
+  const accepted = useMemo(() => new Set(verified.map(referenceKey)), [verified]);
+  const visibleReferences = useMemo(() => [...anchors, ...verified], [anchors, verified]);
+  const revealZh = scope.sourceSessionId ? zh : undefined;
+  const { onClick, onContextMenu } = markdownReferenceHandlers(openFile, scope.sourceSessionId, zh);
+  return <>
+    <div className="v3-message-text codex-markdown" onClick={onClick} onContextMenu={onContextMenu}>
+      {blocks.map(block => <MarkdownHtmlBlock key={block.id} html={block.html} interactive={interactive} accepted={accepted}
+        acceptedKey={block.candidates.map(referenceKey).filter(key => accepted.has(key)).join('\n')} revealZh={revealZh} renderHtml={renderHtml} renderKey={renderKey} />)}
+    </div>
     <FileReferenceChips references={references} visibleReferences={visibleReferences} openFile={openFile} sourceSessionId={scope.sourceSessionId} />
   </>;
 }

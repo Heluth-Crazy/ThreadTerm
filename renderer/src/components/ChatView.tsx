@@ -1,9 +1,10 @@
 import { rankSlash, skillText, slashItems, slashSourceLabel, type SlashItem } from "../slashMenu";
-import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { sanitizeMarkdownHtml } from '../markdownPolicy';
 import { parseChatMarkdown } from '../chatMath';
 import { ChatProviderNotice } from './ChatProviderNotice';
-import { ChatMarkdown } from './ChatMarkdownExtras';
+import { ChatMarkdown, ChatMarkdownBlocks, hasMarkdownExtras } from './ChatMarkdownExtras';
+import { splitStreamingMarkdown } from '../streamingMarkdown';
 import type { ChatAnswerResponse, ChatContextUsage, ChatPart, ChatQueue, ChatQueueItem, ChatSlashCommand, ChatUiState, FileReference, GitCommitInfo, Session } from "@threadterm/protocol";
 import { ChatItem, attachFiles, chooseDirectory, openExternal, operationId, readPageShot, request, subscribeEvents } from "../bridge";
 import { beginResync, chatUiFromEvent, completeResync, nextRepairRevision, upsertChatItem, type ChatResync } from "../chatState";
@@ -32,7 +33,7 @@ import { ActivityFold } from './ToolActivity';
 import { SubagentCard } from './SubagentCard';
 import { isSubagentPart, subagentInfo, subagentTitle } from '../subagentActivity';
 import { createCodexStreamQueue } from "../codexStream";
-import { FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
+import { analyzeMarkdownHtml, FileLinkedText, FileReferenceChips, FileReferenceScopeProvider } from './FileReferenceText';
 import { createReplyActionMarkdownCache, isReplyTextPart } from '../replyMarkdown';
 import { createTranscriptTurnCache } from '../transcriptTurnCache';
 import { MessageActions } from './MessageActions';
@@ -129,8 +130,8 @@ function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; str
 
 const codexMarkdownCache = new Map<string, string>();
 const codexMarkdownCacheLimit = 300;
-function renderCodexMarkdown(text: string, zh: boolean): string {
-  const fenced = hasCodeFence(text);
+/** `fenced` says whether to colour code blocks; a block of a streaming reply passes the whole reply's answer. */
+function renderCodexMarkdown(text: string, zh: boolean, cache = true, fenced = hasCodeFence(text)): string {
   const cacheKey = `${zh ? "zh" : "en"}\u0000${fenced ? codeHighlightVersion() : ''}\u0000${text}`;
   const cached = codexMarkdownCache.get(cacheKey);
   if (cached !== undefined) return cached;
@@ -165,6 +166,7 @@ function renderCodexMarkdown(text: string, zh: boolean): string {
     block.append(button);
   }
   const result = holder.innerHTML;
+  if (!cache) return result;
   codexMarkdownCache.set(cacheKey, result);
   if (codexMarkdownCache.size > codexMarkdownCacheLimit) codexMarkdownCache.delete(codexMarkdownCache.keys().next().value!);
   return result;
@@ -238,6 +240,52 @@ const rateResetText = (window: JsonRecord, copy: (en: string, zh: string) => str
   if (!Number.isFinite(date.getTime())) return "";
   return `${copy("resets", "重置") } ${date.toLocaleString()}`;
 };
+
+type MarkdownBlockRender = { html: string; extras: boolean; candidates: ReturnType<typeof analyzeMarkdownHtml>['candidates']; anchors: FileReference[] };
+type MarkdownBlocksState = { zh: boolean; highlight: number | ''; renders: Map<string, MarkdownBlockRender>; ids: { source: string; id: number }[]; nextId: number };
+/** An assistant reply's Markdown. A reply that streams while this view shows it is rendered block by block from then
+ * on (`splitStreamingMarkdown`): each snapshot lexes the whole text, but only blocks whose source changed are rendered,
+ * analyzed and put into the DOM again. The others keep their DOM, selection and component state, also when the reply
+ * completes. A reply that is complete when it mounts takes the whole-text path and the shared cache, as before. When
+ * the blocks cannot stand for the whole text (raw HTML, a link reference definition), the reply switches to the
+ * whole-text path once, for good. */
+function CodexMarkdownPart({ text, streaming, zh, references, openFile, copy, onInsert }: { text: string; streaming: boolean; zh: boolean; references?: FileReference[]; openFile?: (reference: FileReference) => void; copy: (en: string, zh: string) => string; onInsert?: (text: string) => void }) {
+  const [blockwise, setBlockwise] = useState(streaming);
+  const [whole, setWhole] = useState(false);
+  if (streaming && !blockwise) setBlockwise(true);
+  const split = useMemo(() => blockwise && !whole ? splitStreamingMarkdown(text) : undefined, [blockwise, whole, text]);
+  if (split?.kind === 'whole' && !whole) setWhole(true);
+  // As for the whole text: code is coloured when the reply has a fence, and a loaded grammar renders the reply again.
+  const fenced = hasCodeFence(text);
+  const highlight = fenced ? codeHighlightVersion() : '';
+  // The committed renders (current blocks only, so a growing tail is never kept twice) and block keys. A block keeps
+  // its key while its source stays or grows, so its DOM and state survive; a block replaced by other text (a resync) is
+  // mounted afresh. Computed from the committed state only and committed after render, so a discarded render changes
+  // nothing.
+  const committed = useRef<MarkdownBlocksState>({ zh, highlight, renders: new Map(), ids: [], nextId: 0 });
+  const next = useMemo(() => {
+    if (split?.kind !== 'blocks') return undefined;
+    const previous = committed.current;
+    const reusable = previous.zh === zh && previous.highlight === highlight ? previous.renders : new Map<string, MarkdownBlockRender>();
+    const renders = new Map<string, MarkdownBlockRender>();
+    let nextId = previous.nextId;
+    const blocks = split.blocks.map((source, index) => {
+      let render = renders.get(source) ?? reusable.get(source);
+      if (!render) {
+        const html = renderCodexMarkdown(source, zh, false, fenced);
+        render = { html, extras: hasMarkdownExtras(html), ...analyzeMarkdownHtml(html) };
+      }
+      renders.set(source, render);
+      const prior = previous.ids[index];
+      return { id: prior && source.startsWith(prior.source) ? prior.id : nextId++, source, ...render };
+    });
+    const state: MarkdownBlocksState = { zh, highlight, renders, ids: blocks.map(({ id, source }) => ({ id, source })), nextId };
+    return { blocks, state };
+  }, [split, zh, highlight, fenced]);
+  useLayoutEffect(() => { if (next) committed.current = next.state; }, [next]);
+  if (next) return <ChatMarkdownBlocks blocks={next.blocks} references={references} openFile={openFile} copy={copy} zh={zh} onInsert={onInsert} />;
+  return <ChatMarkdown sanitizedHtml={renderCodexMarkdown(text, zh, !streaming)} references={references} openFile={openFile} copy={copy} zh={zh} onInsert={onInsert} />;
+}
 
 function GuardianReviewCard({ part, copy }: { part: ChatPart; copy: (en: string, zh: string) => string }) {
   const data = asRecord(part.data);
@@ -613,6 +661,39 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   const [caret, setCaret] = useState(0);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  // A chat out of sight (a background tab, a minimized window) does not re-render its streaming reply: the stream
+  // queue keeps the newest text and paints it when the chat is shown again. With three hidden chats streaming, the
+  // renderer had spent a whole core on them (11-26 I/O measurement). Visibility, not focus: an unfocused split is seen.
+  const chatHiddenRef = useRef(false);
+  const chatIntersectingRef = useRef(true);
+  const chatObserverRef = useRef<IntersectionObserver | undefined>(undefined);
+  const revealStreamRef = useRef<() => void>(() => undefined);
+  const updateChatHidden = useCallback(() => {
+    const hidden = !chatIntersectingRef.current || document.visibilityState === 'hidden';
+    const revealed = chatHiddenRef.current && !hidden;
+    chatHiddenRef.current = hidden;
+    if (revealed) revealStreamRef.current();
+  }, []);
+  const chatRootRef = useCallback((node: HTMLElement | null) => {
+    chatObserverRef.current?.disconnect();
+    chatObserverRef.current = undefined;
+    chatIntersectingRef.current = true;
+    if (node && typeof IntersectionObserver === 'function') {
+      const observer = new IntersectionObserver(entries => {
+        const latest = entries[entries.length - 1];
+        if (!latest) return;
+        chatIntersectingRef.current = latest.isIntersecting;
+        updateChatHidden();
+      });
+      observer.observe(node);
+      chatObserverRef.current = observer;
+    }
+    updateChatHidden();
+  }, [updateChatHidden]);
+  useEffect(() => {
+    document.addEventListener('visibilitychange', updateChatHidden);
+    return () => document.removeEventListener('visibilitychange', updateChatHidden);
+  }, [updateChatHidden]);
   const logContentRef = useRef<HTMLDivElement>(null);
   const viewport = useChatViewport(session.id, viewportSessionId === session.id, logRef, logContentRef);
   const flowSync = useChatFlowSync(session.id, logRef, logContentRef, items, viewport);
@@ -628,7 +709,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   // wheel could never reach the transcript above it: fetch the next page instead.
   useLayoutEffect(() => {
     const log = logRef.current;
-    if (!log) return;
+    // Reading scrollHeight forces a layout on every streamed snapshot; it can only matter while an older page exists.
+    if (!log || !earlierPageRef.current.hasEarlier || loadingEarlierRef.current) return;
     if (needsAnotherPage(log.scrollHeight, log.clientHeight, earlierPageRef.current.hasEarlier, loadingEarlierRef.current)) loadEarlierRef.current();
   }, [items]);
   async function refreshBackgroundTasks() {
@@ -732,8 +814,10 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     // cumulative streaming snapshots; canonical cards still paint now.
     const newCodexStream = () => createCodexStreamQueue(item => {
       if (!disposed) setItems(current => upsertChatItem(current, item));
-    });
+    }, undefined, () => chatHiddenRef.current);
     let codexStream = newCodexStream();
+    // Reads the binding, so a resync's replacement stream is the one revealed.
+    revealStreamRef.current = () => codexStream.reveal();
     let repairRevision = -1;
     let integrityError: string | undefined;
     let ingressWasFailed = false;
@@ -935,6 +1019,8 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     };
     discoverHistoryRef.current = () => {
       const generation = ++historyGeneration.current;
+      // Like the other resyncs: the snapshot supersedes queued and parked (hidden) text, which must not repaint over it.
+      codexStream.dispose(); codexStream = newCodexStream();
       resync = beginResync(session.id, generation, resync);
       setRepairDiscovery({ sessionId: session.id, generation, phase: 'pending' });
       void request('chat.snapshot', {sessionId: session.id}).then(transcript => {
@@ -2055,7 +2141,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
           {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
-              ? <ChatMarkdown sanitizedHtml={renderCodexMarkdown(body, zh)} references={part.fileReferences} openFile={openFile} copy={copy} zh={zh} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
+              ? <CodexMarkdownPart text={body} streaming={part.status === 'streaming'} references={part.fileReferences} openFile={openFile} copy={copy} zh={zh} onInsert={writable ? text => insertChatText(session.id, text) : undefined} />
               : item.role === 'user' ? <><ContextMessage text={body} zh={zh}>{(value, badges) => <div className="v3-message-text"><MessageMentionText text={value} badges={badges} openFile={openFile} zh={zh} /></div>}</ContextMessage>{chips.length>0&&<div className="design-note-chips" aria-label={copy('Design notes','设计标注')}>{chips.map(chip=>{const attachment=Number(chip.pin.slice(1))-1,available=Boolean(chip.shotId)||attachment<messageImages.length+messageImageRefs.length;return <button key={chip.pin} type="button" className="chip flat design-note-chip" disabled={!available} title={`${chip.target} · ${chip.words}`} onClick={()=>chip.shotId?void openDesignScreenshot(chip.shotId):setDesignAttachment({part:`${item.id}:${index}`,index:attachment})}>{chip.pin} · {chip.target} · {chip.words}</button>;})}</div>}{asRecord(part.data).steered === true && <span className="chip is-plain chat-inserted-tag" data-testid="inserted-tag">{copy('Inserted', '已插入')}</span>}</> : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
             {!codexMarkdown && <FileReferenceChips references={redactedBrowser?undefined:part.fileReferences} visibleText={body} openFile={openFile} />}
@@ -2161,7 +2247,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
       {renderTurn(group, groupIndex)}
     </section>);
   });
-  return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
+  return <FileReferenceScopeProvider sourceSessionId={session.id} canonicalRoot={session.worktreePath}><section ref={chatRootRef} className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}${permissionRecovery ? " is-permission-recovery" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
     <ChatForkMenu disabledReason={forkActions.disabledReason} busy={forkActions.busy} onFork={id => void forkActions.fork(id)} zh={zh}/>
     <ChatForkStatus session={session} zh={zh} onOpenSession={onOpenSession}/>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}

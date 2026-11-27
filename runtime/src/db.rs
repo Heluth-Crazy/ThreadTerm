@@ -17,6 +17,8 @@ use crate::output_loss::LossRecord;
 
 /// Reason carried by the terminal storage-degraded marker and event (F23).
 pub const TERMINAL_STORAGE_FAILED: &str = "terminal_output_storage_failed";
+/// Most outbox rows `events_after` returns at once; a full page means more may be waiting.
+pub const EVENTS_PAGE: usize = 256;
 pub const TERMINAL_OUTPUT_LOST: &str = "terminal_output_lost";
 /// Leave enough integer space between existing transcript rows for an idle
 /// native-history refresh to insert a bounded conversation without rewriting
@@ -24,7 +26,8 @@ pub const TERMINAL_OUTPUT_LOST: &str = "terminal_output_lost";
 pub(crate) const CHAT_TIMELINE_STRIDE: i64 = 1_i64 << 32;
 
 pub struct Database {
-    connection: Mutex<Connection>,
+    connection: crate::db_lock::ConnectionMutex,
+    epoch: String,
     #[cfg(test)]
     pub(crate) refuse_terminal_marker: std::sync::atomic::AtomicBool,
     path: PathBuf,
@@ -289,12 +292,14 @@ impl Database {
                 r.get(0)
             })
             .optional()?;
-        if epoch.is_none() {
-            connection.execute(
-                "INSERT INTO metadata(key,value) VALUES ('epoch',?)",
-                [Uuid::new_v4().to_string()],
-            )?;
-        }
+        let epoch = match epoch {
+            Some(epoch) => epoch,
+            None => {
+                let epoch = Uuid::new_v4().to_string();
+                connection.execute("INSERT INTO metadata(key,value) VALUES ('epoch',?)", [&epoch])?;
+                epoch
+            }
+        };
         crate::quick_launch::initialize_connection(&connection)?;
         crate::desktop_files::initialize_connection(&connection)?;
         crate::terminal_agents::initialize_connection(&connection)?;
@@ -302,7 +307,8 @@ impl Database {
         schema::migrate_main(&mut connection, upgrade_backup)?;
         release_free_pages_if_bloated(&connection);
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: crate::db_lock::ConnectionMutex::new(connection),
+            epoch,
             #[cfg(test)]
             refuse_terminal_marker: std::sync::atomic::AtomicBool::new(false),
             path: path.to_owned(),
@@ -328,6 +334,8 @@ impl Database {
     }
     /// Extension services use this instead of opening a second SQLite writer.
     /// The closure owns one atomic state/outbox mutation on the runtime thread.
+    /// `#[track_caller]`: the QA lock trace (`db_lock.rs`) names the caller, not this function.
+    #[track_caller]
     pub fn transaction<T, F>(&self, action: F) -> Result<T>
     where
         F: FnOnce(&Transaction<'_>) -> Result<T>,
@@ -825,17 +833,10 @@ impl Database {
             session_activity_tx(tx, session_id)
         })
     }
+    /// Written once when the database is created and never changed (restore and relocation restart the runtime), so
+    /// it is read from memory: every control connection asks for it each time it sends events.
     pub fn epoch(&self) -> Result<String> {
-        self.value("epoch")
-    }
-    fn value(&self, key: &str) -> Result<String> {
-        self.connection
-            .lock()
-            .map_err(|_| anyhow!("database lock poisoned"))?
-            .query_row("SELECT value FROM metadata WHERE key=?", [key], |r| {
-                r.get(0)
-            })
-            .map_err(Into::into)
+        Ok(self.epoch.clone())
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
@@ -928,6 +929,10 @@ impl Database {
         }
         Ok(tree)
     }
+    /// Changes after each committed outbox change made through this database (see `db_lock`).
+    pub(crate) fn outbox_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.connection.outbox_changes()
+    }
     pub fn events_after(&self, after: i64) -> Result<Vec<(i64, String, Value)>> {
         let conn = self
             .connection
@@ -942,8 +947,8 @@ impl Database {
             return Ok(vec![(revision, "runtime.degraded".into(), json!({"reason":"outbox_history_pruned","snapshotRequired":true,"oldestCursor":pruned}))]);
         }
         let mut statement =
-            conn.prepare("SELECT seq,event,data FROM outbox WHERE seq>? ORDER BY seq LIMIT 256")?;
-        let rows = statement.query_map([after], |row| {
+            conn.prepare("SELECT seq,event,data FROM outbox WHERE seq>? ORDER BY seq LIMIT ?")?;
+        let rows = statement.query_map(params![after, EVENTS_PAGE as i64], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,

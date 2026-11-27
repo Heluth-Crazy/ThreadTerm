@@ -547,6 +547,12 @@ textarea.create-input { height:88px; min-height:88px; max-height:240px; padding:
 .codex-markdown h1, .codex-markdown h2, .codex-markdown h3, .codex-markdown h4 { margin:18px 0 8px; line-height:1.35; font-weight:600; }
 .codex-markdown h1 { font-size:1.3em; } .codex-markdown h2 { font-size:1.18em; } .codex-markdown h3 { font-size:1.06em; } .codex-markdown h4 { font-size:1em; }
 .codex-markdown > :first-child { margin-top:0; }
+/* A reply that streams in view renders block by block (ChatView CodexMarkdownPart): each block sits in a box-less
+   wrapper, so the two position rules above are restated for the wrapper. */
+.md-stream-block { display:contents; }
+.codex-markdown > .md-stream-block > p:last-child { margin-bottom:12px; }
+.codex-markdown > .md-stream-block:last-child > p:last-child { margin-bottom:0; }
+.codex-markdown > .md-stream-block:first-child > :first-child { margin-top:0; }
 .codex-markdown blockquote { margin:0 0 12px; padding:2px 0 2px 12px; border-left:3px solid var(--border); color:var(--muted); }
 .codex-markdown a { color:var(--primary); text-decoration:underline; text-underline-offset:2px; }
 .codex-markdown table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }

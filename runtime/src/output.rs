@@ -24,7 +24,18 @@ mod output_retry_tests;
 /// bytes advances the durable cursor past them, so a client reads an explicit
 /// history gap instead of silently missing output.
 const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
-/// Lock order: map (lookup only, released before stream) -> session stream -> commit gate -> DB.
+/// A session commits its output at most once per interval; reads in between wait in `pending`, where the retry worker
+/// commits them at the deadline (so do the next read after it, EOF and the shutdown drain). The first read after a
+/// quiet interval commits at once, so typing echo waits for nothing. 11-26 I/O measurement: a 0.7 MB/s log flood
+/// arrived as ~4,000 reads of ~180 bytes a second, one INSERT each, and held the database 38% of the time.
+const COMMIT_INTERVAL: Duration = Duration::from_millis(5);
+/// Bytes beyond this commit at once on the reader's thread, which keeps backpressure on a fast child and bounds what a
+/// runtime crash can lose to about one interval of output.
+const STAGE_LIMIT: usize = 64 * 1024;
+/// How soon the retry worker looks again at a stream whose lock was busy (its reader was appending).
+const CONTENDED_RECHECK: Duration = Duration::from_millis(10);
+/// Lock order: map (lookup only, released before stream) -> session stream -> commit gate -> DB. `stage` also takes the
+/// retry state under the stream lock, only to count staged bytes; nothing takes a stream lock under the retry state.
 /// Notifications run after releasing every lock.
 pub struct OutputStore {
     streams: Mutex<HashMap<String, Arc<Mutex<Stream>>>>,
@@ -38,6 +49,8 @@ pub struct OutputStore {
     // Independent of stream/DB locks so shutdown can snapshot a blocked retry.
     losses: Mutex<HashMap<String, LossRecord>>,
     sidecars: OnceLock<SidecarWriter>,
+    /// `COMMIT_INTERVAL`; tests use a longer one so that staging never depends on how fast the test runs.
+    commit_interval: Duration,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum FlushOutcome {
@@ -57,8 +70,10 @@ struct Stream {
     /// end itself so a relaunched session never reuses a taken offset.
     seeded: bool,
     retention_check_at: i64,
-    /// Drained bytes the database has not accepted yet (see `append`).
+    /// Drained bytes the database has not accepted yet (see `append`), or has not been asked to yet (`stage`).
     pending: Vec<u8>,
+    /// The last successful write, for `COMMIT_INTERVAL`.
+    last_commit: Option<Instant>,
     degraded: bool,
     marker_pending: bool,
     retry_at: Instant,
@@ -71,6 +86,7 @@ impl Stream {
             seeded: false,
             retention_check_at: crate::retention::ACTIVE_TERMINAL_BYTES + crate::retention::ACTIVE_OUTPUT_MARGIN,
             pending: Vec::new(),
+            last_commit: None,
             degraded: false,
             marker_pending: false,
             retry_at: Instant::now(),
@@ -117,12 +133,60 @@ impl OutputStore {
         session_id: &str,
         data: &[u8],
     ) -> Result<i64> {
+        if let Some(start) = self.stage(db, session_id, data) {
+            return Ok(start);
+        }
         let result = self.append(db, session_id, data);
         let retry = result.is_err() || self.stream(session_id).lock().unwrap().degraded;
         if retry {
             self.start_retry_worker(db);
         }
         result
+    }
+
+    /// Keeps `data` in `pending` when the session committed less than `COMMIT_INTERVAL` ago, and returns the offset the
+    /// bytes will start at. A degraded stream, an unseeded one, a due one and a full one commit instead (`None`), and
+    /// so does every read once the shutdown drain stopped the retry worker: nothing would commit a later stage.
+    /// Staged bytes count as pending everywhere: `pending_bytes`, the loss record, `forget` and the shutdown drain.
+    fn stage(self: &Arc<Self>, db: &Arc<Database>, session_id: &str, data: &[u8]) -> Option<i64> {
+        if data.is_empty() {
+            return None;
+        }
+        let stream = self.stream(session_id);
+        let mut stream = stream.lock().expect("stream lock poisoned");
+        let due = stream.last_commit? + self.commit_interval;
+        if stream.degraded || !stream.seeded || Instant::now() >= due || stream.pending.len() + data.len() > STAGE_LIMIT {
+            return None;
+        }
+        // Counted under the retry state: the shutdown drain stops the worker under it and then reads `pending_bytes`,
+        // so it either sees these bytes and flushes them (waiting for this stream lock) or this read commits them.
+        // Held only for the count, never across a database wait.
+        let running = {
+            let retry = self.retry.0.lock().ok()?;
+            if retry.stopped {
+                return None;
+            }
+            self.pending_bytes.fetch_add(data.len(), Ordering::Relaxed);
+            retry.started
+        };
+        let first = stream.pending.is_empty();
+        let start = stream.cursor + stream.pending.len() as i64;
+        stream.pending.extend_from_slice(data);
+        self.losses.lock().unwrap().insert(
+            session_id.to_owned(), LossRecord::new(session_id, stream.cursor, stream.pending.len()),
+        );
+        if first {
+            stream.retry_at = due;
+        }
+        drop(stream);
+        if first || !running {
+            self.start_retry_worker(db);
+            // A worker that could not start would leave a quiet terminal's last bytes unseen: commit them now.
+            if !self.retry.0.lock().is_ok_and(|retry| retry.started) {
+                let _ = self.flush_pending(db, session_id);
+            }
+        }
+        Some(start)
     }
 
     pub fn flush_pending(&self, db: &Database, session_id: &str) -> Result<FlushOutcome> {
@@ -201,6 +265,7 @@ impl OutputStore {
         self.pending_bytes.fetch_sub(batch.len(), Ordering::Relaxed);
         self.losses.lock().unwrap().remove(session_id);
         stream.cursor += batch.len() as i64;
+        stream.last_commit = Some(Instant::now());
         if stream.cursor > stream.retention_check_at {
             // One indexed retained-start check per margin, never a scan/trim per chunk.
             // Failed checks retry on a later append without making a durable write fail.
@@ -318,17 +383,17 @@ impl OutputStore {
                 let Some(db) = db.upgrade() else {
                     break;
                 };
-                let mut sleep = None;
+                // Absolute: commits of other streams during the scan must not push a staged tail past its deadline.
+                let mut wake_at: Option<Instant> = None;
+                let mut wake = |at: Instant| wake_at = Some(wake_at.map_or(at, |current| current.min(at)));
                 for (id, stream) in store.snapshot() {
                     if signal.0.lock().unwrap().stopped {
                         break;
                     }
                     let Ok(mut stream) = stream.try_lock() else {
-                        sleep = Some(
-                            sleep
-                                .unwrap_or(Duration::from_millis(250))
-                                .min(Duration::from_millis(250)),
-                        );
+                        // Its reader is appending: that append commits a due stage itself, so a short look again
+                        // only covers a reader that stopped right after (a staged tail must not wait 250 ms).
+                        wake(Instant::now() + CONTENDED_RECHECK);
                         continue;
                     };
                     if stream.pending.is_empty() && !stream.degraded {
@@ -348,25 +413,25 @@ impl OutputStore {
                             stream.retry_at = Instant::now() + stream.backoff;
                         }
                         let committed = result.is_ok();
-                        let next = stream.retry_at.saturating_duration_since(Instant::now());
+                        let next = stream.retry_at;
                         let pending = !stream.pending.is_empty() || stream.degraded;
                         drop(stream);
                         if committed {
                             store.notify.notify_waiters();
                         }
                         if pending {
-                            sleep = Some(sleep.unwrap_or(next).min(next));
+                            wake(next);
                         }
                     } else {
-                        let next = stream.retry_at - now;
-                        sleep = Some(sleep.unwrap_or(next).min(next));
+                        wake(stream.retry_at);
                     }
                 }
                 drop(db);
                 drop(store);
                 let state = signal.0.lock().unwrap();
                 let unchanged = |s: &mut RetryState| !s.stopped && s.generation == generation;
-                if let Some(delay) = sleep {
+                if let Some(at) = wake_at {
+                    let delay = at.saturating_duration_since(Instant::now());
                     drop(
                         signal
                             .1
@@ -479,6 +544,13 @@ impl OutputStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_commit_interval(commit_interval: Duration) -> Self {
+        let mut store = Self::default();
+        store.commit_interval = commit_interval;
+        store
+    }
+
+    #[cfg(test)]
     pub(crate) fn stream_count(&self) -> usize {
         self.streams.lock().expect("output lock poisoned").len()
     }
@@ -493,6 +565,7 @@ impl Default for OutputStore {
             pending_bytes: AtomicUsize::new(0),
             losses: Mutex::new(HashMap::new()),
             sidecars: OnceLock::new(),
+            commit_interval: COMMIT_INTERVAL,
         }
     }
 }
@@ -780,5 +853,112 @@ mod tests {
         );
         store.forget(&session.id);
         assert_eq!(store.stream_count(), 0);
+    }
+
+    fn terminal_session(db: &Database, operation_id: &str) -> String {
+        db.create_session(CreateSession {
+            project_id: None,
+            title: None,
+            provider: "shell",
+            mode: "terminal",
+            native_id: None,
+            operation_id,
+        })
+        .unwrap()
+        .id
+    }
+
+    fn durable_bytes(db: &Database, session_id: &str) -> Vec<u8> {
+        db.output_from(session_id, 0, 1 << 20).unwrap().into_iter().flat_map(|(_, data)| data).collect()
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out: {what}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// 11-26: reads inside the commit interval wait in `pending`, count as pending, and the retry worker commits them
+    /// at the deadline although no further read arrives: one row, byte-exact, the durable cursor moving only then.
+    #[test]
+    fn reads_inside_the_commit_interval_commit_together_at_the_deadline_without_another_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let id = terminal_session(&db, "stage-tail");
+        let store = Arc::new(OutputStore::with_commit_interval(Duration::from_millis(300)));
+        assert_eq!(store.append_shared(&db, &id, b"first ").unwrap(), 0, "a quiet stream commits at once");
+        assert_eq!(durable_bytes(&db, &id), b"first ");
+        assert_eq!(store.append_shared(&db, &id, b"second ").unwrap(), 6);
+        assert_eq!(store.append_shared(&db, &id, b"third").unwrap(), 13);
+        assert_eq!(store.cursor(&id), 6, "staged bytes do not move the durable cursor");
+        assert_eq!(store.pending_byte_count(), 12);
+        assert_eq!(durable_bytes(&db, &id), b"first ");
+        store.forget(&id);
+        assert_eq!(store.stream_count(), 1, "a stream with staged bytes is not forgotten");
+        wait_for("the staged tail commit", || durable_bytes(&db, &id) == b"first second third");
+        assert_eq!(store.cursor(&id), 18);
+        assert_eq!(store.pending_byte_count(), 0);
+        assert_eq!(db.output_from(&id, 0, 1 << 20).unwrap().len(), 2, "the two staged reads became one row");
+    }
+
+    /// EOF (`flush_pending`), a read after the deadline and the shutdown drain all commit staged bytes at once.
+    #[test]
+    fn eof_a_late_read_and_the_shutdown_drain_each_commit_staged_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let store = Arc::new(OutputStore::with_commit_interval(Duration::from_secs(60)));
+
+        let eof = terminal_session(&db, "stage-eof");
+        store.append_shared(&db, &eof, b"a").unwrap();
+        store.append_shared(&db, &eof, b"b").unwrap();
+        assert_eq!(store.flush_pending(&db, &eof).unwrap(), FlushOutcome::Clean { durable_end: 2 });
+        assert_eq!(durable_bytes(&db, &eof), b"ab");
+
+        let shutdown = terminal_session(&db, "stage-shutdown");
+        store.append_shared(&db, &shutdown, b"x").unwrap();
+        store.append_shared(&db, &shutdown, b"yz").unwrap();
+        assert_eq!(store.drain_pending(&db, Instant::now() + Duration::from_secs(5)), 0);
+        assert_eq!(durable_bytes(&db, &shutdown), b"xyz");
+        // The drain stopped the retry worker for good: a read after it commits at once instead of staging for nobody.
+        store.append_shared(&db, &shutdown, b"late").unwrap();
+        assert_eq!(durable_bytes(&db, &shutdown), b"xyzlate");
+        assert_eq!(store.pending_byte_count(), 0);
+
+        let late = OutputStore::with_commit_interval(Duration::from_millis(30));
+        let late = Arc::new(late);
+        let id = terminal_session(&db, "stage-late");
+        late.append_shared(&db, &id, b"1").unwrap();
+        thread::sleep(Duration::from_millis(60));
+        late.append_shared(&db, &id, b"2").unwrap();
+        assert_eq!(durable_bytes(&db, &id), b"12", "a read after the deadline commits at once");
+    }
+
+    /// Staged bytes past `STAGE_LIMIT` commit on the reader's thread; a refused staged commit keeps the bytes, the
+    /// durable cursor and a loss record, marks the terminal degraded and is retried once the database accepts again.
+    #[test]
+    fn a_full_stage_commits_at_once_and_a_refused_staged_commit_is_kept_and_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let store = Arc::new(OutputStore::with_commit_interval(Duration::from_secs(60)));
+        let full = terminal_session(&db, "stage-full");
+        store.append_shared(&db, &full, b"head").unwrap();
+        store.append_shared(&db, &full, &vec![b'f'; STAGE_LIMIT + 1]).unwrap();
+        assert_eq!(store.cursor(&full), 4 + STAGE_LIMIT as i64 + 1, "an oversized read is not staged");
+
+        let quick = Arc::new(OutputStore::with_commit_interval(Duration::from_millis(100)));
+        let id = terminal_session(&db, "stage-refused");
+        quick.append_shared(&db, &id, b"kept ").unwrap();
+        refuse_output_writes(&db);
+        quick.append_shared(&db, &id, b"tail").unwrap();
+        wait_for("the refused staged commit marks the stream", || quick.losses.lock().unwrap().contains_key(&id)
+            && quick.stream(&id).lock().unwrap().degraded);
+        assert_eq!(quick.cursor(&id), 5);
+        assert_eq!(quick.pending_byte_count(), 4);
+        accept_output_writes(&db);
+        wait_for("the retry after recovery", || durable_bytes(&db, &id) == b"kept tail");
+        assert_eq!(quick.pending_byte_count(), 0);
+        assert!(!quick.losses.lock().unwrap().contains_key(&id));
     }
 }

@@ -38,7 +38,7 @@ rand = "0.8"
 rcgen = "0.13"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-rusqlite = { version = "0.32", features = ["bundled", "chrono", "backup"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "backup", "hooks"] }
 ruzstd = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -59,6 +59,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 tempfile = "3.14"
+# Paused clock in transport tests: proves an event was sent by its commit wake, not by the fallback timer.
+tokio = { version = "1.43", features = ["test-util"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Diagnostics_ToolHelp"] }
