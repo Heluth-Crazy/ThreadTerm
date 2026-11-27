@@ -235,7 +235,7 @@ function FoldThinkingRow({ step, copy, openFile, renderNote }: { step: Extract<F
 
 /**
  * Commentary is part of what the agent said, so an open fold shows all of it; a closed fold is not
- * laid out, and keeps one line for find-in-page and `chatFlowSync`'s item anchors.
+ * laid out, and keeps one line for find-in-page and the viewport's item anchors (`data-chat-item`).
  */
 function FoldTextRow({ itemId, part, open, renderNote, openFile }: { itemId: string; part: ChatPart; open: boolean; renderNote?: (part: ChatPart) => ReactNode; openFile?: (reference: FileReference) => void }) {
   const line = firstLine(part.text);

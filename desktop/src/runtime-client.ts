@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
-import { closeSync, existsSync, fstatSync, openSync, readFile, readFileSync, readSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, fstatSync, openSync, readFile, readFileSync, readSync } from 'node:fs';
 import { platform, env, hrtime } from 'node:process';
 import { join, resolve } from 'node:path';
 import net from 'node:net';
@@ -171,7 +171,7 @@ interface ControlRequest { v: 1; id: string; method: string; params: Record<stri
 interface ControlResponse { v: 1; id: string; result?: unknown; error?: RuntimeError }
 interface AuthChallenge { kind: 'challenge'; nonce: string; protocol: number; contract?: number }
 interface AuthRequest { kind: 'auth'; clientId: string; protocol: number; contract: number; nonce: string; hmac: string }
-interface Authenticated { kind: 'authenticated'; principal: string; epoch: string; hmac: string; contract?: number }
+interface Authenticated { kind: 'authenticated'; principal: string; epoch: string; hmac: string; contract?: number; build?: unknown }
 interface PendingRequest { method: Method|'qa.chat.projection.fail'|LocalFileCommand; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
 interface BrowserControlSession { control: LengthPrefixedSocket; pipe: string; token: string; epoch: string }
 interface BrowserConnectionAttempt { session: BrowserControlSession; connection?: LengthPrefixedSocket; promise: Promise<LengthPrefixedSocket> }
@@ -280,6 +280,180 @@ export async function runtimePipeIsOpen(): Promise<boolean> {
   } catch { return false; }
 }
 
+/** Every runtime before 11-26 speaks contract 20. A desktop meets one when an older package left its daemon running
+ * (it outlives its desktop when sessions run or other computers are served): it may then talk to it only to see what
+ * runs there and to stop it (main.ts `checkLocalRuntime`). */
+export const LEGACY_CONTRACT = 20;
+/** Which executable a runtime is (runtime/src/build_identity.rs), sent with its authenticated frame since 11-26. */
+export interface RuntimeBuild { sha256: string; path: string }
+/** The running local runtime as the replacement dialog needs it. `liveSessions` is undefined when the runtime's
+ * session list could not be read: then a restart may end sessions nobody counted. */
+export interface LocalRuntimeState { contract: number; build?: RuntimeBuild; liveSessions?: number; remoteAccess: boolean; settings: unknown }
+/** A maintenance connection kept open while the user decides: the stop goes to the runtime that was inspected. */
+export interface LocalRuntimeHandle {
+  contract: number;
+  build?: RuntimeBuild;
+  /** Reads the state again on this connection; rejects when the connection is gone. */
+  state(): Promise<LocalRuntimeState>;
+  /** Shuts this runtime down (the reply acknowledged) and waits until its pipe is gone. */
+  stop(): Promise<void>;
+  close(): void;
+}
+interface MaintenanceConnection {
+  contract: number;
+  build?: RuntimeBuild;
+  request(method: 'runtime.snapshot' | 'runtime.shutdown', params: Record<string, unknown>, id?: string): Promise<unknown>;
+  acknowledgeShutdown(id: string): void;
+  close(): void;
+}
+const MAINTENANCE_REQUEST_TIMEOUT_MS = 30_000;
+
+let localRuntimeGate: Promise<void> = Promise.resolve();
+/** Holds every local connection attempt until `until` settles: the desktop decides first which runtime it uses, so no
+ * window ever works with a runtime it is about to replace. Peer connections are not held. */
+export function holdLocalRuntimeConnections(until: Promise<unknown>): void {
+  localRuntimeGate = until.then(() => undefined, () => undefined);
+}
+
+/** The runtime executable this desktop launches, when the build check applies: a packaged desktop and its bundled
+ * runtime, or an unpackaged QA run that opts in with THREADTERM_QA_RUNTIME_IDENTITY=1 and names it in
+ * THREADTERM_V3_RUNTIME. Development and other QA runs mix builds on purpose and are not checked. */
+export function checkedRuntimeExecutable(packaged: boolean, environment: NodeJS.ProcessEnv, resourcesPath: string): string | undefined {
+  if (packaged) return environment.THREADTERM_V3_RUNTIME ? undefined : join(resourcesPath, 'runtime', 'threadterm-v3-runtime.exe');
+  return environment.THREADTERM_QA_RUNTIME_IDENTITY === '1' && environment.THREADTERM_V3_RUNTIME ? environment.THREADTERM_V3_RUNTIME : undefined;
+}
+
+/** Lowercase hex SHA-256 of a file, streamed; undefined when it cannot be read. */
+export function fileSha256(path: string): Promise<string | undefined> {
+  return new Promise(resolvePromise => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(path);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('end', () => resolvePromise(hash.digest('hex')));
+    stream.on('error', () => resolvePromise(undefined));
+  });
+}
+
+function runtimeBuild(value: unknown): RuntimeBuild | undefined {
+  if (!isRecord(value) || typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256) || typeof value.path !== 'string') return undefined;
+  return { sha256: value.sha256, path: value.path };
+}
+
+/** A maintenance connection to the running local runtime. It authenticates with the runtime's own contract when that
+ * is this desktop's or the legacy one, and sends nothing but `runtime.snapshot` and `runtime.shutdown`. Undefined when
+ * no runtime runs, `incompatible` for any other contract. Never launches a runtime and is never held by the gate. */
+async function maintenanceConnection(): Promise<MaintenanceConnection | 'incompatible' | undefined> {
+  const pipes = await runtimePipes();
+  const token = readCredential();
+  if (!token) return undefined;
+  let connection: LengthPrefixedSocket;
+  try { connection = await LengthPrefixedSocket.connect(pipes.control); } catch { return undefined; }
+  const clientId = `maintenance-${randomUUID()}`;
+  const replies = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  let lost: Error | undefined;
+  const failAll = (error: Error) => {
+    lost ??= error;
+    for (const reply of replies.values()) { clearTimeout(reply.timer); reply.reject(error); }
+    replies.clear();
+  };
+  const maintenance = (contract: number, build: RuntimeBuild | undefined): MaintenanceConnection => ({
+    contract,
+    build,
+    request(method, params, id = randomUUID()) {
+      if (lost) return Promise.reject(lost);
+      return new Promise((resolvePromise, reject) => {
+        const timer = setTimeout(() => { replies.delete(id); reject(new RuntimeUnavailableError(`Runtime request ${method} timed out`)); }, MAINTENANCE_REQUEST_TIMEOUT_MS);
+        replies.set(id, { resolve: resolvePromise, reject, timer });
+        try { connection.write(Buffer.from(JSON.stringify({ v: PROTOCOL_VERSION, id, method, params }), 'utf8')); }
+        catch (error) { clearTimeout(timer); replies.delete(id); reject(asError(error)); }
+      });
+    },
+    // The runtime keeps its pipe open briefly after replying to a shutdown, until the client says it has the reply.
+    acknowledgeShutdown(id) { try { connection.write(Buffer.from(JSON.stringify({ kind: 'shutdownAck', id }), 'utf8')); } catch { /* the runtime ends anyway */ } },
+    close() { failAll(new RuntimeUnavailableError('Maintenance connection closed')); connection.close(); },
+  });
+  return new Promise((resolvePromise, reject) => {
+    let nonce = '', contract = 0, settled = false;
+    const settle = (finish: () => void) => { if (settled) return; settled = true; clearTimeout(timeout); finish(); };
+    const timeout = setTimeout(() => settle(() => { connection.close(); reject(new RuntimeUnavailableError('Runtime authentication timed out')); }), RUNTIME_READY_TIMEOUT_MS);
+    connection.onFailure(error => { failAll(error); settle(() => reject(error)); });
+    connection.onFrame(frame => {
+      let value: unknown;
+      try { value = JSON.parse(frame.toString('utf8')); } catch { return; }
+      if (!isRecord(value)) return;
+      if (settled) {
+        // Replies to maintenance requests; events and anything else are not this connection's business.
+        if (value.v !== 1 || typeof value.id !== 'string') return;
+        const reply = replies.get(value.id);
+        if (!reply) return;
+        replies.delete(value.id);
+        clearTimeout(reply.timer);
+        if (isRuntimeError(value.error)) reply.reject(new RuntimeRequestError(value.error));
+        else reply.resolve(value.result);
+        return;
+      }
+      try {
+        if (value.kind === 'challenge') {
+          if (value.protocol !== PROTOCOL_VERSION || typeof value.nonce !== 'string' || typeof value.contract !== 'number') throw new Error('Runtime sent an invalid authentication challenge');
+          contract = value.contract;
+          if (contract !== PROTOCOL_CONTRACT && contract !== LEGACY_CONTRACT) { settle(() => { connection.close(); resolvePromise('incompatible'); }); return; }
+          nonce = value.nonce;
+          const hmac = createHmac('sha256', token).update(`${PROTOCOL_VERSION}:${clientId}:${nonce}`).digest('hex');
+          connection.write(Buffer.from(JSON.stringify({ kind: 'auth', clientId, protocol: PROTOCOL_VERSION, contract, nonce, hmac } satisfies AuthRequest), 'utf8'));
+          return;
+        }
+        if (value.kind === 'incompatible') { settle(() => { connection.close(); resolvePromise('incompatible'); }); return; }
+        const proof = createHmac('sha256', token).update(`server:${PROTOCOL_VERSION}:${clientId}:${nonce}`).digest('hex');
+        if (!nonce || !isAuthenticated(value) || value.principal !== clientId || !sameProof(value.hmac, proof)) throw new Error('Runtime server proof did not verify');
+        settle(() => resolvePromise(maintenance(contract, runtimeBuild(value.build))));
+      } catch (error) { settle(() => { connection.close(); reject(asError(error)); }); }
+    });
+  });
+}
+
+async function maintenanceState(connection: MaintenanceConnection): Promise<LocalRuntimeState> {
+  // Only what the dialog needs, validated here: a legacy runtime's snapshot does not match today's schema. A list it
+  // cannot read stays unknown rather than "no sessions".
+  const snapshot = await connection.request('runtime.snapshot', {});
+  const record = isRecord(snapshot) ? snapshot : {};
+  const sessions = Array.isArray(record.sessions) && record.sessions.every(session => isRecord(session) && typeof session.status === 'string') ? record.sessions as { status: string }[] : undefined;
+  const liveSessions = sessions?.filter(session => ['starting', 'running', 'idle', 'waiting'].includes(session.status)).length;
+  const settings = isRecord(record.settings) ? record.settings : {};
+  const remoteAccess = isRecord(settings.remoteMachines) && settings.remoteMachines.enabled === true;
+  return { contract: connection.contract, build: connection.build, liveSessions, remoteAccess, settings };
+}
+
+/** A maintenance connection to the running local runtime, kept open until `close`. Undefined when none runs;
+ * `incompatible` when it speaks a contract this desktop cannot even inspect. */
+export async function openLocalRuntime(): Promise<LocalRuntimeHandle | 'incompatible' | undefined> {
+  const connection = await maintenanceConnection();
+  if (!connection || connection === 'incompatible') return connection;
+  return {
+    contract: connection.contract,
+    build: connection.build,
+    state: () => maintenanceState(connection),
+    async stop() {
+      const id = randomUUID();
+      await connection.request('runtime.shutdown', { operationId: randomUUID() }, id);
+      connection.acknowledgeShutdown(id);
+      connection.close();
+      const deadline = Date.now() + 15_000;
+      while (await runtimePipeIsOpen()) {
+        if (Date.now() >= deadline) throw new RuntimeUnavailableError('The runtime acknowledged shutdown but did not release its pipe');
+        await delay(100);
+      }
+    },
+    close: () => connection.close(),
+  };
+}
+
+/** The running local runtime, read once: its contract, build and what a restart would end. */
+export async function inspectLocalRuntime(): Promise<LocalRuntimeState | 'incompatible' | undefined> {
+  const handle = await openLocalRuntime();
+  if (!handle || handle === 'incompatible') return handle;
+  try { return await handle.state(); } finally { handle.close(); }
+}
+
 /**
  * Waits only for runtime processes launched by this desktop process which have
  * not yet reached a usable control pipe. This never launches or reconnects a
@@ -309,6 +483,9 @@ const BACKUP_REQUEST_TIMEOUT_MS = 30 * 60_000;
  * account, thread resume, …), so a start that succeeds after 50 s must not be reported as failed here
  * while the runtime is still connecting it (11-18). */
 const CHAT_CONNECT_TIMEOUT_MS = 150_000;
+/** `session.resume` reads the agent's saved history (Codex: its own app-server start and `thread/read`, 30 s each)
+ * and then starts the agent as `chat.connect` does (11-26). */
+const SESSION_RESUME_TIMEOUT_MS = CHAT_CONNECT_TIMEOUT_MS + 60_000;
 const SESSION_REQUEST_SHARD_COUNT = 8;
 const SESSION_REQUEST_IDLE_MS = 30_000;
 
@@ -360,6 +537,7 @@ const GIT_WRITES = new Set<Method>([
 export function requestTimeoutMs(method: Method): number {
   if (method === 'data.backup' || method === 'data.backup.verify') return BACKUP_REQUEST_TIMEOUT_MS;
   if (method === 'chat.connect') return CHAT_CONNECT_TIMEOUT_MS;
+  if (method === 'session.resume') return SESSION_RESUME_TIMEOUT_MS;
   if (GIT_WRITES.has(method)) return GIT_WRITE_TIMEOUT_MS;
   return DEFAULT_REQUEST_TIMEOUT_MS;
 }
@@ -991,6 +1169,16 @@ export class RuntimeClient {
     this.pending.clear();
   }
 
+  /** After this desktop replaced the local runtime (main.ts `checkLocalRuntime`): a connection that stopped at the
+   * old runtime's contract tries again. */
+  retryAfterRuntimeReplaced(): void {
+    if (this.options.profile?.kind === 'peer' || !(this.incompatible instanceof ProtocolIncompatibleError)) return;
+    this.incompatible = undefined;
+    // Views went "unavailable" on the incompatible state; the reconnect announces itself so they reload.
+    this.sawDisconnect = true;
+    void this.ensureConnected().catch(() => {});
+  }
+
   /** Sidebar selection is the explicit retry for a stopped version-mismatch connection. */
   retryPeerConnection(): void {
     if (this.options.profile?.kind !== 'peer' || !this.incompatible || this.incompatible instanceof PeerTransportError && this.incompatible.code === 'pin-mismatch') return;
@@ -1034,6 +1222,8 @@ export class RuntimeClient {
 
   private async connectAndAuthenticate(): Promise<void> {
     if (this.options.profile?.kind === 'peer') return this.connectPeer(this.options.profile);
+    await localRuntimeGate;
+    this.assertOpen();
     const pipes = await runtimePipes();
     this.assertOpen();
     if (!readCredential()) {

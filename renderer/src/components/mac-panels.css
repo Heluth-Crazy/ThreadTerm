@@ -33,4 +33,4 @@
 .runtime-workspace .wb-deco { font-size:11px; }
 .runtime-workspace .wb-dir { color:var(--faint); font-size:11.5px; }
 /* The shared docked family uses the same 24px icon action targets as the inspector. */
-:is(.wb-tools-head,.wb-history-title,.task-graph-details > header,.wtm-list > header,.wtm-detail > header) :is(.icon-btn,.btn) { height:24px; min-height:24px; }
+:is(.wb-tools-head,.wb-history-title,.wtm-list > header,.wtm-detail > header) :is(.icon-btn,.btn) { height:24px; min-height:24px; }

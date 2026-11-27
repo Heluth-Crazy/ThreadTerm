@@ -99,10 +99,13 @@ pub mod attachments;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Semantic contract includes remote-machine peer handshakes and device profiles. Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 20;
+/// Raised whenever the wire schema changes: `protocol/contract.json` records the schema fingerprint per contract and
+/// `npm run check` refuses a schema change that keeps the contract (scripts/protocol-contract.mjs).
+pub const PROTOCOL_CONTRACT: u32 = 21;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;
+pub mod build_identity;
 pub mod mcp_delegation;
 pub(crate) mod preview;
 pub(crate) mod browser_tools;

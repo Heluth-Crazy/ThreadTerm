@@ -3,6 +3,9 @@ import type { ContentRef, PaneLayout } from '@threadterm/protocol';
 export type WorkspaceTabTarget = { paneId:string; tabId:string };
 export type FileTab = Extract<ContentRef,{kind:'file'|'diff'|'preview'}>;
 export const isFileTab = (tab:ContentRef):tab is FileTab => tab.kind==='file'||tab.kind==='diff'||tab.kind==='preview';
+/** The non-session tabs a workspace keeps when it opens (SessionWorkspace): browser pages, group chats and registered
+ * external files. Every other content tab is dropped, among them the task map's `map` tabs (removed 11-26). */
+export const keptOnOpen = (tab:Exclude<ContentRef,{kind:'session'}>):boolean => tab.kind==='web'||tab.kind==='group'||tab.kind==='roundtable'||(isFileTab(tab)&&Boolean(tab.externalId));
 const baseName = (path:string) => path.split(/[\\/]/).at(-1) || path;
 /** Full title (tooltip) and short tab label for any non-session content. */
 /** Whether a link can open as a web tab. Same rule as the protocol's `isWebPreviewUrl` (kept out of the renderer
@@ -16,6 +19,8 @@ export function webTabLabel(url:string):string {
  try { return new URL(url).host || url; } catch { return url; }
 }
 export function contentTitle(tab:Exclude<ContentRef,{kind:'session'}>,zh:boolean):{title:string;label:string} {
+ // The task map was removed (11-26). A layout saved before then may still hold one; restoring a workspace drops it
+ // (SessionWorkspace), so this only keeps the persisted kind from reaching the path-based titles below.
  if(tab.kind==='map') return {title:zh?'任务图':'Task map',label:zh?'任务图':'Task map'};
  // One Usage page per window (its own tab kind so the runtime validates saved layouts).
  if(tab.kind==='usage') return {title:zh?'用量':'Usage',label:zh?'用量':'Usage'};

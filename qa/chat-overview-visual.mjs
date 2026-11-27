@@ -77,8 +77,7 @@ function ChatFrame({ locale, docked, project, reviewOnly, nextTurn, bare }) {
         <div className="chat-log-shell qa-log-shell">
           <ChatOverview session={current} delegates={reviewOnly || bare ? [] : delegates} items={transcript} copy={copy} zh={zh} docked={docked}
             onOpenSession={() => {}}
-            navigation={variant => <ChatMessageNavigation variant={variant} items={items} copy={copy} onNavigate={() => {}} />}
-            onOpenTaskMap={() => { window.qaTaskMapOpened = (window.qaTaskMapOpened ?? 0) + 1; }} />
+            navigation={variant => <ChatMessageNavigation variant={variant} items={items} copy={copy} onNavigate={() => {}} />} />
           <div className="chat-scroll qa-scroll" data-qa-scroll>
             <div className="qa-messages">{messages.map((message, index) => <p className={'qa-message' + (index % 3 === 0 ? ' is-user' : '')} key={index}>{message}</p>)}</div>
           </div>
@@ -234,11 +233,10 @@ try {
   assert.equal(await noOverlap(dock, page.locator('.qa-message')), true, 'the docked card never covers a message');
   const rowHeights = await activeRows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   assert.deepEqual(rowHeights.map(value => Math.round(value)), [32, 32, 32], 'delegate rows are one 32 px line (T3 metrics, 11-24)');
-  // 11-24: the message list and the task map moved from the header into the card's 会话 section.
+  // 11-24: the message list moved from the header into the card's 会话 section (the task map there was removed 11-26).
   assert.equal(await page.locator('.qa-actions').locator('button').count(), 0, 'a wide Chat puts nothing in the header');
   assert.equal(await dock.locator('.chat-overview-link.is-messages').count(), 1, 'the message list is a card row');
-  await dock.locator('.chat-overview-link.is-task-map').click();
-  assert.equal(await page.evaluate(() => window.qaTaskMapOpened), 1, 'the task map row opens the task map');
+  assert.equal(await dock.locator('.chat-overview-section[aria-label="Session"] button').count(), 1, 'the Session section holds only the message list');
   await dock.locator('.chat-overview-link.is-messages').click();
   const messageList = page.locator('.chat-message-popover');
   await messageList.waitFor();
@@ -471,7 +469,7 @@ try {
 
   assert.deepEqual(report.consoleErrors, [], 'no renderer console errors');
   assert.deepEqual(report.errors, [], 'no renderer page errors');
-  // 11-24: a wide Chat with only messages gets a small pill (message list, task map), one click each, no card.
+  // 11-24: a wide Chat with only messages gets a small pill with the message list, one click, no card.
   await setSize(1680, 900);
   await page.evaluate(() => { const none = () => { throw new Error('no changes'); }; window.qaSetRpc({ 'review.list': none, 'review.changes': none, 'git.status': none, 'git.compare.files': none }); });
   for (const theme of ['light', 'dark']) {
@@ -480,12 +478,10 @@ try {
     await pill.waitFor();
     assert.equal(await page.locator('.chat-overview-card').count(), 0, 'no card without agents, changes or plan');
     assert.equal(await pill.locator('.chat-message-navigation-trigger').count(), 1, 'the pill holds the message list');
+    assert.equal(await pill.locator('button').count(), 1, 'and nothing else');
     await shot(`chat-overview-mini-${theme}`);
   }
-  const before = await page.evaluate(() => window.qaTaskMapOpened ?? 0);
-  await page.locator('.chat-overview-mini .chat-overview-mini-button').last().click();
-  assert.equal(await page.evaluate(() => window.qaTaskMapOpened), before + 1, 'the pill opens the task map in one click');
-  report.checks.push('a messages-only Chat shows the small pill with the message list and the task map');
+  report.checks.push('a messages-only Chat shows the small pill with the message list');
 
   report.passed = true;
 } catch (error) {

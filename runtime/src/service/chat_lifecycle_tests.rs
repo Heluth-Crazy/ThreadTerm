@@ -18,6 +18,8 @@ struct OpenGate {
 
 struct FixtureAdapter {
     gate: Option<OpenGate>,
+    /// Blocks `history_read` until the test releases it (a resume's slow history read, 11-26).
+    history_gate: Option<OpenGate>,
     failures: Mutex<Vec<ProviderError>>,
     status_before_return: Option<(Arc<Database>, &'static str)>,
     opens: Arc<AtomicUsize>,
@@ -122,6 +124,17 @@ impl ProviderAdapter for FixtureAdapter {
     }
 
     fn history_read(&self, _native_id: &str) -> Result<Value, ProviderError> {
+        if let Some(gate) = &self.history_gate {
+            gate.started
+                .send(())
+                .map_err(|error| ProviderError::new("fixture_failed", error.to_string()))?;
+            // Bounded: a second reader that should never get here fails instead of hanging the test.
+            gate.release
+                .lock()
+                .map_err(|_| ProviderError::new("fixture_failed", "release lock poisoned"))?
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| ProviderError::new("fixture_failed", error.to_string()))?;
+        }
         Ok(json!([]))
     }
 
@@ -310,6 +323,8 @@ struct Fixture {
     opened_native: Arc<Mutex<Vec<Option<String>>>>,
     started: Option<Receiver<()>>,
     release: Option<SyncSender<()>>,
+    history_started: Option<Receiver<()>>,
+    history_release: Option<SyncSender<()>>,
     /// Set when the send blocks: the send is in flight until `send_release` fires.
     send_started: Option<Receiver<()>>,
     send_release: Option<SyncSender<()>>,
@@ -368,6 +383,11 @@ impl Fixture {
         Self::build(false, Vec::new(), None, true, true, false, true)
     }
 
+    /// The provider's history read blocks until `history_release` (a resume reads history before it reserves).
+    fn with_slow_history() -> Self {
+        Self::build_with_history(false, Vec::new(), None, false, true, false, false, true)
+    }
+
     fn build(
         slow: bool,
         failures: Vec<ProviderError>,
@@ -376,6 +396,20 @@ impl Fixture {
         initial_liveness: bool,
         blocked_send: bool,
         unrestricted_agent: bool,
+    ) -> Self {
+        Self::build_with_history(slow, failures, status_before_return, unique_native_ids, initial_liveness, blocked_send, unrestricted_agent, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_with_history(
+        slow: bool,
+        failures: Vec<ProviderError>,
+        status_before_return: Option<&'static str>,
+        unique_native_ids: bool,
+        initial_liveness: bool,
+        blocked_send: bool,
+        unrestricted_agent: bool,
+        slow_history: bool,
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
@@ -393,6 +427,8 @@ impl Fixture {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (send_started_tx, send_started_rx) = mpsc::sync_channel(1);
         let (send_release_tx, send_release_rx) = mpsc::sync_channel(1);
+        let (history_started_tx, history_started_rx) = mpsc::sync_channel(1);
+        let (history_release_tx, history_release_rx) = mpsc::sync_channel(1);
         let cancels = Arc::new(AtomicUsize::new(0));
         let cancel_failures = Arc::new(Mutex::new(Vec::new()));
         let capabilities = Arc::new(AtomicUsize::new(0));
@@ -401,6 +437,10 @@ impl Fixture {
             gate: slow.then_some(OpenGate {
                 started: started_tx,
                 release: Mutex::new(release_rx),
+            }),
+            history_gate: slow_history.then_some(OpenGate {
+                started: history_started_tx,
+                release: Mutex::new(history_release_rx),
             }),
             failures: Mutex::new(failures),
             status_before_return: status_before_return.map(|status| (Arc::clone(&db), status)),
@@ -425,6 +465,7 @@ impl Fixture {
             // runtime cannot narrow it (F07).
             adapters.push(Arc::new(FixtureAdapter {
                 gate: None,
+                history_gate: None,
                 failures: Mutex::new(Vec::new()),
                 status_before_return: None,
                 opens: Arc::clone(&opens),
@@ -483,6 +524,8 @@ impl Fixture {
             opened_native,
             started: slow.then_some(started_rx),
             release: slow.then_some(release_tx),
+            history_started: slow_history.then_some(history_started_rx),
+            history_release: slow_history.then_some(history_release_tx),
             send_started: blocked_send.then_some(send_started_rx),
             send_release: blocked_send.then_some(send_release_tx),
             cancels,
@@ -1535,6 +1578,7 @@ fn final_worker_error_survives_liveness_poll_but_not_explicit_stop() {
 fn provider_handoff_does_not_publish_an_already_dead_worker() {
     let adapter = FixtureAdapter {
         gate: None,
+        history_gate: None,
         failures: Mutex::new(Vec::new()),
         status_before_return: None,
         opens: Arc::new(AtomicUsize::new(0)),
@@ -4279,4 +4323,180 @@ fn a_send_back_that_cannot_be_queued_records_no_decision() {
     );
     // The same operationId is not burned: the decision can be retried.
     assert!(fixture.db.operation("decide-full").unwrap().is_none());
+}
+
+/// `session.resume` from the desktop on its own thread.
+fn resume_on_thread(fixture: &Fixture, session_id: &str, operation_id: &str) -> std::thread::JoinHandle<Result<Value, RpcError>> {
+    let service = Arc::clone(&fixture.service);
+    let params = json!({"sessionId":session_id,"cwd":fixture.root.path(),"operationId":operation_id});
+    let operation = operation_id.to_owned();
+    std::thread::spawn(move || {
+        service.dispatch("desktop", RpcRequest { v: 1, id: format!("request-{operation}"), method: "session.resume".into(), params })
+    })
+}
+
+fn exited_chat_with_history(fixture: &Fixture, operation_id: &str) -> String {
+    // Creating a chat with a native id reads its history too: let that read through.
+    if let Some(release) = &fixture.history_release {
+        release.send(()).unwrap();
+    }
+    let id = fixture.create_with_native(operation_id, "fixture-native")["id"].as_str().unwrap().to_owned();
+    if let Some(started) = &fixture.history_started {
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+    fixture.db.set_session_status(&id, "exited", Some(0)).unwrap();
+    id
+}
+
+fn stop(fixture: &Fixture, session_id: &str, operation_id: &str) {
+    fixture
+        .service
+        .dispatch("desktop", RpcRequest { v: 1, id: operation_id.into(), method: "session.stop".into(), params: json!({"sessionId":session_id,"operationId":operation_id}) })
+        .unwrap();
+}
+
+#[test]
+fn a_resume_that_starts_slowly_holds_no_other_request() {
+    // 11-26: resume held the relocation write gate across the agent start, so every other request, other
+    // sessions' reads and terminal input included, waited for it.
+    let fixture = Fixture::new(true, None);
+    let resumed = exited_chat_with_history(&fixture, "create-slow-resume");
+    let other = fixture.create("create-other")["id"].as_str().unwrap().to_owned();
+    let resume = resume_on_thread(&fixture, &resumed, "resume-slow");
+    fixture.started.as_ref().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    // On a thread, so that a regression fails the assertion instead of hanging the test.
+    let service = Arc::clone(&fixture.service);
+    let (answered_tx, answered_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let request = |method: &str, params: Value| service.dispatch("desktop", RpcRequest { v: 1, id: method.into(), method: method.into(), params });
+        let health = request("runtime.health", json!({})).is_ok();
+        let snapshot = request("chat.snapshot", json!({"sessionId":other})).is_ok();
+        let _ = answered_tx.send(health && snapshot);
+    });
+    let answered = answered_rx.recv_timeout(Duration::from_secs(5));
+    fixture.release.as_ref().unwrap().send(()).unwrap();
+    assert_eq!(answered, Ok(true), "other requests answer while a resume starts its agent");
+    let value = resume.join().unwrap().unwrap();
+    assert_eq!(value["status"], "idle");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[test]
+fn a_stop_during_a_resume_wins_and_ends_the_agent_the_resume_started() {
+    let fixture = Fixture::new(true, None);
+    let id = exited_chat_with_history(&fixture, "create-stop-during-resume");
+    let resume = resume_on_thread(&fixture, &id, "resume-then-stop");
+    fixture.started.as_ref().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    stop(&fixture, &id, "stop-during-resume");
+    fixture.release.as_ref().unwrap().send(()).unwrap();
+    let value = resume.join().unwrap().unwrap();
+    assert_eq!(value["status"], "exited");
+    assert_eq!(fixture.db.session_by_id(&id).unwrap().unwrap().status, "exited");
+    let connection = fixture
+        .service
+        .dispatch("viewer", RpcRequest { v: 1, id: "connection-after-stop".into(), method: "chat.connection".into(), params: json!({"sessionId":id}) })
+        .unwrap();
+    assert_ne!(connection["phase"], "ready");
+    assert!(fixture.stops.load(AtomicOrdering::SeqCst) >= 1, "the started agent was stopped");
+}
+
+#[test]
+fn a_stop_while_a_resume_reads_history_ends_it_before_anything_starts() {
+    let fixture = Fixture::with_slow_history();
+    let id = exited_chat_with_history(&fixture, "create-stop-during-history");
+    let resume = resume_on_thread(&fixture, &id, "resume-reading");
+    fixture.history_started.as_ref().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    stop(&fixture, &id, "stop-during-history");
+    fixture.history_release.as_ref().unwrap().send(()).unwrap();
+    let value = resume.join().unwrap().unwrap();
+    assert_eq!(value["status"], "exited");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0, "nothing was launched");
+    // The cancelled operation keeps its outcome: a redelivery returns it and starts nothing.
+    let redelivered = resume_on_thread(&fixture, &id, "resume-reading").join().unwrap().unwrap();
+    assert_eq!(redelivered["status"], "exited");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0, "a redelivered cancelled resume launches nothing");
+    // Nothing was reserved either: a later resume starts the agent.
+    fixture.history_release.as_ref().unwrap().send(()).unwrap();
+    let again = resume_on_thread(&fixture, &id, "resume-after-stop");
+    fixture.history_started.as_ref().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(again.join().unwrap().unwrap()["status"], "idle");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[test]
+fn a_stop_while_an_imported_chat_reads_history_keeps_it_read_only_and_unstarted() {
+    // An imported chat is read-only until its resume reserves the launch; the stop must still cancel that resume.
+    let fixture = Fixture::with_slow_history();
+    fixture.history_release.as_ref().unwrap().send(()).unwrap();
+    let imported = fixture
+        .service
+        .dispatch("desktop", RpcRequest { v: 1, id: "import".into(), method: "history.import".into(), params: json!({"cwd":fixture.root.path(),"provider":"grok","nativeId":"fixture-native","mode":"chat","operationId":"import"}) })
+        .unwrap();
+    fixture.history_started.as_ref().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    let id = imported["id"].as_str().unwrap().to_owned();
+    assert_eq!(fixture.db.session_by_id(&id).unwrap().unwrap().read_only, true);
+    let resume = resume_on_thread(&fixture, &id, "resume-imported");
+    fixture.history_started.as_ref().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    stop(&fixture, &id, "stop-imported");
+    fixture.history_release.as_ref().unwrap().send(()).unwrap();
+    resume.join().unwrap().unwrap();
+    let stored = fixture.db.session_by_id(&id).unwrap().unwrap();
+    assert!(stored.read_only, "the import is unchanged");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0, "the stopped resume started nothing");
+}
+
+#[test]
+fn a_stop_that_overtakes_a_received_resume_cancels_it_before_it_runs() {
+    // The transport registers a resume's fence on receipt (Lane::Connect); the resume may then wait for a start
+    // permit while the same window's stop, which does not wait for its session's start, runs first.
+    let fixture = Fixture::new(false, None);
+    let id = exited_chat_with_history(&fixture, "create-queued-resume");
+    let received = fixture.service.receive_resume(&id).unwrap();
+    stop(&fixture, &id, "stop-queued");
+    let resumed = {
+        // What run_request does around the dispatch of a received resume.
+        let _received = ReceivedResume::enter(Some(received));
+        fixture
+            .service
+            .dispatch("desktop", RpcRequest { v: 1, id: "request-queued".into(), method: "session.resume".into(), params: json!({"sessionId":id,"cwd":fixture.root.path(),"operationId":"resume-queued"}) })
+            .unwrap()
+    };
+    fixture.service.finish_resume(&id, received);
+    assert_eq!(resumed["status"], "exited");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0, "the overtaken resume started nothing");
+    assert!(fixture.service.deferred_launch.lock().unwrap().resumes.is_empty(), "no fence is left behind");
+
+    // A received resume nobody stopped runs as usual with the fence it was given.
+    let received = fixture.service.receive_resume(&id).unwrap();
+    let resumed = {
+        let _received = ReceivedResume::enter(Some(received));
+        fixture
+            .service
+            .dispatch("desktop", RpcRequest { v: 1, id: "request-normal".into(), method: "session.resume".into(), params: json!({"sessionId":id,"cwd":fixture.root.path(),"operationId":"resume-normal"}) })
+            .unwrap()
+    };
+    fixture.service.finish_resume(&id, received);
+    assert_eq!(resumed["status"], "idle");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1);
+    assert!(fixture.service.deferred_launch.lock().unwrap().resumes.is_empty(), "the fence went with the request");
+    // The thread-local was restored: a later resume on this thread registers its own fence.
+    assert_eq!(RECEIVED_RESUME.with(|cell| cell.get()), None);
+}
+
+#[test]
+fn a_repeated_resume_waits_for_the_first_and_launches_once() {
+    // Two deliveries of one resume operation: both used to pass the operation check before either reserved.
+    let fixture = Fixture::with_slow_history();
+    let id = exited_chat_with_history(&fixture, "create-repeated-resume");
+    let first = resume_on_thread(&fixture, &id, "resume-once");
+    fixture.history_started.as_ref().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    let second = resume_on_thread(&fixture, &id, "resume-once");
+    // Let the second reach the session's admission lock before the first goes on.
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.history_release.as_ref().unwrap().send(()).unwrap();
+    assert_eq!(first.join().unwrap().unwrap()["status"], "idle");
+    let repeated = second.join().unwrap().unwrap();
+    assert_eq!(repeated["id"], id.as_str());
+    assert_eq!(repeated["status"], "idle");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 1, "one launch for one operation");
 }

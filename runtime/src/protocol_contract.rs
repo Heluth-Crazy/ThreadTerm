@@ -87,8 +87,17 @@ mod tests {
     }
 
     #[test]
+    fn the_contract_is_the_one_recorded_with_the_wire_schema() {
+        // protocol/contract.json pairs the contract with the schema fingerprint; scripts/protocol-contract.mjs
+        // keeps the TypeScript constant and the record in step and refuses a schema change at the same contract.
+        let record: serde_json::Value =
+            serde_json::from_str(include_str!("../../protocol/contract.json")).unwrap();
+        assert_eq!(record["contract"].as_u64(), Some(PROTOCOL_CONTRACT as u64));
+    }
+
+    #[test]
     fn registry_contract_rejects_contract_two() {
-        assert_eq!(PROTOCOL_CONTRACT, 20);
+        assert!(PROTOCOL_CONTRACT >= 20);
         assert!(
             require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Runtime)
                 .is_err()
@@ -108,7 +117,7 @@ mod tests {
 
     #[test]
     fn fork_feedback_contract_rejects_the_previous_contract() {
-        assert_eq!(PROTOCOL_CONTRACT, 20);
+        assert!(PROTOCOL_CONTRACT >= 20);
         for role in [ContractRole::Runtime, ContractRole::Desktop] {
             let reason =
                 incompatible_reason(&json!({"protocol": 1, "contract": 12}), role).unwrap();

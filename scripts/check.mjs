@@ -294,6 +294,9 @@ function protocolFreshness() {
 }
 
 protocolFreshness();
+// A schema change must come with a new PROTOCOL_CONTRACT, or desktops and runtimes of different builds agree at the
+// handshake and then reject each other's replies (11-26).
+run('protocol contract', root, process.execPath, [join(root, 'scripts/protocol-contract.mjs'), '--repo', repo, ...(workingTree ? [] : ['--committed'])], 120000);
 
 run('typecheck desktop', root, process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--noEmit', '-p', 'tsconfig.desktop.json'], 300000);
 run('typecheck renderer', root, process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--noEmit', '-p', 'renderer'], 300000);
@@ -319,7 +322,7 @@ const QA = [
   'oc2-opencode-harness', 'oc2-opencode-options-regression', 'oc2-opencode-visual-fixture', 'opencode-reconnect-ordering',
   'opencode-retry', 'palette-sessions', 'pane-geometry', 'remote-machine-browser', 'remote-preview-address', 'review-comments', 'selected-commit-selection',
   'send-latency-breakdown', 'session-activity', 'session-ordering', 'session-state', 'terminal-file-links', 'terminal-text', 'lib/desktop1', 'token-speed',
-  'usage-card', 'workbench-graph', 'workbench-helpers', 'workspace-layout', 'workspace-tabs',
+  'usage-card', 'workbench-graph', 'workbench-helpers', 'workspace-layout', 'workspace-tabs', 'protocol-contract',
 ];
 run('qa unit tests', root, process.execPath, ['--test', '--test-timeout=180000', ...QA.map(name => join('qa', `${name}.test.mjs`))], 900000);
 

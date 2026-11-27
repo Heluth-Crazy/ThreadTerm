@@ -48,7 +48,6 @@ import { fileTabMenuItems } from '../contextMenuSurfaceItems';
 import type { ContextMenuItem } from './ContextMenu';
 import { backgroundLayoutEvent } from '../appearance/backgroundState';
 
-const TaskMapView = lazy(() => import('./TaskMapView'));
 const GroupChatView = lazy(async () => ({ default: (await import('./GroupChatView')).GroupChatView }));
 const UsagePage = lazy(async () => ({ default: (await import('./UsagePage')).UsagePage }));
 
@@ -88,8 +87,6 @@ type Props = {
 export type PaneWorkbench = {
   openExternalFiles?:(paths:string[],source:ExternalFileSource,ownerSessionId?:string)=>void;
   externalDisabledReason?:string;
-  openTaskMap?:(sessionId:string,itemId?:string)=>void;
-  taskMapFocus?:{tabId:string;sessionId:string;itemId?:string;key:string};
   openSessionReview?:(target:{sessionId:string;checkpointId:string;toCheckpointId?:string;path:string})=>void;
   openSessionFile?:(target:{sessionId:string;path:string})=>void;
   /** Resolves a Group output in a member workspace, then opens it as an independent file tab. */
@@ -488,7 +485,7 @@ function Pane({
   const content = node.tabs.map(item=>{
     const active=Boolean(visibleNode)&&item.id===tab?.id;
     const itemSession=item.kind==='session'?sessions.find(candidate=>candidate.id===item.sessionId):undefined;
-    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active&&actionsVisible,actionsVisible:active&&actionsVisible,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined,openFork:onFork,openTaskMap:itemSession?.mode==='chat'?workbench?.openTaskMap:undefined}}>
+    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active&&actionsVisible,actionsVisible:active&&actionsVisible,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,...sessionDiffActions(itemSession,projectPath,onOpenPath),openWeb:workbench?.openWeb?openWeb:undefined,openFork:onFork}}>
     <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-drop-label={nativeFileDrop?(zh?'松开以只读方式打开文件':'Drop to open files read-only'):(zh?'松开以插入文件引用（不会发送）':'Drop to insert the file reference (not sent)')} data-content-id={item.id} id={`${item.kind==='web'?'browser':'workspace'}-panel-${node.id}-${item.id}`} role="tabpanel" aria-labelledby={`${item.kind==='web'?'browser':'workspace'}-tab-${node.id}-${item.id}`} hidden={!active} inert={!active}
      {...(itemSession&&!itemSession.readOnly&&workbench?.sendToAgent&&["starting","running","idle","waiting"].includes(itemSession.status)?{
       // An Explorer file dropped here inserts the same reference as "Send to agent", into this session.
@@ -504,10 +501,6 @@ function Pane({
     ) : (
       <ChatView session={itemSession} sessions={sessions} delegates={sessions.filter(candidate => candidate.delegation?.parentSessionId === itemSession.id)} delegatedBy={itemSession.delegation ? sessions.find(candidate => candidate.id === itemSession.delegation?.parentSessionId) : undefined} onOpenSession={onOpenSession} delegationEnabled={delegationEnabled} sessionInfoEnabled={sessionInfoEnabled} />
     )
-  ) : item.kind === "map" ? (
-    <Suspense fallback={<p className="note" role="status">{zh?'正在加载任务图…':'Loading task map…'}</p>}><TaskMapView sessionId={item.sessionId} sessions={sessions} visible={active&&browserVisible} zh={zh}
-      focus={workbench?.taskMapFocus?.tabId===item.id?workbench.taskMapFocus:undefined} onOpenSession={onOpenSession}
-      onOpenReview={workbench?.openSessionReview} onOpenFile={workbench?.openSessionFile} onClose={()=>onCloseTab({paneId:node.id,tabId:item.id})}/></Suspense>
   ) : item.kind === "usage" ? (
     <Suspense fallback={<p className="note" role="status">{zh?'正在加载用量…':'Loading usage…'}</p>}><UsagePage initialProjectId={item.projectId} data={data} onOpenSession={onOpenSession}/></Suspense>
   ) : item.kind === "group" || item.kind === "roundtable" ? (

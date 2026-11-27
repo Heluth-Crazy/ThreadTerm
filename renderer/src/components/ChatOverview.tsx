@@ -177,12 +177,12 @@ function PlanMark({ status, live }: { status: ChatPlanEntry['status']; live: boo
 }
 
 /**
- * The Chat overview: delegated agents, changes, the agent plan, and the session's message list and task map in
- * one card. Owner 11-24 (after T3 Code's thread details card): in a wide Chat the card docks in the empty gutter
- * and collapses into a chip in the same corner; in a narrow Chat it opens from the header button. A Chat with
- * nothing but messages gets a small pill with the message list and the task map. Nothing goes above the transcript.
+ * The Chat overview: delegated agents, changes, the agent plan, and the session's message list in one card.
+ * Owner 11-24 (after T3 Code's thread details card): in a wide Chat the card docks in the empty gutter and
+ * collapses into a chip in the same corner; in a narrow Chat it opens from the header button. A Chat with nothing
+ * but messages gets a small pill with the message list. Nothing goes above the transcript.
  */
-export function ChatOverview({ session, delegates, items, copy, zh, docked, liveTurnId, onOpenSession, onOpenChanges, navigation, onOpenTaskMap }: {
+export function ChatOverview({ session, delegates, items, copy, zh, docked, liveTurnId, onOpenSession, onOpenChanges, navigation }: {
   session: Session;
   delegates: readonly Session[];
   items: readonly ChatItem[];
@@ -194,7 +194,6 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   onOpenChanges?: () => void;
   /** The message list: a card row, or a compact button in the pill. Absent below three messages. */
   navigation?: (variant: 'row' | 'chip') => ReactNode;
-  onOpenTaskMap?: () => void;
 }) {
   const popoverId = useId(), finishedId = useId(), planId = useId();
   const now = Date.now();
@@ -233,7 +232,7 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
   // A turn can undo earlier edits, so its row survives an empty cumulative comparison.
   const changesPresent = Boolean(turn || sessionChanges || (!changeRows.loaded && turnChanges));
   const hasSections = native.length > 0 || overviewHasSections({ delegates, plan, changes: changesPresent ? 1 : 0 });
-  const hasSessionSection = Boolean(navigation || onOpenTaskMap);
+  const hasSessionSection = Boolean(navigation);
   const showDocked = docked && !collapsed && hasSections;
   // Owner 11-24: collapsing a docked card leaves a chip in its corner, never a header control.
   const showChip = docked && collapsed && hasSections;
@@ -373,11 +372,6 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
     {hasSessionSection && <section className="chat-overview-section" aria-label={copy('Session', '会话')}>
       <div className="chat-overview-section-head"><span>{copy('Session', '会话')}</span></div>
       {navigation?.('row')}
-      {onOpenTaskMap && <button type="button" className="chat-overview-link is-task-map" onClick={() => { close(); onOpenTaskMap(); }}>
-        <Icon name="flow" className="chat-overview-change-icon" />
-        <span className="chat-overview-change-label">{copy('Task map', '任务图')}</span>
-        <Icon name="chevR" className="chat-overview-change-chevron" />
-      </button>}
     </section>}
   </div>;
 
@@ -403,7 +397,6 @@ export function ChatOverview({ session, delegates, items, copy, zh, docked, live
     {showChip && <div className="chat-overview-dock"><button type="button" className="chat-overview-chip" aria-label={accessibleLabel} title={copy('Expand overview', '展开概览')} onClick={expand}>{buttonContent}</button></div>}
     {showMini && <div className="chat-overview-dock"><div className="chat-overview-mini" role="group" aria-label={copy('Chat overview', '聊天概览')}>
       {navigation?.('chip')}
-      {onOpenTaskMap && <button type="button" className="chat-overview-mini-button" aria-label={copy('Task map', '任务图')} onClick={onOpenTaskMap}><Icon name="flow" />{copy('Task map', '任务图')}</button>}
     </div></div>}
     {showReview && review && <SurfaceDialog title={review.title} size="wide" icon="diff"
       className="chat-overview-review sheet-fill sheet-edge-to-edge" onClose={() => setReview(undefined)}>

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { METHODS, PROTOCOL_CONTRACT, validateRequest, validateResult } from './index.ts';
 
 test('contract 20 host files, attachments, and editor navigation methods are additive and bounded', () => {
-  assert.equal(PROTOCOL_CONTRACT, 20);
+  assert.ok(PROTOCOL_CONTRACT >= 20);
   for (const method of ['filesystem.browse', 'filesystem.preview.read', 'attachment.upload', 'attachment.read']) assert.ok(METHODS.includes(method));
   validateRequest('filesystem.browse', {});
   validateRequest('filesystem.browse', { path: 'Z:/host' });

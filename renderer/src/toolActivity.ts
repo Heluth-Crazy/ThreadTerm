@@ -371,8 +371,8 @@ export function toolSummary(entries: readonly ToolActivityEntry[]): ToolSummary 
   return summarizeToolViews(entries.map(entry => ({ view: toolView(entry.part), delegation: delegationTool(entry.part) })));
 }
 
-/** `toolSummary` over views a caller already built (the task map groups calls itself). */
-export function summarizeToolViews(calls: readonly { view: ToolView; delegation?: DelegationTool }[]): ToolSummary {
+/** `toolSummary` over built views. */
+function summarizeToolViews(calls: readonly { view: ToolView; delegation?: DelegationTool }[]): ToolSummary {
   const summary: ToolSummary = { delegates: 0, followedDelegates: 0, explored: 0, searched: 0, ran: 0, edited: 0, other: 0, failed: 0, interrupted: 0 };
   const files = new Set<string>();
   const read = new Set<string>();

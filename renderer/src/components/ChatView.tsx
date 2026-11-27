@@ -104,7 +104,6 @@ import { CHAT_REPAIR_REQUEST, setChatRepairAvailability, type ChatRepairAvailabi
 import { discoveredRepair, discoveryMatches, type RepairDiscovery } from '../chatRepairDiscovery';
 import { SurfaceDialog } from './SurfaceDialog';
 import { useChatViewport } from '../useChatViewport';
-import { useChatFlowSync } from '../chatFlowSync';
 import { providerRetryPresentation } from '../providerRetry';
 import { ProviderRetryStatus } from './ProviderRetryStatus';
 import './chat-viewport.css';
@@ -696,7 +695,6 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
   }, [updateChatHidden]);
   const logContentRef = useRef<HTMLDivElement>(null);
   const viewport = useChatViewport(session.id, viewportSessionId === session.id, logRef, logContentRef);
-  const flowSync = useChatFlowSync(session.id, logRef, logContentRef, items, viewport);
   // A prepended page of older messages must not move the message being read.
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;
@@ -2273,8 +2271,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     </CatalogPopover>}
     <SelectionBubble rootRef={logRef} visible={surface?.focused !== false && overlay !== 'full'} copy={copy} quoteEnabled={writable} askEnabled={!!onOpenSession} onQuote={text => insertChatText(session.id, quoteSelection(text))} onAsk={(text, current) => askSelectionChat(session, text, current, id => onOpenSession?.(id))} />
     <div className="chat-log-shell" ref={chatShellRef} onKeyDown={viewport.onKeyDown}>
-    <ChatOverview session={session} delegates={delegates} items={items} copy={copy} zh={zh} docked={overviewIsDocked} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} onOpenSession={onOpenSession} navigation={items.filter(item => item.role === 'user' && !automaticText(item)).length >= 3 ? variant => <ChatMessageNavigation variant={variant} items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined}
-      onOpenTaskMap={surface?.openTaskMap ? () => surface.openTaskMap?.(session.id, flowSync.topItemId()) : undefined} />
+    <ChatOverview session={session} delegates={delegates} items={items} copy={copy} zh={zh} docked={overviewIsDocked} liveTurnId={activeTurnIdFromIndex(presentation, session.status)} onOpenSession={onOpenSession} navigation={items.filter(item => item.role === 'user' && !automaticText(item)).length >= 3 ? variant => <ChatMessageNavigation variant={variant} items={items} copy={copy} onNavigate={viewport.navigateToMessage} /> : undefined} />
     <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} tabIndex={0} aria-label={copy('Chat transcript', '聊天记录')} inert={overlay === "full" || undefined} onClickCapture={viewport.pauseForDisclosure} onFocusCapture={viewport.onFocus} onWheelCapture={viewport.onWheel} onTouchStartCapture={viewport.onTouchStart} onTouchMoveCapture={viewport.onTouchMove} onMouseDownCapture={viewport.onPointerDown} onClick={event => {
       // Links never navigate the app window (the desktop blocks that, so they used to do nothing).
       const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
@@ -2386,5 +2383,3 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession, 
     />}
   </section></FileReferenceScopeProvider>;
 }
-// The Task map inspector reuses this sanitizing renderer (codexMarkdownCache.test.ts evaluates the function source, so it stays a plain declaration).
-export { renderCodexMarkdown };

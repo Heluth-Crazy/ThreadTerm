@@ -41,7 +41,7 @@
 .chat-overview-chip { display:inline-flex; align-items:center; gap:7px; height:30px; padding:0 11px 0 8px; border-radius:15px; color:var(--text); font:inherit; font-size:12.5px; cursor:pointer; box-shadow:0 2px 8px -4px var(--control-drop, transparent); }
 .chat-overview-chip:hover { background:color-mix(in srgb, var(--surface) 94%, transparent); }
 .chat-overview-chip .chat-overview-stack > * { box-shadow:0 0 0 1.5px var(--surface); }
-/* A Chat without agents, changes or plan: its message list and task map, one click each. */
+/* A Chat without agents, changes or plan: its message list, one click away. */
 .chat-overview-mini { display:inline-flex; align-items:center; gap:2px; height:30px; padding:0 3px; border-radius:15px; }
 .chat-overview-mini .chat-message-navigation { display:contents; }
 .chat-overview-mini-button { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 9px; border:0; border-radius:12px; background:none; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; }
@@ -97,7 +97,7 @@
 .chat-overview-change-count { flex:none; color:var(--muted); font-size:12px; font-weight:400; font-variant-numeric:tabular-nums; }
 .chat-overview-change-chevron { width:14px; height:14px; color:var(--faint); }
 .chat-overview-change.is-turn .chat-overview-change-label { font-weight:600; }
-/* The 会话 section: the message list and the task map, which used to be header icons. */
+/* The 会话 section: the message list, which used to be a header icon. */
 .chat-overview-section .chat-message-navigation { display:block; }
 .dialog.sheet.wide.chat-overview-review { width:min(1100px, 92%); height:min(760px, calc(100% - 32px)); max-height:calc(100% - 32px); }
 .chat-overview-review .wb-rs-bar { flex:0 0 auto; flex-wrap:wrap; height:auto; min-height:38px; padding-block:6px; }
