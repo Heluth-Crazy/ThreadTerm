@@ -4,11 +4,11 @@ import { contextIdentityBudget, type MentionEntry } from '../inlineMentions';
 import { createMessageMentionsMemo, type MessageMentionBadge } from '../messageMentions';
 import { displayPath } from '../displayPath';
 import { SurfaceDialog } from './SurfaceDialog';
-import { Icon } from './PrototypeIcon';
+import { Icon, type IconName } from './PrototypeIcon';
 import './context-tray.css';
 
 type Chip = { id: string; kind: ContextItem['kind']; label: string; title: string; block: string };
-const icons = { terminal: 'terminal', file: 'file', diff: 'branch', commit: 'clock', conversation: 'clock', quote: 'file', session: 'layers', agent: 'export', skill: 'spark' };
+const icons: Record<string, IconName> = { terminal: 'terminal', file: 'file', diff: 'diff', commit: 'checkpoint', conversation: 'msg', quote: 'file', session: 'msg', agent: 'bot', skill: 'spark' };
 // A copy-fork header keeps the exact ISO time for the agent; its chip shows a readable one.
 function readableCopiedAt(label: string, zh: boolean) {
   return label.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})/, iso => {

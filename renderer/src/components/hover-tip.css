@@ -1,0 +1,6 @@
+/* The app's hover tip (components/HoverTip.tsx): the menu's glass, one line, never in the way of the pointer. */
+.tt-hover-tip { position:fixed; z-index:2147483000; pointer-events:none; display:flex; align-items:center; gap:8px; max-width:min(360px, calc(100vw - 12px)); padding:4px 8px; border:1px solid var(--menu-edge); border-radius:6px; background:var(--menu); color:var(--text); box-shadow:var(--menu-shadow); backdrop-filter:blur(12px) saturate(1.14); font-size:12px; line-height:16px; white-space:nowrap; animation:tt-hover-tip-in 90ms ease-out; }
+.tt-hover-tip > span { overflow:hidden; text-overflow:ellipsis; }
+.tt-hover-tip kbd { flex:none; font:inherit; font-size:11px; color:var(--muted); }
+@keyframes tt-hover-tip-in { from { opacity:0; } to { opacity:1; } }
+@media (prefers-reduced-motion:reduce) { .tt-hover-tip { animation:none; } }

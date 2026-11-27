@@ -1,3 +1,4 @@
+import { CopyButton } from './CopyButton';
 import { useState } from 'react';
 import type { ChatPart, FileReference } from '@threadterm/protocol';
 import { commandDisplayCwd, compactToolArguments, diffView, editFileStats, mcpResultView, moreFilesLabel, outputView, runToolSummaryFromPart, runToolSummaryLabel, toolCardHasBody, toolStatusLabel, type DiffView, type RunToolSummary } from '../toolCards';
@@ -82,7 +83,7 @@ function OutputBody({ text, copy }: { text: string; copy: Copy }) {
   const [expanded, setExpanded] = useState(false);
   const view = outputView(text, expanded);
   return <>
-    <pre className="tool-output">{view.lines.join('\n')}</pre>
+    <div className="tool-output-wrap copy-host"><pre className="tool-output">{view.lines.join('\n')}</pre><CopyButton className="tool-output-copy" text={text} label={copy('Copy output', '复制输出')} /></div>
     {view.expandable && <button type="button" className="btn btn-sm tool-card-action" onClick={() => setExpanded(true)}>{copy(`Show output (${view.total} lines)`, `显示输出（${view.total} 行）`)}</button>}
     {expanded && view.omitted > 0 && <p className="tool-card-note">{copy(`${view.omitted} earlier lines not shown.`, `较早的 ${view.omitted} 行未显示。`)}</p>}
   </>;
@@ -255,7 +256,8 @@ function CardImages({ part, copy }: { part: ChatPart; copy: Copy }) {
 function CommandDetail({ view, humanized, sessionCwd, copy }: { view: Extract<ToolView, { kind: 'command' }>; humanized: boolean; sessionCwd?: string; copy: Copy }) {
   const cwd = commandDisplayCwd(view.cwd, sessionCwd);
   return <>
-    {humanized && <div className="call-row-command"><span aria-hidden="true">$</span><code>{view.display}</code></div>}
+    {/* The whole command, with a copy button: the row's label may paraphrase it or cut it short. */}
+    <div className="call-row-command copy-host"><span aria-hidden="true">$</span><code>{humanized ? view.display : view.command}</code><CopyButton text={view.command} label={copy('Copy command', '复制命令')} /></div>
     {cwd && <p className="tool-card-note">{copy('Folder', '目录')}: {cwd}</p>}
     {view.output && <OutputBody text={view.output} copy={copy} />}
   </>;

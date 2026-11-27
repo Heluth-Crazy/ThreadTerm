@@ -638,6 +638,15 @@ function settle(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve));
 }
 
+/** The credit paid for a session, summed over its credit frames. */
+function creditPaid(writes: Buffer[], sessionId: string): number {
+  return writes.reduce((total, payload) => {
+    if (payload.readUInt8(0) !== 2) return total;
+    const header = JSON.parse(payload.subarray(5, 5 + payload.readUInt32LE(1)).toString('utf8')) as { sessionId?: unknown; credit?: number };
+    return header.sessionId === sessionId ? total + (header.credit ?? 0) : total;
+  }, 0);
+}
+
 function creditFrames(writes: Buffer[], sessionId: string): number {
   return writes.filter(payload => {
     if (payload.readUInt8(0) !== 2) return false;
@@ -1218,8 +1227,38 @@ test('a stalled consumer never blocks other consumers of its session or its upst
   await settle();
   assert.deepEqual(healthy, [1, 2, 3], 'the healthy view keeps receiving every later chunk');
   assert.deepEqual(other, [9], 'an unrelated session is unaffected');
-  assert.equal(creditFrames(writes, 'stalled'), 1 + 3, 'each chunk is credited while another view has not rendered');
-  assert.equal(creditFrames(writes, 'independent'), 1 + 1);
+  // Every chunk is credited although another view has not rendered it; the three are repaid together (batching).
+  assert.equal(creditPaid(writes, 'stalled'), 64 * 1024 + 3, 'each chunk is credited while another view has not rendered');
+  assert.equal(creditFrames(writes, 'stalled'), 1 + 1, 'tiny chunks from one turn are repaid in one credit frame');
+  assert.equal(creditPaid(writes, 'independent'), 64 * 1024 + 1);
+  client.dispose();
+});
+
+test('credit owed to a pipe that was replaced before the end of the turn is dropped, not paid into the new one', async () => {
+  const { client, writes } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  await client.subscribeOutput('swap', 0, () => undefined);
+  const before = writes.length;
+  void internal.handleOutputFrame(outputFrame('swap', 0, Uint8Array.of(1)));
+  const reconnected: Buffer[] = [];
+  internal.output = { write(payload) { reconnected.push(payload); }, close() {} };
+  await settle();
+  assert.equal(writes.length, before, 'the old pipe is gone');
+  assert.equal(reconnected.length, 0, 'the new pipe never pays for the old pipe\'s bytes');
+  client.dispose();
+});
+
+test('16 KiB of owed credit is repaid at once, without waiting for the end of the turn', async () => {
+  const { client, writes } = clientWithPipes();
+  const internal = client as unknown as ClientInternals;
+  await client.subscribeOutput('flood', 0, () => undefined);
+  void internal.handleOutputFrame(outputFrame('flood', 0, new Uint8Array(10 * 1024)));
+  assert.equal(creditFrames(writes, 'flood'), 1, 'below the batch: still owed');
+  void internal.handleOutputFrame(outputFrame('flood', 10 * 1024, new Uint8Array(8 * 1024)));
+  assert.equal(creditFrames(writes, 'flood'), 2, 'over the batch: paid now');
+  assert.equal(creditPaid(writes, 'flood'), 64 * 1024 + 18 * 1024);
+  await settle();
+  assert.equal(creditFrames(writes, 'flood'), 2, 'nothing left to pay at the end of the turn');
   client.dispose();
 });
 
@@ -1233,7 +1272,8 @@ test('a pending old frame credits only the pipe which supplied it', async () => 
   await client.subscribeOutput('pending', 0, async () => { entered(); await heldDelivery; });
   await internal.handleOutputFrame(outputFrame('pending', 0, Uint8Array.of(9)));
   await enteredDelivery;
-  assert.equal(writes.length, 3, 'credit is paid into the supplying pipe when the frame is enqueued');
+  await settle();
+  assert.equal(writes.length, 3, 'credit is paid into the supplying pipe within the turn the frame was enqueued, before it renders');
   const reconnectedWrites: Buffer[] = [];
   internal.output = { write(payload) { reconnectedWrites.push(payload); }, close() {} };
   release();

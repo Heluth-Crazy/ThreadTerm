@@ -52,7 +52,7 @@ test('an edit is one line per file with its own counts', () => {
   ] } };
   const row = toolRow(part, zh, 'D:\\work');
   assert.deepEqual(row.lines.map(line => [line.icon, line.label, line.where, line.added, line.removed]), [
-    ['plus', '新建 queue.ts', 'src', 2, 0],
+    ['file-plus', '新建 queue.ts', 'src', 2, 0],
     ['diff', '修改 api.ts', 'src', 1, 1],
   ]);
   assert.equal(row.live, '正在修改 queue.ts 等 2 个文件');

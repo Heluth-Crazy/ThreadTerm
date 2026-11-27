@@ -1,3 +1,5 @@
+import { createElement } from 'react';
+import { Icon } from './components/PrototypeIcon';
 import type { FileLocationRequest } from '@threadterm/protocol';
 import { revealFileLocation as revealNativeLocation } from './bridge';
 import { referenceLocationTarget } from './referenceLocation';
@@ -29,5 +31,5 @@ export async function revealFileLocation(target:FileLocationTarget,zh:boolean,on
 }
 export function fileLocationMenuItem(target:FileLocationTarget,zh:boolean,onIssue?:(message:string)=>void):ContextMenuItem{
   const unavailable='externalId' in target&&isRemoteFiles();
-  return {id:'file-reveal-system',label:fileLocationLabel(zh),testId:'file-reveal-system',disabled:unavailable,reason:unavailable?(zh?'此文件仅在本地登记。':'This file is registered on the local computer only.'):undefined,onSelect:()=>revealFileLocation(target,zh,onIssue)};
+  return {id:'file-reveal-system',label:fileLocationLabel(zh),icon:createElement(Icon,{name:'folderOpen'}),testId:'file-reveal-system',disabled:unavailable,reason:unavailable?(zh?'此文件仅在本地登记。':'This file is registered on the local computer only.'):undefined,onSelect:()=>revealFileLocation(target,zh,onIssue)};
 }

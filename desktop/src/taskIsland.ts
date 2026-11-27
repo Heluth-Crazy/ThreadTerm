@@ -16,6 +16,11 @@ const SNAP = 28;
 const POLL_MS = 2500;
 /** While the island is up, how often main looks at the pointer (see `watchPointer`). */
 const POINTER_POLL_MS = 50;
+/** A finished card stays this long after the pointer leaves the island (owner report 2026-11-26: the card left while
+ * they reached for View). */
+const HOVER_GRACE_MS = 1500;
+/** How long a session the island showed can still be opened by a View that arrives after its card left. */
+const OPENABLE_MS = 10 * 60_000;
 
 export interface TaskIslandHost {
   tree: MachineTreeStore;
@@ -52,6 +57,8 @@ export class TaskIsland {
   private lastPointer = '';
   private badge: TaskbarBadge;
   private model?: IslandModel;
+  /** Sessions the island has shown, so a late View (its card already gone) still opens the one it named. */
+  private readonly openable = new Map<string, { machineId: string; sessionId: string; until: number }>();
   private readonly cleanup: (() => void)[] = [];
 
   constructor(private readonly host: TaskIslandHost) {
@@ -77,8 +84,9 @@ export class TaskIsland {
     on('task-island:ready', () => { this.ready = true; this.send(); });
     on('task-island:interactive', (_event, value) => this.interactive(value === true));
     on('task-island:open', (_event, key) => {
-      const item = this.model?.items.find(row => row.key === key);
-      if (item) this.host.openSession(item.machineId, item.sessionId);
+      const known = typeof key === 'string' ? this.model?.items.find(row => row.key === key) ?? this.openable.get(key) : undefined;
+      // A View always brings ThreadTerm forward, at least on its window.
+      if (known) this.host.openSession(known.machineId, known.sessionId); else this.host.openApp();
     });
     on('task-island:open-app', () => this.host.openApp());
     on('task-island:drag', (_event, value) => this.drag(value));
@@ -146,8 +154,15 @@ export class TaskIsland {
   private interactive(on: boolean): void {
     const window = this.window;
     if (!window || window.isDestroyed()) return;
+    if (this.catching && !on) this.releaseHold();
     this.catching = on; this.lastPointer = '';
     window.setIgnoreMouseEvents(!on);
+  }
+
+  /** The pointer left the island: finished cards it held get a moment more, then their time runs out again. */
+  private releaseHold(): void {
+    this.tracker.hold(Date.now() + HOVER_GRACE_MS);
+    this.scheduleExpiry();
   }
 
   /**
@@ -165,7 +180,7 @@ export class TaskIsland {
       const inside = point.x >= bounds.x && point.x < bounds.x + bounds.width && point.y >= bounds.y && point.y < bounds.y + bounds.height;
       if (!inside) {
         this.lastPointer = '';
-        if (this.catching) { this.catching = false; current.setIgnoreMouseEvents(true); current.webContents.send('task-island:pointer-left'); }
+        if (this.catching) { this.catching = false; this.releaseHold(); current.setIgnoreMouseEvents(true); current.webContents.send('task-island:pointer-left'); }
         return;
       }
       // Catching clicks, the page has the real mouse events.
@@ -186,6 +201,7 @@ export class TaskIsland {
 
   private publish(): void {
     const items = this.tracker.items();
+    this.remember(items);
     const focused = this.host.appFocused();
     this.updateBadge(items, focused);
     const enabled = this.preferences.enabled && !this.lightweight;
@@ -213,6 +229,14 @@ export class TaskIsland {
       }, items.length ? 450 : 1200);
     }
     this.send();
+  }
+
+  private remember(items: readonly { key: string; machineId: string; sessionId: string }[]): void {
+    const now = Date.now();
+    for (const [key, entry] of this.openable) if (entry.until <= now) this.openable.delete(key);
+    for (const item of items) { this.openable.delete(item.key); this.openable.set(item.key, { machineId: item.machineId, sessionId: item.sessionId, until: now + OPENABLE_MS }); }
+    // Oldest first: a long day of agents keeps the last 200.
+    for (const key of this.openable.keys()) { if (this.openable.size <= 200) break; this.openable.delete(key); }
   }
 
   private send(): void {
@@ -285,7 +309,12 @@ export class TaskIsland {
     clearTimeout(this.expiryTimer);
     const next = this.tracker.nextExpiry();
     if (next === undefined) return;
-    this.expiryTimer = setTimeout(() => { if (this.tracker.expire(Date.now())) this.publish(); this.scheduleExpiry(); }, Math.max(0, next - Date.now()) + 20);
+    this.expiryTimer = setTimeout(() => {
+      // A card under the pointer stays: someone is reaching for View.
+      if (this.catching) this.tracker.hold(Date.now() + HOVER_GRACE_MS);
+      else if (this.tracker.expire(Date.now())) this.publish();
+      this.scheduleExpiry();
+    }, Math.max(0, next - Date.now()) + 20);
   }
 
   /** The taskbar button: a green dot while agents run, orange while one needs you; it stops flashing once ThreadTerm is in front. */

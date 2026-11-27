@@ -591,7 +591,7 @@ function Pane({
         <button type="button" className="menu-item" disabled={paneLimit} onClick={()=>split('vertical')}><Icon name="split" style={{transform:'rotate(90deg)'}}/>{zh?'上下拆分':'Split down'}</button>
         {session && !session.readOnly && (
           <button type="button" className="menu-item" onClick={() => void openWindow({ sessionId: session.id }).catch((error) => setIssue(error instanceof Error ? error.message : String(error)))}>
-            <Icon name="popout" />{zh?'弹出为浮窗':'Open floating window'}
+            <Icon name="pip" />{zh?'弹出为浮窗':'Open floating window'}
           </button>
         )}
         {session?.mode==='chat' && !session.readOnly && ["starting", "running", "idle", "waiting"].includes(session.status) && (

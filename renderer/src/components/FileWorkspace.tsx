@@ -1,3 +1,5 @@
+import { openInMenuItems } from './OpenInButton';
+import { useOpenInEditors } from '../openIn';
 import { fileLocationMenuItem } from '../fileLocation';
 import { FileLocationButton } from './FileLocationButton';
 import { Select } from "./ui/Select";
@@ -259,6 +261,7 @@ function FileWorkspaceInstance({
     return editor?externalSelectionText(editor.state):'';
   };
   const zh = globalThis.document.documentElement.lang === "zh-CN";
+  const { editors: openInEditors } = useOpenInEditors();
   const issueText = typeof issue === "object" ? externalFileError(issue.externalError, zh) : issue;
   const [navigationReveal, setNavigationReveal] = useState<(NavigationLocation & { key: string })>();
   useEffect(() => { setNavigationReveal(undefined); }, [reveal?.key]);
@@ -1157,6 +1160,12 @@ function FileWorkspaceInstance({
     onSend: onSendToAgent ? target => onSendToAgent({ path: notePath, ...(target.text ? { selection: target.text } : {}) }) : undefined,
     onSelection: target => { viewSelection.current = target; },
   } : undefined;
+  /** The line the source editor's cursor is on, for "Open in"; undefined outside the text view. */
+  const cursorLine = () => {
+    if (officeFile || largeFile || view !== "file" || image) return undefined;
+    const element = sourceEditorHost.current?.querySelector<HTMLElement>('.cm-content'), editor = element ? EditorView.findFromDOM(element) : null;
+    return editor ? editor.state.doc.lineAt(editor.state.selection.main.head).number : undefined;
+  };
   const codeSelection = () => {
     if (officeFile || largeFile || view !== "file" || image || !commentSelection) return undefined;
     const element = sourceEditorHost.current?.querySelector<HTMLElement>('.cm-content'), editor = element ? EditorView.findFromDOM(element) : null;
@@ -1177,11 +1186,12 @@ function FileWorkspaceInstance({
     ...navigation.menuItems,
     fileLocationMenuItem(externalId ? {externalId} : {...scope,path:document.path},zh,setIssue),
     {id:"file-copy-path",label:zh ? "复制路径" : "Copy path",icon:<WbIcon name="copy" />,onSelect:()=>navigator.clipboard.writeText(document.path)},
-    ...(canOpenWithSystemApp(document.path) ? [{id:"file-open-system",label:zh ? "用系统应用打开" : "Open with system app",icon:<Icon name="folder" />,onSelect:()=>void openWithSystemApp({...scope,path:document.path,externalId},zh,setIssue)}] : []),
-    ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="folder" />,onSelect:()=>revealInFiles(document.path)}] : []),
+    ...(canOpenWithSystemApp(document.path) ? [{id:"file-open-system",label:zh ? "用系统应用打开" : "Open with system app",icon:<Icon name="popout" />,onSelect:()=>void openWithSystemApp({...scope,path:document.path,externalId},zh,setIssue)}] : []),
+    ...(!external ? openInMenuItems(openInEditors, () => ({ ...scope, path: document.path, line: cursorLine() }), zh) : []),
+    ...(!external ? [{id:"file-reveal",label:zh ? "在文件中显示" : "Reveal in Files",icon:<Icon name="locate" />,onSelect:()=>revealInFiles(document.path)}] : []),
     ...(!busy ? [{id:"file-reload",label:copy.reload,icon:<WbIcon name="refresh" />,onSelect:()=>{if(external)void open(document.path,view,true);else setPending({path:document.path,view,reload:true});}}] : []),
     ...(view === "file" && !external && !image && gitState.status && (!dirty || blameOn) ? [{id:"file-blame",label:zh ? "逐行追溯" : "Blame",icon:<WbIcon name="person" />,onSelect:()=>setBlameOn(value=>!value)}] : []),
-    ...(!external && onOpenHistory && !image ? [{id:"file-history",label:zh ? "文件历史" : "File history",icon:<Icon name="clock" />,onSelect:()=>onOpenHistory({path:document.path})}] : []),
+    ...(!external && onOpenHistory && !image ? [{id:"file-history",label:zh ? "文件历史" : "File history",icon:<Icon name="fileHistory" />,onSelect:()=>onOpenHistory({path:document.path})}] : []),
     ...(canPin ? [{id:"file-plans",label:pinLabel,icon:<Icon name="bookmark" />,onSelect:()=>toggleSessionDocument()}] : []),
     ...(view !== "diff" && commentScope && commentsHost ? [{id:"file-comment",label:commentLabel,icon:<WbIcon name="comment" />,disabled:!canNote,onSelect:startComment}] : []),
     ...(onSendToAgent && (!image || external) ? [{id:"file-send",label:zh ? "发送给 Agent" : "Send to agent",icon:<Icon name="send" />,onSelect:()=>onSendToAgent({path:document.path})}] : []),

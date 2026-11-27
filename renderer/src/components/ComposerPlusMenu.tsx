@@ -118,7 +118,7 @@ export function ComposerPlusMenu({ quickMessages, onAttachFiles, onPickQuickMess
         </button>) : <p className="chat-menu-empty" data-testid="plus-quick-empty">{copy("No quick messages yet. Add them in Settings.", "还没有快捷消息。请在设置中添加。")}</p>}
       </> : <>
         <button type="button" role="menuitem" className="menu-item chat-plus-item" data-testid="plus-attach-files" onClick={() => { closeForAction(); void onAttachFiles(); }}>
-          <Icon name="file" /><span className="chat-plus-label">{copy("Attach files…", "附加文件…")}</span>
+          <Icon name="attach" /><span className="chat-plus-label">{copy("Attach files…", "附加文件…")}</span>
         </button>
         <button type="button" role="menuitem" className="menu-item chat-plus-item" data-testid="plus-quick-messages" aria-haspopup="menu" aria-expanded={false} onClick={() => setPanel("quick")}>
           <Icon name="spark" /><span className="chat-plus-label">{copy("Quick messages", "快捷消息")}</span><Icon name="chevR" className="chat-plus-chev" />
@@ -127,7 +127,7 @@ export function ComposerPlusMenu({ quickMessages, onAttachFiles, onPickQuickMess
           <Icon name="chevR" /><span className="chat-plus-label">{copy("Slash commands", "斜杠命令")}</span>
         </button>
         {onCodeReview && <button type="button" role="menuitem" className="menu-item chat-plus-item" data-testid="plus-code-review" onClick={() => { closeForAction(); onCodeReview(); }}>
-          <Icon name="search" /><span className="chat-plus-label">{copy("Code review…", "代码审查…")}</span>
+          <Icon name="review" /><span className="chat-plus-label">{copy("Code review…", "代码审查…")}</span>
         </button>}
         <button type="button" role="menuitem" className="menu-item chat-plus-item" data-testid="plus-live-feedback" disabled={!liveFeedbackEnabled} title={liveFeedbackEnabled ? undefined : copy("Available while a running turn accepts feedback notes.", "仅在运行的回合接受反馈备注时可用。")} onClick={() => { closeForAction(); onLiveFeedback(); }}>
           <Icon name="clock" /><span className="chat-plus-label">{copy("Live feedback…", "实时反馈…")}</span>

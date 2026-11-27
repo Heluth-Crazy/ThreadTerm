@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Icon } from './PrototypeIcon';
+import { Icon, type IconName } from './PrototypeIcon';
 import { useTranslation } from '../i18n';
 import { useModalFocus } from "../useModalFocus";
 import { useBrowserOcclusion } from '../browserOcclusion';
 
-export function SurfaceDialog({title,subtitle,icon,children,footer,onClose,size='md',variant,className='',descriptionId}:{title:string;subtitle?:string;icon?:string;children:ReactNode;footer?:ReactNode;onClose:()=>void;size?:'sm'|'md'|'wide';variant?:'create'|'plain';className?:string;descriptionId?:string}) {
+export function SurfaceDialog({title,subtitle,icon,children,footer,onClose,size='md',variant,className='',descriptionId}:{title:string;subtitle?:string;icon?:IconName;children:ReactNode;footer?:ReactNode;onClose:()=>void;size?:'sm'|'md'|'wide';variant?:'create'|'plain';className?:string;descriptionId?:string}) {
   const id=useId(), panel=useRef<HTMLElement>(null), close=useRef<HTMLButtonElement>(null), callback=useRef(onClose);
   callback.current=onClose;
   const {locale}=useTranslation();

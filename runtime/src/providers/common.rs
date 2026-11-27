@@ -360,6 +360,23 @@ fn executable_extensions(pathext: Option<&str>) -> Vec<String> {
     extensions
 }
 
+thread_local! {
+    /// Commands on this thread that ran out of time. The capability probe reads it per agent (providers.rs), so a
+    /// round that only timed out never replaces that agent's last complete answer.
+    static PROBE_TIMEOUTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Test fixtures: records a command that ran out of time on this thread, as `command_output` does.
+#[cfg(test)]
+pub(crate) fn note_probe_timeout_for_test() {
+    PROBE_TIMEOUTS.with(|count| count.set(count.get() + 1));
+}
+
+/// How many commands on this thread ran out of time since the last call; the count starts again at zero.
+pub(crate) fn take_probe_timeouts() -> u32 {
+    PROBE_TIMEOUTS.with(|count| count.replace(0))
+}
+
 pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, ProviderError> {
     #[cfg(windows)]
     let (mut child, job) = spawn_managed_service(spec, None, &[])?;
@@ -425,6 +442,7 @@ pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, P
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
+                PROBE_TIMEOUTS.with(|count| count.set(count.get() + 1));
                 return Err(ProviderError::new(
                     "provider_timeout",
                     format!(
@@ -484,7 +502,15 @@ pub fn version_probe_detailed(
         Ok(spec) => spec,
         Err(error) => return (false, None, Some(error)),
     };
-    match command_output(&spec, Duration::from_secs(5)) {
+    version_outcome(command_output(&spec, Duration::from_secs(5)))
+}
+
+/// What a `--version` run says about an agent. One that started but ran out of time is installed, its version
+/// unknown: a cold Node start, an antivirus scan or a busy PC can take longer than the probe, and calling that
+/// 「未安装」 made agents flip between installed and not installed (owner 2026-11-26). Only a CLI that is missing,
+/// or that started and failed, is not installed.
+pub(crate) fn version_outcome(result: Result<String, ProviderError>) -> (bool, Option<String>, Option<ProviderError>) {
+    match result {
         Ok(output) => (
             true,
             output
@@ -494,6 +520,7 @@ pub fn version_probe_detailed(
                 .map(ToOwned::to_owned),
             None,
         ),
+        Err(error) if error.code == "provider_timeout" => (true, None, Some(error)),
         Err(error) => (false, None, Some(error)),
     }
 }
@@ -1864,5 +1891,38 @@ mod extension_tests {
         assert!(!extensions.contains(&"bad/path".to_owned()));
         assert_eq!(extensions.iter().filter(|ext| *ext == "exe").count(), 1);
         assert_eq!(extensions.last().unwrap(), "");
+    }
+}
+
+#[cfg(test)]
+mod version_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn a_cli_that_started_but_ran_out_of_time_is_installed_with_its_version_unknown() {
+        let (installed, version, error) = version_outcome(Err(ProviderError::new("provider_timeout", "claude did not finish within 5 seconds")));
+        assert!(installed, "a slow start is not 未安装");
+        assert_eq!(version, None);
+        assert_eq!(error.unwrap().code, "provider_timeout");
+        let (installed, version, _) = version_outcome(Ok("codex-cli 0.98.0\n".into()));
+        assert!(installed);
+        assert_eq!(version.as_deref(), Some("codex-cli 0.98.0"));
+        for code in ["provider_not_found", "provider_probe_failed", "provider_launch_failed"] {
+            let (installed, _, error) = version_outcome(Err(ProviderError::new(code, "fixture")));
+            assert!(!installed, "{code} is not installed");
+            assert_eq!(error.unwrap().code, code);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_command_that_runs_out_of_time_is_counted_once_on_its_thread() {
+        take_probe_timeouts();
+        let cmd = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32").join("cmd.exe");
+        let spec = CommandSpec::from_path(cmd, vec!["/d".into(), "/c".into(), "ping -n 4 127.0.0.1 >nul".into()]).unwrap();
+        let error = command_output(&spec, Duration::from_millis(500)).unwrap_err();
+        assert_eq!(error.code, "provider_timeout");
+        assert_eq!(take_probe_timeouts(), 1);
+        assert_eq!(take_probe_timeouts(), 0, "taking the count resets it");
     }
 }

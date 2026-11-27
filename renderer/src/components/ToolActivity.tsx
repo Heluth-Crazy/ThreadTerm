@@ -8,10 +8,10 @@ import { approvalPreview } from '../approvalPreview';
 import { approvalData } from '../chatApproval';
 import { FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { ToolCard } from './ToolCards';
-import { Icon } from './PrototypeIcon';
+import { Icon, type IconName } from './PrototypeIcon';
 import './tool-activity.css';
 
-const icons: Record<ToolKind, string> = { command: 'terminal', browser: 'globe', file: 'file', search: 'search', delegation: 'agents', mcp: 'plug', tool: 'wrench' };
+const icons: Record<ToolKind, IconName> = { command: 'terminal', browser: 'globe', file: 'file', search: 'search', delegation: 'bot', mcp: 'plug', tool: 'wrench' };
 type Copy = (en: string, zh: string) => string;
 
 /** `onInspect` pauses follow while the reader opens or closes a fold; collapsing scrolls the header back into view. */
@@ -178,7 +178,7 @@ export function ActivityFold({ steps, live, outcome, durationLabel, startedAt, a
   } else {
     headline = countsLabel ? '' : copy('Done', '已完成');
   }
-  const icon = outcome === 'failed' ? 'close' : outcome === 'interrupted' ? 'info' : thinkingOnly && !outcome ? 'spark' : 'check';
+  const icon = outcome === 'failed' ? 'close' : outcome === 'interrupted' ? 'info' : thinkingOnly && !outcome ? 'brain' : 'check';
   const accessible = [headline, rest, failures?.label].filter(Boolean).join(' · ');
   return <article className={`v3-chat-message assistant is-native is-${provider} chat-tool-activity-card is-fold`}>
     <details className={`chat-tool-activity chat-fold${live ? ' is-live' : ' is-settled'}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
@@ -222,7 +222,7 @@ function FoldThinkingRow({ step, copy, openFile, renderNote }: { step: Extract<F
   const line = title || copy('Thought process', '思考过程');
   const expandable = Boolean(body && body !== title) || Boolean(step.part.fileReferences?.length);
   const content = <>
-    <Icon name="spark" className="chat-fold-step-icon" />
+    <Icon name="brain" className="chat-fold-step-icon" />
     <span className="chat-fold-step-value is-dim" title={line}>{line}</span>
     {expandable && <Icon name="chevR" className="chat-fold-step-chevron" />}
   </>;

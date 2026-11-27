@@ -1,8 +1,8 @@
-import { Icon } from './PrototypeIcon';
+import { Icon, type IconName } from './PrototypeIcon';
 import type { MentionGroup, MentionItem } from '../chatMentions';
 import './mentions.css';
 
-const groupIcons: Record<MentionGroup['id'], string> = { files: 'file', sessions: 'layers', commits: 'clock', agents: 'export', skills: 'spark' };
+const groupIcons: Record<MentionGroup['id'], IconName> = { files: 'file', sessions: 'msg', commits: 'checkpoint', agents: 'bot', skills: 'spark' };
 
 export function mentionGroupLabel(id: MentionGroup['id'], zh: boolean): string {
   return zh

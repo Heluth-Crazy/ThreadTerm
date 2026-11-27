@@ -1,3 +1,4 @@
+import { CopyButton } from './CopyButton';
 import { useEffect, useRef, useState } from 'react';
 import { dismissNotice, useNotices, type Notice } from '../notices';
 import { usePassiveBrowserOcclusion } from '../browserOcclusion';
@@ -30,6 +31,7 @@ function NoticeRow({ notice, zh }: { notice: Notice; zh: boolean }) {
     onFocus={() => setHeld(true)} onBlur={() => setHeld(false)}>
     <i className="tt-notice-mark" aria-hidden="true" />
     <p className="tt-notice-text">{notice.text}</p>
+    {notice.tone === 'error' && <CopyButton className="tt-notice-copy" text={notice.text} label={zh ? '复制错误信息' : 'Copy error text'} />}
     <button type="button" className="tt-notice-close" aria-label={zh ? '关闭' : 'Dismiss'} title={zh ? '关闭' : 'Dismiss'} onClick={() => dismissNotice(notice.key)}>
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
     </button>

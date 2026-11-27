@@ -169,6 +169,11 @@ export class IslandTracker {
   }
 
 
+  /** Keeps every finished announcement on screen until at least `until`; never shortens one. */
+  hold(until: number): void {
+    for (const item of this.finished.values()) item.until = Math.max(item.until, until);
+  }
+
   /** Drops finished announcements whose time is up; true when something left. */
   expire(now: number): boolean {
     let changed = false;

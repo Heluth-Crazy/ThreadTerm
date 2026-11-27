@@ -1,0 +1,16 @@
+/* "Open" split button (OpenInButton.tsx): one bordered control, the program's icon at 16px. */
+.open-in { display:inline-flex; align-items:stretch; flex:none; }
+.open-in > .btn { gap:6px; }
+.open-in > .open-in-main { border-top-right-radius:0; border-bottom-right-radius:0; }
+.open-in > .open-in-more { border-top-left-radius:0; border-bottom-left-radius:0; margin-left:-1px; padding:0 6px; }
+.open-in > .open-in-more .ico { width:14px; height:14px; }
+.open-in.is-compact > .open-in-main { padding:0 8px; }
+.open-in-icon { width:16px; height:16px; flex:none; object-fit:contain; }
+.app-context-icon .open-in-icon { width:15px; height:15px; }
+
+/* Hover copy (CopyButton.tsx): shows on the row it belongs to, or on keyboard focus. */
+.copy-host .copy-btn { opacity:0; transition:opacity 90ms; }
+.copy-host:hover .copy-btn, .copy-host .copy-btn:focus-visible, .copy-host .copy-btn.is-done { opacity:1; }
+.copy-btn { width:22px; height:22px; min-height:22px; vertical-align:middle; }
+.copy-btn .ico { width:13px; height:13px; }
+.copy-btn.is-done { color:var(--st-running, var(--primary)); }

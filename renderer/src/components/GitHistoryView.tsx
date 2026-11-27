@@ -330,7 +330,7 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
     <header className="wb-commit-head">
      <strong>{info.subject}</strong>
      <span className="wb-commit-meta">{info.authorName} &lt;{info.authorEmail}&gt; · {new Date(info.authoredAt).toLocaleString()} · <code title={info.hash}>{info.hash.slice(0, 10)}</code>
-      <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => copy(info.hash)}><Icon name="export"/></button></span>
+      <button type="button" className="icon-btn" title={text('Copy commit hash', '复制提交哈希')} aria-label={text('Copy commit hash', '复制提交哈希')} onClick={() => copy(info.hash)}><Icon name="copy"/></button></span>
      <span className="wb-operation-actions">
       {headPrimary.map(item=><button key={item.id} type="button" className="cg-ghost cg-sm" disabled={item.disabled} title={item.reason} onClick={()=>void openAction(headerKind[item.id as keyof typeof headerKind],info)}>{item.label}</button>)}
       {commentsHost?.attachContext && <ContextSendAction ghost host={commentsHost} item={{kind:'commit', id:crypto.randomUUID(), sha:info.hash, subject:info.subject} satisfies ContextItem} zh={zh} label={text('Send to agent', '发送给 Agent')} testId="history-send-to-agent"/>}

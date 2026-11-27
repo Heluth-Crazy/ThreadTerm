@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { OutputFanout } from '../src/output-fanout.js';
+import { MAX_DELIVERY_BYTES, OutputFanout } from '../src/output-fanout.js';
 
 const chunk = { sessionId: 's', cursor: 0, data: new Uint8Array([1]) };
 
@@ -34,14 +34,75 @@ test('every view keeps its own chunk order and receives each chunk once', async 
   const slow: number[] = [];
   const fast: number[] = [];
   const gate = deferred();
-  fanout.add('slow', async (value) => { await gate.promise; slow.push(value.cursor); });
-  fanout.add('fast', (value) => { fast.push(value.cursor); });
+  // Bytes, not calls: frames queued behind an in-flight delivery arrive joined (MAX_DELIVERY_BYTES).
+  fanout.add('slow', async (value) => { await gate.promise; slow.push(...value.data); });
+  fanout.add('fast', (value) => { fast.push(...value.data); });
   for (let cursor = 0; cursor < 4; cursor++) fanout.publish({ sessionId: 's', cursor, data: Uint8Array.of(cursor) });
   await settle();
   assert.deepEqual(fast, [0, 1, 2, 3], 'the healthy view does not wait for the stalled one');
   gate.resolve();
   await settle();
   assert.deepEqual(slow, [0, 1, 2, 3], 'the stalled view catches its own order back');
+  fanout.dispose();
+});
+
+test('frames queued behind an in-flight delivery go out as one, in order, and the first never waits', async () => {
+  const fanout = new OutputFanout();
+  const deliveries: { cursor: number; bytes: number[] }[] = [];
+  const gate = deferred();
+  let first = true;
+  fanout.add('view', async (value) => { deliveries.push({ cursor: value.cursor, bytes: [...value.data] }); if (first) { first = false; await gate.promise; } });
+  fanout.publish({ sessionId: 's', cursor: 0, data: Uint8Array.of(0) });
+  await settle();
+  assert.deepEqual(deliveries, [{ cursor: 0, bytes: [0] }], 'the first frame goes out alone, at once');
+  for (let cursor = 1; cursor < 6; cursor++) fanout.publish({ sessionId: 's', cursor, data: Uint8Array.of(cursor) });
+  gate.resolve();
+  await settle();
+  assert.deepEqual(deliveries, [{ cursor: 0, bytes: [0] }, { cursor: 1, bytes: [1, 2, 3, 4, 5] }], 'the backlog is one delivery');
+  fanout.dispose();
+});
+
+test('a gap or a jump in cursor ends a batch; so does the size cap', async () => {
+  const fanout = new OutputFanout();
+  const deliveries: { cursor: number; length: number; gap?: boolean }[] = [];
+  const gate = deferred();
+  let first = true;
+  fanout.add('view', async (value) => { deliveries.push({ cursor: value.cursor, length: value.data.byteLength, ...(value.gap ? { gap: true } : {}) }); if (first) { first = false; await gate.promise; } });
+  fanout.publish({ sessionId: 's', cursor: 0, data: Uint8Array.of(0) });
+  await settle();
+  fanout.publish({ sessionId: 's', cursor: 1, data: new Uint8Array(2) });
+  fanout.publish({ sessionId: 's', cursor: 3, data: new Uint8Array(2) });
+  fanout.publish({ sessionId: 's', cursor: 9, data: new Uint8Array(), gap: true });
+  fanout.publish({ sessionId: 's', cursor: 9, data: new Uint8Array(1) });
+  fanout.publish({ sessionId: 's', cursor: 20, data: new Uint8Array(1) });
+  fanout.publish({ sessionId: 's', cursor: 21, data: new Uint8Array(MAX_DELIVERY_BYTES) });
+  gate.resolve();
+  await settle();
+  assert.deepEqual(deliveries, [
+    { cursor: 0, length: 1 },
+    { cursor: 1, length: 4 },
+    { cursor: 9, length: 0, gap: true },
+    { cursor: 9, length: 1 },
+    { cursor: 20, length: 1 },
+    { cursor: 21, length: MAX_DELIVERY_BYTES },
+  ]);
+  fanout.dispose();
+});
+
+test('a delivery failure is reported once to each publisher of the joined frames', async () => {
+  const fanout = new OutputFanout();
+  const gate = deferred();
+  let calls = 0;
+  fanout.add('view', async () => { calls++; if (calls === 1) { await gate.promise; return; } throw new Error('renderer gone'); });
+  const errors: string[] = [];
+  fanout.publish({ sessionId: 's', cursor: 0, data: Uint8Array.of(0) }, error => errors.push(`a:${error.message}`));
+  await settle();
+  const b = (error: Error) => errors.push(`b:${error.message}`);
+  fanout.publish({ sessionId: 's', cursor: 1, data: Uint8Array.of(1) }, b);
+  fanout.publish({ sessionId: 's', cursor: 2, data: Uint8Array.of(2) }, b);
+  gate.resolve();
+  await settle();
+  assert.deepEqual(errors, ['b:renderer gone'], 'one report per publisher, not per frame');
   fanout.dispose();
 });
 

@@ -35,6 +35,11 @@ const RUNTIME_READY_TIMEOUT_MS = 12_000;
 const RETRY_DELAY_MS = 400;
 const INITIAL_OUTPUT_CREDIT = 64 * 1024;
 const MAX_OUTPUT_CREDIT = 8 * 1024 * 1024;
+// Credit is repaid in batches of at least this much, or at the end of the event-loop turn that queued the frames.
+// Repaid frame by frame, a terminal flood's window splintered into the tens-of-bytes reads ConPTY delivers: the
+// runtime sent one tiny frame per tiny repayment, and 20 MB took minutes of IPC after the program had finished
+// (2026-11-26). Batched, the runtime refills the window in large frames.
+const OUTPUT_CREDIT_BATCH = 16 * 1024;
 // A view which falls further behind than this is switched to lagging catch-up
 // instead of buffering without bound.  The cap matches the runtime's own credit
 // window (MAX_OUTPUT_CREDIT), so the bytes a view misses while lagging are the
@@ -1242,8 +1247,34 @@ export class RuntimeClient {
     // A delayed consumer may finish after this session was unsubscribed or
     // after the output pipe reconnected.  Credit belongs to the transport which
     // supplied this exact frame; never pay it into a newer stream.
-    if (credit > 0 && !this.expectedDisconnect && this.output === origin && this.outputGroups.get(group.sessionId) === group) {
-      this.sendOutputFrame(2, { sessionId: group.sessionId, credit });
+    if (credit > 0) this.repayCredit(group, credit, origin);
+  }
+
+  /** Credit owed per session, repaid in batches (OUTPUT_CREDIT_BATCH) to the transport that supplied the frames. */
+  private readonly creditOwed = new Map<OutputGroup, { credit: number; origin?: LengthPrefixedSocket }>();
+  private creditFlush?: ReturnType<typeof setImmediate>;
+
+  private repayCredit(group: OutputGroup, credit: number, origin?: LengthPrefixedSocket): void {
+    const owed = this.creditOwed.get(group);
+    if (owed && owed.origin !== origin) this.flushCredit(group);
+    const current = this.creditOwed.get(group) ?? { credit: 0, origin };
+    current.credit += credit;
+    this.creditOwed.set(group, current);
+    if (current.credit >= OUTPUT_CREDIT_BATCH) { this.flushCredit(group); return; }
+    // The rest goes out at the end of this turn, after every frame this read brought was queued.
+    this.creditFlush ??= setImmediate(() => {
+      this.creditFlush = undefined;
+      for (const pending of [...this.creditOwed.keys()]) this.flushCredit(pending);
+    });
+  }
+
+  private flushCredit(group: OutputGroup): void {
+    const owed = this.creditOwed.get(group);
+    this.creditOwed.delete(group);
+    if (!owed || owed.credit <= 0) return;
+    // Credit belongs to the transport which supplied the frames; never pay it into a newer stream or a closed group.
+    if (!this.expectedDisconnect && this.output === owed.origin && this.outputGroups.get(group.sessionId) === group) {
+      try { this.sendOutputFrame(2, { sessionId: group.sessionId, credit: owed.credit }); } catch { /* the disconnect path owns recovery */ }
     }
   }
 

@@ -37,6 +37,13 @@ interface ConsumerState {
   wake: boolean;
 }
 
+/**
+ * The most bytes one delivery carries. A terminal flood arrives in tens of bytes per frame (ConPTY); each delivery is
+ * one IPC message and one acknowledgement, so 20 MB took 267k round trips and about six minutes of main at one core
+ * (2026-11-26). Frames that queued while a delivery was in flight go out together instead.
+ */
+export const MAX_DELIVERY_BYTES = 256 * 1024;
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -139,8 +146,9 @@ export class OutputFanout {
         const item = state.queue.shift();
         if (!item) break;
         state.queuedBytes -= item.chunk.data.byteLength;
-        try { await state.consumer(item.chunk); }
-        catch (error) { item.onError?.(asError(error)); }
+        const batch = this.coalesce(state, item);
+        try { await state.consumer(batch.chunk); }
+        catch (error) { for (const onError of batch.onErrors) onError(asError(error)); }
       }
     } finally {
       state.draining = false;
@@ -148,6 +156,31 @@ export class OutputFanout {
     // Frames which arrived while the loop was awaiting this view still need it,
     // and a failed catch-up is retried by the next frame rather than a timer.
     if (state.wake || state.queue.length > 0) this.start(state);
+  }
+
+  /**
+   * Joins the frames queued right behind `first` that continue its bytes (same session, no gap, the next cursor) into
+   * one chunk of at most MAX_DELIVERY_BYTES. A gap, a jump or the cap ends the run; order and bytes are unchanged.
+   */
+  private coalesce(state: ConsumerState, first: EnqueuedChunk): { chunk: OutputChunk; onErrors: ConsumerErrorHandler[] } {
+    const parts = [first];
+    let bytes = first.chunk.data.byteLength;
+    for (let last = first.chunk; !last.gap;) {
+      const next = state.queue[0];
+      if (!next || next.chunk.gap || next.chunk.sessionId !== last.sessionId || next.chunk.cursor !== last.cursor + last.data.byteLength
+        || bytes + next.chunk.data.byteLength > MAX_DELIVERY_BYTES) break;
+      state.queue.shift();
+      state.queuedBytes -= next.chunk.data.byteLength;
+      bytes += next.chunk.data.byteLength;
+      parts.push(next);
+      last = next.chunk;
+    }
+    const onErrors = [...new Set(parts.map(part => part.onError).filter((handler): handler is ConsumerErrorHandler => Boolean(handler)))];
+    if (parts.length === 1) return { chunk: first.chunk, onErrors };
+    const data = new Uint8Array(bytes);
+    let offset = 0;
+    for (const part of parts) { data.set(part.chunk.data, offset); offset += part.chunk.data.byteLength; }
+    return { chunk: { ...first.chunk, data }, onErrors };
   }
 
   /** Returns true once the view has caught up and may rejoin live delivery. */

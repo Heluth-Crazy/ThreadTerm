@@ -15,6 +15,9 @@ const bridge = window.threadtermIsland;
 const leave = { timer: 0 };
 /** When the last drag moved; the island's own tap fires on release, before the window hears pointerup. */
 const dragged = { at: 0 };
+/** The activity an alert expanded, while it is still the expanded one. Pointing at it makes it the user's: islandcn
+ * returns an alert on its own clock, and the 完成 card's View went away under the pointer (owner report 2026-11-26). */
+const alerted = { id: undefined as string | undefined };
 
 export function IslandApp() {
   const [model, setModel] = useState<IslandModel>();
@@ -41,7 +44,7 @@ function IslandSync({ model }: { model: IslandModel }) {
       later: () => island.collapse(),
       openApp: () => { bridge?.openApp(); island.collapse(); },
     };
-    const press = (id: string) => () => { if (Date.now() - dragged.at > 300) island.expand(id); };
+    const press = (id: string) => () => { if (Date.now() - dragged.at > 300) { alerted.id = undefined; island.expand(id); } };
     const running = model.items.filter(item => item.state === 'running');
     const waiting = model.items.filter(item => item.state === 'approval' || item.state === 'input');
     const finished = model.items.filter(item => item.state === 'done' || item.state === 'error');
@@ -65,7 +68,7 @@ function IslandSync({ model }: { model: IslandModel }) {
     }
     for (const want of desired) {
       const previous = shown.current.get(want.id);
-      if (want.alert) window.clearTimeout(leave.timer);
+      if (want.alert) { window.clearTimeout(leave.timer); alerted.id = want.id; }
       if (previous === undefined) island.start({ ...want.options, alert: want.alert });
       else if (previous !== want.sig) {
         const { compact, minimal, expanded, label, priority, onPress } = want.options;
@@ -92,6 +95,8 @@ function Stage({ visible, zh }: { visible: boolean; zh: boolean }) {
     const report = (over: boolean) => {
       if (over === state.current.over) return;
       state.current.over = over;
+      // An alert under the pointer stays open: it becomes a user expansion, which collapses only after the pointer leaves.
+      if (over && state.current.expanded && alerted.id && island.activities.some(activity => activity.id === alerted.id)) { const id = alerted.id; alerted.id = undefined; island.expand(id); }
       bridge?.setInteractive(over);
       window.clearTimeout(leave.timer);
       if (!over && state.current.expanded) leave.timer = window.setTimeout(() => { if (state.current.expanded && !state.current.over) island.collapse(); }, 1400);
@@ -110,6 +115,12 @@ function Stage({ visible, zh }: { visible: boolean; zh: boolean }) {
     const unsubscribePointer = bridge?.onPointer(point => at(point.x, point.y));
     return () => { window.removeEventListener('mousemove', move); unsubscribe?.(); unsubscribePointer?.(); };
   }, [island]);
+
+  // A collapsed island has no alert left to keep open; one that expands under a resting pointer is kept open at once.
+  useEffect(() => {
+    if (!expanded) { alerted.id = undefined; return; }
+    if (state.current.over && alerted.id && island.activities.some(activity => activity.id === alerted.id)) { const id = alerted.id; alerted.id = undefined; island.expand(id); }
+  }, [expanded, island]);
 
   useEffect(() => {
     if (on) return;

@@ -60,6 +60,7 @@ import { argumentLines, commandLines, commandPreset, commandPresets, type Comman
 import { attentionFromEvent, shouldPresentAttention, type Attention } from "./attentionState";
 import { AttentionToast } from "./components/AttentionToast";
 import { NoticeCenter } from "./components/NoticeCenter";
+import { HoverTip } from "./components/HoverTip";
 import { reportTransportRecovered } from "./notices";
 import { manualSessionOrder, neighborProjectSession, reorderProjectSessions } from "./sessionOrdering";
 import {
@@ -440,9 +441,9 @@ function MachineApp() {
         <aside className="sidebar">
           <div className="side-head">
             <button className="brand-home" aria-label="ThreadTerm" title="ThreadTerm" onClick={() => void navigate({ kind: "workbench" })}><span className="brand-mark"><img src="./brand-mark.png" alt="" /></span></button>
-            <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed(true)}><Icon name="panel" /></button>
+            <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed(true)}><Icon name="sidebar" /></button>
             <button aria-label={t("inbox")} className="icon-btn" aria-expanded={shellMenu?.kind==="notifications"} onClick={event => setShellMenu(shellMenu?.kind==="notifications"?undefined:{kind:"notifications",anchor:event.currentTarget})}><Icon name="bell" />{inboxUnread > 0 && <i className="bell-badge">{inboxUnread}</i>}</button>
-            <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4H4v16h16V10M12 12l8-8 2 2-8 8-4 1z" /></svg></button>
+            <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><Icon name="compose" /></button>
           </div>
           <div className="side-search"><button type="button" className="search-field" aria-label={t("commandPalette")} onClick={() => setPaletteOpen(true)}><Icon name="search" /><span>{locale === 'zh-CN' ? '搜索' : 'Search'}</span><kbd>Ctrl K</kbd></button></div>
           {remoteMachine && <div className="sidebar-machine-head"><span>ThreadTerm — {currentMachine?.name}</span><MachineChrome zh={locale === 'zh-CN'} /></div>}
@@ -618,8 +619,8 @@ function MachineApp() {
           <button type="button" className="caption-close" aria-label={t("closeWindow")} onClick={() => void windowAction("close")}><svg viewBox="0 0 10 10" aria-hidden="true"><path d="m.5.5 9 9m0-9-9 9" /></svg></button>
         </div>
         {sidebarCollapsed && <div className="shell-toolbar-prefix">
-          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={false} onClick={() => setSidebarCollapsed(false)}><Icon name="panel" /></button>
-          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4H4v16h16V10M12 12l8-8 2 2-8 8-4 1z" /></svg></button>
+          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '切换侧栏' : 'Toggle sidebar'} aria-expanded={false} onClick={() => setSidebarCollapsed(false)}><Icon name="sidebar" /></button>
+          <button type="button" className="icon-btn" aria-label={locale === 'zh-CN' ? '新建终端' : 'New terminal'} onClick={() => setCreatorOpen(true)}><Icon name="compose" /></button>
           {remoteMachine && <MachineChrome zh={locale === 'zh-CN'} />}
         </div>}
         <RuntimeStatusChip state={visibleRuntimeProblem} locale={locale} onRetry={() => void refresh()} placementKey={`${route.kind}:${route.id ?? ""}:${sessionView}`} />
@@ -634,6 +635,7 @@ function MachineApp() {
           />
         )}
         <NoticeCenter zh={locale === "zh-CN"} />
+        <HoverTip />
         {attention && <AttentionToast attention={attention} capabilities={data?.providers} session={data?.sessions.find(candidate => candidate.id === attention.sessionId)} locale={locale} onClose={() => setAttention(undefined)} onOpen={() => { setAttention(undefined); void navigate({ kind: "session", id: attention.sessionId }); }} />}
         {!floatingWindow && route.kind === "all" && sessionHistoryOpen && data && (
           <SessionHistoryRail

@@ -101,6 +101,12 @@ pub(crate) fn provider_decision() -> ProviderDecision {
     ProviderDecision { previous, _thread: std::marker::PhantomData }
 }
 
+/// Like `provider_decision`, with an environment already captured: a round's probe threads share one snapshot.
+pub(crate) fn provider_decision_with(environment: Arc<ProviderEnvironment>) -> ProviderDecision {
+    let previous = PROVIDER_ENVIRONMENT.with(|value| value.borrow_mut().replace(environment));
+    ProviderDecision { previous, _thread: std::marker::PhantomData }
+}
+
 pub(crate) fn provider_environment() -> Arc<ProviderEnvironment> {
     if let Some(environment) = PROVIDER_ENVIRONMENT.with(|value| value.borrow().clone()) {
         return environment;

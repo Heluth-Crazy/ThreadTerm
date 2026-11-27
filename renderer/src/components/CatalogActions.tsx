@@ -1,3 +1,5 @@
+import { EditorIcon } from './OpenInButton';
+import { openInEditor, openInLabel, useOpenInEditors, type OpenInEditor } from '../openIn';
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { CatalogVisibility, ProjectCatalogItem, ProviderCapability, Session, Worktree } from '@threadterm/protocol';
@@ -5,7 +7,7 @@ import { openDirectory, operationId, request } from '../bridge';
 import { hasDirtyEditorsInScope } from '../dirtyEditors';
 import { useTranslation } from '../i18n';
 import { displayPath, sameCanonicalScope } from '../projectScope';
-import { Icon } from './PrototypeIcon';
+import { Icon, type IconName } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import { CHAT_REPAIR_CHANGED, chatRepairAvailability, requestChatRepair } from '../chatRepair';
 import './catalog-active-delete-dialog.css';
@@ -27,7 +29,7 @@ const isActiveSession=(session:Session)=>!session.readOnly&&['starting','running
 const sessionsInCatalogScope=(target:CatalogTarget,sessions:Session[],projectPath?:string)=>sessions.filter(session=>target.kind==='session'?session.id===target.id:session.projectId===target.projectId&&(target.kind==='project'||sameCanonicalScope(session.worktreePath??projectPath,target.path)));
 
 /** Every archived branch or project, filtered by name, each with Restore (the menus show the first few). */
-export function ArchivedListDialog({title,subtitle,rows,icon,zh,onRestore,onClose}:{title:string;subtitle?:string;rows:{id:string;name:string}[];icon:string;zh:boolean;onRestore:(id:string)=>Promise<void>;onClose:()=>void}){
+export function ArchivedListDialog({title,subtitle,rows,icon,zh,onRestore,onClose}:{title:string;subtitle?:string;rows:{id:string;name:string}[];icon:IconName;zh:boolean;onRestore:(id:string)=>Promise<void>;onClose:()=>void}){
   const text=(en:string,cn:string)=>zh?cn:en;
   const [filter,setFilter]=useState(''),[busy,setBusy]=useState<string>(),[issue,setIssue]=useState<string>();
   const shown=rows.filter(row=>row.name.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -49,6 +51,9 @@ export async function restoreCatalogTarget(target:CatalogTarget,visibility:Catal
 
 export function CatalogActions({target,projects,trees,sessions,providers=[],visibility,onChanged,onHidden,onWorktree,onNewSession,onMenuOpenChange}:Props){
   const {locale}=useTranslation(),zh=locale==='zh-CN',text=(en:string,cn:string)=>zh?cn:en;
+  // "Open in": the editor used last and, when installed, the terminal (the full list is on the project page).
+  const openIn=useOpenInEditors();
+  const openInRows=[openIn.preferred,openIn.editors.find(editor=>editor.id==='terminal')].filter((editor,index,rows):editor is OpenInEditor=>Boolean(editor)&&rows.indexOf(editor)===index);
   const [anchor,setAnchor]=useState<HTMLElement>(),[dialog,setDialog]=useState<Dialog>(),[sessionsToEnd,setSessionsToEnd]=useState<Session[]>(),[deleteNotice,setDeleteNotice]=useState<DeleteNotice>();
   const [name,setName]=useState(target.name),[issue,setIssue]=useState<string>(),[busy,setBusy]=useState(false),locked=useRef(false);
   const [idleSummary,setIdleSummary]=useState<{count:number;bytes?:number}>();
@@ -146,7 +151,7 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
   const rename=async()=>{if(!name.trim())return;if(target.kind==='project')await updateProject({name:name.trim()});else await request('session.update',{sessionId:target.id,title:name.trim(),operationId:operationId()});setDialog(undefined);onChanged();};
   const organize=async(patch:{pinned?:boolean;bookmarked?:boolean})=>{if(!session)return;await request('session.organize',{sessionId:session.id,...patch,expectedRevision:session.organizationRevision??0,operationId:operationId()});onChanged();close();};
   const acknowledgeAttention=async()=>{if(!session?.activity||!canAcknowledgeActivity(session))return;try{await request('session.attention.acknowledge',{sessionId:session.id,expectedRevision:session.activity.revision,operationId:operationId()});}catch(error){const message=error instanceof Error?error.message:String(error);if(['attention_not_actionable','attention_not_found','activity_revision_conflict'].some(code=>message.includes(code)))throw new Error(text('Session status changed; review it and try again.','会话状态已更新，请查看后重试。'));throw error;}onChanged();close();};
-  const item=(label:string,icon:string,action:()=>void,danger=false,disabled=false)=><button type="button" role="menuitem" className={`menu-item${danger?' danger':''}`} disabled={busy||disabled} onClick={action}><Icon name={icon}/>{label}</button>;
+  const item=(label:string,icon:IconName,action:()=>void,danger=false,disabled=false)=><button type="button" role="menuitem" className={`menu-item${danger?' danger':''}`} disabled={busy||disabled} onClick={action}><Icon name={icon}/>{label}</button>;
   const archivedTargets:CatalogTarget[]=target.kind==='project'?trees.filter(tree=>visibility.some(row=>row.kind==='worktree'&&row.id===tree.id&&row.visibility==='archived')).map(tree=>({kind:'worktree',id:tree.id,name:tree.branch??text('Local directory','本地目录'),path:tree.path,projectId:tree.projectId,worktreeId:tree.id})):target.kind==='worktree'?sessions.filter(row=>row.projectId===target.projectId&&sameCanonicalScope(row.worktreePath??project?.path,target.path)&&(row.archived||visibility.some(entry=>entry.kind==='session'&&entry.id===row.id&&entry.visibility==='archived'))).map(row=>({...target,kind:'session',id:row.id,name:row.title})):[];
   return <>
     {dialog==='export'&&session&&<Suspense fallback={<p role="status">{text('Loading export…','正在加载导出…')}</p>}><ChatExportDialog session={session} copy={text} onClose={()=>setDialog(undefined)} /></Suspense>}
@@ -155,25 +160,27 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
       <div className="menu-label">{target.name}</div>
       {/* The sidebar row folds on click, so its page opens from here. */}
       {target.kind!=='session'&&onWorktree&&item(target.kind==='project'?text('Open project page','打开项目页'):text('Open branch page','打开分支页'),'home',()=>{close();onWorktree(target.projectId,target.kind==='project'?undefined:target.path);})}
-      {item(text('Copy directory path','复制目录路径'),'file',()=>void run(async()=>{await navigator.clipboard.writeText(displayPath(target.path));close();}))}
+      {item(text('Copy directory path','复制目录路径'),'copy',()=>void run(async()=>{await navigator.clipboard.writeText(displayPath(target.path));close();}))}
+      {target.kind==='worktree'&&item(text('Copy branch name','复制分支名'),'copy',()=>void run(async()=>{await navigator.clipboard.writeText(target.name);close();}))}
+      {target.kind!=='session'&&openInRows.map(editor=><button type="button" role="menuitem" className="menu-item" key={`open-in-${editor.id}`} disabled={busy} onClick={()=>{close();void openInEditor(editor,{projectId:target.projectId,worktreePath:target.path},zh);}}><EditorIcon editor={editor}/>{openInLabel(editor,zh)}</button>)}
       {item(text('Open directory','查看目录'),'folder',()=>void run(async()=>{await openDirectory(target.projectId,target.worktreeId);close();}))}
       {target.kind!=='session'&&item(text('Refresh directory status','刷新目录状态'),'refresh',()=>{onChanged();close();})}
       {target.kind==='project'&&project&&<>
-        {item(text('Discover existing worktrees','发现已有分支工作树'),'branch',()=>begin('discover'))}
-        {item(text('Rename project','重命名项目'),'file',()=>begin('rename'))}
-        {item(project.pinned?text('Unpin','取消置顶'):text('Pin project','置顶项目'),'star',()=>void run(async()=>{await updateProject({pinned:!project.pinned});close();}))}
-        {item(text('Move up','向上移动'),'chevD',()=>void run(()=>move(-1)))}
-        {item(text('Move down','向下移动'),'chevD',()=>void run(()=>move(1)))}
+        {item(text('Discover existing worktrees','发现已有分支工作树'),'worktree',()=>begin('discover'))}
+        {item(text('Rename project','重命名项目'),'rename',()=>begin('rename'))}
+        {item(project.pinned?text('Unpin','取消置顶'):text('Pin project','置顶项目'),'pin',()=>void run(async()=>{await updateProject({pinned:!project.pinned});close();}))}
+        {item(text('Move up','向上移动'),'moveUp',()=>void run(()=>move(-1)))}
+        {item(text('Move down','向下移动'),'moveDown',()=>void run(()=>move(1)))}
       </>}
-      {session&&item(session.pinned?text('Unpin from quick switch','取消固定快捷选择'):text('Pin to quick switch','固定到快捷选择'),'star',()=>void run(()=>organize({pinned:!session.pinned})))} 
+      {session&&item(session.pinned?text('Unpin from quick switch','取消固定快捷选择'):text('Pin to quick switch','固定到快捷选择'),'pin',()=>void run(()=>organize({pinned:!session.pinned})))} 
       {target.kind!=='session'&&idleSummary&&idleMenuLabel(idleSummary.count,idleSummary.bytes,zh)&&<button type="button" role="menuitem" className="menu-item" disabled={busy} onClick={()=>void run(stopIdleSessions)}><Icon name="close"/>{idleMenuLabel(idleSummary.count,idleSummary.bytes,zh)}</button>}
       <div className="menu-sep"/>
-      {liveSession&&<button type="button" role="menuitem" className="menu-item" disabled={busy||Boolean(releaseBlocked(liveSession))} title={releaseBlocked(liveSession)} onClick={()=>void run(releaseSession)}><Icon name="terminal"/>{releaseMenuLabel(zh)}</button>}
+      {liveSession&&<button type="button" role="menuitem" className="menu-item" disabled={busy||Boolean(releaseBlocked(liveSession))} title={releaseBlocked(liveSession)} onClick={()=>void run(releaseSession)}><Icon name="power"/>{releaseMenuLabel(zh)}</button>}
       {liveSession&&releaseBlocked(liveSession)&&<div className="menu-note">{releaseBlocked(liveSession)}</div>}
       {target.kind==='session'
         ? archived?item(text('Back to the list','回到列表'),'back',()=>void run(async()=>{await unsettleSessions(settleGroup(target.id,sessions).map(row=>row.id));onChanged();close();}))
           :item(text('Settle','收尾'),'check',()=>void run(async()=>{await settleSessions(settleGroup(target.id,sessions).map(row=>row.id),zh);onHidden();onChanged();close();}))
-        : archived?item(text('Restore','恢复'),'archive',()=>void run(()=>changeVisibility('active'))):item(text('Archive','归档'),'archive',()=>begin('archive'))}
+        : archived?item(text('Restore','恢复'),'restore',()=>void run(()=>changeVisibility('active'))):item(text('Archive','归档'),'archive',()=>begin('archive'))}
       {item(text('Delete','删除'),'trash',beginDelete,true)}
       {target.kind==='project'&&<><div className="menu-sep"/><div className="menu-label">{text('Archived branches','归档的分支')}</div>{archivedTargets.length?archivedTargets.slice(0,ARCHIVED_MENU_ROWS).map(row=><button type="button" role="menuitem" className="menu-item" disabled={busy} key={row.id} onClick={()=>void run(async()=>{await restoreCatalogTarget(row,visibility);onChanged();close();})}><Icon name="branch"/><span className="grow">{row.name}</span><span className="dim">{text('Restore','恢复')}</span></button>):<div className="menu-note">{text('No archived branches','暂无归档的分支')}</div>}
         {archivedTargets.length>ARCHIVED_MENU_ROWS&&<button type="button" role="menuitem" className="menu-item" onClick={()=>begin('archived')}><Icon name="more"/>{text(`All ${archivedTargets.length}…`,`全部 ${archivedTargets.length} 个…`)}</button>}</>}
@@ -183,9 +190,9 @@ export function CatalogActions({target,projects,trees,sessions,providers=[],visi
         {session.mode==='chat'&&window.threadterm.exportChatMarkdown&&item(text('Export as Markdown…','导出为 Markdown…'),'export',()=>begin('export'))}
         {repair?.offered&&<button type="button" role="menuitem" className="menu-item" disabled={busy||!repair.writable} title={repair.writable?undefined:text('Take control of this chat to repair it.','请先取得此对话的控制权，再修复。')} onClick={()=>{requestChatRepair(session.id);close();}}><Icon name="refresh"/>{text('Repair from native history','从原生历史修复')}</button>}
         {canAcknowledgeActivity(session)&&item(text('Mark handled','标记已处理'),'check',()=>void run(acknowledgeAttention))}
-        {item(session.followed?text('Unfollow','取消关注'):text('Follow','关注'),'star',()=>void run(async()=>{await request('session.update',{sessionId:session.id,followed:!session.followed,operationId:operationId()});onChanged();close();}))}
+        {item(session.followed?text('Unfollow','取消关注'):text('Follow','关注'),'follow',()=>void run(async()=>{await request('session.update',{sessionId:session.id,followed:!session.followed,operationId:operationId()});onChanged();close();}))}
         {item(session.bookmarked?text('Remove bookmark','移除书签'):text('Bookmark','添加书签'),'bookmark',()=>void run(()=>organize({bookmarked:!session.bookmarked})))}
-        {item(text('Rename session','重命名会话'),'file',()=>begin('rename'))}
+        {item(text('Rename session','重命名会话'),'rename',()=>begin('rename'))}
       </>}
       <div className="menu-note">{text('Local catalogue only; files and Agent CLI history are retained.','仅本应用归档，不影响磁盘或 Agent CLI')}</div>
       {issue&&<p className="surface-error" role="alert">{issue}</p>}
