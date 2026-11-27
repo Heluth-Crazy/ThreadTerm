@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { electron } from './lib/desktop1.mjs';
 import { connectPeer } from './pipe-client.mjs';
+import { PROTOCOL_CONTRACT } from '../protocol/index.ts';
 
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 function memory() {
@@ -219,7 +220,7 @@ require(${JSON.stringify(join(built.appDir,'main.cjs'))});
 
     await this.restartA(987);await this.state(localPage,machine.id,'incompatible');
     const mismatch=remotePage.locator('.machine-failure');await mismatch.waitFor();
-    const message=await mismatch.innerText();assert.match(message,/desktop 0\.1\.0/);assert.match(message,/computer 0\.1\.0/);assert.match(message,/contract 20/);assert.match(message,/contract 987/);assert.match(message,/Update one so they match/);
+    const message=await mismatch.innerText();assert.match(message,/desktop 0\.1\.0/);assert.match(message,/computer 0\.1\.0/);assert.match(message,new RegExp(`contract ${PROTOCOL_CONTRACT}\\b`));assert.match(message,/contract 987/);assert.match(message,/Update one so they match/);
     await remotePage.screenshot({path:join(this.out,'version-mismatch.png')});
     await this.show(app,localPage,this.bMachine.id,bSession.id);await this.send(bPage,bSession.id,'B works while A versions differ.');
     await this.show(app,localPage,'local');assert.ok((await this.rpc(localPage,'runtime.snapshot')).projects.some(row=>row.name==='Client-only project'));

@@ -10,8 +10,7 @@ import { addSessionTab } from '../presentation';
 import { sameCanonicalScope } from '../projectScope';
 import { displayPath } from '../displayPath';
 import { activate, addPane, addTabToPane, closePane, placeWebTabBesideSession, reconcileSessionLayout, selectWebTabBesideSession, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
-import { taskMapRoot } from '../taskMapRoot';
-import { focusedWorkspaceTab, isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
+import { focusedWorkspaceTab, isFileTab, isWebTabUrl, keptOnOpen, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { sameDiffTabKey } from '../workbench/branchScope';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
@@ -112,12 +111,11 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const openedFrom=useRef<{source:PaneLayout;stripped:PaneLayout}|undefined>(undefined);
  const [layout,setLayout]=useState<PaneLayout>(()=>{
   if(!restored)return initialFor(session);
-  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,tab=>tab.kind==='web'||tab.kind==='group'||tab.kind==='roundtable'||(isFileTab(tab)&&Boolean(tab.externalId))),new Set(data.sessions.map(item=>item.id)),session.id);
+  const stripped=reconcileSessionLayout(sessionOnlyLayout(restored.layout,keptOnOpen),new Set(data.sessions.map(item=>item.id)),session.id);
   openedFrom.current={source:restored.layout,stripped};
   return stripped;
  });
  const [previewSessionId,setPreviewSessionId]=useState(session.id);
- const [taskMapFocus,setTaskMapFocus]=useState<{tabId:string;sessionId:string;itemId?:string;key:string}>();
  const latestLayout=useRef(layout);latestLayout.current=layout;
  const previewViewIds=useRef(new Map<string,string>());
  const previewAttachments=useRef(new Map<string,string>());
@@ -211,7 +209,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   if(!live.current)return;
   const unsaved=unsavedTabIds(dropped.map(item=>item.tab),tab=>drafts.some(draft=>draft.projectId===tab.projectId&&draft.path===tab.path&&(draft.worktreePath||'')===(tab.worktreePath??'')));
   if(latestLayout.current===stripped){
-   const next=unsaved.size?reconcileSessionLayout(sessionOnlyLayout(source,tab=>tab.kind==='web'||tab.kind==='group'||tab.kind==='roundtable'||kept.has(tab.id)||unsaved.has(tab.id)),new Set(data.sessions.map(item=>item.id)),session.id):stripped;
+   const next=unsaved.size?reconcileSessionLayout(sessionOnlyLayout(source,tab=>keptOnOpen(tab)||kept.has(tab.id)||unsaved.has(tab.id)),new Set(data.sessions.map(item=>item.id)),session.id):stripped;
    save(next);
    return;
   }
@@ -437,11 +435,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   openUsageTab(usageToOpen.projectId);
   onUsageOpened?.(usageToOpen.key);
  },[usageToOpen]);
- const openTaskMap=(sessionId:string,itemId?:string)=>{
-  const root=taskMapRoot(sessionId,data.sessions);
-  const tabId=openWorkbenchTab({id:crypto.randomUUID(),kind:'map',sessionId:root},candidate=>candidate.kind==='map'&&candidate.sessionId===root);
-  if(tabId&&(root!==sessionId||itemId!==undefined))setTaskMapFocus({tabId,sessionId,itemId,key:crypto.randomUUID()});
- };
  const openHistory=(target:{projectId:string;worktreePath?:string;path?:string;commit?:string})=>{
   const tabId=openWorkbenchTab({id:crypto.randomUUID(),kind:'history',projectId:target.projectId,...(target.worktreePath?{worktreePath:target.worktreePath}:{}),...(target.path?{path:target.path}:{})},
    candidate=>candidate.kind==='history'&&candidate.projectId===target.projectId&&sameCanonicalScope(candidate.worktreePath??project?.path,target.worktreePath??project?.path)&&(candidate.path??'')===(target.path??''));
@@ -609,7 +602,6 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  };
  const paneWorkbench:PaneWorkbench={
   openExternalFiles:(paths,source,ownerId)=>{if(!externalDisabledReason)void openOutside(paths,source,ownerId);},externalDisabledReason,
-  openTaskMap,taskMapFocus,
   openSessionReview:target=>{
    const source=data.sessions.find(candidate=>candidate.id===target.sessionId),sourceProject=data.projects.find(candidate=>candidate.id===source?.projectId);
    if(!source||!sourceProject)return;
@@ -748,7 +740,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
      {panelBrowser.url!==BROWSER_NEW_TAB_URL&&<button type="button" className="icon-btn" aria-label={zh?'并排打开':'Open side by side'} title={pageBesideAvailable?(zh?'移到对话旁边的单独窗格':'Move this page to its own pane beside the chat'):(zh?'已有四个窗格，先关闭一个':'There are already four panes; close one first')} disabled={!pageBesideAvailable} onClick={openPageBeside}><WbIcon name="split"/></button>}
     </>}
     details={<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-scroll">
-    <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path??'')}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button>{session.mode==='chat'&&<button type="button" className="btn" onClick={()=>openTaskMap(session.id)}>{zh?'任务图':'Task map'}</button>}</div>
+    <div className="ins-block"><h3>{zh?'会话信息':'Session information'}</h3><span className={`chip st-${state}`}>{stateLabel}</span><p>{session.title}</p><p className="mono dim-s">{displayPath(path??'')}</p><button className="btn" onClick={()=>setConfigOpen(true)}>{zh?'配置':'Configure'}</button></div>
     {canPin&&project&&<SessionDocuments key={documentsSession.id} sessionId={documentsSession.id} zh={zh} state={documents} onPick={()=>setPinPicker(true)} openFile={file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:'file'}).catch(fail)}/>}
     <div className="ins-block"><h3>{zh?'重点关注':'Following'}</h3><button className="btn" onClick={follow} aria-pressed={session.followed}><Icon name="star"/>{zh?(session.followed?'已关注 · 点击取消':'关注此会话'):(session.followed?'Following · Unfollow':'Follow session')}</button></div>
     <div className="ins-block runtime-session-actions"><SessionActions session={session}/></div><div className="ins-block session-fullscreen-row"><button className="btn" title={zh?'隐藏工作区界面，按 Esc 退出':'Hide workspace chrome; press Esc to leave'} onClick={()=>setFullscreen(value=>!value)}>{session.mode==='chat'?(zh?'全屏':'Fullscreen'):(zh?'全屏终端':'Fullscreen terminal')}</button></div>

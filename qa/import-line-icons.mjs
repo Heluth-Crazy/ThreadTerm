@@ -16,7 +16,7 @@ const MAP = {
   // Shell and navigation
   home: 'house', inbox: 'inbox', terminal: 'square-terminal', clock: 'clock', layers: 'layers', search: 'search',
   plus: 'plus', bell: 'bell', gear: 'settings', sidebar: 'panel-left', panel: 'panel-right', compose: 'square-pen',
-  usage: 'chart-no-axes-column', flow: 'workflow', sun: 'sun', moon: 'moon', globe: 'globe', user: 'user', person: 'user',
+  usage: 'chart-no-axes-column', sun: 'sun', moon: 'moon', globe: 'globe', user: 'user', person: 'user',
   // Disclosure and arrows
   chevR: 'chevron-right', chevD: 'chevron-down', back: 'chevron-left', chevU: 'chevron-up', 'chev-up': 'chevron-up',
   arrowUp: 'arrow-up', moveUp: 'arrow-up', moveDown: 'arrow-down', 'arrow-left': 'arrow-left', 'arrow-right': 'arrow-right',

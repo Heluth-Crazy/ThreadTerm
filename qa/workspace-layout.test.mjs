@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, placeWebTabBesideSession, reconcileSessionLayout, resizeSplit, sessionIdsIn, sessionOnlyLayout, splitPane } from '../renderer/src/workspaceLayout.ts';
 import { paneGeometry } from '../renderer/src/paneGeometry.ts';
+import { keptOnOpen } from '../renderer/src/workspaceTabs.ts';
 
 const tab = id => ({ id: `tab-${id}`, kind: 'session', sessionId: id });
 const pane = id => ({ kind: 'pane', id, tabs: [tab(id)], activeTabId: `tab-${id}` });
@@ -197,4 +198,24 @@ test('session-only projection retains independent web tabs without mutating thei
   assert.deepEqual(restored.tabs,[tab('owner'),web]);
   assert.equal(restored.activeTabId,'tab-owner');
   assert.deepEqual(saved,before,'projection never erases a saved manual or runtime page');
+});
+
+test('opening a workspace drops task map tabs saved before the map was removed (11-26)', () => {
+  const map = id => ({ id, kind: 'map', sessionId: 'a' });
+  // A pane of nothing but task maps closes; the session keeps the split's other side.
+  const allMaps = { kind: 'split', id: 'outer', direction: 'horizontal', ratio: .5, first: pane('a'), second: { kind: 'pane', id: 'maps', tabs: [map('m1'), map('m2')], activeTabId: 'm2' } };
+  assert.deepEqual(sessionOnlyLayout(allMaps, keptOnOpen), pane('a'));
+  // An active map beside a browser page and an external file: the map goes, the active tab moves to the session.
+  const web = { id: 'w', kind: 'web', url: 'https://example.test/' };
+  const external = { id: 'x', kind: 'file', projectId: 'p', path: 'C:/notes.md', externalId: 'ext-1' };
+  const plain = { id: 'f', kind: 'file', projectId: 'p', path: 'notes.md' };
+  const mixed = { kind: 'pane', id: 'left', tabs: [tab('a'), map('m'), web, external, plain], activeTabId: 'm' };
+  const opened = sessionOnlyLayout(mixed, keptOnOpen);
+  assert.deepEqual(opened.tabs.map(item => item.id), ['tab-a', 'w', 'x']);
+  assert.equal(opened.activeTabId, 'tab-a');
+  // Restoring a file with unsaved edits (SessionWorkspace's second pass) still leaves the map out.
+  const restored = sessionOnlyLayout(mixed, item => keptOnOpen(item) || item.id === 'f');
+  assert.deepEqual(restored.tabs.map(item => item.id), ['tab-a', 'w', 'x', 'f']);
+  // A layout that is only a map leaves an empty leaf for the routed session.
+  assert.deepEqual(sessionOnlyLayout({ kind: 'pane', id: 'solo', tabs: [map('m')], activeTabId: 'm' }, keptOnOpen), { kind: 'pane', id: 'solo', tabs: [], activeTabId: null });
 });

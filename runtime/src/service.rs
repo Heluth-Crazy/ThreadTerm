@@ -31,6 +31,93 @@ struct DeferredLaunchGate {
     stopping: bool,
     next_generation: u64,
     generations: HashMap<String, u64>,
+    /// `session.resume` calls in flight, by session (one generation each): see `ResumeFence`.
+    resumes: HashMap<String, std::collections::HashSet<u64>>,
+}
+
+thread_local! {
+    /// The fence generation the transport registered when it received the `session.resume` this thread dispatches
+    /// (`RuntimeService::receive_resume`, `ReceivedResume`).
+    static RECEIVED_RESUME: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Hands a received resume's fence to the dispatch on this thread: set around `RuntimeService::dispatch` by the
+/// transport, taken by `resume_native`, the previous value restored on drop.
+pub(crate) struct ReceivedResume {
+    previous: Option<u64>,
+}
+
+impl ReceivedResume {
+    pub(crate) fn enter(generation: Option<u64>) -> Self {
+        Self { previous: RECEIVED_RESUME.with(|cell| cell.replace(generation)) }
+    }
+}
+
+impl Drop for ReceivedResume {
+    fn drop(&mut self) {
+        RECEIVED_RESUME.with(|cell| cell.set(self.previous));
+    }
+}
+
+/// A `session.resume` in flight. Resumes run under the shared relocation gate (11-26: under the write gate one slow
+/// history read and agent start held every other request), so a `session.stop` can arrive while one reads history
+/// or starts the agent. The stop removes the entry; the resume checks it before reserving, before launching and
+/// after launching, and a cancelled resume ends whatever it started (`end_cancelled_resume`). The lock is only held
+/// for those checks.
+struct ResumeFence {
+    gate: Arc<Mutex<DeferredLaunchGate>>,
+    session_id: String,
+    generation: u64,
+}
+
+impl DeferredLaunchGate {
+    fn add_resume(&mut self, session_id: &str) -> Result<u64> {
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("deferred launch generation exhausted"))?;
+        let generation = self.next_generation;
+        self.resumes.entry(session_id.to_owned()).or_default().insert(generation);
+        Ok(generation)
+    }
+    fn drop_resume(&mut self, session_id: &str, generation: u64) {
+        if let Some(generations) = self.resumes.get_mut(session_id) {
+            generations.remove(&generation);
+            if generations.is_empty() {
+                self.resumes.remove(session_id);
+            }
+        }
+    }
+}
+
+impl ResumeFence {
+    /// The fence the transport registered when it received this request (`received`; a stop since then has already
+    /// cancelled it), or a new one for a request that came another way (remote HTTP, tests).
+    fn register(gate: &Arc<Mutex<DeferredLaunchGate>>, session_id: &str, received: Option<u64>) -> Result<Self> {
+        let generation = match received {
+            Some(generation) => generation,
+            None => gate
+                .lock()
+                .map_err(|_| anyhow::anyhow!("deferred launch gate poisoned"))?
+                .add_resume(session_id)?,
+        };
+        Ok(Self { gate: Arc::clone(gate), session_id: session_id.to_owned(), generation })
+    }
+    fn current_in(&self, owner: &DeferredLaunchGate) -> bool {
+        owner.resumes.get(&self.session_id).is_some_and(|generations| generations.contains(&self.generation))
+    }
+    /// A poisoned gate counts as cancelled: the resume then ends instead of launching.
+    fn cancelled(&self) -> bool {
+        self.gate.lock().map(|owner| !self.current_in(&owner)).unwrap_or(true)
+    }
+}
+
+impl Drop for ResumeFence {
+    fn drop(&mut self) {
+        if let Ok(mut owner) = self.gate.lock() {
+            owner.drop_resume(&self.session_id, self.generation);
+        }
+    }
 }
 
 pub struct RuntimeService {
@@ -1677,7 +1764,7 @@ impl RuntimeService {
             || public_file_mutation
             || matches!(
                 request.method.as_str(),
-                "data.relocation.cancel" | "session.resume"
+                "data.relocation.cancel"
             );
         if exclusive {
             let _gate = self
@@ -2138,6 +2225,15 @@ impl RuntimeService {
                     crate::chat_tools::shared(&self.config.database_path, Arc::clone(&self.db))?
                         .revoke_session(&p.session_id)?;
                     self.browser_tools.revoke_session(&p.session_id);
+                    // A resume in flight is cancelled first: an imported chat stays read-only until its resume
+                    // reserves the launch, so the read-only return below must not let that resume go on.
+                    let cancelled_resume = self
+                        .deferred_launch
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("deferred launch gate poisoned"))?
+                        .resumes
+                        .remove(&p.session_id)
+                        .is_some();
                     if session.read_only {
                         self.record_null(&p.operation_id, "session.stop")?;
                         return Ok(Value::Null);
@@ -2165,7 +2261,21 @@ impl RuntimeService {
                         .db
                         .session_by_id(&p.session_id)?
                         .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
-                    if !cancelled_pending
+                    if cancelled_resume {
+                        // A resume of this session is in flight: it sees the cancellation and ends what it
+                        // launches. What already runs is stopped here too, in case the resume has passed its last
+                        // check: a Chat start under way is interrupted; a terminal that is not spawned yet has no
+                        // process to stop (the resume stops it after the spawn).
+                        if current.mode == "chat" {
+                            self.providers.chat_stop(&p.session_id)?;
+                            self.previews.revoke_disabled(&self.providers)?;
+                        } else {
+                            let _ = self.pty.stop(&self.db, &p.session_id, p.force);
+                        }
+                        if !matches!(current.status.as_str(), "exited" | "interrupted" | "error") {
+                            self.db.set_session_status(&p.session_id, "exited", None)?;
+                        }
+                    } else if !cancelled_pending
                         && !matches!(current.status.as_str(), "exited" | "interrupted" | "error")
                     {
                         if current.mode == "chat" {
@@ -3189,10 +3299,24 @@ impl RuntimeService {
         request: SessionCreate,
         cwd: String,
     ) -> Result<()> {
+        self.start_deferred_codex_launch_fenced(session_id, request, cwd, None).map(|_| ())
+    }
+    /// `start_deferred_codex_launch` for a resume: `Ok(false)` when a stop already cancelled `fence`, decided under
+    /// the same gate the new launch registers in, so a stop either cancels the resume or the deferred launch.
+    fn start_deferred_codex_launch_fenced(
+        &self,
+        session_id: &str,
+        request: SessionCreate,
+        cwd: String,
+        fence: Option<&ResumeFence>,
+    ) -> Result<bool> {
         let mut gate = self
             .deferred_launch
             .lock()
             .map_err(|_| anyhow::anyhow!("deferred launch gate poisoned"))?;
+        if fence.is_some_and(|fence| !fence.current_in(&gate)) {
+            return Ok(false);
+        }
         if gate.stopping {
             self.db.begin_deferred_codex_launch(session_id)?;
             self.db.fail_deferred_codex_launch(
@@ -3237,7 +3361,7 @@ impl RuntimeService {
                     |native_id| {
                         let mut launch = request;
                         launch.native_id = Some(native_id.to_owned());
-                        RuntimeService::launch_session_with(
+                        RuntimeService::launch_session_admitted(
                             &launch_db,
                             &launch_provider,
                             &pty,
@@ -3257,7 +3381,7 @@ impl RuntimeService {
                 &format!("Could not start Codex preparation: {error}"),
             )?;
         }
-        Ok(())
+        Ok(true)
     }
     fn launch_session(&self, session_id: &str, p: &SessionCreate, cwd: &str) -> Result<Value> {
         Self::launch_session_with(&self.db, &self.providers, &self.pty, session_id, p, cwd)
@@ -3270,10 +3394,21 @@ impl RuntimeService {
         p: &SessionCreate,
         cwd: &str,
     ) -> Result<Value> {
-        let _decision = (!matches!(p.provider.as_str(), "shell" | "custom"))
-            .then(crate::environment::provider_decision);
         let admission = crate::chat_fork::session_admission(db, session_id)?;
         let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        Self::launch_session_admitted(db, providers, pty, session_id, p, cwd)
+    }
+    /// `launch_session_with` for a caller that already holds the session's admission lock (`resume_native`).
+    fn launch_session_admitted(
+        db: &Arc<Database>,
+        providers: &Arc<Providers>,
+        pty: &Arc<PtyManager>,
+        session_id: &str,
+        p: &SessionCreate,
+        cwd: &str,
+    ) -> Result<Value> {
+        let _decision = (!matches!(p.provider.as_str(), "shell" | "custom"))
+            .then(crate::environment::provider_decision);
         if p.mode == "terminal" {
             let agent_provider = !matches!(p.provider.as_str(), "shell" | "custom");
             // Obtain the exact identity before launching the terminal. Some
@@ -4046,6 +4181,13 @@ impl RuntimeService {
             resume: bool,
         }
         let p: Resume = parse(params)?;
+        // Resume runs under the shared relocation gate, like `session.create`. Per session it still runs alone:
+        // connect, release, sends and a repeated resume (the same operation retried) take this admission lock and
+        // wait, so only one of them launches; a stop does not wait and cancels the fence instead.
+        let admission = crate::chat_fork::session_admission(&self.db, &p.session_id)?;
+        let _admission = admission.lock().map_err(|_| anyhow::anyhow!("provider_internal"))?;
+        let received = RECEIVED_RESUME.with(|cell| cell.take());
+        let fence = ResumeFence::register(&self.deferred_launch, &p.session_id, received)?;
         let existing = self
             .db
             .session_by_id(&p.session_id)?
@@ -4097,8 +4239,12 @@ impl RuntimeService {
         if let Some(native_id) = existing.native_id.as_deref().filter(|_| grok_terminal) {
             // Report the recorded directory even if the requested cwd is
             // outside the card's workspace. The workspace check still applies.
-            self.providers
-                .preflight_terminal_resume(&existing.provider, cwd, native_id)?;
+            if let Err(error) = self.providers.preflight_terminal_resume(&existing.provider, cwd, native_id) {
+                if fence.cancelled() {
+                    return self.cancelled_before_reserving(&existing.id, &p.operation_id);
+                }
+                return Err(error.into());
+            }
         }
         let workspace_root = if let Some(project_id) = existing.project_id.as_deref() {
             crate::workspace_services::workspace_root_for_cwd(&self.db, project_id, cwd)?
@@ -4122,6 +4268,9 @@ impl RuntimeService {
                     None,
                 )?;
             }
+            if fence.cancelled() {
+                return self.cancelled_before_reserving(&existing.id, &p.operation_id);
+            }
             self.db.reserve_resume(
                 &existing.id,
                 &workspace_root.to_string_lossy(),
@@ -4142,7 +4291,9 @@ impl RuntimeService {
                 operation_id: p.operation_id,
                 defer_launch: true,
             };
-            self.start_deferred_codex_launch(&existing.id, launch, cwd.to_owned())?;
+            if !self.start_deferred_codex_launch_fenced(&existing.id, launch, cwd.to_owned(), Some(&fence))? {
+                return self.end_cancelled_resume(&existing, false);
+            }
             return Ok(serde_json::to_value(
                 self.db
                     .session_by_id(&existing.id)?
@@ -4156,17 +4307,32 @@ impl RuntimeService {
         if existing.mode == "terminal" && !grok_terminal {
             // Read-only validation must fail before reserving a launch or
             // appending a run marker. Missing history is not a new conversation.
-            self.providers
-                .preflight_terminal_resume(&existing.provider, cwd, native_id)?;
+            if let Err(error) = self.providers.preflight_terminal_resume(&existing.provider, cwd, native_id) {
+                if fence.cancelled() {
+                    return self.cancelled_before_reserving(&existing.id, &p.operation_id);
+                }
+                return Err(error.into());
+            }
         }
         // The transcript pre-read only serves Chat history import. Terminal
         // resumes replay natively inside the provider TUI, and Codex validates
         // the exact thread when its terminal command is built.
         let history: Vec<crate::domain::ChatItem> = if existing.mode == "chat" {
-            serde_json::from_value(self.providers.history_read(&existing.provider, native_id)?)?
+            // A read that fails after a stop (it timed out, say): the stop's outcome is what this operation records.
+            match self.providers.history_read(&existing.provider, native_id) {
+                Ok(value) => serde_json::from_value(value)?,
+                Err(_) if fence.cancelled() => {
+                    return self.cancelled_before_reserving(&existing.id, &p.operation_id);
+                }
+                Err(error) => return Err(error.into()),
+            }
         } else {
             Vec::new()
         };
+        // A stop during the history read: nothing was reserved or launched.
+        if fence.cancelled() {
+            return self.cancelled_before_reserving(&existing.id, &p.operation_id);
+        }
         // Reserve the durable launch owner before touching provider state. Two
         // callers can both observe the same resumable snapshot above; only the
         // transaction winner may stop or replace the provider worker.
@@ -4221,8 +4387,15 @@ impl RuntimeService {
                         .append(&self.db, &existing.id, marker.as_bytes())?;
                 }
             }
-            self.launch_session(&existing.id, &launch, cwd)
+            if fence.cancelled() {
+                return Err(anyhow::anyhow!("session_stopped"));
+            }
+            Self::launch_session_admitted(&self.db, &self.providers, &self.pty, &existing.id, &launch, cwd)
         })();
+        // A stop that arrived before or during the launch wins, also over a launch it made fail.
+        if fence.cancelled() {
+            return self.end_cancelled_resume(&existing, deferred_codex);
+        }
         if deferred_codex {
             if let Err(ref failure) = result {
                 let (code, message) = deferred_failure(failure);
@@ -4244,6 +4417,52 @@ impl RuntimeService {
             }
         }
         result
+    }
+    /// A stop cancelled this resume before it reserved anything. The operation records that outcome, so a
+    /// redelivery of the same request returns it instead of starting the session after all.
+    fn cancelled_before_reserving(&self, session_id: &str, operation_id: &str) -> Result<Value> {
+        let value = self.session_value(session_id)?;
+        self.db.complete_operation(operation_id, "session.resume", &value)?;
+        Ok(value)
+    }
+    /// The transport received a `session.resume` that will wait for a start permit (11-26): its fence exists from now
+    /// on, so a stop that overtakes it cancels it as well. The generation goes with the request (`ReceivedResume`);
+    /// `finish_resume` forgets it after the request ran.
+    pub(crate) fn receive_resume(&self, session_id: &str) -> Option<u64> {
+        self.deferred_launch.lock().ok()?.add_resume(session_id).ok()
+    }
+    /// After a received resume ran, also when it failed before `resume_native` took its fence.
+    pub(crate) fn finish_resume(&self, session_id: &str, generation: u64) {
+        if let Ok(mut owner) = self.deferred_launch.lock() {
+            owner.drop_resume(session_id, generation);
+        }
+    }
+    fn session_value(&self, session_id: &str) -> Result<Value> {
+        Ok(serde_json::to_value(
+            self.db
+                .session_by_id(session_id)?
+                .ok_or_else(|| anyhow::anyhow!("session disappeared"))?,
+        )?)
+    }
+    /// A stop cancelled this resume after it reserved the launch: the stop wins. Ends whatever the resume started
+    /// (an agent Chat, or a terminal's process) and leaves the session exited; a deferred Codex launch record is
+    /// marked cancelled as a stop marks it.
+    fn end_cancelled_resume(&self, existing: &Session, deferred_codex: bool) -> Result<Value> {
+        if existing.mode == "chat" {
+            let _ = self.providers.chat_stop(&existing.id);
+            let _ = self.previews.revoke_disabled(&self.providers);
+        } else {
+            // Nothing to stop when the cancellation came before the spawn.
+            let _ = self.pty.stop(&self.db, &existing.id, true);
+        }
+        if deferred_codex {
+            self.db.cancel_deferred_codex_launch(&existing.id)?;
+        }
+        // A launch the stop interrupted may have recorded "error"; the user stopped it.
+        if self.db.session_by_id(&existing.id)?.map(|session| session.status).as_deref() != Some("exited") {
+            self.db.set_session_status(&existing.id, "exited", None)?;
+        }
+        self.session_value(&existing.id)
     }
     fn rerun(&self, params: &Value) -> Result<Value> {
         if let Some(result) = crate::quick_launch::rerun(&self.db, &self.pty, params)? {
@@ -4315,6 +4534,20 @@ fn run_deferred_codex_launch<P, L>(
 {
     let _decision = crate::environment::provider_decision();
     let prepared = prepare();
+    // Admission before the gate, the order release and resume use: a resume of this session that holds admission
+    // while its fence takes the gate must never meet a worker holding the gate and waiting for admission (11-26).
+    // `launch` runs with both held, so it must not take admission again (`launch_session_admitted`).
+    let admission = match crate::chat_fork::session_admission(db, session_id) {
+        Ok(admission) => admission,
+        Err(error) => {
+            eprintln!("deferred Codex launch admission failed for {session_id}: {error}");
+            return;
+        }
+    };
+    let Ok(_admitted) = admission.lock() else {
+        eprintln!("deferred Codex launch admission poisoned for {session_id}");
+        return;
+    };
     let Ok(mut owner) = gate.lock() else {
         eprintln!("deferred Codex launch gate poisoned for {session_id}");
         return;
@@ -7365,6 +7598,62 @@ mod tests {
             db.deferred_codex_launch(&id).unwrap().unwrap()["phase"],
             "running"
         );
+    }
+
+    #[test]
+    fn a_deferred_worker_never_holds_the_gate_while_it_waits_for_admission() {
+        // 11-26 (Codex round 3): a resume holds the session's admission lock while its fence takes the gate. A
+        // worker that took the gate first and then waited for admission deadlocked with it.
+        use std::sync::mpsc;
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        crate::session_configs::initialize(&db).unwrap();
+        crate::retry_scheduler::initialize(&db).unwrap();
+        let id = deferred_test_session(&db, "deferred-order");
+        let gate = Arc::new(Mutex::new(DeferredLaunchGate::default()));
+        gate.lock().unwrap().generations.insert(id.clone(), 1);
+        let admission = crate::chat_fork::session_admission(&db, &id).unwrap();
+        let resume_holds = admission.lock().unwrap();
+        let (prepared_tx, prepared_rx) = mpsc::sync_channel(1);
+        let (launched_tx, launched_rx) = mpsc::sync_channel(1);
+        let worker = {
+            let db = Arc::clone(&db);
+            let gate = Arc::clone(&gate);
+            let id = id.clone();
+            std::thread::spawn(move || {
+                run_deferred_codex_launch(
+                    &db,
+                    &gate,
+                    &id,
+                    1,
+                    || {
+                        prepared_tx.send(()).unwrap();
+                        Ok("native-order".into())
+                    },
+                    |_| {
+                        launched_tx.send(()).unwrap();
+                        Ok(())
+                    },
+                )
+            })
+        };
+        prepared_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        // Let the worker reach its locks, then do what the resume's fence does: take the gate.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let (taken_tx, taken_rx) = mpsc::channel();
+        let fence_gate = Arc::clone(&gate);
+        std::thread::spawn(move || {
+            let _owner = fence_gate.lock().unwrap();
+            let _ = taken_tx.send(());
+        });
+        let taken = taken_rx.recv_timeout(std::time::Duration::from_secs(2));
+        assert!(launched_rx.try_recv().is_err(), "the worker waits for the session's admission before it launches");
+        drop(resume_holds);
+        assert!(taken.is_ok(), "the gate is free while the worker waits for the session's admission");
+        launched_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the worker launches once admitted");
+        worker.join().unwrap();
     }
 
     #[test]

@@ -22,6 +22,8 @@
   padding:8px 14px;
   border-radius:18px;
   background:var(--bubble);
+  /* Palettes whose readable fill cannot stand out from the chat draw the bubble's shape with a 1 px edge. */
+  box-shadow:inset 0 0 0 1px var(--bubble-edge, transparent);
   font-size:13.5px;
   line-height:1.6;
 }

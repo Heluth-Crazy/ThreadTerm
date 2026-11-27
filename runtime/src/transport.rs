@@ -264,11 +264,13 @@ enum Lane {
     /// revision-checked transaction; queued behind a slow `chat.connect` they timed out and the
     /// later, still-applied write left the view's next revision stale (11-18).
     State,
-    /// Agent starts (`chat.connect`): a start can take a minute (network model refresh, MCP servers,
-    /// antivirus on new binaries). Run beside everything else, a few at a time, without holding live
-    /// events; a later request for the same session still waits for its start (`ConnectGate`), and
-    /// the provider's per-session admission lock serializes the start with sends and approvals.
-    /// In the ordered lane one start froze every other chat's writes and all live updates (11-25).
+    /// Agent starts (`chat.connect`, and `session.resume`, which reads the saved history and then starts
+    /// the agent): a start can take a minute (network model refresh, MCP servers, antivirus on new
+    /// binaries). Run beside everything else, a few at a time, without holding live events; a later
+    /// request for the same session still waits for its start (`ConnectGate`) unless it is a stop
+    /// (`waits_for_session_start`), and the per-session admission lock serializes the start with sends
+    /// and approvals. In the ordered lane one start froze every other chat's writes and all live
+    /// updates (11-25).
     Connect,
     /// Git writes, worktree creation/removal and backups: arrival order among themselves (one Git
     /// operation at a time), but a 120 s push or a 300 s commit hook no longer holds unrelated writes
@@ -324,7 +326,7 @@ fn request_lane(method: &str) -> Lane {
         | "usage.ledger.session" | "usage.ledger.sources" | "usage.ledger.settings"
         | "filesystem.image" | "filesystem.preview.read" | "attachment.read" | "filesystem.resolve"
         | "runtime.health" | "terminal.host" | "browser.approval.read" => Lane::Concurrent,
-        "chat.connect" => Lane::Connect,
+        "chat.connect" | "session.resume" => Lane::Connect,
         "git.fetch" | "git.pull" | "git.push" | "git.commit" | "git.commit.selected" | "git.merge"
         | "git.merge.abort" | "git.cherryPick" | "git.revert" | "git.reset" | "git.operation.abort"
         | "git.operation.continue" | "git.stage" | "git.unstage" | "git.index.write" | "git.discard"
@@ -440,6 +442,14 @@ impl ConnectGate {
             changed.await;
         }
     }
+}
+
+/// Whether a sequenced request for a session waits until that session's agent start replied. A stop
+/// does not: it must reach a start in flight (a resume's fence, a connect's provider slot), which the
+/// service ends; waiting would leave the user's Stop queued behind the very start it stops (11-26).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn waits_for_session_start(method: &str) -> bool {
+    method != "session.stop"
 }
 
 #[cfg(windows)]
@@ -559,6 +569,7 @@ async fn run_request(
     principal: String,
     request: RpcRequest,
     sequenced: bool,
+    received_resume: Option<u64>,
 ) -> Reply {
     let id = request.id.clone();
     let is_shutdown = request.method == "runtime.shutdown";
@@ -579,6 +590,8 @@ async fn run_request(
         }
     } else { tokio::task::spawn_blocking(move || {
         let _trace_context = trace_context.map(SendTraceContext::enter);
+        // A resume registered at receipt finds its fence here (`resume_native`).
+        let _received_resume = crate::service::ReceivedResume::enter(received_resume);
         if is_chat_send {
             send_trace::emit(SendTraceEvent::new("transport.dispatch.begin").method("chat.send"));
         }
@@ -653,10 +666,10 @@ fn lane_worker(
                     .queue_wait_us(queued.queued.as_ref().and_then(SendTraceTimer::elapsed_us)));
             }
             let request = queued.request;
-            if let Some(session_id) = request_session(&request) {
+            if let Some(session_id) = request_session(&request).filter(|_| waits_for_session_start(&request.method)) {
                 gate.wait(&session_id).await;
             }
-            let reply = run_request(Arc::clone(&service), principal.clone(), request, sequenced).await;
+            let reply = run_request(Arc::clone(&service), principal.clone(), request, sequenced, None).await;
             if let Some(state) = &worker_active {
                 if let Ok(mut active) = state.lock() {
                     *active = None;
@@ -778,6 +791,12 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                         if let Some(session_id) = &session_id {
                             gate.enter(session_id);
                         }
+                        // A resume's fence exists from receipt: a stop that overtakes it while it waits for a
+                        // permit cancels it too (the stop does not wait for its session's start).
+                        let received_resume = (request.method == "session.resume")
+                            .then(|| session_id.as_deref())
+                            .flatten()
+                            .and_then(|session| service.receive_resume(session).map(|generation| (session.to_owned(), generation)));
                         let connects = Arc::clone(&connects);
                         let service = Arc::clone(&service);
                         let principal = principal.clone();
@@ -786,8 +805,11 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                         // The permit is taken inside the task: a start beyond the limit waits there, never in the reader.
                         tokio::spawn(async move {
                             let permit = connects.acquire_owned().await;
-                            let reply = run_request(service, principal, request, false).await;
+                            let reply = run_request(Arc::clone(&service), principal, request, false, received_resume.as_ref().map(|(_, generation)| *generation)).await;
                             drop(permit);
+                            if let Some((session, generation)) = &received_resume {
+                                service.finish_resume(session, *generation);
+                            }
                             let _ = replies.send(reply);
                             if let Some(session_id) = &session_id {
                                 gate.leave(session_id);
@@ -800,7 +822,7 @@ pub(crate) async fn serve_control<T: tokio::io::AsyncRead + tokio::io::AsyncWrit
                         let principal = principal.clone();
                         let replies = replies.clone();
                         tokio::spawn(async move {
-                            let reply = run_request(service, principal, request, false).await;
+                            let reply = run_request(service, principal, request, false, None).await;
                             drop(permit);
                             let _ = replies.send(reply);
                         });
@@ -1090,7 +1112,12 @@ async fn authenticate<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         .map_err(|_| anyhow::anyhow!("authentication failed"))?;
     let mut server_mac = HmacSha256::new_from_slice(credential.as_bytes())?;
     server_mac.update(format!("server:{}:{}:{}", PROTOCOL_VERSION, client_id, nonce).as_bytes());
-    write_json(stream,&json!({"kind":"authenticated","principal":client_id,"epoch":runtime_epoch,"contract":PROTOCOL_CONTRACT,"hmac":hex::encode(server_mac.finalize().into_bytes())})).await?;
+    let mut authenticated = json!({"kind":"authenticated","principal":client_id,"epoch":runtime_epoch,"contract":PROTOCOL_CONTRACT,"hmac":hex::encode(server_mac.finalize().into_bytes())});
+    // Which executable answers, so a desktop of another package can tell (11-26). Older desktops ignore it.
+    if let Some(identity) = crate::build_identity::current() {
+        authenticated["build"] = json!({"sha256":identity.sha256,"path":identity.path});
+    }
+    write_json(stream,&authenticated).await?;
     Ok(client_id.to_owned())
 }
 
@@ -1592,7 +1619,7 @@ mod decoder_tests {
         for method in [
             "filesystem.external.open",
             "filesystem.external.forget",
-            "session.resume",
+            // session.resume is an agent start (Lane::Connect, asserted below).
             "session.stop",
             "chat.tool.run.start",
             "chat.tool.run.stop",
@@ -1630,8 +1657,14 @@ mod decoder_tests {
         ] {
             assert_eq!(request_lane(read), Lane::Concurrent, "{read}");
         }
-        // Agent starts run beside the ordered lane; the connect gate keeps the session's own order.
+        // Agent starts run beside the ordered lane; the connect gate keeps the session's own order,
+        // except for a stop, which must reach the start it stops.
         assert_eq!(request_lane("chat.connect"), Lane::Connect);
+        assert_eq!(request_lane("session.resume"), Lane::Connect);
+        assert!(!waits_for_session_start("session.stop"));
+        for sequenced in ["chat.send", "chat.cancel", "session.releaseResources", "chat.queue.add"] {
+            assert!(waits_for_session_start(sequenced), "{sequenced}");
+        }
         // Git writes, worktree changes and backups keep their own order without holding other writes.
         for write in [
             "git.fetch", "git.pull", "git.push", "git.commit", "git.commit.selected", "git.merge",

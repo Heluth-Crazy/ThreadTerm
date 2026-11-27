@@ -23,11 +23,11 @@ const scratch=await mkdtemp(join(scratchBase,'tt-panel-consistency-'));
 assert.equal(dirname(scratch).toLowerCase(),scratchBase.toLowerCase());
 const label=process.argv[2]??'before';assert.match(label,/^[\w.-]+$/);
 // Every pane kind the strip must survive: the strip is identical whatever the pane shows.
-const PANE_KINDS=['chat','file','terminal','browser','map','empty'];
+const PANE_KINDS=['chat','file','terminal','browser','empty'];
 const verify=process.argv.includes('--verify'),out=join(root,'qa/results/panel-consistency',label);
 const baseline=process.argv.includes('--baseline'),baselineSources=new Map();
 if(baseline){
- for(const file of ['BlockInspector.tsx','block-inspector.css','PaneWorkspace.tsx','SessionWorkspace.tsx','SessionConfigDialog.tsx','WorkbenchSideBar.tsx','WorktreeManager.tsx','task-map.css','browser-chrome.css']){
+ for(const file of ['BlockInspector.tsx','block-inspector.css','PaneWorkspace.tsx','SessionWorkspace.tsx','SessionConfigDialog.tsx','WorkbenchSideBar.tsx','WorktreeManager.tsx','browser-chrome.css']){
   const relative=`renderer/src/components/${file}`;
   baselineSources.set(join(root,relative).replaceAll('\\','/').toLowerCase(),execFileSync('git',['show',`HEAD:${relative}`],{cwd:root,encoding:'utf8',windowsHide:true}));
  }
@@ -59,8 +59,7 @@ async function capture(name){
   ['Side panel',SIDE_PANEL_FAMILY,'.runtime-workspace .wb-panel > .wb-panel-head','strong'],
   ['Pane tabs','pane','.workspace-pane > .workspace-tabbar.ws-strip','.workspace-tab.active .workspace-tab-label'],['File editor/preview','file','.tt-editor-tabs.file-view-tabs','.file-bar-breadcrumb, .embedded-file-breadcrumb, .tt-editor-tab.active'],
   ['File/diff/review toolbar','file','.file-bar:not(.wb-browser-toolbar)','.file-bar-breadcrumb, .path, .embedded-file-breadcrumb'],['Browser toolbar','browser-toolbar','.wb-browser-toolbar',null],['Review bar','file','.wb-rs-bar','b'],['Files & Git','docked','.wb-tools-head','strong'],
-  ['Git history','docked','.wb-history-title','strong'],['Task map','toolbar','.task-map-toolbar','.task-map-title strong'],
-  ['Task map details','docked','.task-graph-details > header','strong'],['Block inspector','floating','.block-inspector-heading','h2'],
+  ['Git history','docked','.wb-history-title','strong'],['Block inspector','floating','.block-inspector-heading','h2'],
   ['Worktree list','docked','.wtm-list > header','strong'],['Worktree details','docked','.wtm-detail > header','h3'],
   ['Dialog','sheet-dialog','.dlg-head','h2'],['Configure session','sheet-dialog','.dialog-title','h2'],
   ['Local history intro','content-heading','.history-rail-heading','h3'],
@@ -88,7 +87,7 @@ async function capture(name){
    // strip family rules can compare panes with each other.
    const strip=node.matches('.workspace-tabbar.ws-strip')?node:null,card=strip&&node.closest('.workspace-pane')?.querySelector('.pane-card');
    const tabs=strip?[...strip.querySelectorAll('.workspace-tab')].map(tab=>{const rect=box(tab),style=getComputedStyle(tab),select=tab.querySelector('.workspace-tab-select'),close=tab.querySelector('.workspace-tab-close');return {active:tab.classList.contains('active'),height:rect.height,width:rect.width,bottom:rect.bottom,radius:[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),selectHeight:select?box(select).height:null,closeHeight:close?box(close).height:null};}):undefined;
-   const paneKind=card?(()=>{const kindOf=surface=>surface.querySelector('.xterm')?'terminal':surface.querySelector('.wb-web-preview')?'browser':surface.querySelector('.task-map')?'map':surface.querySelector('.file-workspace, .tt-editor-tabs')?'file':surface.querySelector('.chat-view, .chat-compose-shell')?'chat':'unknown';const visible=[...card.querySelectorAll('.pane-tab-surface')].find(surface=>!surface.hidden);return visible?kindOf(visible):card.querySelector('.pane-empty')?'empty':'unknown';})():undefined;
+   const paneKind=card?(()=>{const kindOf=surface=>surface.querySelector('.xterm')?'terminal':surface.querySelector('.wb-web-preview')?'browser':surface.querySelector('.file-workspace, .tt-editor-tabs')?'file':surface.querySelector('.chat-view, .chat-compose-shell')?'chat':'unknown';const visible=[...card.querySelectorAll('.pane-tab-surface')].find(surface=>!surface.hidden);return visible?kindOf(visible):card.querySelector('.pane-empty')?'empty':'unknown';})():undefined;
    rows.push({surface,tabs,paneKind,family:node.matches('.create-head')?'create-dialog':family,selector,index,rect:r,padding:[s.paddingTop,s.paddingRight,s.paddingBottom,s.paddingLeft],gap:s.gap,background:s.backgroundColor,effectiveBackground:bg,border:s.borderBottom,radius:[s.borderTopLeftRadius,s.borderTopRightRadius],cardRadius:[getComputedStyle(node.parentElement).borderTopLeftRadius,getComputedStyle(node.parentElement).borderTopRightRadius],title:title?{text:title.textContent,fontSize:ts.fontSize,fontWeight:ts.fontWeight,color:ts.color,lineHeight:ts.lineHeight,contrast:(lights[0]+.05)/(lights[1]+.05),rect:tb,visibleRect:visibleRect(title),clipped:title.scrollWidth>title.clientWidth+1,ellipsis:ts.textOverflow==='ellipsis',inside:tr.left>=r.x-1&&tr.right<=r.right+1&&tr.top>=r.y-1&&tr.bottom<=r.bottom+1}:null,controls});
   }
   return rows;
@@ -205,7 +204,6 @@ try{
    await capture(`${cell}-${view[0].replaceAll(' ','-')}`);
   }
   await optional('Configure session',async()=>{const details=page.getByRole('button',{name:zh?'会话详情面板':'Session details',exact:true});if(await details.getAttribute('aria-pressed')!=='true')await details.click();await page.locator('.inspector').getByRole('button',{name:zh?'配置':'Configure',exact:true}).click();await page.locator('.session-config').waitFor();await capture(`${cell}-configure`);if(verify){const subtitle=page.locator('.session-config .dialog-title p');const original=await subtitle.evaluate(node=>{const text=node.textContent;node.textContent=text.repeat(40);return text});assert.ok(await subtitle.evaluate(node=>node.scrollWidth>node.clientWidth&&getComputedStyle(node).textOverflow==='ellipsis'),'long session title ellipsizes');await capture(`${cell}-configure-long-title`);await subtitle.evaluate((node,text)=>node.textContent=text,original)}await closeDialog()});
-  await optional('Task map',async()=>{const details=page.getByRole('button',{name:zh?'会话详情面板':'Session details',exact:true});if(await details.getAttribute('aria-pressed')!=='true')await details.click();await page.locator('.inspector').getByRole('button',{name:zh?'任务图':'Task map',exact:true}).click();await page.locator('.task-map').waitFor();await capture(`${cell}-task-map`);await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
   await optional('File editor/preview',async()=>{await page.locator('.ws-top .wb-switcher').getByRole('button',{name:zh?'文件':'Files',exact:true}).click();await page.locator('.wb-tree').getByText('plan.md',{exact:true}).dblclick();await page.locator('.file-workspace').waitFor();await capture(`${cell}-file`);const preview=page.locator('.file-workspace').getByRole('button',{name:zh?'预览':'Preview',exact:true});if(await preview.count()){await preview.click();await capture(`${cell}-preview`)}await page.locator('.workspace-pane').filter({has:page.getByRole('tab',{name:'Panel QA',exact:true})}).getByRole('tab',{name:'Panel QA',exact:true}).click()});
   await optional('Browser and DevTools',async()=>{
    const browser=page.locator('.wb-web-preview:visible');
@@ -248,13 +246,12 @@ try{
  const fixtureId=await app.evaluate(async({BrowserWindow},file)=>{const window=new BrowserWindow({show:false,width:1440,height:1000,webPreferences:{contextIsolation:true,sandbox:true}});await window.loadFile(file);return window.webContents.id},join(scratch,'surfaces.html'));
  page=app.windows().find(candidate=>candidate.url().endsWith('/surfaces.html'));assert.ok(page,'mounted production fixture window');page.setDefaultTimeout(10000);page.on('pageerror',error=>report.errors.push(error.message));
  await page.waitForFunction(()=>Boolean(window.qaPanelSurfaces));
- for(const language of ['en','zh-CN'])for(const theme of ['light','dark'])for(const surface of ['block-inspector','worktree-manager','task-map','git-history','review-diff','delegation','terminal','local-history']){
+ for(const language of ['en','zh-CN'])for(const theme of ['light','dark'])for(const surface of ['block-inspector','worktree-manager','git-history','review-diff','delegation','terminal','local-history']){
   await page.evaluate(({surface,language,theme})=>window.qaPanelSurfaces.render(surface,language,theme),{surface,language,theme});await settled();
   if(surface==='worktree-manager')await page.locator('.wtm-detail h3').waitFor();
   if(surface==='git-history'){await page.locator('.wb-commit-head').waitFor();await page.locator('.wb-history-diff .cm-editor').first().waitFor()}
   if(surface==='review-diff')await page.locator('.wb-review-diff .cm-editor').first().waitFor();
   if(surface==='local-history')await page.getByText('Native panel header audit',{exact:true}).waitFor();
-  if(surface==='task-map'){await page.locator('.task-graph-box').first().waitFor();await page.locator('.task-graph-box').first().dblclick();}
   await capture(`${language}-${theme}-fixture-${surface}`);
   if(surface==='local-history'){await page.getByRole('button',{name:language==='zh-CN'?'ThreadTerm 记录':'ThreadTerm records',exact:true}).click();await page.locator('.session-history-rail').waitFor();await capture(`${language}-${theme}-fixture-local-history-saved`)}
  }
@@ -270,7 +267,7 @@ try{
   if(theme==='light'){await assertShellHitTargets('session toolbar');check('Windows hit test: caption and collapsed-sidebar buttons are clickable; empty toolbar drags');}
   check(`background ${theme}: Settings Choose/None, geometry, search and keyboard navigation verified`);
  }
- check('mounted production Block Inspector, worktree manager, task-map details, Git history/review and delegation inventory captured');
+ check('mounted production Block Inspector, worktree manager, Git history/review and delegation inventory captured');
  if(verify){
   for(const language of ['en','zh-CN'])for(const theme of ['light','dark']){
    const rows=report.measurements.filter(cell=>cell.name.startsWith(`${language}-${theme}-`)).flatMap(cell=>cell.rows);

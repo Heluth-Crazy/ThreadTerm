@@ -107,6 +107,43 @@ export function contrastRatio(left: string, right: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 const betterContrast = (accent: string, left: string, right: string) => contrastRatio(accent, left) >= contrastRatio(accent, right) ? left : right;
+/** `amount` (0–1) of `ink` mixed into `base`, both #rrggbb. */
+function mixHex(ink: string, base: string, amount: number): string {
+  const channel = (offset: number) => {
+    const value = Math.round(Number.parseInt(ink.slice(offset, offset + 2), 16) * amount + Number.parseInt(base.slice(offset, offset + 2), 16) * (1 - amount));
+    return value.toString(16).padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+/** How far the user bubble stands out from the chat behind it: the stock palettes' Mac values reach 1.20 / 1.22. */
+export const USER_BUBBLE_FILL_CONTRAST = 1.15;
+/** A 1 px edge needs more than a filled area to be seen. */
+export const USER_BUBBLE_EDGE_CONTRAST = 1.3;
+/** The user bubble of a palette without the Mac reference values (owner 11-24: its edges were invisible, because the
+ * bubble was the chat surface itself). `panel` is the surface behind it (`--surface`). The fill mixes the text into
+ * the panel, as little as reaches USER_BUBBLE_FILL_CONTRAST while the message text keeps its contrast (4.5, or what
+ * the palette has if less). Where no fill does both (e.g. Solarized), the fill keeps the text readable and a 1 px edge
+ * draws the shape: the text colour, or black/white when the text is too close to the panel. */
+export function userBubble(panel: string, text: string): { fill: string; edge: string } {
+  if (!hexColour.test(panel) || !hexColour.test(text)) return { fill: `color-mix(in srgb, ${text} 8%, ${panel})`, edge: "transparent" };
+  const textFloor = Math.min(4.5, contrastRatio(text, panel));
+  // Every strength is tried: for an unusual pair (a saturated panel) the text's contrast need not fall steadily as
+  // the fill darkens or lightens.
+  let readable = panel;
+  for (let percent = 0; percent <= 16; percent++) {
+    const fill = mixHex(text, panel, percent / 100);
+    if (contrastRatio(text, fill) < textFloor - 1e-9) continue;
+    readable = fill;
+    if (contrastRatio(fill, panel) >= USER_BUBBLE_FILL_CONTRAST) return { fill, edge: "transparent" };
+  }
+  for (const ink of [text, relativeLuminance(panel) > 0.179 ? "#000000" : "#ffffff"]) {
+    for (let percent = 10; percent <= 60; percent += 2) {
+      const edge = mixHex(ink, panel, percent / 100);
+      if (contrastRatio(edge, panel) >= USER_BUBBLE_EDGE_CONTRAST) return { fill: readable, edge };
+    }
+  }
+  return { fill: readable, edge: mixHex(relativeLuminance(panel) > 0.179 ? "#000000" : "#ffffff", panel, 0.6) };
+}
 export function customPrimaryForeground(tokens: ThemeTokens): string {
   const custom = betterContrast(tokens.accent, tokens.text, tokens.background);
   if (contrastRatio(tokens.accent, custom) >= 4.5) return custom;
@@ -336,7 +373,9 @@ export function themeCssVariables(resolved: ResolvedTheme): Record<string, strin
     ? { panel: "#f6f6f8", tabbar: "#ececee", bubble: "#ececf0", menu: "rgba(244,244,246,.92)", fillHover: "rgba(0,0,0,.045)", fillSelected: "rgba(0,0,0,.08)", control: "#ffffff", controlEdge: "rgba(0,0,0,.15)", controlDrop: "rgba(0,0,0,.1)", menuEdge: "rgba(0,0,0,.14)", group: "#f5f5f7", raised: "#f5f5f7", faint: "#a1a1a6", runningText: "#1f7f38", needsText: "#995000", failedText: "#cf241b" }
     : macPalette && resolved.presetId === "threadterm-dark"
       ? { panel: "#232325", tabbar: "#252527", bubble: "#2f2f33", menu: "rgba(40,40,42,.92)", fillHover: "rgba(255,255,255,.055)", fillSelected: "rgba(255,255,255,.1)", control: "#3a3a3c", controlEdge: "rgba(255,255,255,.07)", controlDrop: "rgba(0,0,0,.35)", menuEdge: "rgba(255,255,255,.12)", group: "#262628", raised: "#2a2a2c", faint: "#636366", runningText: "#30d158", needsText: "#ffb340", failedText: "#ff6b61" }
-      : { panel: colors.panel, tabbar: colors.frame, bubble: colors.panel, menu: colors.panel, fillHover: "color-mix(in srgb, var(--text) 5.5%, transparent)", fillSelected: "color-mix(in srgb, var(--text) 10%, transparent)", control: colors.panel, controlEdge: colors.border, controlDrop: "rgba(0,0,0,.1)", menuEdge: colors.border, group: colors.panel, raised: colors.panel, faint: colors.muted, runningText: colors.ok, needsText: colors.warn, failedText: colors.danger };
+      : { panel: colors.panel, tabbar: colors.frame, bubble: undefined, menu: colors.panel, fillHover: "color-mix(in srgb, var(--text) 5.5%, transparent)", fillSelected: "color-mix(in srgb, var(--text) 10%, transparent)", control: colors.panel, controlEdge: colors.border, controlDrop: "rgba(0,0,0,.1)", menuEdge: colors.border, group: colors.panel, raised: colors.panel, faint: colors.muted, runningText: colors.ok, needsText: colors.warn, failedText: colors.danger };
+  // The stock palettes keep the Mac reference bubble; every other one derives it from the surface behind it.
+  const bubble = mac.bubble ? { fill: mac.bubble, edge: "transparent" } : userBubble(colors.panel, colors.text);
   return {
     "--bg": colors.frame,
     "--side": colors.sidebar,
@@ -345,7 +384,8 @@ export function themeCssVariables(resolved: ResolvedTheme): Record<string, strin
     "--editor": colors.editor,
     "--panel": mac.panel,
     "--tabbar": mac.tabbar,
-    "--bubble": mac.bubble,
+    "--bubble": bubble.fill,
+    "--bubble-edge": bubble.edge,
     "--menu": mac.menu,
     "--fill-hover": mac.fillHover,
     "--fill-selected": mac.fillSelected,

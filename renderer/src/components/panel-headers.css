@@ -1,6 +1,6 @@
 /* Docked cards share the existing Workbench header scale. */
 .wb-panel-head,
-.task-map .task-graph-details > header, .wb-history-title, .wb-tools-head,
+.wb-history-title, .wb-tools-head,
 .worktree-manager .wtm-list > header, .worktree-manager .wtm-detail > header {
  box-sizing:border-box; display:flex; flex:none; align-items:center; min-width:0;
  height:38px; min-height:38px; gap:2px; padding:0 6px 0 14px;
@@ -8,22 +8,19 @@
  color:var(--text); font-size:13px; font-weight:600; line-height:18px;
 }
 .wb-panel-head > strong,
-.task-graph-details > header > strong, .wb-history-title > strong, .wb-tools-head > strong,
+.wb-history-title > strong, .wb-tools-head > strong,
 .worktree-manager .wtm-list > header > strong, .worktree-manager .wtm-detail > header h3 {
  flex:1; min-width:0; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
  color:inherit; font-size:inherit; font-weight:600; line-height:18px;
 }
-.wb-panel-head .icon-btn, .task-graph-details > header .icon-btn,
+.wb-panel-head .icon-btn,
 .wb-tools-head .icon-btn, .worktree-manager .wtm-list > header > .icon-btn {
  flex:none; width:26px; height:24px; border-radius:var(--radius);
 }
-.task-graph-details > header .icon-btn .ico { width:14px; height:14px; }
 
 /* Content toolbars use the same rule height, preserving file and browser controls. */
 .file-workspace .tt-editor-tabs.file-view-tabs { padding-inline:14px 6px; }
 .file-workspace .file-bar, .wb-history-diff > .file-bar { min-height:38px; }
-.task-map > .task-map-toolbar { height:38px; min-height:38px; }
-.task-map .task-map-title { font-size:12.5px; line-height:18px; }
 
 .worktree-manager .wtm-list { padding:0 8px 8px; }
 .worktree-manager .wtm-list > header { margin:0 -8px 8px; }

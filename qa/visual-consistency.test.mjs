@@ -499,9 +499,9 @@ test('every pane strip is 43 px and panes agree on insets, surface, rule and row
 });
 
 test('strip icon buttons share one size and radius while tab controls keep the tab shape', () => {
-  const tapped = stripRow({ controls: [...stripRow().controls, { label: 'Task map', height: 26, width: 26, radius: '6px', icons: [{}], inTab: false }] });
+  const tapped = stripRow({ controls: [...stripRow().controls, { label: 'Open in', height: 26, width: 26, radius: '6px', icons: [{}], inTab: false }] });
   const errors = paneStripViolations([tapped]).flatMap(entry => entry.errors);
-  assert.deepEqual(errors, ['strip control height 26 != 28: Task map']);
+  assert.deepEqual(errors, ['strip control height 26 != 28: Open in']);
   const radii = stripRow({ controls: stripRow().controls.map((control, index) => index === 0 ? { ...control, radius: '5px' } : control) });
   assert.match(paneStripViolations([radii]).flatMap(entry => entry.errors).join(' '), /disagree on radius/);
   const tabScopedOnly = stripRow({ controls: [stripRow().controls[2]] });
@@ -553,7 +553,7 @@ test('bars under the strips end on one line when they sit side by side', () => {
   assert.deepEqual(errors, ['Browser toolbar ends at 81, File editor/preview beside it at 77']);
   const stacked = { surface: 'Review bar', family: 'file', rect: at(0, PANE_STRIP_HEIGHT, 400, 40) };
   assert.deepEqual(sharedRowViolations([...strips, bar('Browser toolbar', 'browser-toolbar', 0, 38), stacked]), [], 'bars in one column are not side by side');
-  const lower = { surface: 'Task map details', family: 'docked', rect: at(401, 120, 400, 34) };
+  const lower = { surface: 'Worktree details', family: 'docked', rect: at(401, 120, 400, 34) };
   assert.deepEqual(sharedRowViolations([...strips, bar('Browser toolbar', 'browser-toolbar', 0, 38), lower]), [], 'a bar below the content line is not compared');
 });
 

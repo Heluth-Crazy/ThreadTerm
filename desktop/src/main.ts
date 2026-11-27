@@ -8,8 +8,9 @@ import { canonicalRelocationPath } from './relocationPaths.js';
 import { appendFileSync, existsSync, readdirSync, readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { realpath, stat } from 'node:fs/promises';
-import { validateRequest, type Method, type RequestParams, type RuntimeEvent, type Settings } from '@threadterm/protocol';
-import { RuntimeClient, RuntimeRequestError, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
+import { PROTOCOL_CONTRACT, validateRequest, type Method, type RequestParams, type RuntimeEvent, type Settings } from '@threadterm/protocol';
+import { RuntimeClient, RuntimeRequestError, checkedRuntimeExecutable, fileSha256, holdLocalRuntimeConnections, inspectLocalRuntime, openLocalRuntime, runtimePipeIsOpen, waitForPendingRuntimeStartup } from './runtime-client.js';
+import { replacementOutcome, replacementOutcomePrompt, restartStillAsTold, runtimeReplacementChoice, runtimeReplacementPrompt, runtimeReplacementQaChoice, runtimeUnsettledPrompt, type RuntimeReplacementPrompt } from './runtimeReplacement.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
 import { nativeDelivery, type NotificationKind } from './notificationPreferences.js';
 import { machineNotificationFocused, machineNotificationCopy, inboxNotificationCopy, notificationLocale, terminalNotificationCopy, terminalNotificationKind, testNotificationCopy, type InboxNotice, type NotificationLocale } from './inboxNotification.js';
@@ -117,6 +118,8 @@ app.on('before-quit', (event) => { if (!allowQuit) { event.preventDefault(); voi
 app.on('will-quit', () => { taskIsland?.dispose(); machineBrowsers?.close(); machineTree.stop(); adminRuntime.dispose(); for (const client of windowRuntimes.values()) client.dispose(); });
 
 void app.whenReady().then(async () => {
+  // Before anything connects: which runtime is running, and is it the one this desktop brought (11-26)?
+  holdLocalRuntimeConnections(checkLocalRuntime().catch(error => console.error('Runtime check failed:', error)));
   htmlPreviewPreloadReady = prepareAppSession(session.defaultSession);
   machines = new MachineRegistry(join(app.getPath('userData'), 'machines.json'), safeStorage);
   machineTree.add(machines.list()[0], adminRuntime, false);
@@ -130,6 +133,119 @@ void app.whenReady().then(async () => {
   await runScheduledElectronCacheCleanup();
 });
 
+/** A desktop from one package must not work with the runtime daemon another package left running (11-26): the daemon
+ * outlives its desktop while sessions run or other computers are served. At startup every local connection waits for
+ * this check (`holdLocalRuntimeConnections`); it runs again when the local runtime comes back as another process or
+ * refuses this desktop's contract. A legacy daemon (contract 20) is restarted or the desktop quits; a daemon of the
+ * same contract but another build is restarted or kept this time. Always asked, never automatic
+ * (runtimeReplacement.ts). Packaged desktops only, or a QA run that opts in. */
+let runtimeCheck: Promise<void> | undefined;
+/** Builds the user chose to keep this time: not asked about again while this desktop runs. */
+const keptRuntimeBuilds = new Set<string>();
+let runtimeRecheck = false;
+function checkLocalRuntime(): Promise<void> {
+  // One check at a time. A reconnect while one runs (the dialog may be open while another daemon takes over) asks
+  // for one more check after it, on what runs then.
+  if (runtimeCheck) { runtimeRecheck = true; return runtimeCheck; }
+  runtimeCheck = (async () => {
+    do {
+      runtimeRecheck = false;
+      await reconcileLocalRuntime();
+    } while (runtimeRecheck);
+  })().finally(() => { runtimeCheck = undefined; });
+  return runtimeCheck;
+}
+async function reconcileLocalRuntime(): Promise<void> {
+  const executable = checkedRuntimeExecutable(app.isPackaged, process.env, process.resourcesPath);
+  if (!executable) return;
+  const own = await fileSha256(executable);
+  const qa = runtimeReplacementQaChoice(app.isPackaged, process.env);
+  // The connection can drop while the dialog is open, or a restart can come to end more than the dialog said: then
+  // the user is asked again with what is true now.
+  let unsettled: boolean | undefined;
+  let zhKnown: boolean | undefined;
+  for (let round = 0; round < 3; round += 1) {
+    // Unreachable or unreadable: the ordinary connection reports what is wrong.
+    const handle = await openLocalRuntime().catch(() => undefined);
+    if (!handle || handle === 'incompatible') return;
+    try {
+      const legacy = handle.contract !== PROTOCOL_CONTRACT;
+      if (!legacy && (!own || !handle.build || handle.build.sha256 === own || keptRuntimeBuilds.has(handle.build.sha256))) return;
+      unsettled = legacy;
+      const told = await handle.state().catch(() => undefined);
+      if (!told) continue;
+      zhKnown = notificationLocale(told.settings) === 'zh-CN';
+      const zh = notificationLocale(told.settings) === 'zh-CN';
+      const choice = qa ?? runtimeReplacementChoice(await showRuntimeDialog(runtimeReplacementPrompt({ legacy, liveSessions: told.liveSessions, remoteAccess: told.remoteAccess, runtimePath: handle.build?.path, zh })), legacy);
+      if (choice === 'keep') { if (handle.build) keptRuntimeBuilds.add(handle.build.sha256); return; }
+      if (choice === 'quit') { quitKeepingRuntime(); return; }
+      // The stop goes to the runtime that was shown, on the same connection, and only while it ends no more than said.
+      const now = await handle.state().catch(() => undefined);
+      if (!now || !restartStillAsTold(told, now)) continue;
+      try {
+        await handle.stop();
+      } catch (error) {
+        if (!qa) await showRuntimeDialog({ title: 'ThreadTerm', message: zh ? '后台程序没有停止。' : 'The background program did not stop.', detail: error instanceof Error ? error.message : String(error), buttons: [zh ? '退出' : 'Quit'], defaultId: 0, cancelId: 0 });
+        quitKeepingRuntime();
+        return;
+      }
+      // Connections that stopped at the old runtime's contract try again; they launch this desktop's runtime.
+      for (const client of [adminRuntime, ...windowRuntimes.values()]) client.retryAfterRuntimeReplaced();
+      void verifyRuntimeReplacement(zh, qa !== undefined, own);
+      return;
+    } finally {
+      handle.close();
+    }
+  }
+  // Rounds ran out without a restart the user could still stand by: decide on what runs now, read once more (the
+  // right daemon may have taken over meanwhile).
+  if (unsettled === undefined) return;
+  const found = await inspectLocalRuntime().catch(() => undefined);
+  if (!found || found === 'incompatible') return;
+  const legacy = found.contract !== PROTOCOL_CONTRACT;
+  if (!legacy && (!own || !found.build || found.build.sha256 === own || keptRuntimeBuilds.has(found.build.sha256))) return;
+  const zh = notificationLocale(found.settings) === 'zh-CN' || (zhKnown ?? false);
+  // QA: a legacy runtime means quitting, another build is kept.
+  const response = qa ? 0 : await showRuntimeDialog(runtimeUnsettledPrompt(legacy, zh));
+  if (legacy || response === 1) { quitKeepingRuntime(); return; }
+  if (found.build) keptRuntimeBuilds.add(found.build.sha256);
+}
+/** After a restart: an older desktop that is still open may have launched its own runtime first. */
+async function verifyRuntimeReplacement(zh: boolean, qa: boolean, own: string | undefined): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    await delay(1_000);
+    const found = await inspectLocalRuntime().catch(() => undefined);
+    if (!found) continue;
+    if (found === 'incompatible') return;
+    const outcome = replacementOutcome(found, PROTOCOL_CONTRACT, own);
+    if (outcome === 'ok') return;
+    if (qa) { if (outcome === 'legacy') quitKeepingRuntime(); return; }
+    const response = await showRuntimeDialog(replacementOutcomePrompt(outcome, zh));
+    if (outcome === 'legacy' || response === 1) { quitKeepingRuntime(); return; }
+    // Kept: not asked about again while this desktop runs.
+    if (found.build) keptRuntimeBuilds.add(found.build.sha256);
+    return;
+  }
+}
+async function showRuntimeDialog(prompt: RuntimeReplacementPrompt): Promise<number> {
+  const options = { type: 'warning' as const, noLink: true, icon: nativeImage.createFromDataURL(applicationIconPng), ...prompt };
+  const result = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+  return result.response;
+}
+/** Quits without the quit flow, which could stop the runtime: the daemon of the other package keeps its sessions. */
+function quitKeepingRuntime(): void {
+  allowQuit = true;
+  app.exit(0);
+}
+
+/** The admin connection came back (possibly to another runtime process: a new process keeps the database's epoch,
+ * so every reconnect counts) or stopped at another contract. */
+function isLocalRuntimeChange(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const { state } = data as { state?: unknown };
+  return state === 'reconnected' || state === 'incompatible';
+}
 function createAdminRuntime(): RuntimeClient {
   const client = new RuntimeClient({ controlOnly: true });
   attachAdminRuntime(client);
@@ -139,6 +255,8 @@ function attachAdminRuntime(client: RuntimeClient): void {
   client.onEvent((event) => {
     if (stoppingRuntime) return;
     if (event.event === 'presentation.requested') presentRuntimeSession(event.data);
+    // The local runtime came back as another process, or refused this desktop's contract: which one is it now?
+    if (event.event === 'runtime.transport' && client === adminRuntime && isLocalRuntimeChange(event.data)) void checkLocalRuntime().catch(error => console.error('Runtime check failed:', error));
     // Settings are persisted as a state.changed outbox event, never as an
     // invented "settings" transport event. Refresh immediately so shortcut
     // registration and floating-window preference follow the confirmed state.

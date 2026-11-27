@@ -48,6 +48,8 @@ async fn run() -> Result<()> {
     }
     // First: what Windows defined when this environment was inherited (environment.rs).
     threadterm_v3_runtime::environment::initialize();
+    // Which executable this is, for desktops of other packages: known before any desktop connects.
+    threadterm_v3_runtime::build_identity::start();
     let config = RuntimeConfig::load()?;
     threadterm_v3_runtime::runtime_log::initialize(config.data_dir.join("runtime.log"));
     let _singleton = RuntimeLock::acquire(&format!(

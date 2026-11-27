@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyThemeTokens, contrastRatio, customHoverTarget, customPrimaryForeground, customSwitchOffForeground, customTheme, customTokens, resolveTheme, subscribeThemeState, themeCssVariables, themeUsesSystemAppearance, type ThemeTokens } from './themes';
+import { applyThemeTokens, contrastRatio, customHoverTarget, customPrimaryForeground, customSwitchOffForeground, customTheme, customTokens, resolveTheme, subscribeThemeState, themeCssVariables, themeUsesSystemAppearance, userBubble, USER_BUBBLE_EDGE_CONTRAST, USER_BUBBLE_FILL_CONTRAST, type ThemeTokens } from './themes';
 import { customThemeFromResolved } from './appearance/backgrounds';
+import { THEME_PRESETS } from './themePresets';
 
 const tokens = (overrides: Partial<ThemeTokens> = {}): ThemeTokens => ({ background: '#182430', surface: '#22303d', text: '#f1f5f9', muted: '#94a3b8', accent: '#ff7a45', border: '#44505d', ...overrides });
 
@@ -164,7 +165,7 @@ test('custom themes default sidebar to the frame, editor to the panel and the ba
 test('themeCssVariables exposes Mac component roles and derives them for non-stock themes', () => {
   const resolved = resolveTheme('preset:solarized-dark', { systemDark: true });
   const variables = themeCssVariables(resolved);
-  const expected = ['--bg', '--side', '--sidebar', '--surface', '--editor', '--panel', '--tabbar', '--bubble', '--menu', '--fill-hover', '--fill-selected', '--control', '--control-edge', '--control-drop', '--menu-edge', '--group', '--raised', '--text', '--muted', '--faint', '--border', '--primary', '--primary-fg', '--amber', '--danger', '--st-needs', '--st-running', '--st-failed', '--st-running-text', '--st-needs-text', '--st-failed-text', '--st-ended', '--term-bg', '--term-fg', '--syn-keyword', '--syn-string', '--syn-number', '--syn-comment', '--syn-function', '--syn-type', '--syn-property', '--syn-punct', '--syn-meta', '--syn-deleted'];
+  const expected = ['--bg', '--side', '--sidebar', '--surface', '--editor', '--panel', '--tabbar', '--bubble', '--bubble-edge', '--menu', '--fill-hover', '--fill-selected', '--control', '--control-edge', '--control-drop', '--menu-edge', '--group', '--raised', '--text', '--muted', '--faint', '--border', '--primary', '--primary-fg', '--amber', '--danger', '--st-needs', '--st-running', '--st-failed', '--st-running-text', '--st-needs-text', '--st-failed-text', '--st-ended', '--term-bg', '--term-fg', '--syn-keyword', '--syn-string', '--syn-number', '--syn-comment', '--syn-function', '--syn-type', '--syn-property', '--syn-punct', '--syn-meta', '--syn-deleted'];
   assert.deepEqual(Object.keys(variables).sort(), expected.slice().sort());
   assert.equal(variables['--bg'], resolved.colors.frame);
   assert.equal(variables['--sidebar'], resolved.colors.sidebar);
@@ -190,9 +191,45 @@ test('adding a background preserves every stock Mac component role while edited 
     assert.equal(restored.custom, true);
     assert.deepEqual(themeCssVariables(restored), themeCssVariables(original));
     const edited = resolveTheme('custom:edited', { systemDark: false, customThemes: { edited: { ...copy, accent: '#a055aa' } } });
-    assert.equal(themeCssVariables(edited)['--bubble'], edited.colors.panel);
+    const editedBubble = userBubble(edited.colors.panel, edited.colors.text);
+    assert.deepEqual([themeCssVariables(edited)['--bubble'], themeCssVariables(edited)['--bubble-edge']], [editedBubble.fill, editedBubble.edge]);
+    assert.notEqual(themeCssVariables(edited)['--bubble'], edited.colors.panel);
     assert.notEqual(themeCssVariables(edited)['--bubble'], themeCssVariables(original)['--bubble']);
     const borderEdited = resolveTheme('custom:border', { systemDark: false, customThemes: { border: { ...copy, border: '#123456' } } });
     assert.equal(themeCssVariables(borderEdited)['--border'], '#123456');
   }
 });
+
+test('the user bubble stands out from the chat in every palette and keeps its text readable', () => {
+  // Owner 11-24: the bubble's edges were invisible; for every palette but the two stock ones it was the surface itself.
+  const visible = (panel: string, text: string, label: string) => {
+    const { fill, edge } = userBubble(panel, text);
+    assert.ok(contrastRatio(text, fill) >= Math.min(4.5, contrastRatio(text, panel)) - 1e-9, `${label}: text stays readable on ${fill}`);
+    if (edge === 'transparent') assert.ok(contrastRatio(fill, panel) >= USER_BUBBLE_FILL_CONTRAST, `${label}: fill ${fill} stands out from ${panel}`);
+    else assert.ok(contrastRatio(edge, panel) >= USER_BUBBLE_EDGE_CONTRAST, `${label}: edge ${edge} stands out from ${panel}`);
+    return { fill, edge };
+  };
+  for (const preset of THEME_PRESETS) {
+    const resolved = resolveTheme(`preset:${preset.id}`, { systemDark: preset.mode === 'dark' });
+    const variables = themeCssVariables(resolved);
+    if (['threadterm-light', 'threadterm-dark'].includes(preset.id)) {
+      assert.equal(variables['--bubble-edge'], 'transparent', preset.id);
+      continue;
+    }
+    const { fill, edge } = visible(resolved.colors.panel, resolved.colors.text, preset.id);
+    assert.deepEqual([variables['--bubble'], variables['--bubble-edge']], [fill, edge], preset.id);
+  }
+  // Solarized: no fill both stands out and keeps the text at 4.5, so the shape comes from the edge.
+  for (const id of ['solarized-light', 'solarized-dark']) {
+    const resolved = resolveTheme(`preset:${id}`, { systemDark: id.endsWith('dark') });
+    assert.notEqual(userBubble(resolved.colors.panel, resolved.colors.text).edge, 'transparent', id);
+  }
+  // A valid custom palette may use one colour for text and surface: the edge then comes from black or white.
+  assert.notEqual(visible('#e0e0e0', '#e0e0e0', 'equal light').edge, 'transparent');
+  assert.notEqual(visible('#202020', '#202020', 'equal dark').edge, 'transparent');
+  visible('#ffffff', '#1d1d1f', 'plain light');
+  // A saturated panel: 1% misses the text floor, a stronger fill meets both (Codex review 11-26).
+  assert.equal(visible('#0000ff', '#604000', 'saturated').edge, 'transparent');
+  visible('#14212e', '#f1f7fb', 'plain dark');
+});
+
